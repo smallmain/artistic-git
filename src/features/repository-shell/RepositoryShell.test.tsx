@@ -819,7 +819,7 @@ describe("RepositoryShell review mode", () => {
 });
 
 describe("RepositoryShell close guard", () => {
-  it("guards active backend operations and refuses to close without a recovery path", async () => {
+  it("guards active backend operations with a wait-only prompt when no recovery API exists", async () => {
     const errors: unknown[] = [];
     const handleError = (event: Event) => {
       errors.push((event as CustomEvent<unknown>).detail);
@@ -846,17 +846,54 @@ describe("RepositoryShell close guard", () => {
       );
 
       await emitWindowCloseBlocked({ reason: "closeWindow" });
+      const dialog = await screen.findByRole("dialog", {
+        name: "Close window?",
+      });
+      expect(dialog).toHaveTextContent(
+        "This operation cannot be safely canceled yet. Wait for it to finish, then close again.",
+      );
+      expect(
+        within(dialog).queryByRole("button", { name: "Close and recover" }),
+      ).not.toBeInTheDocument();
+
       fireEvent.click(
-        within(
-          await screen.findByRole("dialog", { name: "Close window?" }),
-        ).getByRole("button", { name: "Close and recover" }),
+        within(dialog).getByRole("button", { name: "Keep waiting" }),
       );
 
-      await waitFor(() => expect(errors.length).toBeGreaterThan(0));
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("dialog", { name: "Close window?" }),
+        ).not.toBeInTheDocument(),
+      );
+      expect(errors).toHaveLength(0);
       expect(commandMocks.closeCurrentWindow).not.toHaveBeenCalled();
     } finally {
       window.removeEventListener("artistic-git:error", handleError);
     }
+  });
+
+  it("cancels pending app quit when an active backend operation must keep waiting", async () => {
+    const activeOperation: OperationProgressEvent = {
+      cancellable: false,
+      label: "sync",
+      operationId: "sync-active",
+      progress: { kind: "indeterminate" },
+    };
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />, {
+      operationsById: {
+        [activeOperation.operationId]: activeOperation,
+      },
+    });
+
+    await emitWindowCloseBlocked({ reason: "quit" });
+    fireEvent.click(
+      within(
+        await screen.findByRole("dialog", { name: "Close window?" }),
+      ).getByRole("button", { name: "Keep waiting" }),
+    );
+
+    expect(commandMocks.cancelPendingWindowExit).toHaveBeenCalledTimes(1);
+    expect(commandMocks.closeCurrentWindow).not.toHaveBeenCalled();
   });
 
   it("cancels unresolved conflicts before closing the guarded window", async () => {

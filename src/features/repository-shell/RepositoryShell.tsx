@@ -502,6 +502,8 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     conflict !== null ||
     reviewActive ||
     reviewRecoveryPrompt;
+  const closeGuardNeedsRecovery =
+    conflict !== null || reviewActive || reviewRecoveryPrompt;
   const interactionBusy = busy || reviewActive;
   const busyLabel = activeOperation
     ? operationLabel(activeOperation.label, t)
@@ -1954,20 +1956,59 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         title={t("repository.deleteSafetyBackupTitle")}
         variant="danger"
       />
-      <ConfirmDialog
-        busy={closeRecoveryBusy}
-        confirmLabel={t("repository.closeGuardConfirm")}
-        description={t("repository.closeGuardDescription")}
-        onConfirm={() => {
-          if (closeRequest) {
-            void performGuardedClose(closeRequest.reason);
+      {closeRequest !== null &&
+      writeOperationBusy &&
+      !closeGuardNeedsRecovery ? (
+        <DialogFrame
+          description={t("repository.closeGuardBusyBlocked")}
+          footer={
+            <div className="flex justify-end">
+              <Button
+                onClick={() => {
+                  handleCloseRequestOpenChange(false);
+                }}
+                type="button"
+                variant="default"
+              >
+                {t("repository.closeGuardWait")}
+              </Button>
+            </div>
           }
-        }}
-        onOpenChange={handleCloseRequestOpenChange}
-        open={closeRequest !== null}
-        title={t("repository.closeGuardTitle")}
-        variant="danger"
-      />
+          onOpenChange={handleCloseRequestOpenChange}
+          title={t("repository.closeGuardTitle")}
+        >
+          <div className="flex gap-3 rounded-md border bg-background p-3 text-sm">
+            <AlertTriangle
+              className="mt-0.5 size-4 shrink-0 text-warning"
+              aria-hidden="true"
+            />
+            <p>{t("repository.closeGuardBusyBlocked")}</p>
+          </div>
+        </DialogFrame>
+      ) : (
+        <ConfirmDialog
+          busy={closeRecoveryBusy}
+          confirmLabel={
+            closeGuardNeedsRecovery
+              ? t("repository.closeGuardConfirm")
+              : t("actions.close")
+          }
+          description={
+            closeGuardNeedsRecovery
+              ? t("repository.closeGuardDescription")
+              : t("repository.closeGuardReadyDescription")
+          }
+          onConfirm={() => {
+            if (closeRequest) {
+              void performGuardedClose(closeRequest.reason);
+            }
+          }}
+          onOpenChange={handleCloseRequestOpenChange}
+          open={closeRequest !== null}
+          title={t("repository.closeGuardTitle")}
+          variant="danger"
+        />
+      )}
       <CreateBranchDialog
         baseBranch={branchCreateBase}
         baseBranches={branches}

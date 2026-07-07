@@ -94,9 +94,12 @@ export const resources = {
         closeGuardConfirm: "Close and recover",
         closeGuardDescription:
           "An operation is in progress. Closing will cancel it and restore the pre-operation state.",
+        closeGuardReadyDescription:
+          "The operation has finished. Close this window now.",
         closeGuardRecoveryConflict:
           "Recovery needs conflict resolution before the window can close.",
         closeGuardTitle: "Close window?",
+        closeGuardWait: "Keep waiting",
         checkout: "Switch branch",
         checkoutAutoStash: "Move changes with me",
         checkoutAutoStashDescription:
@@ -761,8 +764,10 @@ export const resources = {
         closeGuardConfirm: "关闭并恢复",
         closeGuardDescription:
           "有操作正在进行，关闭将取消该操作并恢复到操作前状态",
+        closeGuardReadyDescription: "操作已结束。现在可以关闭此窗口。",
         closeGuardRecoveryConflict: "恢复时需要先解决冲突，窗口暂不能关闭。",
         closeGuardTitle: "关闭窗口？",
+        closeGuardWait: "继续等待",
         checkout: "切换分支",
         checkoutAutoStash: "更改跟随我",
         checkoutAutoStashDescription:
