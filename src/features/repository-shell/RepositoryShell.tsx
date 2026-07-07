@@ -6,7 +6,6 @@ import {
   Trash2,
 } from "lucide-react";
 import * as React from "react";
-import { listen } from "@tauri-apps/api/event";
 import { useTranslation } from "react-i18next";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -34,10 +33,8 @@ import { useLocalizedFormatters } from "@/i18n/format";
 import {
   acceptRemoteHistory,
   checkoutBranch,
-  cancelPendingWindowExit,
   cancelConflictResolution,
   cancelStashRestore,
-  closeCurrentWindow,
   commitChanges,
   completeConflictResolution,
   conflictDetail,
@@ -65,7 +62,6 @@ import {
   saveWindowGeometry,
   saveConflictResolution,
   selectConflictSide,
-  setWindowCloseGuard,
   stashDetails,
   startReviewMode,
   syncAllBranches,
@@ -101,18 +97,14 @@ import {
   validateFetchIntervalSeconds,
 } from "@/features/settings/settings-model";
 import { ReviewModeOverlay } from "@/features/review/ReviewModeOverlay";
+import { WindowCloseGuard } from "@/features/window-close-guard/WindowCloseGuard";
 
 type MainTab = "history" | "localChanges";
 type StashScope = "all" | "selected";
-type WindowCloseBlockedReason = "closeWindow" | "quit";
 type SyncStatusTranslator = (
   key: string,
   options?: Record<string, unknown>,
 ) => string;
-
-interface WindowCloseBlockedEvent {
-  reason?: WindowCloseBlockedReason;
-}
 
 const demoBranches: BranchListItem[] = [
   {
@@ -206,10 +198,6 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   const [reviewModeState, setReviewModeState] =
     React.useState<ReviewModeState | null>(null);
   const [reviewRecoveryPrompt, setReviewRecoveryPrompt] = React.useState(false);
-  const [closeRequest, setCloseRequest] = React.useState<{
-    reason: WindowCloseBlockedReason;
-  } | null>(null);
-  const [closeRecoveryBusy, setCloseRecoveryBusy] = React.useState(false);
   const [liveFetchState, setLiveFetchState] =
     React.useState<FetchStateEvent | null>(null);
   const fetchInFlightRef = React.useRef(false);
@@ -510,6 +498,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     reviewRecoveryPrompt;
   const closeGuardNeedsRecovery =
     conflict !== null || reviewActive || reviewRecoveryPrompt;
+  const closeGuardCanRecover = closeGuardNeedsRecovery && !writeOperationBusy;
   const interactionBusy = busy || reviewActive;
   const busyLabel = activeOperation
     ? operationLabel(activeOperation.label, t)
@@ -1002,30 +991,6 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       cancelled = true;
     };
   }, [repositoryPath]);
-
-  React.useEffect(() => {
-    if (!closeGuardActive) {
-      void setWindowCloseGuard({ active: false }).catch(() => undefined);
-      return;
-    }
-
-    void setWindowCloseGuard({ active: true }).catch((error) => {
-      window.dispatchEvent(
-        new CustomEvent("artistic-git:error", { detail: error }),
-      );
-    });
-
-    const blockClose = (event: BeforeUnloadEvent) => {
-      event.preventDefault();
-      event.returnValue = "";
-    };
-
-    window.addEventListener("beforeunload", blockClose);
-    return () => {
-      void setWindowCloseGuard({ active: false }).catch(() => undefined);
-      window.removeEventListener("beforeunload", blockClose);
-    };
-  }, [closeGuardActive]);
 
   React.useEffect(() => {
     if (!syncFeedback) {
@@ -1617,14 +1582,6 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     [clearConflict, conflict],
   );
 
-  const cancelPendingQuit = React.useCallback(() => {
-    void cancelPendingWindowExit().catch((error) => {
-      window.dispatchEvent(
-        new CustomEvent("artistic-git:error", { detail: error }),
-      );
-    });
-  }, []);
-
   const recoverCloseGuardedState = React.useCallback(async () => {
     if (writeOperationBusy) {
       throw new Error(t("repository.closeGuardBusyBlocked"));
@@ -1672,81 +1629,6 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     t,
     writeOperationBusy,
   ]);
-
-  const performGuardedClose = React.useCallback(
-    async (reason: WindowCloseBlockedReason) => {
-      setCloseRecoveryBusy(true);
-      try {
-        await recoverCloseGuardedState();
-        setCloseRequest(null);
-        await setWindowCloseGuard({ active: false });
-        await closeCurrentWindow();
-      } catch (error) {
-        if (reason === "quit") {
-          cancelPendingQuit();
-        }
-        setCloseRequest(null);
-        window.dispatchEvent(
-          new CustomEvent("artistic-git:error", { detail: error }),
-        );
-      } finally {
-        setCloseRecoveryBusy(false);
-      }
-    },
-    [cancelPendingQuit, recoverCloseGuardedState],
-  );
-
-  const handleCloseRequestOpenChange = React.useCallback(
-    (open: boolean) => {
-      if (open || closeRecoveryBusy) {
-        return;
-      }
-      if (closeRequest?.reason === "quit") {
-        cancelPendingQuit();
-      }
-      setCloseRequest(null);
-    },
-    [cancelPendingQuit, closeRecoveryBusy, closeRequest?.reason],
-  );
-
-  React.useEffect(() => {
-    let active = true;
-    let unlisten: (() => void) | undefined;
-
-    void listen<WindowCloseBlockedEvent | WindowCloseBlockedReason>(
-      "window-close-blocked",
-      (event) => {
-        if (!active) {
-          return;
-        }
-
-        const reason = closeBlockedReasonFromPayload(event.payload);
-        if (!closeGuardActive) {
-          void setWindowCloseGuard({ active: false })
-            .then(() => closeCurrentWindow())
-            .catch((error) => {
-              window.dispatchEvent(
-                new CustomEvent("artistic-git:error", { detail: error }),
-              );
-            });
-          return;
-        }
-
-        setCloseRequest({ reason });
-      },
-    ).then((resolvedUnlisten) => {
-      if (active) {
-        unlisten = resolvedUnlisten;
-      } else {
-        resolvedUnlisten();
-      }
-    });
-
-    return () => {
-      active = false;
-      unlisten?.();
-    };
-  }, [closeGuardActive]);
 
   return (
     <main className="flex h-screen min-h-0 bg-background text-foreground">
@@ -1962,59 +1844,11 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         title={t("repository.deleteSafetyBackupTitle")}
         variant="danger"
       />
-      {closeRequest !== null &&
-      writeOperationBusy &&
-      !closeGuardNeedsRecovery ? (
-        <DialogFrame
-          description={t("repository.closeGuardBusyBlocked")}
-          footer={
-            <div className="flex justify-end">
-              <Button
-                onClick={() => {
-                  handleCloseRequestOpenChange(false);
-                }}
-                type="button"
-                variant="default"
-              >
-                {t("repository.closeGuardWait")}
-              </Button>
-            </div>
-          }
-          onOpenChange={handleCloseRequestOpenChange}
-          title={t("repository.closeGuardTitle")}
-        >
-          <div className="flex gap-3 rounded-md border bg-background p-3 text-sm">
-            <AlertTriangle
-              className="mt-0.5 size-4 shrink-0 text-warning"
-              aria-hidden="true"
-            />
-            <p>{t("repository.closeGuardBusyBlocked")}</p>
-          </div>
-        </DialogFrame>
-      ) : (
-        <ConfirmDialog
-          busy={closeRecoveryBusy}
-          confirmLabel={
-            closeGuardNeedsRecovery
-              ? t("repository.closeGuardConfirm")
-              : t("actions.close")
-          }
-          description={
-            closeGuardNeedsRecovery
-              ? t("repository.closeGuardDescription")
-              : t("repository.closeGuardReadyDescription")
-          }
-          onConfirm={() => {
-            if (closeRequest) {
-              void performGuardedClose(closeRequest.reason);
-            }
-          }}
-          onOpenChange={handleCloseRequestOpenChange}
-          open={closeRequest !== null}
-          title={t("repository.closeGuardTitle")}
-          variant="danger"
-        />
-      )}
+      <WindowCloseGuard
+        active={closeGuardActive}
+        canRecover={closeGuardCanRecover}
+        onRecover={recoverCloseGuardedState}
+      />
       <CreateBranchDialog
         baseBranch={branchCreateBase}
         baseBranches={branches}
@@ -2155,25 +1989,6 @@ function pathsForChangeIds(
   return ids
     .map((id) => byId.get(id)?.payload.newPath)
     .filter((path): path is string => Boolean(path));
-}
-
-function closeBlockedReasonFromPayload(
-  payload: WindowCloseBlockedEvent | WindowCloseBlockedReason | unknown,
-): WindowCloseBlockedReason {
-  if (payload === "quit") {
-    return "quit";
-  }
-
-  if (
-    typeof payload === "object" &&
-    payload !== null &&
-    "reason" in payload &&
-    (payload as WindowCloseBlockedEvent).reason === "quit"
-  ) {
-    return "quit";
-  }
-
-  return "closeWindow";
 }
 
 function isRepositoryShellOperation(

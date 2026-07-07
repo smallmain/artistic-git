@@ -2457,6 +2457,22 @@ mod tests {
     }
 
     #[test]
+    fn window_menu_close_guard_pending_exit_is_ready_after_last_guard_clears() {
+        let registry = WindowRegistry::default();
+        registry_set_close_guard(&registry, "repo-1", true).expect("guard first");
+        registry_set_close_guard(&registry, "repo-2", true).expect("guard second");
+        registry_set_pending_exit_after_close_guards(&registry, true).expect("set pending exit");
+
+        registry_unregister(&registry, "repo-1");
+        assert!(registry_pending_exit_after_close_guards(&registry));
+        assert!(registry_has_close_guards(&registry));
+
+        registry_unregister(&registry, "repo-2");
+        assert!(registry_pending_exit_after_close_guards(&registry));
+        assert!(!registry_has_close_guards(&registry));
+    }
+
+    #[test]
     fn window_menu_renderer_crash_payload_is_consumed_once() {
         let registry = WindowRegistry::default();
         let crash = renderer_crash_payload("repo-1", "Renderer crashed".to_owned());

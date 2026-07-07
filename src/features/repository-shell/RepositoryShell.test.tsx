@@ -281,6 +281,10 @@ beforeEach(() => {
   commandMocks.cancelConflictResolution.mockResolvedValue({
     aborted: "merge",
   });
+  commandMocks.cancelStashRestore.mockResolvedValue({
+    droppedRecoveryStash: false,
+    restored: true,
+  });
   commandMocks.commitChanges.mockResolvedValue({
     committedPaths: ["src/app.ts"],
     lfsTrackedPaths: [],
@@ -819,14 +823,16 @@ describe("RepositoryShell review mode", () => {
 });
 
 describe("RepositoryShell close guard", () => {
-  it("guards active backend operations with a wait-only prompt when no recovery API exists", async () => {
+  it.each([false, true])(
+    "guards active backend operations with cancellable=%s as wait-only when no recovery API exists",
+    async (cancellable) => {
     const errors: unknown[] = [];
     const handleError = (event: Event) => {
       errors.push((event as CustomEvent<unknown>).detail);
     };
     window.addEventListener("artistic-git:error", handleError);
     const activeOperation: OperationProgressEvent = {
-      cancellable: false,
+      cancellable,
       label: "sync",
       operationId: "sync-active",
       progress: { kind: "indeterminate" },
@@ -872,7 +878,8 @@ describe("RepositoryShell close guard", () => {
     } finally {
       window.removeEventListener("artistic-git:error", handleError);
     }
-  });
+    },
+  );
 
   it("cancels pending app quit when an active backend operation must keep waiting", async () => {
     const activeOperation: OperationProgressEvent = {
@@ -965,6 +972,57 @@ describe("RepositoryShell close guard", () => {
         repositoryPath: "/repo/art",
       }),
     );
+    expect(commandMocks.closeCurrentWindow).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels stash restore recovery before closing the guarded window", async () => {
+    const conflict = createConflictEvent();
+    const recovery = {
+      headOid: "abc1234",
+      id: "recovery-1",
+      stashOid: null,
+      stashSelector: null,
+    };
+    commandMocks.listStashes.mockResolvedValue({
+      stashes: [
+        stashEntry({
+          message: "WIP material polish",
+          selector: "stash@{0}",
+        }),
+      ],
+    });
+    commandMocks.restoreStash.mockResolvedValueOnce({
+      oid: "stashoid",
+      outcome: { status: "conflicts", conflict },
+      recovery,
+      selector: "stash@{0}",
+    });
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Apply stash" }));
+    await waitFor(() =>
+      expect(commandMocks.restoreStash).toHaveBeenCalledWith({
+        dropOnSuccess: false,
+        operationName: null,
+        repositoryPath: "/repo/art",
+        selector: "stash@{0}",
+      }),
+    );
+
+    await emitWindowCloseBlocked({ reason: "closeWindow" });
+    fireEvent.click(
+      within(
+        await screen.findByRole("dialog", { name: "Close window?" }),
+      ).getByRole("button", { name: "Close and recover" }),
+    );
+
+    await waitFor(() =>
+      expect(commandMocks.cancelStashRestore).toHaveBeenCalledWith({
+        recovery,
+        repositoryPath: "/repo/art",
+      }),
+    );
+    expect(commandMocks.cancelConflictResolution).not.toHaveBeenCalled();
     expect(commandMocks.closeCurrentWindow).toHaveBeenCalledTimes(1);
   });
 
