@@ -278,6 +278,89 @@ describe("ConflictResolutionOverlay", () => {
     });
   });
 
+  it("keeps submodule-prefixed paths in the list, diff, and conflict commands", async () => {
+    const file = createFile({
+      path: "deps/lib/src/conflict.ts",
+      status: "unresolved",
+    });
+    const api = createApi({
+      completeConflictResolution: vi.fn(async () => ({
+        continuation: "merge" as const,
+      })),
+      conflictDetail: vi.fn(async () => createTextDetail(file)),
+      listConflicts: vi.fn(async () => ({
+        files: [file],
+        operation: mergeOperation,
+      })),
+      saveConflictResolution: vi.fn(async () => ({
+        file: resolvedFile(file),
+      })),
+      selectConflictSide: vi.fn(async () => ({
+        files: [resolvedFile(file)],
+      })),
+    });
+    const onClose = vi.fn();
+
+    renderWithProviders(
+      <ConflictResolutionOverlay
+        api={api}
+        event={createEvent([file])}
+        onClose={onClose}
+      />,
+    );
+
+    expect(
+      await screen.findAllByText("deps/lib/src/conflict.ts"),
+    ).not.toHaveLength(0);
+    expect(
+      within(screen.getByLabelText("Diff viewer")).getByText(
+        "deps/lib/src/conflict.ts",
+      ),
+    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(api.conflictDetail).toHaveBeenCalledWith({
+        path: "deps/lib/src/conflict.ts",
+        repositoryPath: "/repo/art",
+      });
+    });
+
+    const hunk = screen.getByLabelText("Conflict at line 2");
+    fireEvent.click(
+      within(hunk).getByRole("button", { name: "Use own section" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(api.saveConflictResolution).toHaveBeenCalledWith({
+        content: "before\nown line\nafter\n",
+        path: "deps/lib/src/conflict.ts",
+        pendingHunks: 0,
+        repositoryPath: "/repo/art",
+      });
+    });
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Use own" })[0]);
+
+    await waitFor(() => {
+      expect(api.selectConflictSide).toHaveBeenCalledWith({
+        paths: ["deps/lib/src/conflict.ts"],
+        repositoryPath: "/repo/art",
+        side: "own",
+      });
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Complete" }));
+
+    await waitFor(() => {
+      expect(api.completeConflictResolution).toHaveBeenCalledWith({
+        operationId: "op-conflict",
+        paths: ["deps/lib/src/conflict.ts"],
+        repositoryPath: "/repo/art",
+      });
+      expect(onClose).toHaveBeenCalledWith("/repo/art");
+    });
+  });
+
   it("calls complete only after all files are resolved and cancel after confirmation", async () => {
     const file = createFile({ status: "resolved" });
     const completeApi = createApi({
