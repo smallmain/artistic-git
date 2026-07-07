@@ -2331,12 +2331,15 @@ function mapLocalChangeToItem(change: LocalChange): LocalChangeItem {
     searchableText: [
       path,
       oldPath,
+      change.submodule?.name,
+      change.submodule?.path,
       change.indexStatus,
       change.worktreeStatus,
       change.payload.fileKind,
     ]
       .filter(Boolean)
       .join(" "),
+    submodule: change.submodule,
   };
 }
 

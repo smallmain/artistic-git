@@ -1157,8 +1157,17 @@ pub struct LocalChange {
     pub change_kind: DiffChangeKind,
     pub index_status: String,
     pub worktree_status: String,
+    #[serde(default)]
+    pub submodule: Option<LocalChangeSubmodule>,
     pub payload: DiffPayload,
     pub diff: DiffContent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalChangeSubmodule {
+    pub path: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]

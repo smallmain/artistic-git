@@ -1,5 +1,6 @@
 import type {
   DiffPayload,
+  LocalChangeSubmodule,
   LocalChangesRenormalizeSuggestion,
 } from "@/lib/ipc/generated";
 
@@ -12,6 +13,7 @@ export interface LocalChangeItem {
   id: string;
   payload: DiffPayload;
   searchableText?: string;
+  submodule?: LocalChangeSubmodule | null;
 }
 
 export interface LocalChangesPanelProps {

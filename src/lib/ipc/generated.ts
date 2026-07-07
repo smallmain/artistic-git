@@ -609,8 +609,14 @@ export type LocalChange = {
   changeKind: DiffChangeKind;
   indexStatus: string;
   worktreeStatus: string;
+  submodule?: LocalChangeSubmodule | null;
   payload: DiffPayload;
   diff: DiffContent;
+};
+
+export type LocalChangeSubmodule = {
+  path: string;
+  name: string;
 };
 
 export type LocalChangesRenormalizeSuggestion = {
