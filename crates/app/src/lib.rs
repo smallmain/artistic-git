@@ -1,6 +1,6 @@
 use artistic_git_contracts::{
     AppError, AppErrorCategory, AppResult, CommitRequest, CommitResponse, OperationContext,
-    SyncCurrentBranchRequest, SyncCurrentBranchResponse,
+    SyncBranchRequest, SyncBranchResponse, SyncCurrentBranchRequest, SyncCurrentBranchResponse,
 };
 use artistic_git_core::AppInfo;
 use artistic_git_git_runner::{
@@ -113,6 +113,14 @@ pub fn sync_current_branch(
     let _permit =
         begin_identity_write(runner, "syncCurrentBranch", &request.repository_path, false)?;
     sync::sync_current_branch(runner, request)
+}
+
+pub fn sync_branch(
+    runner: &GitRunner,
+    request: SyncBranchRequest,
+) -> AppResult<SyncBranchResponse> {
+    let _permit = begin_identity_write(runner, "syncBranch", &request.repository_path, false)?;
+    sync::sync_branch(runner, request)
 }
 
 pub fn commit_changes(runner: &GitRunner, request: CommitRequest) -> AppResult<CommitResponse> {

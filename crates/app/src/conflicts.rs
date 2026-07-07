@@ -247,7 +247,14 @@ pub fn complete_conflict_resolution(
         assert_no_worktree_markers(&root, path, OP_COMPLETE)?;
     }
     git_add_paths(runner, &root, paths.iter(), OP_COMPLETE)?;
-    run_continuation(runner, &root, operation.kind, OP_COMPLETE)?;
+    let continuation = run_continuation(runner, &root, operation.kind, OP_COMPLETE);
+    if continuation.is_ok() {
+        crate::sync::finish_sync_worktree_conflict(runner, &root, &request.operation_id)?;
+    } else {
+        let _ =
+            crate::sync::cleanup_sync_worktree_after_conflict(runner, &root, &request.operation_id);
+    }
+    continuation?;
 
     Ok(ConflictCompleteResponse {
         continuation: operation.kind,
@@ -266,7 +273,11 @@ pub fn cancel_conflict_resolution(
         ConflictOperationKind::CherryPick => ["cherry-pick", "--abort"],
         ConflictOperationKind::Revert => ["revert", "--abort"],
     };
-    git_stdout(runner, &root, command, OP_CANCEL)?;
+    let abort = git_stdout(runner, &root, command, OP_CANCEL);
+    let cleanup =
+        crate::sync::cleanup_sync_worktree_after_conflict(runner, &root, &request.operation_id);
+    abort?;
+    cleanup?;
 
     Ok(ConflictCancelResponse {
         aborted: operation.kind,

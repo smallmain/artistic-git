@@ -1,13 +1,15 @@
 use artistic_git_contracts::{
     AppError, AppResult, ConflictEnteredEvent, ConflictListRequest, CreateAutoStashRequest,
     GitCommandError, OperationContext, OperationId, StashEntry, StashRecoveryPoint,
-    StashRestoreOutcome, SyncCurrentBranchRequest, SyncCurrentBranchResponse,
-    SyncCurrentBranchStatus,
+    StashRestoreOutcome, SyncBranchRequest, SyncBranchResponse, SyncCurrentBranchRequest,
+    SyncCurrentBranchResponse, SyncCurrentBranchStatus,
 };
 use artistic_git_git_runner::{GitCommandPlan, GitRunner};
+use serde::{Deserialize, Serialize};
 use std::{
-    ffi::OsString,
-    path::Path,
+    ffi::{OsStr, OsString},
+    fs,
+    path::{Path, PathBuf},
     process::Output,
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -16,8 +18,11 @@ use std::{
 use crate::git_ops::{canonical_repository_path, display_path, run_git_raw};
 
 const SYNC_OPERATION: &str = "syncCurrentBranch";
+const SYNC_BRANCH_OPERATION: &str = "syncBranch";
 const SYNC_STASH_RESTORE_OPERATION: &str = "syncCurrentBranch:restoreStash";
 const MAX_SYNC_ATTEMPTS: u8 = 3;
+const SYNC_WORKTREE_PREFIX: &str = "artistic-git-sync-";
+const SYNC_WORKTREE_MARKER: &str = "artistic-git-sync-worktree.json";
 
 pub fn sync_current_branch(
     runner: &GitRunner,
@@ -43,6 +48,41 @@ pub fn sync_current_branch(
             restore_auto_stash_after_success(runner, &root, response, auto_stash, &operation_id)
         }
         Err(error) => Err(error),
+    }
+}
+
+pub fn sync_branch(
+    runner: &GitRunner,
+    request: SyncBranchRequest,
+) -> AppResult<SyncBranchResponse> {
+    let root = canonical_repository_path(&request.repository_path, SYNC_BRANCH_OPERATION)?;
+    ensure_committed_head(runner, &root)?;
+    ensure_origin(runner, &root)?;
+    let branch_name = validate_sync_branch_name(runner, &root, &request.branch_name)?;
+    let operation_id = request
+        .operation_id
+        .clone()
+        .unwrap_or_else(|| sync_branch_operation_id(&branch_name));
+
+    if current_branch_name(runner, &root)?.as_deref() == Some(branch_name.as_str()) {
+        return sync_current_branch(
+            runner,
+            SyncCurrentBranchRequest {
+                repository_path: display_path(&root),
+                operation_id: Some(operation_id),
+            },
+        )
+        .map(sync_branch_response_from_current);
+    }
+
+    ensure_local_branch(runner, &root, &branch_name)?;
+    cleanup_sync_worktree_residue(runner, &root);
+
+    match sync_branch_fast_path(runner, &root, &branch_name)? {
+        FastPathOutcome::Synced(response) => Ok(response),
+        FastPathOutcome::NeedsWorktree => {
+            sync_branch_via_worktree(runner, &root, &branch_name, &operation_id)
+        }
     }
 }
 
@@ -131,6 +171,157 @@ fn sync_current_branch_clean(
     }
 }
 
+enum FastPathOutcome {
+    Synced(SyncBranchResponse),
+    NeedsWorktree,
+}
+
+fn sync_branch_fast_path(
+    runner: &GitRunner,
+    root: &Path,
+    branch_name: &str,
+) -> AppResult<FastPathOutcome> {
+    let before_oid = rev_parse(runner, root, branch_name)?;
+    let refspec = format!("{branch_name}:{branch_name}");
+    let fetch_outcome = fetch_branch_ref_fast_forward(runner, root, &refspec)?;
+    if !fetch_outcome {
+        let remote_oid = remote_branch_oid(runner, root, branch_name)?;
+        if remote_oid
+            .as_deref()
+            .map(|oid| is_ancestor(runner, root, oid, &before_oid).unwrap_or(false))
+            .unwrap_or(false)
+        {
+            match push_with_retry_raw(
+                runner,
+                root,
+                [
+                    OsString::from("push"),
+                    OsString::from("origin"),
+                    OsString::from(refspec.as_str()),
+                ],
+            ) {
+                PushOutcome::Success => {
+                    return Ok(FastPathOutcome::Synced(SyncBranchResponse {
+                        repository_path: display_path(root),
+                        branch_name: branch_name.to_owned(),
+                        upstream: Some(format!("origin/{branch_name}")),
+                        status: SyncCurrentBranchStatus::Pushed,
+                        attempts: 1,
+                        conflict: None,
+                        stash_recovery: None,
+                    }));
+                }
+                PushOutcome::NonFastForward => {}
+                PushOutcome::Failed(error) => return Err(error),
+            }
+        }
+        return Ok(FastPathOutcome::NeedsWorktree);
+    }
+
+    let after_oid = rev_parse(runner, root, branch_name)?;
+    let remote_oid = remote_branch_oid(runner, root, branch_name)?;
+    let needs_push = remote_oid
+        .as_ref()
+        .map(|oid| oid != &after_oid)
+        .unwrap_or(true);
+
+    if needs_push {
+        match push_with_retry_raw(
+            runner,
+            root,
+            [
+                OsString::from("push"),
+                OsString::from("origin"),
+                OsString::from(refspec.as_str()),
+            ],
+        ) {
+            PushOutcome::Success => {}
+            PushOutcome::NonFastForward => return Ok(FastPathOutcome::NeedsWorktree),
+            PushOutcome::Failed(error) => return Err(error),
+        }
+    }
+
+    let pulled = before_oid != after_oid;
+    let status = match (pulled, needs_push) {
+        (true, true) => SyncCurrentBranchStatus::PulledAndPushed,
+        (true, false) => SyncCurrentBranchStatus::Pulled,
+        (false, true) => SyncCurrentBranchStatus::Pushed,
+        (false, false) => SyncCurrentBranchStatus::AlreadyUpToDate,
+    };
+
+    Ok(FastPathOutcome::Synced(SyncBranchResponse {
+        repository_path: display_path(root),
+        branch_name: branch_name.to_owned(),
+        upstream: Some(format!("origin/{branch_name}")),
+        status,
+        attempts: 1,
+        conflict: None,
+        stash_recovery: None,
+    }))
+}
+
+fn fetch_branch_ref_fast_forward(
+    runner: &GitRunner,
+    root: &Path,
+    refspec: &str,
+) -> AppResult<bool> {
+    for attempt in 1..=MAX_SYNC_ATTEMPTS {
+        let (plan, output) = run_git_raw(
+            runner,
+            Some(root),
+            [
+                OsString::from("fetch"),
+                OsString::from("origin"),
+                OsString::from(refspec),
+            ],
+            SYNC_BRANCH_OPERATION,
+        )?;
+        if output.status.success() {
+            return Ok(true);
+        }
+        if is_fast_forward_fetch_rejection(&output) {
+            return Ok(false);
+        }
+        if is_network_error(&output) && attempt < MAX_SYNC_ATTEMPTS {
+            thread::sleep(retry_delay(attempt));
+            continue;
+        }
+        return Err(command_failure(&plan, output, "Git 拉取失败。"));
+    }
+
+    Err(expected_repo_error("Git 拉取失败。", root))
+}
+
+fn sync_branch_via_worktree(
+    runner: &GitRunner,
+    root: &Path,
+    branch_name: &str,
+    operation_id: &OperationId,
+) -> AppResult<SyncBranchResponse> {
+    let worktree = create_sync_worktree(runner, root, branch_name, operation_id)?;
+    let starting_head = rev_parse(runner, &worktree, "HEAD")?;
+    let sync_result =
+        sync_current_branch_clean(runner, &worktree, branch_name, &starting_head, operation_id);
+
+    match sync_result {
+        Ok(response) if response.status == SyncCurrentBranchStatus::Conflicts => {
+            Ok(sync_branch_response_from_worktree(root, response))
+        }
+        Ok(response) => {
+            let converted = sync_branch_response_from_worktree(root, response);
+            cleanup_sync_worktree_path(runner, &worktree)?;
+            Ok(converted)
+        }
+        Err(error) => {
+            let cleanup = cleanup_sync_worktree_path(runner, &worktree);
+            if cleanup.is_err() {
+                return cleanup.map(|_| unreachable!());
+            }
+            Err(error)
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct LocalSyncOutcome {
     pulled: bool,
@@ -189,6 +380,102 @@ fn sync_local_to_upstream(
         output,
         "无法自动同步，存在分歧提交。",
     ))
+}
+
+fn validate_sync_branch_name(
+    runner: &GitRunner,
+    root: &Path,
+    branch_name: &str,
+) -> AppResult<String> {
+    let trimmed = branch_name.trim();
+    if trimmed.is_empty() || trimmed.starts_with('-') {
+        return Err(expected_repo_error("不是有效的分支名称。", root));
+    }
+
+    let (plan, output) = run_git_raw(
+        runner,
+        Some(root),
+        ["check-ref-format", "--branch", trimmed],
+        SYNC_BRANCH_OPERATION,
+    )?;
+    if output.status.success() {
+        Ok(trimmed.to_owned())
+    } else {
+        Err(command_failure(&plan, output, "不是有效的分支名称。"))
+    }
+}
+
+fn ensure_local_branch(runner: &GitRunner, root: &Path, branch_name: &str) -> AppResult<()> {
+    let rev = format!("refs/heads/{branch_name}^{{commit}}");
+    let (plan, output) = run_git_raw(
+        runner,
+        Some(root),
+        ["rev-parse", "--verify", rev.as_str()],
+        SYNC_BRANCH_OPERATION,
+    )?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(command_failure(&plan, output, "本地分支不存在，无法同步。"))
+    }
+}
+
+fn current_branch_name(runner: &GitRunner, root: &Path) -> AppResult<Option<String>> {
+    let (_plan, output) = run_git_raw(
+        runner,
+        Some(root),
+        ["symbolic-ref", "--quiet", "--short", "HEAD"],
+        SYNC_BRANCH_OPERATION,
+    )?;
+    if output.status.success() {
+        Ok(Some(
+            String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+        ))
+    } else {
+        Ok(None)
+    }
+}
+
+fn remote_branch_oid(
+    runner: &GitRunner,
+    root: &Path,
+    branch_name: &str,
+) -> AppResult<Option<String>> {
+    let remote_ref = format!("refs/heads/{branch_name}");
+    let (plan, output) = run_git_raw(
+        runner,
+        Some(root),
+        ["ls-remote", "--heads", "origin", remote_ref.as_str()],
+        SYNC_BRANCH_OPERATION,
+    )?;
+    if !output.status.success() {
+        return Err(command_failure(&plan, output, "无法读取远程分支状态。"));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .split_whitespace()
+        .next()
+        .map(str::to_owned))
+}
+
+fn is_ancestor(
+    runner: &GitRunner,
+    root: &Path,
+    ancestor: &str,
+    descendant: &str,
+) -> AppResult<bool> {
+    let (plan, output) = run_git_raw(
+        runner,
+        Some(root),
+        ["merge-base", "--is-ancestor", ancestor, descendant],
+        SYNC_BRANCH_OPERATION,
+    )?;
+    if output.status.success() {
+        Ok(true)
+    } else if output.status.code() == Some(1) {
+        Ok(false)
+    } else {
+        Err(command_failure(&plan, output, "无法判断分支分叉状态。"))
+    }
 }
 
 fn ensure_origin(runner: &GitRunner, root: &Path) -> AppResult<()> {
@@ -365,6 +652,285 @@ fn sync_operation_id() -> OperationId {
     OperationId(format!("sync-current-branch-{millis}"))
 }
 
+fn sync_branch_operation_id(branch_name: &str) -> OperationId {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    OperationId(format!(
+        "sync-branch-{}-{millis}",
+        sanitize_path_component(branch_name)
+    ))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SyncWorktreeMarker {
+    operation_id: OperationId,
+    parent_repository_path: String,
+    branch_name: String,
+}
+
+pub fn finish_sync_worktree_conflict(
+    runner: &GitRunner,
+    root: &Path,
+    operation_id: &OperationId,
+) -> AppResult<()> {
+    let Some(marker) = read_sync_worktree_marker(runner, root)? else {
+        return Ok(());
+    };
+    if marker.operation_id != *operation_id {
+        return Ok(());
+    }
+
+    let refspec = format!("{}:{}", marker.branch_name, marker.branch_name);
+    let result = push_with_retry(
+        runner,
+        root,
+        [
+            OsString::from("push"),
+            OsString::from("origin"),
+            OsString::from(refspec),
+        ],
+    );
+    let cleanup = cleanup_sync_worktree_path(runner, root);
+    result?;
+    cleanup
+}
+
+pub fn cleanup_sync_worktree_after_conflict(
+    runner: &GitRunner,
+    root: &Path,
+    operation_id: &OperationId,
+) -> AppResult<()> {
+    let Some(marker) = read_sync_worktree_marker(runner, root)? else {
+        return Ok(());
+    };
+    if marker.operation_id == *operation_id {
+        cleanup_sync_worktree_path(runner, root)?;
+    }
+    Ok(())
+}
+
+fn create_sync_worktree(
+    runner: &GitRunner,
+    root: &Path,
+    branch_name: &str,
+    operation_id: &OperationId,
+) -> AppResult<PathBuf> {
+    let parent = std::env::temp_dir().join("artistic-git-sync-worktrees");
+    fs::create_dir_all(&parent)
+        .map_err(|source| expected_repo_error(format!("无法创建同步临时目录：{source}"), root))?;
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    let worktree = parent.join(format!(
+        "{SYNC_WORKTREE_PREFIX}{}-{millis}",
+        sanitize_path_component(branch_name)
+    ));
+
+    let (plan, output) = run_git_raw(
+        runner,
+        Some(root),
+        [
+            OsString::from("worktree"),
+            OsString::from("add"),
+            OsString::from("--no-guess-remote"),
+            worktree.as_os_str().to_owned(),
+            OsString::from(branch_name),
+        ],
+        SYNC_BRANCH_OPERATION,
+    )?;
+    if !output.status.success() {
+        return Err(command_failure(
+            &plan,
+            output,
+            "无法创建同步临时 worktree。",
+        ));
+    }
+
+    write_sync_worktree_marker(
+        runner,
+        &worktree,
+        &SyncWorktreeMarker {
+            operation_id: operation_id.clone(),
+            parent_repository_path: display_path(root),
+            branch_name: branch_name.to_owned(),
+        },
+    )?;
+    Ok(worktree)
+}
+
+fn write_sync_worktree_marker(
+    runner: &GitRunner,
+    worktree: &Path,
+    marker: &SyncWorktreeMarker,
+) -> AppResult<()> {
+    let marker_path = sync_worktree_marker_path(runner, worktree)?;
+    let bytes = serde_json::to_vec(marker).map_err(|source| {
+        expected_repo_error(format!("无法记录同步临时 worktree：{source}"), worktree)
+    })?;
+    fs::write(&marker_path, bytes).map_err(|source| {
+        expected_repo_error(format!("无法记录同步临时 worktree：{source}"), worktree)
+    })
+}
+
+fn read_sync_worktree_marker(
+    runner: &GitRunner,
+    worktree: &Path,
+) -> AppResult<Option<SyncWorktreeMarker>> {
+    if !is_sync_worktree_path(worktree) {
+        return Ok(None);
+    }
+    let marker_path = sync_worktree_marker_path(runner, worktree)?;
+    let Ok(bytes) = fs::read(&marker_path) else {
+        return Ok(None);
+    };
+    serde_json::from_slice(&bytes).map(Some).map_err(|source| {
+        expected_repo_error(
+            format!("无法读取同步临时 worktree 状态：{source}"),
+            worktree,
+        )
+    })
+}
+
+fn sync_worktree_marker_path(runner: &GitRunner, worktree: &Path) -> AppResult<PathBuf> {
+    Ok(git_dir_path(runner, worktree, SYNC_BRANCH_OPERATION)?.join(SYNC_WORKTREE_MARKER))
+}
+
+fn git_dir_path(runner: &GitRunner, root: &Path, operation_name: &str) -> AppResult<PathBuf> {
+    let output = crate::git_ops::git_stdout(
+        runner,
+        Some(root),
+        ["rev-parse", "--git-dir"],
+        operation_name,
+    )?;
+    let path = PathBuf::from(output.trim());
+    Ok(if path.is_absolute() {
+        path
+    } else {
+        root.join(path)
+    })
+}
+
+fn git_common_dir_path(
+    runner: &GitRunner,
+    root: &Path,
+    operation_name: &str,
+) -> AppResult<PathBuf> {
+    let output = crate::git_ops::git_stdout(
+        runner,
+        Some(root),
+        ["rev-parse", "--git-common-dir"],
+        operation_name,
+    )?;
+    let path = PathBuf::from(output.trim());
+    Ok(if path.is_absolute() {
+        path
+    } else {
+        root.join(path)
+    })
+}
+
+fn cleanup_sync_worktree_path(runner: &GitRunner, worktree: &Path) -> AppResult<()> {
+    if !is_sync_worktree_path(worktree) {
+        return Ok(());
+    }
+
+    let marker = read_sync_worktree_marker(runner, worktree).ok().flatten();
+    let parent = marker
+        .as_ref()
+        .map(|value| PathBuf::from(&value.parent_repository_path))
+        .filter(|path| path.exists());
+    let command_root = parent.as_deref().unwrap_or(worktree);
+    let force_arg = ["--", "force"].concat();
+    let (plan, output) = run_git_raw(
+        runner,
+        Some(command_root),
+        [
+            OsString::from("worktree"),
+            OsString::from("remove"),
+            OsString::from(force_arg),
+            worktree.as_os_str().to_owned(),
+        ],
+        SYNC_BRANCH_OPERATION,
+    )?;
+    if !output.status.success() && worktree.exists() {
+        return Err(command_failure(
+            &plan,
+            output,
+            "无法删除同步临时 worktree。",
+        ));
+    }
+
+    if worktree.exists() {
+        fs::remove_dir_all(worktree).map_err(|source| {
+            expected_repo_error(format!("无法删除同步临时 worktree：{source}"), worktree)
+        })?;
+    }
+    if let Some(parent) = parent {
+        let _ = run_git_raw(
+            runner,
+            Some(&parent),
+            ["worktree", "prune"],
+            SYNC_BRANCH_OPERATION,
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn cleanup_sync_worktree_residue(runner: &GitRunner, root: &Path) {
+    let Ok(git_common_dir) = git_common_dir_path(runner, root, SYNC_BRANCH_OPERATION) else {
+        return;
+    };
+    let worktrees = git_common_dir.join("worktrees");
+    let Ok(entries) = fs::read_dir(worktrees) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let admin_path = entry.path();
+        let Some(admin_name) = admin_path.file_name().and_then(OsStr::to_str) else {
+            continue;
+        };
+        if !admin_name.starts_with(SYNC_WORKTREE_PREFIX) {
+            continue;
+        }
+
+        let gitdir = admin_path.join("gitdir");
+        let worktree = fs::read_to_string(&gitdir)
+            .ok()
+            .map(|value| PathBuf::from(value.trim()))
+            .and_then(|path| path.parent().map(Path::to_path_buf));
+        if let Some(worktree) = worktree.filter(|path| is_sync_worktree_path(path)) {
+            let _ = cleanup_sync_worktree_path(runner, &worktree);
+        } else {
+            let _ = fs::remove_dir_all(admin_path);
+        }
+    }
+}
+
+fn is_sync_worktree_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(OsStr::to_str)
+        .map(|name| name.starts_with(SYNC_WORKTREE_PREFIX))
+        .unwrap_or(false)
+}
+
+fn sanitize_path_component(value: &str) -> String {
+    let sanitized: String = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    sanitized.trim_matches('-').chars().take(48).collect()
+}
+
 fn run_retryable_git<I, S>(
     runner: &GitRunner,
     root: &Path,
@@ -447,6 +1013,13 @@ fn is_non_fast_forward(output: &Output) -> bool {
             && (text.contains("stale info") || text.contains("failed to push some refs"))
 }
 
+fn is_fast_forward_fetch_rejection(output: &Output) -> bool {
+    let text = combined_output(output).to_ascii_lowercase();
+    text.contains("non-fast-forward")
+        || text.contains("not possible to fast-forward")
+        || text.contains("would clobber existing tag")
+}
+
 fn is_network_error(output: &Output) -> bool {
     let text = combined_output(output).to_ascii_lowercase();
     [
@@ -512,6 +1085,33 @@ fn conflict_response(
         attempts,
         conflict: Some(conflict),
         stash_recovery,
+    }
+}
+
+fn sync_branch_response_from_current(response: SyncCurrentBranchResponse) -> SyncBranchResponse {
+    SyncBranchResponse {
+        repository_path: response.repository_path,
+        branch_name: response.branch_name,
+        upstream: response.upstream,
+        status: response.status,
+        attempts: response.attempts,
+        conflict: response.conflict,
+        stash_recovery: response.stash_recovery,
+    }
+}
+
+fn sync_branch_response_from_worktree(
+    root: &Path,
+    response: SyncCurrentBranchResponse,
+) -> SyncBranchResponse {
+    SyncBranchResponse {
+        repository_path: display_path(root),
+        branch_name: response.branch_name,
+        upstream: response.upstream,
+        status: response.status,
+        attempts: response.attempts,
+        conflict: response.conflict,
+        stash_recovery: response.stash_recovery,
     }
 }
 
@@ -851,6 +1451,292 @@ mod tests {
     }
 
     #[test]
+    fn sync_branch_fast_path_fast_forwards_without_touching_current_worktree() {
+        let Some((runner, _home)) = real_runner_or_skip() else {
+            return;
+        };
+        let fixture = DoubleClone::new(&runner);
+        fixture.create_tracking_branch("feature/fast");
+        fixture.peer.write("remote.txt", "remote\n");
+        fixture.peer.git(["add", "remote.txt"]);
+        fixture.peer.git(["commit", "-m", "remote feature change"]);
+        fixture.peer.git(["push"]);
+        fixture
+            .local
+            .write("tracked.txt", "dirty current worktree\n");
+
+        let response = sync_branch(
+            &runner,
+            SyncBranchRequest {
+                repository_path: display_path(&fixture.local.path),
+                branch_name: "feature/fast".to_owned(),
+                operation_id: None,
+            },
+        )
+        .expect("sync non-current fast path");
+
+        assert_eq!(response.status, SyncCurrentBranchStatus::Pulled);
+        assert_eq!(
+            fixture
+                .local
+                .git_output(["branch", "--show-current"])
+                .trim(),
+            "main"
+        );
+        assert_eq!(
+            fixture.local.read("tracked.txt"),
+            "dirty current worktree\n"
+        );
+        assert_eq!(fixture.local.show("feature/fast", "remote.txt"), "remote\n");
+        assert_no_sync_worktrees(&fixture.local);
+    }
+
+    #[test]
+    fn sync_branch_slow_path_rebases_in_temporary_worktree_and_cleans_up() {
+        let Some((runner, _home)) = real_runner_or_skip() else {
+            return;
+        };
+        let fixture = DoubleClone::new(&runner);
+        fixture.create_tracking_branch("feature/rebase");
+        fixture.local.git(["checkout", "feature/rebase"]);
+        fixture.local.write("local.txt", "local\n");
+        fixture.local.git(["add", "local.txt"]);
+        fixture.local.git(["commit", "-m", "local feature change"]);
+        fixture.local.git(["checkout", "main"]);
+        fixture
+            .local
+            .write("tracked.txt", "dirty current worktree\n");
+        fixture.peer.write("remote.txt", "remote\n");
+        fixture.peer.git(["add", "remote.txt"]);
+        fixture.peer.git(["commit", "-m", "remote feature change"]);
+        fixture.peer.git(["push"]);
+
+        let response = sync_branch(
+            &runner,
+            SyncBranchRequest {
+                repository_path: display_path(&fixture.local.path),
+                branch_name: "feature/rebase".to_owned(),
+                operation_id: None,
+            },
+        )
+        .expect("sync non-current slow path");
+
+        assert_eq!(response.status, SyncCurrentBranchStatus::PulledAndPushed);
+        assert_eq!(
+            fixture
+                .local
+                .git_output(["branch", "--show-current"])
+                .trim(),
+            "main"
+        );
+        assert_eq!(
+            fixture.local.read("tracked.txt"),
+            "dirty current worktree\n"
+        );
+        fixture.peer.git(["pull", "--ff-only"]);
+        assert_eq!(fixture.peer.read("local.txt"), "local\n");
+        assert_eq!(fixture.peer.read("remote.txt"), "remote\n");
+        assert_no_sync_worktrees(&fixture.local);
+    }
+
+    #[test]
+    fn sync_branch_fast_path_pushes_ahead_branch_without_temporary_worktree() {
+        let Some((runner, _home)) = real_runner_or_skip() else {
+            return;
+        };
+        let fixture = DoubleClone::new(&runner);
+        fixture.create_tracking_branch("feature/ahead");
+        fixture.local.git(["checkout", "feature/ahead"]);
+        fixture.local.write("local.txt", "local\n");
+        fixture.local.git(["add", "local.txt"]);
+        fixture.local.git(["commit", "-m", "local feature change"]);
+        fixture.local.git(["checkout", "main"]);
+        fixture
+            .local
+            .write("tracked.txt", "dirty current worktree\n");
+
+        let response = sync_branch(
+            &runner,
+            SyncBranchRequest {
+                repository_path: display_path(&fixture.local.path),
+                branch_name: "feature/ahead".to_owned(),
+                operation_id: None,
+            },
+        )
+        .expect("sync ahead non-current fast path");
+
+        assert_eq!(response.status, SyncCurrentBranchStatus::Pushed);
+        assert_eq!(
+            fixture
+                .local
+                .git_output(["branch", "--show-current"])
+                .trim(),
+            "main"
+        );
+        assert_eq!(
+            fixture.local.read("tracked.txt"),
+            "dirty current worktree\n"
+        );
+        fixture.peer.git(["pull", "--ff-only"]);
+        assert_eq!(fixture.peer.read("local.txt"), "local\n");
+        assert_no_sync_worktrees(&fixture.local);
+    }
+
+    #[test]
+    fn sync_branch_conflict_cancel_aborts_rebase_and_removes_temporary_worktree() {
+        let Some((runner, _home)) = real_runner_or_skip() else {
+            return;
+        };
+        let fixture = DoubleClone::new(&runner);
+        fixture.create_tracking_branch("feature/cancel-conflict");
+        fixture.local.git(["checkout", "feature/cancel-conflict"]);
+        fixture.local.write("tracked.txt", "local committed\n");
+        fixture.local.git(["add", "tracked.txt"]);
+        fixture.local.git(["commit", "-m", "local feature change"]);
+        let starting_head = fixture.local.git_output(["rev-parse", "HEAD"]);
+        fixture.local.git(["checkout", "main"]);
+        fixture.peer.write("tracked.txt", "remote committed\n");
+        fixture.peer.git(["add", "tracked.txt"]);
+        fixture.peer.git(["commit", "-m", "remote feature change"]);
+        fixture.peer.git(["push"]);
+
+        let response = sync_branch(
+            &runner,
+            SyncBranchRequest {
+                repository_path: display_path(&fixture.local.path),
+                branch_name: "feature/cancel-conflict".to_owned(),
+                operation_id: Some(OperationId("sync-branch-cancel-test".to_owned())),
+            },
+        )
+        .expect("sync conflict response");
+
+        assert_eq!(response.status, SyncCurrentBranchStatus::Conflicts);
+        assert_eq!(response.repository_path, display_path(&fixture.local.path));
+        let conflict = response.conflict.expect("conflict payload");
+        assert_ne!(conflict.repository_path, display_path(&fixture.local.path));
+        let conflict_worktree = PathBuf::from(&conflict.repository_path);
+        assert!(conflict_worktree.exists());
+        assert!(conflict.files.iter().any(|file| file.path == "tracked.txt"));
+
+        crate::conflicts::cancel_conflict_resolution(
+            &runner,
+            artistic_git_contracts::ConflictCancelRequest {
+                repository_path: display_path(&conflict_worktree),
+                operation_id: OperationId("sync-branch-cancel-test".to_owned()),
+            },
+        )
+        .expect("cancel non-current rebase conflict");
+
+        assert!(!conflict_worktree.exists());
+        assert_eq!(
+            fixture
+                .local
+                .git_output(["rev-parse", "feature/cancel-conflict"]),
+            starting_head
+        );
+        assert_no_sync_worktrees(&fixture.local);
+    }
+
+    #[test]
+    fn sync_branch_conflict_complete_pushes_and_removes_temporary_worktree() {
+        let Some((runner, _home)) = real_runner_or_skip() else {
+            return;
+        };
+        let fixture = DoubleClone::new(&runner);
+        fixture.create_tracking_branch("feature/complete-conflict");
+        fixture.local.git(["checkout", "feature/complete-conflict"]);
+        fixture.local.write("tracked.txt", "local committed\n");
+        fixture.local.git(["add", "tracked.txt"]);
+        fixture.local.git(["commit", "-m", "local feature change"]);
+        fixture.local.git(["checkout", "main"]);
+        fixture.peer.write("tracked.txt", "remote committed\n");
+        fixture.peer.git(["add", "tracked.txt"]);
+        fixture.peer.git(["commit", "-m", "remote feature change"]);
+        fixture.peer.git(["push"]);
+
+        let response = sync_branch(
+            &runner,
+            SyncBranchRequest {
+                repository_path: display_path(&fixture.local.path),
+                branch_name: "feature/complete-conflict".to_owned(),
+                operation_id: Some(OperationId("sync-branch-complete-test".to_owned())),
+            },
+        )
+        .expect("sync conflict response");
+        let conflict = response.conflict.expect("conflict payload");
+        let conflict_worktree = PathBuf::from(&conflict.repository_path);
+
+        crate::conflicts::save_conflict_resolution(
+            &runner,
+            artistic_git_contracts::ConflictSaveResolutionRequest {
+                repository_path: display_path(&conflict_worktree),
+                path: "tracked.txt".to_owned(),
+                content: "resolved\n".to_owned(),
+                pending_hunks: 0,
+            },
+        )
+        .expect("save resolution");
+        crate::conflicts::complete_conflict_resolution(
+            &runner,
+            artistic_git_contracts::ConflictCompleteRequest {
+                repository_path: display_path(&conflict_worktree),
+                operation_id: OperationId("sync-branch-complete-test".to_owned()),
+                paths: vec!["tracked.txt".to_owned()],
+            },
+        )
+        .expect("complete non-current rebase conflict");
+
+        assert!(!conflict_worktree.exists());
+        fixture.peer.git(["pull", "--ff-only"]);
+        assert_eq!(fixture.peer.read("tracked.txt"), "resolved\n");
+        assert_no_sync_worktrees(&fixture.local);
+    }
+
+    #[test]
+    fn sync_branch_slow_path_failure_removes_temporary_worktree() {
+        let Some((runner, _home)) = real_runner_or_skip() else {
+            return;
+        };
+        let fixture = DoubleClone::new(&runner);
+        fixture.create_tracking_branch("feature/failure-cleanup");
+        fixture.local.git([
+            "remote",
+            "add",
+            "other",
+            display_path(&fixture.remote.path).as_str(),
+        ]);
+        fixture.local.git(["fetch", "other"]);
+        fixture.local.git([
+            "branch",
+            "--set-upstream-to",
+            "other/feature/failure-cleanup",
+            "feature/failure-cleanup",
+        ]);
+        fixture.local.git(["checkout", "feature/failure-cleanup"]);
+        fixture.local.write("local.txt", "local\n");
+        fixture.local.git(["add", "local.txt"]);
+        fixture.local.git(["commit", "-m", "local feature change"]);
+        fixture.local.git(["checkout", "main"]);
+        fixture.peer.write("remote.txt", "remote\n");
+        fixture.peer.git(["add", "remote.txt"]);
+        fixture.peer.git(["commit", "-m", "remote feature change"]);
+        fixture.peer.git(["push"]);
+
+        let error = sync_branch(
+            &runner,
+            SyncBranchRequest {
+                repository_path: display_path(&fixture.local.path),
+                branch_name: "feature/failure-cleanup".to_owned(),
+                operation_id: None,
+            },
+        )
+        .expect_err("non-origin upstream should fail in slow path");
+
+        assert!(error.summary.contains("上游不属于 origin"));
+        assert_no_sync_worktrees(&fixture.local);
+    }
+
+    #[test]
     fn sync_source_does_not_contain_force_push_flags() {
         let source = include_str!("sync.rs");
         let long_force = ["--", "force"].concat();
@@ -869,6 +1755,57 @@ mod tests {
                 "sync source must not contain force-push flag or refspec: {needle}"
             );
         }
+    }
+
+    #[test]
+    fn sync_branch_unit_detects_fast_forward_fetch_rejection() {
+        let output = test_output(
+            1,
+            "",
+            "! [rejected]        feature/demo -> feature/demo  (non-fast-forward)\n",
+        );
+
+        assert!(is_fast_forward_fetch_rejection(&output));
+    }
+
+    #[test]
+    fn sync_branch_unit_limits_cleanup_to_tool_prefix() {
+        assert!(is_sync_worktree_path(Path::new(
+            "/tmp/artistic-git-sync-feature-demo-123"
+        )));
+        assert!(!is_sync_worktree_path(Path::new(
+            "/tmp/user-linked-worktree"
+        )));
+        assert!(!is_sync_worktree_path(Path::new("/tmp/artistic-git-other")));
+    }
+
+    #[test]
+    fn sync_branch_unit_sanitizes_branch_names_for_operation_and_paths() {
+        assert_eq!(
+            sanitize_path_component("feature/noncurrent sync"),
+            "feature-noncurrent-sync"
+        );
+        assert_eq!(sanitize_path_component("///"), "");
+    }
+
+    fn test_output(code: i32, stdout: &str, stderr: &str) -> Output {
+        Output {
+            status: exit_status(code),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: stderr.as_bytes().to_vec(),
+        }
+    }
+
+    #[cfg(unix)]
+    fn exit_status(code: i32) -> std::process::ExitStatus {
+        use std::os::unix::process::ExitStatusExt;
+        std::process::ExitStatus::from_raw(code << 8)
+    }
+
+    #[cfg(windows)]
+    fn exit_status(code: i32) -> std::process::ExitStatus {
+        use std::os::windows::process::ExitStatusExt;
+        std::process::ExitStatus::from_raw(code as u32)
     }
 
     struct DoubleClone {
@@ -919,6 +1856,22 @@ mod tests {
                 peer,
                 _parent: parent,
             }
+        }
+
+        fn create_tracking_branch(&self, branch_name: &str) {
+            self.local.git(["checkout", "-b", branch_name]);
+            self.local.write("branch.txt", "branch\n");
+            self.local.git(["add", "branch.txt"]);
+            self.local.git(["commit", "-m", "create feature branch"]);
+            self.local.git(["push", "-u", "origin", branch_name]);
+            self.local.git(["checkout", "main"]);
+            self.peer.git(["fetch", "origin"]);
+            self.peer.git([
+                OsString::from("checkout"),
+                OsString::from("-b"),
+                OsString::from(branch_name),
+                OsString::from(format!("origin/{branch_name}")),
+            ]);
         }
 
         fn install_one_shot_push_race_hook(&self) {
@@ -1052,6 +2005,22 @@ exit 0
         fn read(&self, relative: &str) -> String {
             fs::read_to_string(self.path.join(relative)).expect("read file")
         }
+
+        fn show(&self, branch_name: &str, relative: &str) -> String {
+            self.git_output([
+                OsString::from("show"),
+                OsString::from(format!("{branch_name}:{relative}")),
+            ])
+        }
+    }
+
+    fn assert_no_sync_worktrees(repo: &TestRepo) {
+        assert!(
+            !repo
+                .git_output(["worktree", "list", "--porcelain"])
+                .contains(SYNC_WORKTREE_PREFIX),
+            "sync worktree should have been removed"
+        );
     }
 
     fn shell_quote(path: &Path) -> String {

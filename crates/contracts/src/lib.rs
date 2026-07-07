@@ -271,6 +271,14 @@ pub struct SyncCurrentBranchRequest {
     pub operation_id: Option<OperationId>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncBranchRequest {
+    pub repository_path: String,
+    pub branch_name: String,
+    pub operation_id: Option<OperationId>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum SyncCurrentBranchStatus {
@@ -285,6 +293,18 @@ pub enum SyncCurrentBranchStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncCurrentBranchResponse {
+    pub repository_path: String,
+    pub branch_name: String,
+    pub upstream: Option<String>,
+    pub status: SyncCurrentBranchStatus,
+    pub attempts: u8,
+    pub conflict: Option<ConflictEnteredEvent>,
+    pub stash_recovery: Option<StashRecoveryPoint>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncBranchResponse {
     pub repository_path: String,
     pub branch_name: String,
     pub upstream: Option<String>,

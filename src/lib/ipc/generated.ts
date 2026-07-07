@@ -904,6 +904,22 @@ export type StashRestoreStateEvent = {
 export type StashRestoreStatus =
   "applying" | "applied" | "conflicted" | "cancelled";
 
+export type SyncBranchRequest = {
+  repositoryPath: string;
+  branchName: string;
+  operationId: OperationId | null;
+};
+
+export type SyncBranchResponse = {
+  repositoryPath: string;
+  branchName: string;
+  upstream: string | null;
+  status: SyncCurrentBranchStatus;
+  attempts: number;
+  conflict: ConflictEnteredEvent | null;
+  stashRecovery: StashRecoveryPoint | null;
+};
+
 export type SyncCurrentBranchRequest = {
   repositoryPath: string;
   operationId: OperationId | null;

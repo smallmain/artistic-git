@@ -186,6 +186,13 @@ impl RepositoryBackend {
         crate::sync_current_branch(&self.runner, request)
     }
 
+    pub fn sync_branch(
+        &self,
+        request: artistic_git_contracts::SyncBranchRequest,
+    ) -> AppResult<artistic_git_contracts::SyncBranchResponse> {
+        crate::sync_branch(&self.runner, request)
+    }
+
     pub fn load_remote_settings(
         &self,
         request: RepositoryPathRequest,
@@ -419,6 +426,7 @@ pub fn open_repository(
     reject_unsupported_repository_type(runner, &root, &git_dir, &git_common_dir)?;
 
     clean_tool_worktree_residue(&git_common_dir);
+    crate::sync::cleanup_sync_worktree_residue(runner, &root);
     apply_tool_identity(
         runner,
         &root,

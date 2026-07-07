@@ -399,10 +399,10 @@ graph TD
 
 ### 5B 非当前分支同步（快/慢路径） **\[P\]**
 
-- [ ] 快路径：无分叉时 `git fetch origin B:B`（仅 fast-forward）完成拉取再推送；不切分支不碰工作区、无需储藏
-- [ ] 慢路径：需 rebase 或自动跟踪合并时，临时目录 `git worktree add` 检出该分支执行完整流程，完成后删除
-- [ ] worktree 冲突同样进冲突界面（文件路径指向 worktree）；取消 → abort + 删除 worktree
-- [ ] 清理保证：成功/失败/取消均删除工具专用 worktree；启动只清理工具创建的临时 worktree 残留（2A 已挂），不自动清理用户 linked worktree
+- [x] 快路径：无分叉时 `git fetch origin B:B`（仅 fast-forward）完成拉取再推送；不切分支不碰工作区、无需储藏
+- [x] 慢路径：需 rebase 或自动跟踪合并时，临时目录 `git worktree add` 检出该分支执行完整流程，完成后删除
+- [x] worktree 冲突同样进冲突界面（文件路径指向 worktree）；取消 → abort + 删除 worktree
+- [x] 清理保证：成功/失败/取消均删除工具专用 worktree；启动只清理工具创建的临时 worktree 残留（2A 已挂），不自动清理用户 linked worktree
 
 **验收**：集成测试：快路径 ff/慢路径分叉 rebase/worktree 冲突解决与取消/进程 kill 模拟崩溃后 prune 清理。
 

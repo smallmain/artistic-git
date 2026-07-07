@@ -332,6 +332,28 @@ fn sync_current_branch(
 }
 
 #[tauri::command]
+fn sync_branch(
+    app_handle: tauri::AppHandle,
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::SyncBranchRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::SyncBranchResponse> {
+    let response = backend.sync_branch(request)?;
+    if let Some(conflict) = response.conflict.as_ref() {
+        let _ = app_handle.emit("conflict-entered", conflict);
+    }
+    emit_repo_changed(
+        &app_handle,
+        response.repository_path.clone(),
+        vec![
+            artistic_git_contracts::RepoQueryKind::Summary,
+            artistic_git_contracts::RepoQueryKind::Branches,
+            artistic_git_contracts::RepoQueryKind::History,
+        ],
+    );
+    Ok(response)
+}
+
+#[tauri::command]
 fn load_remote_settings(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::RepositoryPathRequest,
@@ -838,6 +860,7 @@ pub fn run() {
             repository_summary,
             fetch_repository,
             sync_current_branch,
+            sync_branch,
             load_remote_settings,
             save_remote_settings,
             list_branches,

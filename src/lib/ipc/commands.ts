@@ -74,6 +74,8 @@ import type {
   StashDetailsRequest,
   StashDetailsResponse,
   StashListResponse,
+  SyncBranchRequest,
+  SyncBranchResponse,
   SyncCurrentBranchRequest,
   SyncCurrentBranchResponse,
 } from "./generated";
@@ -98,6 +100,7 @@ export interface AppCommandArgs {
   repository_summary: { request: RepositoryPathRequest };
   fetch_repository: { request: FetchRepositoryRequest };
   sync_current_branch: { request: SyncCurrentBranchRequest };
+  sync_branch: { request: SyncBranchRequest };
   load_remote_settings: { request: RepositoryPathRequest };
   save_remote_settings: { request: SaveRemoteSettingsRequest };
   list_branches: { request: RepositoryPathRequest };
@@ -157,6 +160,7 @@ export interface AppCommandResponses {
   repository_summary: RepositorySummary;
   fetch_repository: FetchRepositoryResponse;
   sync_current_branch: SyncCurrentBranchResponse;
+  sync_branch: SyncBranchResponse;
   load_remote_settings: RemoteSettingsResponse;
   save_remote_settings: RemoteSettingsResponse;
   list_branches: BranchListResponse;
@@ -320,6 +324,12 @@ export function syncCurrentBranch(
   request: SyncCurrentBranchRequest,
 ): Promise<SyncCurrentBranchResponse> {
   return invokeAppCommand("sync_current_branch", { request });
+}
+
+export function syncBranch(
+  request: SyncBranchRequest,
+): Promise<SyncBranchResponse> {
+  return invokeAppCommand("sync_branch", { request });
 }
 
 export function loadRemoteSettings(
