@@ -1,20 +1,24 @@
 use artistic_git_contracts::{
     AppError, AppResult, BranchNameValidationRequest, BranchNameValidationResponse,
     BranchOperationResponse, CheckoutBranchRequest, CheckoutLocalChangesMode,
-    CreateAutoStashRequest, CreateBranchRequest, DeleteBranchRequest, GitCommandError,
-    OperationContext, OperationId, RepositoryPathRequest, StashRestoreOutcome,
+    CreateAutoStashRequest, CreateBranchRequest, DeleteBranchRequest, DeleteSafetyBackupRequest,
+    DeleteSafetyBackupResponse, GitCommandError, OperationContext, OperationId,
+    RepositoryPathRequest, SafetyBackupListResponse, SafetyBackupSummary, StashRestoreOutcome,
 };
 use artistic_git_git_runner::GitRunner;
 use std::{
     ffi::OsString,
     fs,
     path::{Component, Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 const VALIDATE_BRANCH_NAME_OPERATION: &str = "validateBranchName";
 const CREATE_BRANCH_OPERATION: &str = "createBranch";
 const CHECKOUT_BRANCH_OPERATION: &str = "checkoutBranch";
 const DELETE_BRANCH_OPERATION: &str = "deleteBranch";
+const LIST_SAFETY_BACKUPS_OPERATION: &str = "listSafetyBackups";
+const DELETE_SAFETY_BACKUP_OPERATION: &str = "deleteSafetyBackup";
 
 pub fn validate_branch_name(
     runner: &GitRunner,
@@ -257,6 +261,139 @@ pub fn delete_branch(
     }
 
     Ok(completed_response(&root, branch_name))
+}
+
+pub fn list_safety_backups(
+    runner: &GitRunner,
+    request: RepositoryPathRequest,
+) -> AppResult<SafetyBackupListResponse> {
+    let root = crate::repository::canonical_repository_path(
+        &request.repository_path,
+        LIST_SAFETY_BACKUPS_OPERATION,
+    )?;
+    let output = crate::repository::git_stdout(
+        runner,
+        Some(&root),
+        [
+            "for-each-ref",
+            "--format=%(refname)%00%(objectname)%00%(committerdate:unix)",
+            "refs/heads/backup",
+        ],
+        LIST_SAFETY_BACKUPS_OPERATION,
+    )?;
+
+    let mut backups = output
+        .lines()
+        .filter_map(parse_safety_backup_ref_line)
+        .collect::<Vec<_>>();
+    backups.sort_by(|left, right| {
+        right
+            .created_at_unix_millis
+            .cmp(&left.created_at_unix_millis)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+
+    Ok(SafetyBackupListResponse { backups })
+}
+
+pub fn delete_safety_backup(
+    runner: &GitRunner,
+    request: DeleteSafetyBackupRequest,
+) -> AppResult<DeleteSafetyBackupResponse> {
+    let root = crate::repository::canonical_repository_path(
+        &request.repository_path,
+        DELETE_SAFETY_BACKUP_OPERATION,
+    )?;
+    let backup_branch = validate_safety_backup_branch(runner, &root, &request.backup_branch)?;
+    if crate::repository::current_branch_name(runner, &root, DELETE_SAFETY_BACKUP_OPERATION).ok()
+        == Some(backup_branch.clone())
+    {
+        return Err(expected_repo_error(
+            "不能删除当前分支。",
+            DELETE_SAFETY_BACKUP_OPERATION,
+            &root,
+        ));
+    }
+
+    crate::repository::git_stdout(
+        runner,
+        Some(&root),
+        ["branch", "-D", backup_branch.as_str()],
+        DELETE_SAFETY_BACKUP_OPERATION,
+    )?;
+
+    Ok(DeleteSafetyBackupResponse {
+        repository_path: crate::repository::display_path(&root),
+        backup_branch,
+    })
+}
+
+pub(crate) fn create_safety_backup_branch(
+    runner: &GitRunner,
+    root: &Path,
+    original_branch: &str,
+    start_point: &str,
+    operation_name: &str,
+) -> AppResult<SafetyBackupSummary> {
+    for offset in 0..20 {
+        let timestamp = unix_now_millis().saturating_add(offset);
+        let backup_branch = format!("backup/{original_branch}-{timestamp}");
+        let backup_ref = format!("refs/heads/{backup_branch}");
+        if exact_ref_exists(runner, root, &backup_ref, operation_name)? {
+            continue;
+        }
+
+        crate::repository::git_stdout(
+            runner,
+            Some(root),
+            ["branch", backup_branch.as_str(), start_point],
+            operation_name,
+        )?;
+
+        return Ok(safety_backup_summary(
+            backup_branch,
+            Some(start_point.to_owned()),
+        ));
+    }
+
+    Err(expected_repo_error(
+        "无法创建安全备份分支，请稍后重试。",
+        operation_name,
+        root,
+    ))
+}
+
+pub(crate) fn reset_local_branch_to_ref(
+    runner: &GitRunner,
+    root: &Path,
+    branch_name: &str,
+    target_ref: &str,
+    operation_name: &str,
+) -> AppResult<()> {
+    let force_arg = ["-", "f"].concat();
+    crate::repository::git_stdout(
+        runner,
+        Some(root),
+        [
+            OsString::from("branch"),
+            OsString::from(force_arg),
+            OsString::from(branch_name),
+            OsString::from(target_ref),
+        ],
+        operation_name,
+    )?;
+    crate::repository::git_stdout(
+        runner,
+        Some(root),
+        [
+            OsString::from("branch"),
+            OsString::from("--set-upstream-to"),
+            OsString::from(target_ref),
+            OsString::from(branch_name),
+        ],
+        operation_name,
+    )?;
+    Ok(())
 }
 
 fn checkout_with_mode(
@@ -717,6 +854,104 @@ fn safe_join(root: &Path, relative: &str) -> Option<PathBuf> {
     Some(path)
 }
 
+fn parse_safety_backup_ref_line(line: &str) -> Option<SafetyBackupSummary> {
+    let parts = line.split('\0').collect::<Vec<_>>();
+    if parts.len() < 3 {
+        return None;
+    }
+
+    let ref_name = parts[0];
+    let short_name = ref_name.strip_prefix("refs/heads/")?;
+    if !short_name.starts_with("backup/") {
+        return None;
+    }
+    Some(safety_backup_summary(
+        short_name.to_owned(),
+        empty_to_none(parts[1]).map(str::to_owned),
+    ))
+}
+
+fn safety_backup_summary(name: String, head_oid: Option<String>) -> SafetyBackupSummary {
+    let ref_name = format!("refs/heads/{name}");
+    let parsed = parse_safety_backup_name(&name);
+    SafetyBackupSummary {
+        name,
+        ref_name,
+        original_branch: parsed.as_ref().map(|(branch, _timestamp)| branch.clone()),
+        created_at_unix_millis: parsed.map(|(_branch, timestamp)| timestamp),
+        head_oid,
+    }
+}
+
+fn parse_safety_backup_name(name: &str) -> Option<(String, String)> {
+    let rest = name.strip_prefix("backup/")?;
+    let (original_branch, timestamp) = rest.rsplit_once('-')?;
+    if original_branch.is_empty()
+        || timestamp.is_empty()
+        || !timestamp
+            .chars()
+            .all(|character| character.is_ascii_digit())
+    {
+        return None;
+    }
+    Some((original_branch.to_owned(), timestamp.to_owned()))
+}
+
+fn validate_safety_backup_branch(
+    runner: &GitRunner,
+    root: &Path,
+    backup_branch: &str,
+) -> AppResult<String> {
+    let trimmed = backup_branch.trim();
+    let short_name = trimmed.strip_prefix("refs/heads/").unwrap_or(trimmed);
+    if !short_name.starts_with("backup/") {
+        return Err(expected_repo_error(
+            "只能删除安全备份分支。",
+            DELETE_SAFETY_BACKUP_OPERATION,
+            root,
+        ));
+    }
+
+    let check = git_output_status(
+        runner,
+        root,
+        ["check-ref-format", "--branch", short_name],
+        DELETE_SAFETY_BACKUP_OPERATION,
+    )?;
+    if !check.status.success() {
+        return Err(expected_repo_error(
+            "安全备份分支名称无效。",
+            DELETE_SAFETY_BACKUP_OPERATION,
+            root,
+        ));
+    }
+    let backup_ref = format!("refs/heads/{short_name}");
+    if !exact_ref_exists(runner, root, &backup_ref, DELETE_SAFETY_BACKUP_OPERATION)? {
+        return Err(expected_repo_error(
+            "安全备份分支不存在。",
+            DELETE_SAFETY_BACKUP_OPERATION,
+            root,
+        ));
+    }
+
+    Ok(short_name.to_owned())
+}
+
+fn empty_to_none(value: &str) -> Option<&str> {
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn unix_now_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BranchTarget {
     Local,
@@ -993,6 +1228,80 @@ mod tests {
             .git_output(["branch", "-r"])
             .lines()
             .all(|line| !line.contains("origin/feature/remote")));
+    }
+
+    #[test]
+    fn safety_backups_list_parse_and_delete_local_backup_branches() {
+        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
+            return;
+        };
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        repo.git(["checkout", "-b", "feature/paint"]);
+        repo.write("paint.txt", "paint\n");
+        repo.git(["add", "paint.txt"]);
+        repo.git(["commit", "-m", "paint"]);
+        let feature_head = repo.git_output(["rev-parse", "HEAD"]);
+
+        let created = create_safety_backup_branch(
+            &runner,
+            &repo.path,
+            "feature/paint",
+            feature_head.trim(),
+            "testSafetyBackup",
+        )
+        .expect("create safety backup");
+        repo.git(["branch", "backup/manual-ref"]);
+
+        let listed = list_safety_backups(
+            &runner,
+            RepositoryPathRequest {
+                repository_path: display_path(&repo.path),
+            },
+        )
+        .expect("list safety backups");
+
+        let parsed = listed
+            .backups
+            .iter()
+            .find(|backup| backup.name == created.name)
+            .expect("parsed backup");
+        assert_eq!(parsed.original_branch.as_deref(), Some("feature/paint"));
+        assert_eq!(parsed.head_oid.as_deref(), Some(feature_head.trim()));
+        assert!(parsed.created_at_unix_millis.is_some());
+        let manual = listed
+            .backups
+            .iter()
+            .find(|backup| backup.name == "backup/manual-ref")
+            .expect("manual backup");
+        assert_eq!(manual.original_branch, None);
+        assert_eq!(manual.created_at_unix_millis, None);
+        assert_eq!(manual.ref_name, "refs/heads/backup/manual-ref");
+
+        let normal_delete = delete_safety_backup(
+            &runner,
+            DeleteSafetyBackupRequest {
+                repository_path: display_path(&repo.path),
+                backup_branch: "feature/paint".to_owned(),
+            },
+        )
+        .expect_err("normal branch is not a safety backup");
+        assert_eq!(normal_delete.summary, "只能删除安全备份分支。");
+
+        let deleted = delete_safety_backup(
+            &runner,
+            DeleteSafetyBackupRequest {
+                repository_path: display_path(&repo.path),
+                backup_branch: created.name.clone(),
+            },
+        )
+        .expect("delete safety backup");
+        assert_eq!(deleted.backup_branch, created.name);
+        assert!(repo
+            .git_output(["branch", "--list", deleted.backup_branch.as_str()])
+            .trim()
+            .is_empty());
+        assert_eq!(repo.git_output(["rev-parse", "HEAD"]), feature_head);
     }
 
     #[test]

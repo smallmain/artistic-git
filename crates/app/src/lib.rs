@@ -1,6 +1,8 @@
 use artistic_git_contracts::{
-    AppError, AppErrorCategory, AppResult, CommitRequest, CommitResponse, OperationContext,
-    SyncBranchRequest, SyncBranchResponse, SyncCurrentBranchRequest, SyncCurrentBranchResponse,
+    AcceptRemoteHistoryRequest, AcceptRemoteHistoryResponse, AppError, AppErrorCategory, AppResult,
+    CommitRequest, CommitResponse, DeleteSafetyBackupRequest, DeleteSafetyBackupResponse,
+    OperationContext, SyncBranchRequest, SyncBranchResponse, SyncCurrentBranchRequest,
+    SyncCurrentBranchResponse,
 };
 use artistic_git_core::AppInfo;
 use artistic_git_git_runner::{
@@ -77,7 +79,10 @@ pub mod stash {
         super::stash_impl::restore_stash(runner, request)
     }
 }
-pub use branches::{checkout_branch, create_branch, delete_branch, validate_branch_name};
+pub use branches::{
+    checkout_branch, create_branch, delete_branch, delete_safety_backup, list_safety_backups,
+    validate_branch_name,
+};
 pub use fetch::{
     fetch_changed_queries, fetch_repository, plan_scheduled_fetch, FetchScheduleDecision,
     FetchStateStore,
@@ -126,6 +131,32 @@ pub fn sync_branch(
 ) -> AppResult<SyncBranchResponse> {
     let _permit = begin_identity_write(runner, "syncBranch", &request.repository_path, false)?;
     sync::sync_branch(runner, request)
+}
+
+pub fn accept_remote_history(
+    runner: &GitRunner,
+    request: AcceptRemoteHistoryRequest,
+) -> AppResult<AcceptRemoteHistoryResponse> {
+    let _permit = begin_identity_write(
+        runner,
+        "acceptRemoteHistory",
+        &request.repository_path,
+        false,
+    )?;
+    sync::accept_remote_history(runner, request)
+}
+
+pub fn delete_safety_backup_with_lock(
+    runner: &GitRunner,
+    request: DeleteSafetyBackupRequest,
+) -> AppResult<DeleteSafetyBackupResponse> {
+    let _permit = begin_identity_write(
+        runner,
+        "deleteSafetyBackup",
+        &request.repository_path,
+        false,
+    )?;
+    branches::delete_safety_backup(runner, request)
 }
 
 pub fn start_review_mode_with_config(

@@ -7,6 +7,22 @@ export type AbortRevertResponse = {
   aborted: boolean;
 };
 
+export type AcceptRemoteHistoryRequest = {
+  repositoryPath: string;
+  branchName: string;
+  operationId: OperationId | null;
+};
+
+export type AcceptRemoteHistoryResponse = {
+  repositoryPath: string;
+  branchName: string;
+  upstream: string;
+  backup: SafetyBackupSummary;
+  resetToOid: string;
+  conflict: ConflictEnteredEvent | null;
+  stashRecovery: StashRecoveryPoint | null;
+};
+
 export type AppError = {
   category: AppErrorCategory;
   summary: string;
@@ -356,6 +372,16 @@ export type DeleteHttpsCredentialRequest = {
   scope: HttpsCredentialScope;
 };
 
+export type DeleteSafetyBackupRequest = {
+  repositoryPath: string;
+  backupBranch: string;
+};
+
+export type DeleteSafetyBackupResponse = {
+  repositoryPath: string;
+  backupBranch: string;
+};
+
 export type DeleteStashRequest = {
   repositoryPath: string;
   selector: string;
@@ -682,6 +708,14 @@ export type ProjectsDocument = {
   projects?: { [key in string]: ProjectSettings };
 };
 
+export type RemoteHistoryChange = {
+  branchName: string;
+  upstream: string;
+  localHead: string;
+  previousRemoteHead: string;
+  remoteHead: string;
+};
+
 export type RemoteSettingsResponse = {
   repositoryPath: string;
   remoteMode: RepositoryRemoteMode;
@@ -852,6 +886,18 @@ export type ReviewModeState = {
   hasRemoteUpdate: boolean;
 };
 
+export type SafetyBackupListResponse = {
+  backups: SafetyBackupSummary[];
+};
+
+export type SafetyBackupSummary = {
+  name: string;
+  refName: string;
+  originalBranch: string | null;
+  createdAtUnixMillis: string | null;
+  headOid: string | null;
+};
+
 export type SaveAppSettingsRequest = {
   settings: AppSettings;
   openRepositoryPaths?: string[];
@@ -975,6 +1021,7 @@ export type SyncBranchResponse = {
   attempts: number;
   conflict: ConflictEnteredEvent | null;
   stashRecovery: StashRecoveryPoint | null;
+  remoteHistoryChange: RemoteHistoryChange | null;
 };
 
 export type SyncCurrentBranchRequest = {
@@ -990,6 +1037,7 @@ export type SyncCurrentBranchResponse = {
   attempts: number;
   conflict: ConflictEnteredEvent | null;
   stashRecovery: StashRecoveryPoint | null;
+  remoteHistoryChange: RemoteHistoryChange | null;
 };
 
 export type SyncCurrentBranchStatus =
@@ -998,7 +1046,8 @@ export type SyncCurrentBranchStatus =
   | "pushed"
   | "pulledAndPushed"
   | "published"
-  | "conflicts";
+  | "conflicts"
+  | "remoteHistoryChanged";
 
 export type SyncReviewModeResponse = {
   state: ReviewModeState;

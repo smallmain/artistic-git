@@ -1,4 +1,5 @@
 import {
+  Archive,
   ChevronDown,
   ChevronRight,
   Cloud,
@@ -65,6 +66,7 @@ interface RepositorySidebarProps {
   onOpenSettings?: () => void;
   onReviewMode?: () => void;
   onShowStashDetails?: (stash: StashListItem) => void;
+  onShowSafetyBackups?: () => void;
   onSidebarLayoutChange?: (layout: Required<SidebarLayoutSettings>) => void;
   onSyncBranch?: (branch: BranchListItem) => void;
   repository: RepositorySummary;
@@ -91,6 +93,7 @@ export function RepositorySidebar({
   onOpenSettings,
   onReviewMode,
   onShowStashDetails,
+  onShowSafetyBackups,
   onSidebarLayoutChange,
   onSyncBranch,
   repository,
@@ -278,6 +281,19 @@ export function RepositorySidebar({
           searchLabel={t("repository.searchBranches")}
           title={t("repository.branches")}
         >
+          {onShowSafetyBackups ? (
+            <button
+              className="mb-2 flex h-8 w-full items-center gap-2 rounded-md border bg-background px-2 text-left text-sm text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={busy}
+              onClick={onShowSafetyBackups}
+              type="button"
+            >
+              <Archive className="size-4" aria-hidden="true" />
+              <span className="min-w-0 truncate">
+                {t("repository.safetyBackups")}
+              </span>
+            </button>
+          ) : null}
           <ul className="space-y-1">
             {filteredBranches.map((branch) => (
               <BranchRow

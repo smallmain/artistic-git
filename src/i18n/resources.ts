@@ -70,6 +70,7 @@ export const resources = {
         autoStashUnknownOrigin: "an unknown operation",
         branches: "Branches",
         branchBusy: "Updating branch...",
+        acceptRemoteHistory: "Use remote version",
         branchBase: "Base branch",
         branchBaseRemoteOnly:
           "Remote-only branch. Creating from it will create a local tracking branch.",
@@ -122,6 +123,10 @@ export const resources = {
           "Remote-only branches are deleted on origin",
         deleteRemoteOnlyBranchRequired:
           "This is a remote-only branch, so the remote deletion choice is required and cannot be changed here.",
+        deleteSafetyBackup: "Delete safety backup",
+        deleteSafetyBackupDescription:
+          "Delete safety backup “{{name}}”? This cannot be undone.",
+        deleteSafetyBackupTitle: "Delete safety backup?",
         deleteStash: "Delete stash",
         deleteStashDescription:
           "Delete stash “{{name}}”? This cannot be undone.",
@@ -141,14 +146,28 @@ export const resources = {
         moreActions: "More actions",
         noRemote: "No remote repository configured",
         noSearchResults: "No matching items",
+        noSafetyBackups: "No safety backups",
         openProjectSettings: "Project settings",
         ready: "Ready",
         resizeSections: "Resize branch and stash sections",
         resizeSidebar: "Resize sidebar",
+        remoteHistoryChangedBody:
+          "The remote branch changed history. Local commits that were already pushed are no longer in remote history.",
+        remoteHistoryChangedDescription:
+          "Choose whether to keep {{branch}} as-is or reset it to the remote branch after creating a local safety backup.",
+        remoteHistoryChangedTitle: "Remote history changed",
+        remoteHistoryLocal: "Local",
+        remoteHistoryRemote: "Remote",
+        remoteHistoryUpstream: "Upstream",
         reviewMode: "Review Mode",
         reviewModePlaceholder: "Review mode is implemented in a later phase",
         searchBranches: "Search branches",
         searchStashes: "Search stashes",
+        safetyBackupBusy: "Updating safety backups...",
+        safetyBackups: "Safety backups",
+        safetyBackupsDescription:
+          "Safety backups are local branches only. They are never pushed or deleted automatically.",
+        safetyBackupsTitle: "Safety backups",
         stashDetails: "Stash details",
         stashBusy: "Updating stash...",
         stashCreatedAt: "Created",
@@ -655,6 +674,7 @@ export const resources = {
         autoStashUnknownOrigin: "未知操作",
         branches: "分支",
         branchBusy: "正在更新分支...",
+        acceptRemoteHistory: "以远程为准",
         branchBase: "基于分支",
         branchBaseRemoteOnly:
           "这是仅远程分支。基于它创建时会建立本地跟踪分支。",
@@ -700,6 +720,10 @@ export const resources = {
         deleteRemoteOnlyBranchDisabled: "仅远程分支会从 origin 删除",
         deleteRemoteOnlyBranchRequired:
           "这是仅远程分支，远程删除选项必须勾选且无法在此处修改。",
+        deleteSafetyBackup: "删除安全备份",
+        deleteSafetyBackupDescription:
+          "删除安全备份“{{name}}”？此操作无法撤销。",
+        deleteSafetyBackupTitle: "删除安全备份？",
         deleteStash: "删除储藏",
         deleteStashDescription: "删除储藏“{{name}}”？此操作无法撤销。",
         deleteStashTitle: "删除储藏？",
@@ -717,14 +741,28 @@ export const resources = {
         moreActions: "更多操作",
         noRemote: "未配置远程仓库",
         noSearchResults: "未搜索到相关内容",
+        noSafetyBackups: "暂无安全备份",
         openProjectSettings: "项目设置",
         ready: "就绪",
         resizeSections: "调整分支和储藏区比例",
         resizeSidebar: "调整侧栏宽度",
+        remoteHistoryChangedBody:
+          "远程分支历史发生变化，本地已推送过的提交不再位于远程历史中。",
+        remoteHistoryChangedDescription:
+          "选择保留 {{branch}} 当前状态，或先创建本地安全备份后重置到远程分支。",
+        remoteHistoryChangedTitle: "远程历史发生变化",
+        remoteHistoryLocal: "本地",
+        remoteHistoryRemote: "远程",
+        remoteHistoryUpstream: "上游",
         reviewMode: "审查模式",
         reviewModePlaceholder: "审查模式在后续阶段实现",
         searchBranches: "搜索分支",
         searchStashes: "搜索储藏",
+        safetyBackupBusy: "正在更新安全备份...",
+        safetyBackups: "查看安全备份",
+        safetyBackupsDescription:
+          "安全备份只存在于本地分支，不会被推送，也不会被自动删除。",
+        safetyBackupsTitle: "安全备份",
         stashDetails: "储藏详情",
         stashBusy: "正在更新储藏...",
         stashCreatedAt: "创建时间",

@@ -7,7 +7,8 @@ use artistic_git_app::{
     SaveProjectSettingsRequest, SettingsSnapshot, SshKeyStatus,
 };
 use artistic_git_contracts::{
-    AbortRevertRequest, AbortRevertResponse, AppError, AppEvent, BranchListResponse,
+    AbortRevertRequest, AbortRevertResponse, AcceptRemoteHistoryRequest,
+    AcceptRemoteHistoryResponse, AppError, AppEvent, BranchListResponse,
     BranchNameValidationRequest, BranchNameValidationResponse, BranchOperationResponse,
     CancelCloneRepositoryRequest, CancelCloneRepositoryResponse, CancelStashRestoreRequest,
     CancelStashRestoreResponse, CheckoutBranchRequest, CloneRepositoryRequest,
@@ -17,13 +18,14 @@ use artistic_git_contracts::{
     ConflictPathRequest, ConflictSaveResolutionRequest, ConflictSaveResolutionResponse,
     ConflictSelectSideRequest, ConflictSelectSideResponse, CreateAutoStashRequest,
     CreateBranchRequest, CreateStashRequest, CreateStashResponse, DeleteBranchRequest,
-    DeleteStashRequest, DeleteStashResponse, DiffAsset, DiffContent, DiffPayload,
-    ExitReviewModeResponse, FetchRepositoryRequest, FetchRepositoryResponse, GitDistManifest,
-    LargeFileWarning, LfsContentStatus, LocalChangesResponse, LogPageRequest, LogPageResponse,
-    LogSearchRequest, OpenRepositoryRequest, OpenRepositoryResponse, RemoteSettingsResponse,
-    RepositoryPathRequest, RepositorySummary, RestoreChangesRequest, RestoreChangesResponse,
-    RestoreStashRequest, RestoreStashResponse, RevertCommitRequest, RevertCommitResponse,
-    ReviewModeRecoveryRequest, ReviewModeRecoveryResponse, ReviewModeRequest,
+    DeleteSafetyBackupRequest, DeleteSafetyBackupResponse, DeleteStashRequest, DeleteStashResponse,
+    DiffAsset, DiffContent, DiffPayload, ExitReviewModeResponse, FetchRepositoryRequest,
+    FetchRepositoryResponse, GitDistManifest, LargeFileWarning, LfsContentStatus,
+    LocalChangesResponse, LogPageRequest, LogPageResponse, LogSearchRequest, OpenRepositoryRequest,
+    OpenRepositoryResponse, RemoteSettingsResponse, RepositoryPathRequest, RepositorySummary,
+    RestoreChangesRequest, RestoreChangesResponse, RestoreStashRequest, RestoreStashResponse,
+    RevertCommitRequest, RevertCommitResponse, ReviewModeRecoveryRequest,
+    ReviewModeRecoveryResponse, ReviewModeRequest, SafetyBackupListResponse,
     SaveRemoteSettingsRequest, StartReviewModeRequest, StartReviewModeResponse,
     StashDetailsRequest, StashDetailsResponse, StashListResponse, SyncBranchRequest,
     SyncBranchResponse, SyncCurrentBranchRequest, SyncCurrentBranchResponse,
@@ -53,6 +55,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register::<SyncCurrentBranchResponse>()
         .register::<SyncBranchRequest>()
         .register::<SyncBranchResponse>()
+        .register::<AcceptRemoteHistoryRequest>()
+        .register::<AcceptRemoteHistoryResponse>()
         .register::<StartReviewModeRequest>()
         .register::<StartReviewModeResponse>()
         .register::<ReviewModeRequest>()
@@ -63,11 +67,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register::<RemoteSettingsResponse>()
         .register::<SaveRemoteSettingsRequest>()
         .register::<BranchListResponse>()
+        .register::<SafetyBackupListResponse>()
         .register::<BranchNameValidationRequest>()
         .register::<BranchNameValidationResponse>()
         .register::<CreateBranchRequest>()
         .register::<CheckoutBranchRequest>()
         .register::<DeleteBranchRequest>()
+        .register::<DeleteSafetyBackupRequest>()
+        .register::<DeleteSafetyBackupResponse>()
         .register::<BranchOperationResponse>()
         .register::<LocalChangesResponse>()
         .register::<StashListResponse>()

@@ -1,4 +1,10 @@
-import { AlertTriangle, FileText, History } from "lucide-react";
+import {
+  AlertTriangle,
+  Archive,
+  FileText,
+  History,
+  Trash2,
+} from "lucide-react";
 import * as React from "react";
 import { listen } from "@tauri-apps/api/event";
 import { useTranslation } from "react-i18next";
@@ -25,6 +31,7 @@ import {
 } from "@/features/local-changes";
 import { useLocalizedFormatters } from "@/i18n/format";
 import {
+  acceptRemoteHistory,
   checkoutBranch,
   cancelPendingWindowExit,
   cancelConflictResolution,
@@ -36,6 +43,7 @@ import {
   createBranch,
   createStash,
   deleteBranch,
+  deleteSafetyBackup,
   deleteStash,
   dismissReviewModeRecovery,
   exitReviewMode,
@@ -43,6 +51,7 @@ import {
   listBranches,
   listConflicts,
   listLocalChanges,
+  listSafetyBackups,
   listStashes,
   loadProjectSettings,
   restoreChanges,
@@ -71,6 +80,8 @@ import type {
   LocalChange,
   LocalChangesViewMode,
   ReviewModeState,
+  RemoteHistoryChange,
+  SafetyBackupSummary,
   SidebarLayoutSettings,
   StashEntry,
   StashDetailsResponse,
@@ -165,7 +176,16 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   const [fetchBusy, setFetchBusy] = React.useState(false);
   const [syncBusy, setSyncBusy] = React.useState(false);
   const [historyWriteBusy, setHistoryWriteBusy] = React.useState(false);
+  const [safetyBackupBusy, setSafetyBackupBusy] = React.useState(false);
   const [reviewBusy, setReviewBusy] = React.useState(false);
+  const [remoteHistoryChange, setRemoteHistoryChange] =
+    React.useState<RemoteHistoryChange | null>(null);
+  const [safetyBackupsOpen, setSafetyBackupsOpen] = React.useState(false);
+  const [safetyBackups, setSafetyBackups] = React.useState<
+    SafetyBackupSummary[]
+  >([]);
+  const [safetyBackupToDelete, setSafetyBackupToDelete] =
+    React.useState<SafetyBackupSummary | null>(null);
   const [reviewModeState, setReviewModeState] =
     React.useState<ReviewModeState | null>(null);
   const [reviewRecoveryPrompt, setReviewRecoveryPrompt] = React.useState(false);
@@ -430,6 +450,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     commitBusy ||
     restoreBusy ||
     branchActionBusy ||
+    safetyBackupBusy ||
     stashActionBusy ||
     historyWriteBusy ||
     reviewBusy;
@@ -439,6 +460,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     commitBusy ||
     restoreBusy ||
     branchActionBusy ||
+    safetyBackupBusy ||
     stashActionBusy ||
     historyWriteBusy ||
     reviewBusy;
@@ -460,13 +482,15 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
             ? t("localChanges.restoreBusy")
             : branchActionBusy
               ? t("repository.branchBusy")
-              : stashActionBusy
-                ? t("repository.stashBusy")
-                : historyWriteBusy
-                  ? t("history.revert.busy")
-                  : reviewBusy
-                    ? t("review.busy")
-                    : t("repository.ready");
+              : safetyBackupBusy
+                ? t("repository.safetyBackupBusy")
+                : stashActionBusy
+                  ? t("repository.stashBusy")
+                  : historyWriteBusy
+                    ? t("history.revert.busy")
+                    : reviewBusy
+                      ? t("review.busy")
+                      : t("repository.ready");
   const selectedCommitPaths = React.useMemo(
     () => pathsForChangeIds(commitIds ?? [], localChanges),
     [commitIds, localChanges],
@@ -580,6 +604,12 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         operationId: null,
         repositoryPath,
       });
+      if (
+        response.status === "remoteHistoryChanged" &&
+        response.remoteHistoryChange
+      ) {
+        setRemoteHistoryChange(response.remoteHistoryChange);
+      }
       const { conflict, stashRecovery } = response;
       if (conflict) {
         if (stashRecovery) {
@@ -618,6 +648,92 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     setConflictEntered,
     syncBusy,
   ]);
+
+  const runAcceptRemoteHistory = React.useCallback(async () => {
+    if (!remoteHistoryChange) {
+      return;
+    }
+
+    setSyncBusy(true);
+    try {
+      const response = await acceptRemoteHistory({
+        branchName: remoteHistoryChange.branchName,
+        operationId: null,
+        repositoryPath,
+      });
+      if (response.conflict) {
+        if (response.stashRecovery) {
+          setStashRecoveryByOperation((current) => ({
+            ...current,
+            [response.conflict!.operationId]: response.stashRecovery!,
+          }));
+        }
+        setConflictEntered(response.conflict);
+      }
+      setRemoteHistoryChange(null);
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: repoQueryKeys.summary(repositoryPath),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: repoQueryKeys.branches(repositoryPath),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: repoQueryKeys.history(repositoryPath),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: repoQueryKeys.localChanges(repositoryPath),
+        }),
+      ]);
+    } catch (error) {
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:error", { detail: error }),
+      );
+    } finally {
+      setSyncBusy(false);
+    }
+  }, [queryClient, remoteHistoryChange, repositoryPath, setConflictEntered]);
+
+  const refreshSafetyBackups = React.useCallback(async () => {
+    setSafetyBackupBusy(true);
+    try {
+      const response = await listSafetyBackups({ repositoryPath });
+      setSafetyBackups(response.backups);
+      setSafetyBackupsOpen(true);
+    } catch (error) {
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:error", { detail: error }),
+      );
+    } finally {
+      setSafetyBackupBusy(false);
+    }
+  }, [repositoryPath]);
+
+  const runDeleteSafetyBackup = React.useCallback(async () => {
+    if (!safetyBackupToDelete) {
+      return;
+    }
+
+    setSafetyBackupBusy(true);
+    try {
+      await deleteSafetyBackup({
+        backupBranch: safetyBackupToDelete.name,
+        repositoryPath,
+      });
+      setSafetyBackupToDelete(null);
+      const response = await listSafetyBackups({ repositoryPath });
+      setSafetyBackups(response.backups);
+      await queryClient.invalidateQueries({
+        queryKey: repoQueryKeys.branches(repositoryPath),
+      });
+    } catch (error) {
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:error", { detail: error }),
+      );
+    } finally {
+      setSafetyBackupBusy(false);
+    }
+  }, [queryClient, repositoryPath, safetyBackupToDelete]);
 
   const invalidateReviewQueries = React.useCallback(async () => {
     await Promise.all([
@@ -1481,6 +1597,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         onSidebarLayoutChange={(layout) => {
           void persistProjectPreferences({ sidebar: layout });
         }}
+        onShowSafetyBackups={() => void refreshSafetyBackups()}
         onShowStashDetails={(stash) => void showStashDetails(stash)}
         onSyncBranch={() => void runSyncCurrentBranch()}
         repository={repository}
@@ -1623,6 +1740,43 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         }}
         open={reviewRecoveryPrompt}
         title={t("review.recoveryTitle")}
+      />
+      <RemoteHistoryChangedDialog
+        busy={syncBusy}
+        change={remoteHistoryChange}
+        onAccept={() => void runAcceptRemoteHistory()}
+        onOpenChange={(open) => {
+          if (!open && !syncBusy) {
+            setRemoteHistoryChange(null);
+          }
+        }}
+      />
+      <SafetyBackupsDialog
+        backups={safetyBackups}
+        busy={safetyBackupBusy}
+        formatDate={formatters.formatDate}
+        onDelete={setSafetyBackupToDelete}
+        onOpenChange={(open) => {
+          if (!open && !safetyBackupBusy) {
+            setSafetyBackupsOpen(false);
+          }
+        }}
+        open={safetyBackupsOpen}
+      />
+      <ConfirmDialog
+        confirmLabel={t("repository.deleteSafetyBackup")}
+        description={t("repository.deleteSafetyBackupDescription", {
+          name: safetyBackupToDelete?.name ?? "",
+        })}
+        onConfirm={() => void runDeleteSafetyBackup()}
+        onOpenChange={(open) => {
+          if (!open && !safetyBackupBusy) {
+            setSafetyBackupToDelete(null);
+          }
+        }}
+        open={safetyBackupToDelete !== null}
+        title={t("repository.deleteSafetyBackupTitle")}
+        variant="danger"
       />
       <ConfirmDialog
         busy={closeRecoveryBusy}
@@ -1842,6 +1996,162 @@ function mapLocalChangeToItem(change: LocalChange): LocalChangeItem {
       .filter(Boolean)
       .join(" "),
   };
+}
+
+function RemoteHistoryChangedDialog({
+  busy,
+  change,
+  onAccept,
+  onOpenChange,
+}: {
+  busy: boolean;
+  change: RemoteHistoryChange | null;
+  onAccept: () => void;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const { t } = useTranslation();
+
+  if (!change) {
+    return null;
+  }
+
+  return (
+    <DialogFrame
+      description={t("repository.remoteHistoryChangedDescription", {
+        branch: change.branchName,
+      })}
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button
+            disabled={busy}
+            onClick={() => onOpenChange(false)}
+            type="button"
+            variant="ghost"
+          >
+            {t("actions.cancel")}
+          </Button>
+          <Button disabled={busy} onClick={onAccept} type="button">
+            {t("repository.acceptRemoteHistory")}
+          </Button>
+        </div>
+      }
+      onOpenChange={onOpenChange}
+      title={t("repository.remoteHistoryChangedTitle")}
+    >
+      <div className="flex gap-3 rounded-md border bg-warning/10 p-3 text-sm">
+        <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" />
+        <div className="grid gap-2">
+          <p>
+            {t("repository.remoteHistoryChangedBody", {
+              branch: change.branchName,
+            })}
+          </p>
+          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-muted-foreground">
+            <dt>{t("repository.remoteHistoryUpstream")}</dt>
+            <dd className="truncate text-foreground">{change.upstream}</dd>
+            <dt>{t("repository.remoteHistoryLocal")}</dt>
+            <dd className="text-numeric text-foreground">
+              {shortOid(change.localHead)}
+            </dd>
+            <dt>{t("repository.remoteHistoryRemote")}</dt>
+            <dd className="text-numeric text-foreground">
+              {shortOid(change.remoteHead)}
+            </dd>
+          </dl>
+        </div>
+      </div>
+    </DialogFrame>
+  );
+}
+
+function SafetyBackupsDialog({
+  backups,
+  busy,
+  formatDate,
+  onDelete,
+  onOpenChange,
+  open,
+}: {
+  backups: SafetyBackupSummary[];
+  busy: boolean;
+  formatDate: (
+    value: Date | number | string,
+    options?: Intl.DateTimeFormatOptions,
+  ) => string;
+  onDelete: (backup: SafetyBackupSummary) => void;
+  onOpenChange: (open: boolean) => void;
+  open: boolean;
+}) {
+  const { t } = useTranslation();
+
+  if (!open) {
+    return null;
+  }
+
+  return (
+    <DialogFrame
+      description={t("repository.safetyBackupsDescription")}
+      footer={
+        <div className="flex justify-end">
+          <Button
+            disabled={busy}
+            onClick={() => onOpenChange(false)}
+            type="button"
+            variant="ghost"
+          >
+            {t("actions.close")}
+          </Button>
+        </div>
+      }
+      onOpenChange={onOpenChange}
+      title={t("repository.safetyBackupsTitle")}
+    >
+      {backups.length === 0 ? (
+        <p className="rounded-md border bg-background p-4 text-sm text-muted-foreground">
+          {t("repository.noSafetyBackups")}
+        </p>
+      ) : (
+        <ul className="grid gap-2">
+          {backups.map((backup) => (
+            <li
+              className="grid grid-cols-[auto_1fr_auto] items-center gap-3 rounded-md border bg-background p-3"
+              key={backup.refName}
+            >
+              <Archive className="size-4 text-muted-foreground" />
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium">
+                  {backup.originalBranch ?? backup.refName}
+                </p>
+                <p className="truncate text-xs text-muted-foreground">
+                  {backup.createdAtUnixMillis
+                    ? formatDate(Number(backup.createdAtUnixMillis), {
+                        dateStyle: "medium",
+                        timeStyle: "short",
+                      })
+                    : backup.refName}
+                  {backup.headOid ? ` · ${shortOid(backup.headOid)}` : ""}
+                </p>
+              </div>
+              <Button
+                disabled={busy}
+                onClick={() => onDelete(backup)}
+                size="icon"
+                title={t("repository.deleteSafetyBackup")}
+                type="button"
+                variant="ghost"
+              >
+                <Trash2 className="size-4" aria-hidden="true" />
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </DialogFrame>
+  );
+}
+
+function shortOid(oid: string): string {
+  return oid.slice(0, 7);
 }
 
 function DeleteBranchDialog({

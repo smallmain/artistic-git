@@ -1,6 +1,7 @@
 use artistic_git_contracts::{
-    AppError, AppResult, ConflictEnteredEvent, ConflictListRequest, CreateAutoStashRequest,
-    GitCommandError, OperationContext, OperationId, StashEntry, StashRecoveryPoint,
+    AcceptRemoteHistoryRequest, AcceptRemoteHistoryResponse, AppError, AppResult,
+    ConflictEnteredEvent, ConflictListRequest, CreateAutoStashRequest, GitCommandError,
+    OperationContext, OperationId, RemoteHistoryChange, StashEntry, StashRecoveryPoint,
     StashRestoreOutcome, SyncBranchRequest, SyncBranchResponse, SyncCurrentBranchRequest,
     SyncCurrentBranchResponse, SyncCurrentBranchStatus,
 };
@@ -20,6 +21,8 @@ use crate::git_ops::{canonical_repository_path, display_path, run_git_raw};
 const SYNC_OPERATION: &str = "syncCurrentBranch";
 const SYNC_BRANCH_OPERATION: &str = "syncBranch";
 const SYNC_STASH_RESTORE_OPERATION: &str = "syncCurrentBranch:restoreStash";
+const ACCEPT_REMOTE_HISTORY_OPERATION: &str = "acceptRemoteHistory";
+const ACCEPT_REMOTE_HISTORY_STASH_RESTORE_OPERATION: &str = "acceptRemoteHistory:restoreStash";
 const MAX_SYNC_ATTEMPTS: u8 = 3;
 const SYNC_WORKTREE_PREFIX: &str = "artistic-git-sync-";
 const SYNC_WORKTREE_MARKER: &str = "artistic-git-sync-worktree.json";
@@ -86,6 +89,111 @@ pub fn sync_branch(
     }
 }
 
+pub fn accept_remote_history(
+    runner: &GitRunner,
+    request: AcceptRemoteHistoryRequest,
+) -> AppResult<AcceptRemoteHistoryResponse> {
+    let root =
+        canonical_repository_path(&request.repository_path, ACCEPT_REMOTE_HISTORY_OPERATION)?;
+    ensure_committed_head(runner, &root)?;
+    ensure_origin(runner, &root)?;
+    let branch_name = validate_sync_branch_name(runner, &root, &request.branch_name)?;
+    if branch_name.starts_with("backup/") {
+        return Err(expected_repo_error(
+            "安全备份分支不能作为远程历史恢复目标。",
+            &root,
+        ));
+    }
+    ensure_local_branch(runner, &root, &branch_name)?;
+
+    run_retryable_git(
+        runner,
+        &root,
+        ["fetch", "origin", "--prune"],
+        ACCEPT_REMOTE_HISTORY_OPERATION,
+    )?;
+
+    let current_branch = current_branch_name(runner, &root)?;
+    let upstream = if current_branch.as_deref() == Some(branch_name.as_str()) {
+        upstream_branch(runner, &root)?
+            .ok_or_else(|| expected_repo_error("当前分支未设置上游，无法以远程为准。", &root))?
+    } else {
+        format!("origin/{branch_name}")
+    };
+    if !upstream.starts_with("origin/") {
+        return Err(expected_repo_error(
+            "目标分支的上游不属于 origin，无法以远程为准。",
+            &root,
+        ));
+    }
+
+    let local_oid = rev_parse(runner, &root, &branch_name)?;
+    let remote_oid = rev_parse(runner, &root, &upstream)?;
+    let backup = crate::branches::create_safety_backup_branch(
+        runner,
+        &root,
+        &branch_name,
+        &local_oid,
+        ACCEPT_REMOTE_HISTORY_OPERATION,
+    )?;
+
+    let operation_id = request
+        .operation_id
+        .unwrap_or_else(accept_remote_history_operation_id);
+    let mut conflict = None;
+    let mut stash_recovery = None;
+
+    if current_branch.as_deref() == Some(branch_name.as_str()) {
+        let auto_stash = create_accept_remote_history_auto_stash(runner, &root)?;
+        let (plan, output) = run_git_raw(
+            runner,
+            Some(&root),
+            ["reset", "--hard", upstream.as_str()],
+            ACCEPT_REMOTE_HISTORY_OPERATION,
+        )?;
+        if !output.status.success() {
+            return Err(command_failure(&plan, output, "无法重置到远程分支。"));
+        }
+        if let Some(auto_stash) = auto_stash {
+            let restore = crate::stash_impl::restore_stash_for_root(
+                runner,
+                &root,
+                &auto_stash.selector,
+                true,
+                ACCEPT_REMOTE_HISTORY_STASH_RESTORE_OPERATION,
+                Some(&operation_id),
+            )?;
+            match restore.outcome {
+                StashRestoreOutcome::Applied { .. } => {}
+                StashRestoreOutcome::Conflicts {
+                    conflict: restore_conflict,
+                } => {
+                    conflict = Some(restore_conflict);
+                    stash_recovery = Some(restore.recovery);
+                }
+            }
+        }
+    } else {
+        crate::branches::reset_local_branch_to_ref(
+            runner,
+            &root,
+            &branch_name,
+            &upstream,
+            ACCEPT_REMOTE_HISTORY_OPERATION,
+        )?;
+    }
+
+    Ok(AcceptRemoteHistoryResponse {
+        repository_path: display_path(&root),
+        branch_name,
+        upstream,
+        backup,
+        reset_to_oid: remote_oid,
+        conflict,
+        stash_recovery,
+    })
+}
+
 fn sync_current_branch_clean(
     runner: &GitRunner,
     root: &Path,
@@ -96,6 +204,10 @@ fn sync_current_branch_clean(
     let mut last_non_fast_forward = false;
 
     for attempt in 1..=MAX_SYNC_ATTEMPTS {
+        let previous_upstream = upstream_branch(runner, root)?;
+        let previous_remote_head = previous_upstream
+            .as_deref()
+            .and_then(|upstream| rev_parse(runner, root, upstream).ok());
         run_retryable_git(runner, root, ["fetch", "origin", "--prune"], SYNC_OPERATION)?;
         ensure_clean_worktree(runner, root)?;
 
@@ -114,6 +226,27 @@ fn sync_current_branch_clean(
             return Err(expected_repo_error(
                 "当前分支的上游不属于 origin，无法由 Artistic Git 同步。",
                 root,
+            ));
+        }
+
+        let previous_remote_head = previous_upstream
+            .as_deref()
+            .filter(|previous| *previous == upstream.as_str())
+            .and(previous_remote_head.as_deref());
+        if let Some(change) = detect_remote_history_change(
+            runner,
+            root,
+            branch_name,
+            "HEAD",
+            &upstream,
+            previous_remote_head,
+        )? {
+            return Ok(remote_history_changed_response(
+                root,
+                branch_name,
+                Some(upstream),
+                attempt,
+                change,
             ));
         }
 
@@ -182,10 +315,32 @@ fn sync_branch_fast_path(
     branch_name: &str,
 ) -> AppResult<FastPathOutcome> {
     let before_oid = rev_parse(runner, root, branch_name)?;
+    let remote_tracking = format!("refs/remotes/origin/{branch_name}");
+    let previous_remote_head = rev_parse(runner, root, &remote_tracking).ok();
     let refspec = format!("{branch_name}:{branch_name}");
     let fetch_outcome = fetch_branch_ref_fast_forward(runner, root, &refspec)?;
     if !fetch_outcome {
         let remote_oid = remote_branch_oid(runner, root, branch_name)?;
+        if let Some(change) = detect_remote_history_change_from_oid(
+            runner,
+            root,
+            branch_name,
+            branch_name,
+            &format!("origin/{branch_name}"),
+            previous_remote_head.as_deref(),
+            remote_oid.as_deref(),
+        )? {
+            return Ok(FastPathOutcome::Synced(SyncBranchResponse {
+                repository_path: display_path(root),
+                branch_name: branch_name.to_owned(),
+                upstream: Some(format!("origin/{branch_name}")),
+                status: SyncCurrentBranchStatus::RemoteHistoryChanged,
+                attempts: 1,
+                conflict: None,
+                stash_recovery: None,
+                remote_history_change: Some(change),
+            }));
+        }
         if remote_oid
             .as_deref()
             .map(|oid| is_ancestor(runner, root, oid, &before_oid).unwrap_or(false))
@@ -209,6 +364,7 @@ fn sync_branch_fast_path(
                         attempts: 1,
                         conflict: None,
                         stash_recovery: None,
+                        remote_history_change: None,
                     }));
                 }
                 PushOutcome::NonFastForward => {}
@@ -257,6 +413,7 @@ fn sync_branch_fast_path(
         attempts: 1,
         conflict: None,
         stash_recovery: None,
+        remote_history_change: None,
     }))
 }
 
@@ -382,6 +539,61 @@ fn sync_local_to_upstream(
     ))
 }
 
+fn detect_remote_history_change(
+    runner: &GitRunner,
+    root: &Path,
+    branch_name: &str,
+    local_ref: &str,
+    upstream: &str,
+    previous_remote_head: Option<&str>,
+) -> AppResult<Option<RemoteHistoryChange>> {
+    let remote_head = rev_parse(runner, root, upstream).ok();
+    detect_remote_history_change_from_oid(
+        runner,
+        root,
+        branch_name,
+        local_ref,
+        upstream,
+        previous_remote_head,
+        remote_head.as_deref(),
+    )
+}
+
+fn detect_remote_history_change_from_oid(
+    runner: &GitRunner,
+    root: &Path,
+    branch_name: &str,
+    local_ref: &str,
+    upstream: &str,
+    previous_remote_head: Option<&str>,
+    remote_head: Option<&str>,
+) -> AppResult<Option<RemoteHistoryChange>> {
+    let (Some(previous_remote_head), Some(remote_head)) = (previous_remote_head, remote_head)
+    else {
+        return Ok(None);
+    };
+    if previous_remote_head == remote_head
+        || is_ancestor(runner, root, previous_remote_head, remote_head)?
+    {
+        return Ok(None);
+    }
+
+    let Some(local_pushed_base) = merge_base(runner, root, local_ref, previous_remote_head)? else {
+        return Ok(None);
+    };
+    if is_ancestor(runner, root, &local_pushed_base, remote_head)? {
+        return Ok(None);
+    }
+
+    Ok(Some(RemoteHistoryChange {
+        branch_name: branch_name.to_owned(),
+        upstream: upstream.to_owned(),
+        local_head: rev_parse(runner, root, local_ref)?,
+        previous_remote_head: previous_remote_head.to_owned(),
+        remote_head: remote_head.to_owned(),
+    }))
+}
+
 fn validate_sync_branch_name(
     runner: &GitRunner,
     root: &Path,
@@ -475,6 +687,29 @@ fn is_ancestor(
         Ok(false)
     } else {
         Err(command_failure(&plan, output, "无法判断分支分叉状态。"))
+    }
+}
+
+fn merge_base(
+    runner: &GitRunner,
+    root: &Path,
+    left: &str,
+    right: &str,
+) -> AppResult<Option<String>> {
+    let (plan, output) = run_git_raw(
+        runner,
+        Some(root),
+        ["merge-base", left, right],
+        SYNC_BRANCH_OPERATION,
+    )?;
+    if output.status.success() {
+        Ok(Some(
+            String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+        ))
+    } else if output.status.code() == Some(1) {
+        Ok(None)
+    } else {
+        Err(command_failure(&plan, output, "无法判断远程历史状态。"))
     }
 }
 
@@ -579,6 +814,22 @@ fn create_sync_auto_stash(runner: &GitRunner, root: &Path) -> AppResult<Option<S
     .stash)
 }
 
+fn create_accept_remote_history_auto_stash(
+    runner: &GitRunner,
+    root: &Path,
+) -> AppResult<Option<StashEntry>> {
+    Ok(crate::stash_impl::create_auto_stash(
+        runner,
+        CreateAutoStashRequest {
+            repository_path: display_path(root),
+            reason: "before accepting remote history".to_owned(),
+            include_untracked: true,
+            paths: Vec::new(),
+        },
+    )?
+    .stash)
+}
+
 fn restore_auto_stash_after_success(
     runner: &GitRunner,
     root: &Path,
@@ -661,6 +912,14 @@ fn sync_branch_operation_id(branch_name: &str) -> OperationId {
         "sync-branch-{}-{millis}",
         sanitize_path_component(branch_name)
     ))
+}
+
+fn accept_remote_history_operation_id() -> OperationId {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    OperationId(format!("accept-remote-history-{millis}"))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1066,6 +1325,26 @@ fn response(
         attempts,
         conflict: None,
         stash_recovery: None,
+        remote_history_change: None,
+    }
+}
+
+fn remote_history_changed_response(
+    root: &Path,
+    branch_name: &str,
+    upstream: Option<String>,
+    attempts: u8,
+    remote_history_change: RemoteHistoryChange,
+) -> SyncCurrentBranchResponse {
+    SyncCurrentBranchResponse {
+        repository_path: display_path(root),
+        branch_name: branch_name.to_owned(),
+        upstream,
+        status: SyncCurrentBranchStatus::RemoteHistoryChanged,
+        attempts,
+        conflict: None,
+        stash_recovery: None,
+        remote_history_change: Some(remote_history_change),
     }
 }
 
@@ -1085,6 +1364,7 @@ fn conflict_response(
         attempts,
         conflict: Some(conflict),
         stash_recovery,
+        remote_history_change: None,
     }
 }
 
@@ -1097,6 +1377,7 @@ fn sync_branch_response_from_current(response: SyncCurrentBranchResponse) -> Syn
         attempts: response.attempts,
         conflict: response.conflict,
         stash_recovery: response.stash_recovery,
+        remote_history_change: response.remote_history_change,
     }
 }
 
@@ -1112,6 +1393,7 @@ fn sync_branch_response_from_worktree(
         attempts: response.attempts,
         conflict: response.conflict,
         stash_recovery: response.stash_recovery,
+        remote_history_change: response.remote_history_change,
     }
 }
 
@@ -1734,6 +2016,90 @@ mod tests {
 
         assert!(error.summary.contains("上游不属于 origin"));
         assert_no_sync_worktrees(&fixture.local);
+    }
+
+    #[test]
+    fn remote_history_rewrite_requires_confirmation_and_accept_creates_local_backup() {
+        let Some((runner, _home)) = real_runner_or_skip() else {
+            return;
+        };
+        let fixture = DoubleClone::new(&runner);
+        fixture.local.write("published.txt", "published\n");
+        fixture.local.git(["add", "published.txt"]);
+        fixture
+            .local
+            .git(["commit", "-m", "published local change"]);
+        fixture.local.git(["push"]);
+        let published_head = fixture.local.git_output(["rev-parse", "HEAD"]);
+
+        fixture.peer.write("rewrite.txt", "rewrite\n");
+        fixture.peer.git(["add", "rewrite.txt"]);
+        fixture.peer.git(["commit", "-m", "rewrite remote history"]);
+        let remote_head = fixture.peer.git_output(["rev-parse", "HEAD"]);
+        let force_arg = ["--", "force"].concat();
+        fixture
+            .peer
+            .git(["push", force_arg.as_str(), "origin", "main"]);
+
+        let response = sync_current_branch(
+            &runner,
+            SyncCurrentBranchRequest {
+                repository_path: display_path(&fixture.local.path),
+                operation_id: None,
+            },
+        )
+        .expect("sync detects rewritten remote history");
+
+        assert_eq!(
+            response.status,
+            SyncCurrentBranchStatus::RemoteHistoryChanged
+        );
+        let change = response
+            .remote_history_change
+            .expect("remote history change");
+        assert_eq!(change.branch_name, "main");
+        assert_eq!(change.local_head, published_head.trim());
+        assert_eq!(change.previous_remote_head, published_head.trim());
+        assert_eq!(change.remote_head, remote_head.trim());
+        assert_eq!(
+            fixture.local.git_output(["rev-parse", "HEAD"]),
+            published_head
+        );
+        assert!(fixture.local.path.join("published.txt").exists());
+        assert!(!fixture.local.path.join("rewrite.txt").exists());
+
+        let accept = accept_remote_history(
+            &runner,
+            AcceptRemoteHistoryRequest {
+                repository_path: display_path(&fixture.local.path),
+                branch_name: "main".to_owned(),
+                operation_id: None,
+            },
+        )
+        .expect("accept rewritten remote history");
+
+        assert!(accept.backup.name.starts_with("backup/main-"));
+        assert_eq!(
+            fixture
+                .local
+                .git_output(["rev-parse", accept.backup.name.as_str()]),
+            published_head
+        );
+        assert_eq!(
+            fixture
+                .local
+                .show(accept.backup.name.as_str(), "published.txt"),
+            "published\n"
+        );
+        assert_eq!(fixture.local.git_output(["rev-parse", "HEAD"]), remote_head);
+        assert!(fixture.local.path.join("rewrite.txt").exists());
+        assert!(!fixture.local.path.join("published.txt").exists());
+        assert!(fixture
+            .remote
+            .git_output(["for-each-ref", "--format=%(refname)", "refs/heads/backup"])
+            .trim()
+            .is_empty());
+        assert!(fixture.local.status_clean());
     }
 
     #[test]

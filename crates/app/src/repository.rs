@@ -1,19 +1,21 @@
 use artistic_git_contracts::{
-    AppError, AppErrorCategory, AppResult, BranchExistence, BranchListResponse,
-    BranchNameValidationRequest, BranchNameValidationResponse, BranchOperationResponse,
-    BranchSummary, CancelCloneRepositoryRequest, CancelCloneRepositoryResponse,
-    CancelStashRestoreRequest, CancelStashRestoreResponse, CheckoutBranchRequest,
-    CloneRepositoryRequest, CloneRepositoryResponse, CommitSummary, CreateAutoStashRequest,
-    CreateBranchRequest, CreateStashRequest, CreateStashResponse, DeleteBranchRequest,
-    DeleteStashRequest, DeleteStashResponse, DiffAsset, DiffChangeKind, DiffContent, DiffFileKind,
-    DiffPayload, FetchRepositoryRequest, FetchRepositoryResponse, FetchStateEvent, GitCommandError,
+    AcceptRemoteHistoryRequest, AcceptRemoteHistoryResponse, AppError, AppErrorCategory, AppResult,
+    BranchExistence, BranchListResponse, BranchNameValidationRequest, BranchNameValidationResponse,
+    BranchOperationResponse, BranchSummary, CancelCloneRepositoryRequest,
+    CancelCloneRepositoryResponse, CancelStashRestoreRequest, CancelStashRestoreResponse,
+    CheckoutBranchRequest, CloneRepositoryRequest, CloneRepositoryResponse, CommitSummary,
+    CreateAutoStashRequest, CreateBranchRequest, CreateStashRequest, CreateStashResponse,
+    DeleteBranchRequest, DeleteSafetyBackupRequest, DeleteSafetyBackupResponse, DeleteStashRequest,
+    DeleteStashResponse, DiffAsset, DiffChangeKind, DiffContent, DiffFileKind, DiffPayload,
+    FetchRepositoryRequest, FetchRepositoryResponse, FetchStateEvent, GitCommandError,
     IndexLockInfo, LfsContentStatus, LocalChange, LocalChangesResponse, LogPageRequest,
     LogPageResponse, LogSearchRequest, OpenRepositoryRequest, OpenRepositoryResponse, OperationId,
     OperationProgressEvent, ProgressState, RemoteSettingsResponse, RepositoryHeadState,
     RepositoryHealth, RepositoryMiddleState, RepositoryMiddleStateKind, RepositoryOpenWarning,
     RepositoryOpenWarningKind, RepositoryPathRequest, RepositoryRemote, RepositoryRemoteMode,
-    RepositorySummary, RestoreStashRequest, RestoreStashResponse, SaveRemoteSettingsRequest,
-    StashDetailsRequest, StashDetailsResponse, StashEntry, StashListResponse,
+    RepositorySummary, RestoreStashRequest, RestoreStashResponse, SafetyBackupListResponse,
+    SaveRemoteSettingsRequest, StashDetailsRequest, StashDetailsResponse, StashEntry,
+    StashListResponse,
 };
 use artistic_git_core::config::{
     AppSettings, ConfigActor, GitUserSettings, ProjectSettings, WindowGeometry,
@@ -193,6 +195,13 @@ impl RepositoryBackend {
         crate::sync_branch(&self.runner, request)
     }
 
+    pub fn accept_remote_history(
+        &self,
+        request: AcceptRemoteHistoryRequest,
+    ) -> AppResult<AcceptRemoteHistoryResponse> {
+        crate::accept_remote_history(&self.runner, request)
+    }
+
     pub fn start_review_mode(
         &self,
         request: artistic_git_contracts::StartReviewModeRequest,
@@ -253,6 +262,13 @@ impl RepositoryBackend {
         list_branches(&self.runner, request)
     }
 
+    pub fn list_safety_backups(
+        &self,
+        request: RepositoryPathRequest,
+    ) -> AppResult<SafetyBackupListResponse> {
+        crate::branches::list_safety_backups(&self.runner, request)
+    }
+
     pub fn validate_branch_name(
         &self,
         request: BranchNameValidationRequest,
@@ -279,6 +295,13 @@ impl RepositoryBackend {
         request: DeleteBranchRequest,
     ) -> AppResult<BranchOperationResponse> {
         crate::branches::delete_branch(&self.runner, request)
+    }
+
+    pub fn delete_safety_backup(
+        &self,
+        request: DeleteSafetyBackupRequest,
+    ) -> AppResult<DeleteSafetyBackupResponse> {
+        crate::delete_safety_backup_with_lock(&self.runner, request)
     }
 
     pub fn list_local_changes(

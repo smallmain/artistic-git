@@ -288,6 +288,7 @@ pub enum SyncCurrentBranchStatus {
     PulledAndPushed,
     Published,
     Conflicts,
+    RemoteHistoryChanged,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -300,6 +301,7 @@ pub struct SyncCurrentBranchResponse {
     pub attempts: u8,
     pub conflict: Option<ConflictEnteredEvent>,
     pub stash_recovery: Option<StashRecoveryPoint>,
+    pub remote_history_change: Option<RemoteHistoryChange>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -312,6 +314,67 @@ pub struct SyncBranchResponse {
     pub attempts: u8,
     pub conflict: Option<ConflictEnteredEvent>,
     pub stash_recovery: Option<StashRecoveryPoint>,
+    pub remote_history_change: Option<RemoteHistoryChange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteHistoryChange {
+    pub branch_name: String,
+    pub upstream: String,
+    pub local_head: String,
+    pub previous_remote_head: String,
+    pub remote_head: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AcceptRemoteHistoryRequest {
+    pub repository_path: String,
+    pub branch_name: String,
+    pub operation_id: Option<OperationId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AcceptRemoteHistoryResponse {
+    pub repository_path: String,
+    pub branch_name: String,
+    pub upstream: String,
+    pub backup: SafetyBackupSummary,
+    pub reset_to_oid: String,
+    pub conflict: Option<ConflictEnteredEvent>,
+    pub stash_recovery: Option<StashRecoveryPoint>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SafetyBackupListResponse {
+    pub backups: Vec<SafetyBackupSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SafetyBackupSummary {
+    pub name: String,
+    pub ref_name: String,
+    pub original_branch: Option<String>,
+    pub created_at_unix_millis: Option<String>,
+    pub head_oid: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteSafetyBackupRequest {
+    pub repository_path: String,
+    pub backup_branch: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteSafetyBackupResponse {
+    pub repository_path: String,
+    pub backup_branch: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]

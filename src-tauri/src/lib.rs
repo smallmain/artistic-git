@@ -391,6 +391,29 @@ fn sync_branch(
 }
 
 #[tauri::command]
+fn accept_remote_history(
+    app_handle: tauri::AppHandle,
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::AcceptRemoteHistoryRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::AcceptRemoteHistoryResponse> {
+    let response = backend.accept_remote_history(request)?;
+    if let Some(conflict) = response.conflict.as_ref() {
+        let _ = app_handle.emit("conflict-entered", conflict);
+    }
+    emit_repo_changed(
+        &app_handle,
+        response.repository_path.clone(),
+        vec![
+            artistic_git_contracts::RepoQueryKind::Summary,
+            artistic_git_contracts::RepoQueryKind::Branches,
+            artistic_git_contracts::RepoQueryKind::History,
+            artistic_git_contracts::RepoQueryKind::LocalChanges,
+        ],
+    );
+    Ok(response)
+}
+
+#[tauri::command]
 fn start_review_mode(
     app_handle: tauri::AppHandle,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
@@ -504,6 +527,14 @@ fn list_branches(
 }
 
 #[tauri::command]
+fn list_safety_backups(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::RepositoryPathRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::SafetyBackupListResponse> {
+    backend.list_safety_backups(request)
+}
+
+#[tauri::command]
 fn validate_branch_name(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::BranchNameValidationRequest,
@@ -541,6 +572,21 @@ fn delete_branch(
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::BranchOperationResponse> {
     let response = backend.delete_branch(request)?;
     emit_branch_operation_events(&app_handle, &response);
+    Ok(response)
+}
+
+#[tauri::command]
+fn delete_safety_backup(
+    app_handle: tauri::AppHandle,
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::DeleteSafetyBackupRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::DeleteSafetyBackupResponse> {
+    let response = backend.delete_safety_backup(request)?;
+    emit_repo_changed(
+        &app_handle,
+        response.repository_path.clone(),
+        vec![artistic_git_contracts::RepoQueryKind::Branches],
+    );
     Ok(response)
 }
 
@@ -969,6 +1015,7 @@ pub fn run() {
             fetch_repository,
             sync_current_branch,
             sync_branch,
+            accept_remote_history,
             start_review_mode,
             sync_review_mode,
             exit_review_mode,
@@ -978,10 +1025,12 @@ pub fn run() {
             load_remote_settings,
             save_remote_settings,
             list_branches,
+            list_safety_backups,
             validate_branch_name,
             create_branch,
             checkout_branch,
             delete_branch,
+            delete_safety_backup,
             list_local_changes,
             list_stashes,
             create_stash,

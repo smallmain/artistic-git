@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 
 import type {
+  AcceptRemoteHistoryRequest,
+  AcceptRemoteHistoryResponse,
   AppError,
   AppSettings,
   AbortRevertRequest,
@@ -35,6 +37,8 @@ import type {
   CreateStashRequest,
   CreateStashResponse,
   DeleteBranchRequest,
+  DeleteSafetyBackupRequest,
+  DeleteSafetyBackupResponse,
   DeleteHttpsCredentialRequest,
   DeleteStashRequest,
   DeleteStashResponse,
@@ -73,6 +77,7 @@ import type {
   SaveGitignoreRequest,
   SaveProjectSettingsRequest,
   SaveRemoteSettingsRequest,
+  SafetyBackupListResponse,
   SettingsSnapshot,
   SshKeyStatus,
   StashDetailsRequest,
@@ -110,6 +115,7 @@ export interface AppCommandArgs {
   fetch_repository: { request: FetchRepositoryRequest };
   sync_current_branch: { request: SyncCurrentBranchRequest };
   sync_branch: { request: SyncBranchRequest };
+  accept_remote_history: { request: AcceptRemoteHistoryRequest };
   start_review_mode: { request: StartReviewModeRequest };
   sync_review_mode: { request: ReviewModeRequest };
   exit_review_mode: { request: ReviewModeRequest };
@@ -119,10 +125,12 @@ export interface AppCommandArgs {
   load_remote_settings: { request: RepositoryPathRequest };
   save_remote_settings: { request: SaveRemoteSettingsRequest };
   list_branches: { request: RepositoryPathRequest };
+  list_safety_backups: { request: RepositoryPathRequest };
   validate_branch_name: { request: BranchNameValidationRequest };
   create_branch: { request: CreateBranchRequest };
   checkout_branch: { request: CheckoutBranchRequest };
   delete_branch: { request: DeleteBranchRequest };
+  delete_safety_backup: { request: DeleteSafetyBackupRequest };
   list_local_changes: { request: RepositoryPathRequest };
   list_stashes: { request: RepositoryPathRequest };
   create_stash: { request: CreateStashRequest };
@@ -178,6 +186,7 @@ export interface AppCommandResponses {
   fetch_repository: FetchRepositoryResponse;
   sync_current_branch: SyncCurrentBranchResponse;
   sync_branch: SyncBranchResponse;
+  accept_remote_history: AcceptRemoteHistoryResponse;
   start_review_mode: StartReviewModeResponse;
   sync_review_mode: SyncReviewModeResponse;
   exit_review_mode: ExitReviewModeResponse;
@@ -187,10 +196,12 @@ export interface AppCommandResponses {
   load_remote_settings: RemoteSettingsResponse;
   save_remote_settings: RemoteSettingsResponse;
   list_branches: BranchListResponse;
+  list_safety_backups: SafetyBackupListResponse;
   validate_branch_name: BranchNameValidationResponse;
   create_branch: BranchOperationResponse;
   checkout_branch: BranchOperationResponse;
   delete_branch: BranchOperationResponse;
+  delete_safety_backup: DeleteSafetyBackupResponse;
   list_local_changes: LocalChangesResponse;
   list_stashes: StashListResponse;
   create_stash: CreateStashResponse;
@@ -369,6 +380,12 @@ export function syncBranch(
   return invokeAppCommand("sync_branch", { request });
 }
 
+export function acceptRemoteHistory(
+  request: AcceptRemoteHistoryRequest,
+): Promise<AcceptRemoteHistoryResponse> {
+  return invokeAppCommand("accept_remote_history", { request });
+}
+
 export function startReviewMode(
   request: StartReviewModeRequest,
 ): Promise<StartReviewModeResponse> {
@@ -423,6 +440,12 @@ export function listBranches(
   return invokeAppCommand("list_branches", { request });
 }
 
+export function listSafetyBackups(
+  request: RepositoryPathRequest,
+): Promise<SafetyBackupListResponse> {
+  return invokeAppCommand("list_safety_backups", { request });
+}
+
 export function validateBranchName(
   request: BranchNameValidationRequest,
 ): Promise<BranchNameValidationResponse> {
@@ -445,6 +468,12 @@ export function deleteBranch(
   request: DeleteBranchRequest,
 ): Promise<BranchOperationResponse> {
   return invokeAppCommand("delete_branch", { request });
+}
+
+export function deleteSafetyBackup(
+  request: DeleteSafetyBackupRequest,
+): Promise<DeleteSafetyBackupResponse> {
+  return invokeAppCommand("delete_safety_backup", { request });
 }
 
 export function listLocalChanges(

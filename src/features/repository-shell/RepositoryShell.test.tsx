@@ -24,6 +24,7 @@ import type { WindowStoreState } from "@/store/window-store";
 import { RepositoryShell } from "./RepositoryShell";
 
 const commandMocks = vi.hoisted(() => ({
+  acceptRemoteHistory: vi.fn(),
   cancelConflictResolution: vi.fn(),
   cancelPendingWindowExit: vi.fn(),
   cancelStashRestore: vi.fn(),
@@ -35,6 +36,7 @@ const commandMocks = vi.hoisted(() => ({
   createBranch: vi.fn(),
   createStash: vi.fn(),
   deleteBranch: vi.fn(),
+  deleteSafetyBackup: vi.fn(),
   deleteStash: vi.fn(),
   dismissReviewModeRecovery: vi.fn(),
   exitReviewMode: vi.fn(),
@@ -42,6 +44,7 @@ const commandMocks = vi.hoisted(() => ({
   listBranches: vi.fn(),
   listConflicts: vi.fn(),
   listLocalChanges: vi.fn(),
+  listSafetyBackups: vi.fn(),
   listStashes: vi.fn(),
   loadProjectSettings: vi.fn(),
   repositorySummary: vi.fn(),
@@ -283,10 +286,25 @@ beforeEach(() => {
     attempts: 1,
     branchName: "main",
     conflict: null,
+    remoteHistoryChange: null,
     repositoryPath: "/repo/art",
     status: "alreadyUpToDate",
     stashRecovery: null,
     upstream: "origin/main",
+  });
+  commandMocks.acceptRemoteHistory.mockResolvedValue({
+    backup: safetyBackupSummary(),
+    branchName: "main",
+    conflict: null,
+    repositoryPath: "/repo/art",
+    resetToOid: "remoteabcdef",
+    stashRecovery: null,
+    upstream: "origin/main",
+  });
+  commandMocks.listSafetyBackups.mockResolvedValue({ backups: [] });
+  commandMocks.deleteSafetyBackup.mockResolvedValue({
+    backupBranch: "backup/main-1760000000000",
+    repositoryPath: "/repo/art",
   });
   commandMocks.reviewModeRecovery.mockResolvedValue({
     autoStash: null,
@@ -1121,6 +1139,103 @@ describe("RepositoryShell branch flow", () => {
       }),
     );
   });
+
+  it("prompts before accepting rewritten remote history and resets through the dedicated command", async () => {
+    mockBranchList();
+    commandMocks.syncCurrentBranch.mockResolvedValueOnce({
+      attempts: 1,
+      branchName: "main",
+      conflict: null,
+      remoteHistoryChange: {
+        branchName: "main",
+        localHead: "localabcdef1234567890",
+        previousRemoteHead: "localabcdef1234567890",
+        remoteHead: "remoteabcdef1234567890",
+        upstream: "origin/main",
+      },
+      repositoryPath: "/repo/art",
+      status: "remoteHistoryChanged",
+      stashRecovery: null,
+      upstream: "origin/main",
+    });
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    const syncButtons = await screen.findAllByRole("button", {
+      name: "Sync",
+    });
+    fireEvent.click(syncButtons[0]);
+
+    const dialog = await screen.findByRole("dialog", {
+      name: "Remote history changed",
+    });
+    expect(dialog).toHaveTextContent(
+      "Local commits that were already pushed are no longer in remote history.",
+    );
+    expect(dialog).toHaveTextContent("localab");
+    expect(dialog).toHaveTextContent("remotea");
+
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Use remote version" }),
+    );
+
+    await waitFor(() =>
+      expect(commandMocks.acceptRemoteHistory).toHaveBeenCalledWith({
+        branchName: "main",
+        operationId: null,
+        repositoryPath: "/repo/art",
+      }),
+    );
+  });
+
+  it("opens safety backups and deletes one only after confirmation", async () => {
+    mockBranchList();
+    commandMocks.listSafetyBackups
+      .mockResolvedValueOnce({
+        backups: [
+          safetyBackupSummary({
+            name: "backup/feature/lookdev-1760000000000",
+            originalBranch: "feature/lookdev",
+          }),
+          safetyBackupSummary({
+            createdAtUnixMillis: null,
+            name: "backup/manual-ref",
+            originalBranch: null,
+            refName: "refs/heads/backup/manual-ref",
+          }),
+        ],
+      })
+      .mockResolvedValueOnce({ backups: [] });
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Safety backups" }),
+    );
+
+    const dialog = await screen.findByRole("dialog", {
+      name: "Safety backups",
+    });
+    expect(dialog).toHaveTextContent("feature/lookdev");
+    expect(dialog).toHaveTextContent("refs/heads/backup/manual-ref");
+
+    fireEvent.click(
+      within(dialog).getAllByRole("button", {
+        name: "Delete safety backup",
+      })[0],
+    );
+    const confirm = await screen.findByRole("dialog", {
+      name: "Delete safety backup?",
+    });
+    fireEvent.click(
+      within(confirm).getByRole("button", { name: "Delete safety backup" }),
+    );
+
+    await waitFor(() =>
+      expect(commandMocks.deleteSafetyBackup).toHaveBeenCalledWith({
+        backupBranch: "backup/feature/lookdev-1760000000000",
+        repositoryPath: "/repo/art",
+      }),
+    );
+  });
 });
 
 describe("RepositoryShell commit flow", () => {
@@ -1500,6 +1615,28 @@ function branchSummary({
         : `refs/heads/${shortName}`,
     shortName,
     upstream: existence === "localAndRemote" ? `origin/${shortName}` : null,
+  };
+}
+
+function safetyBackupSummary({
+  createdAtUnixMillis = "1760000000000",
+  headOid = "backupabcdef1234567890",
+  name = "backup/main-1760000000000",
+  originalBranch = "main",
+  refName,
+}: {
+  createdAtUnixMillis?: string | null;
+  headOid?: string | null;
+  name?: string;
+  originalBranch?: string | null;
+  refName?: string;
+} = {}) {
+  return {
+    createdAtUnixMillis,
+    headOid,
+    name,
+    originalBranch,
+    refName: refName ?? `refs/heads/${name}`,
   };
 }
 
