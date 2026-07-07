@@ -524,7 +524,7 @@ graph TD
 
 ## 阶段 10 — 构建发布管线（依赖 1A；**自阶段 1 后可随时并行推进**） **\[P\]**
 
-- [ ] Tauri 打包配置：macOS 13+ Universal `.dmg` + `.app.tar.gz` + 更新签名；Windows x64 NSIS `.exe`（**perUser/currentUser** 安装，自更新免 UAC 可静默）；Linux `.AppImage`（主推，自带 webkit，glibc 2.31+）+ `.deb`（Ubuntu 22.04+ / webkit2gtk-4.1）
+- [x] Tauri 打包配置：macOS 13+ Universal `.dmg` + `.app.tar.gz` + 更新签名；Windows x64 NSIS `.exe`（**perUser/currentUser** 安装，自更新免 UAC 可静默）；Linux `.AppImage`（主推，自带 webkit，glibc 2.31+）+ `.deb`（Ubuntu 22.04+ / webkit2gtk-4.1）
 - [x] Release 工作流：推送 main 自动构建发布，但受 GitHub Environment 或仓库变量（如 `ENABLE_MAIN_RELEASE=true`）闸门保护，未开启时只测试 + dry-run 打包；`workflow_dispatch` 手动触发（默认自动计算版本，可手动指定级别覆盖）；PR 只测试不发布
 - [x] 版本计算：初始 `0.1.0`；解析自上一 tag 提交（Conventional Commits）：仅 fix→patch；feat/refactor→minor；BREAKING CHANGE/`!`→major；无法解析→patch；自动打 tag
 - [x] 更新日志 = 自上一 tag 以来所有提交信息，写入 Release notes

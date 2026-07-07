@@ -70,13 +70,15 @@ variable, so each platform package stages and verifies the matching
 `artistic-git-dist-*` artifact before bundling.
 
 Publishing requires a Tauri updater key pair generated outside the repository.
-Store the private key in GitHub Secrets as `TAURI_SIGNING_PRIVATE_KEY` and, when
-used, its password as `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Replace the updater
-`pubkey` placeholder in `src-tauri/tauri.conf.json` with the generated public
-key before enabling public releases. The publish job uploads the platform
-installers, signed updater artifacts, and a generated `latest.json` for GitHub
-Releases; AppImage supports in-app updates, while `.deb` users should install
-new versions from the release page.
+Store the public key in GitHub Variables as `TAURI_UPDATER_PUBLIC_KEY` (or the
+same-named Secret), the private key in GitHub Secrets as
+`TAURI_SIGNING_PRIVATE_KEY`, and, when used, its password as
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. The release job injects the public key
+into `src-tauri/tauri.conf.json` before signed packaging and rejects placeholder
+values. The publish job uploads the platform installers, signed updater
+artifacts, and a generated `latest.json` for GitHub Releases; AppImage supports
+in-app updates, while `.deb` users should install new versions from the release
+page.
 
 ## Commit Convention
 

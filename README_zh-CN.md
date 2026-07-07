@@ -64,11 +64,12 @@ Distribution workflow run id，可通过 `git_dist_run_id` 手动输入或
 `artistic-git-dist-*` artifact。
 
 发布需要在仓库外生成 Tauri updater 密钥对。私钥保存到 GitHub Secrets 的
-`TAURI_SIGNING_PRIVATE_KEY`，如设置密码则保存到
-`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。公开发布前，需要把
-`src-tauri/tauri.conf.json` 里的 updater `pubkey` 占位符替换为生成的公钥。
-发布任务会上传各平台安装包、签名后的 updater 产物，并为 GitHub Releases 生成
-`latest.json`；AppImage 支持应用内更新，`.deb` 用户应从 release 页面安装新版。
+`TAURI_SIGNING_PRIVATE_KEY`，公钥保存到 GitHub Variables 的
+`TAURI_UPDATER_PUBLIC_KEY`（或同名 Secret），如设置密码则保存到
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。release job 会在签名打包前把公钥注入
+`src-tauri/tauri.conf.json`，并拒绝占位值。发布任务会上传各平台安装包、签名后的
+updater 产物，并为 GitHub Releases 生成 `latest.json`；AppImage 支持应用内更新，
+`.deb` 用户应从 release 页面安装新版。
 
 ## 提交约定
 

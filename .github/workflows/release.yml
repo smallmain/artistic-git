@@ -254,13 +254,23 @@ jobs:
           }
           NODE
 
+      - name: Inject updater public key
+        env:
+          TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY || secrets.TAURI_UPDATER_PUBLIC_KEY }}
+        run: node scripts/apply-tauri-updater-public-key.mjs
+
       - name: Verify updater signing secrets
         shell: bash
         env:
+          TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY || secrets.TAURI_UPDATER_PUBLIC_KEY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
+          if [ -z "${TAURI_UPDATER_PUBLIC_KEY:-}" ]; then
+            echo "TAURI_UPDATER_PUBLIC_KEY must be configured in GitHub Variables or Secrets before publishing updater artifacts." >&2
+            exit 1
+          fi
           if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
             echo "TAURI_SIGNING_PRIVATE_KEY must be configured in GitHub Secrets before publishing updater artifacts." >&2
             exit 1
