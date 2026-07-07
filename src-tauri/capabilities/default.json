@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Default permissions for Artistic Git windows",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "dialog:allow-open"]
 }

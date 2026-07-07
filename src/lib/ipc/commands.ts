@@ -9,6 +9,8 @@ import type {
   BranchNameValidationRequest,
   BranchNameValidationResponse,
   BranchOperationResponse,
+  CancelCloneRepositoryRequest,
+  CancelCloneRepositoryResponse,
   CancelStashRestoreRequest,
   CancelStashRestoreResponse,
   CheckoutBranchRequest,
@@ -77,6 +79,7 @@ export interface AppCommandArgs {
   open_log_dir: undefined;
   open_repository: { request: OpenRepositoryRequest };
   clone_repository: { request: CloneRepositoryRequest };
+  cancel_clone_repository: { request: CancelCloneRepositoryRequest };
   repository_summary: { request: RepositoryPathRequest };
   fetch_repository: { request: FetchRepositoryRequest };
   load_remote_settings: { request: RepositoryPathRequest };
@@ -123,6 +126,7 @@ export interface AppCommandResponses {
   open_log_dir: OpenLogDirResponse;
   open_repository: OpenRepositoryResponse;
   clone_repository: CloneRepositoryResponse;
+  cancel_clone_repository: CancelCloneRepositoryResponse;
   repository_summary: RepositorySummary;
   fetch_repository: FetchRepositoryResponse;
   load_remote_settings: RemoteSettingsResponse;
@@ -207,6 +211,12 @@ export function cloneRepository(
   request: CloneRepositoryRequest,
 ): Promise<CloneRepositoryResponse> {
   return invokeAppCommand("clone_repository", { request });
+}
+
+export function cancelCloneRepository(
+  request: CancelCloneRepositoryRequest,
+): Promise<CancelCloneRepositoryResponse> {
+  return invokeAppCommand("cancel_clone_repository", { request });
 }
 
 export function repositorySummary(

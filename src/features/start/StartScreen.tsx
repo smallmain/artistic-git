@@ -1,6 +1,7 @@
 import {
   FolderGit2,
   FolderOpen,
+  FolderSearch,
   GitBranchPlus,
   GraduationCap,
   Settings,
@@ -8,17 +9,24 @@ import {
 } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
 import { DialogFrame } from "@/components/dialogs/DialogFrame";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
 import { TruncatedText } from "@/components/ui/truncated-text";
 import {
+  cancelCloneRepository,
   cloneRepository,
   openRepository,
   saveAppSettings,
 } from "@/lib/ipc/commands";
-import type { AppSettings } from "@/lib/ipc/generated";
+import { listenAppEvent } from "@/lib/ipc/events";
+import type {
+  AppSettings,
+  OperationProgressEvent,
+  ProgressState,
+} from "@/lib/ipc/generated";
 import { cn } from "@/lib/utils";
 import {
   normalizeAppSettings,
@@ -61,6 +69,13 @@ export function StartScreen() {
     React.useState(false);
   const [cloneError, setCloneError] = React.useState<string | null>(null);
   const [isCloning, setIsCloning] = React.useState(false);
+  const [cloneCancelling, setCloneCancelling] = React.useState(false);
+  const [cloneOperationId, setCloneOperationId] = React.useState<string | null>(
+    null,
+  );
+  const [cloneProgress, setCloneProgress] =
+    React.useState<OperationProgressEvent | null>(null);
+  const cloneCancelRequestedRef = React.useRef(false);
   const activateRepository = React.useCallback(
     (repositoryPath: string) => {
       setActiveRepositoryPath(repositoryPath);
@@ -120,11 +135,22 @@ export function StartScreen() {
   );
   const handleCloneRepository = React.useCallback(async () => {
     const parentDirectory = cloneParentDirectory.trim();
+    const operationId = createOperationId();
     setIsCloning(true);
+    setCloneCancelling(false);
     setCloneError(null);
+    setCloneOperationId(operationId);
+    setCloneProgress({
+      cancellable: true,
+      label: "Cloning repository",
+      operationId,
+      progress: { kind: "indeterminate" },
+    });
+    cloneCancelRequestedRef.current = false;
     try {
       const response = await cloneRepository({
         directoryName: cloneDirectoryName.trim(),
+        operationId,
         targetParentDirectory: parentDirectory,
         toolIdentity: toolIdentityFromSettings(appSettings),
         url: cloneUrl.trim(),
@@ -136,9 +162,17 @@ export function StartScreen() {
       setCloneDirectoryName("");
       setCloneDirectoryNameTouched(false);
     } catch (error) {
-      setCloneError(errorSummary(error, t("start.cloneFailed")));
+      setCloneError(
+        cloneCancelRequestedRef.current
+          ? t("start.cloneCancelled")
+          : errorSummary(error, t("start.cloneFailed")),
+      );
     } finally {
       setIsCloning(false);
+      setCloneCancelling(false);
+      setCloneOperationId(null);
+      setCloneProgress(null);
+      cloneCancelRequestedRef.current = false;
     }
   }, [
     activateRepository,
@@ -149,6 +183,46 @@ export function StartScreen() {
     rememberCloneParentDirectory,
     t,
   ]);
+  const handleChooseCloneParentDirectory = React.useCallback(async () => {
+    try {
+      const selected = await openDialog({
+        defaultPath: cloneParentDirectory.trim() || undefined,
+        directory: true,
+        multiple: false,
+        title: t("start.cloneChooseParentDirectory"),
+      });
+      if (typeof selected === "string" && selected.trim()) {
+        setCloneParentDirectory(selected);
+        setCloneError(null);
+      }
+    } catch (error) {
+      setCloneError(errorSummary(error, t("start.cloneChooseParentFailed")));
+    }
+  }, [cloneParentDirectory, t]);
+  const handleCancelClone = React.useCallback(async () => {
+    if (!cloneOperationId) {
+      return;
+    }
+    if (!window.confirm(t("start.cloneCancelConfirm"))) {
+      return;
+    }
+
+    cloneCancelRequestedRef.current = true;
+    setCloneCancelling(true);
+    setCloneError(null);
+    try {
+      const response = await cancelCloneRepository({
+        operationId: cloneOperationId,
+      });
+      if (!response.cancelled) {
+        setCloneError(t("start.cloneCancelUnavailable"));
+        setCloneCancelling(false);
+      }
+    } catch (error) {
+      setCloneError(errorSummary(error, t("start.cloneCancelFailed")));
+      setCloneCancelling(false);
+    }
+  }, [cloneOperationId, t]);
   const handleCloneUrlChange = React.useCallback(
     (url: string) => {
       setCloneUrl(url);
@@ -159,6 +233,30 @@ export function StartScreen() {
     },
     [cloneDirectoryNameTouched],
   );
+  React.useEffect(() => {
+    if (!cloneOperationId) {
+      return undefined;
+    }
+
+    let disposed = false;
+    let unlistenProgress: (() => void) | null = null;
+    void listenAppEvent("operation-progress", (event) => {
+      if (!disposed && event.payload.operationId === cloneOperationId) {
+        setCloneProgress(event.payload);
+      }
+    }).then((unlisten) => {
+      if (disposed) {
+        unlisten();
+      } else {
+        unlistenProgress = unlisten;
+      }
+    });
+
+    return () => {
+      disposed = true;
+      unlistenProgress?.();
+    };
+  }, [cloneOperationId]);
 
   return (
     <main className="flex min-h-screen bg-background text-foreground">
@@ -364,8 +462,13 @@ export function StartScreen() {
       {cloneDialogOpen ? (
         <CloneRepositoryDialog
           busy={isCloning}
+          cancelling={cloneCancelling}
           directoryName={cloneDirectoryName}
           error={cloneError}
+          onCancelClone={() => void handleCancelClone()}
+          onChooseParentDirectory={() =>
+            void handleChooseCloneParentDirectory()
+          }
           onDirectoryNameChange={(value) => {
             setCloneDirectoryName(value);
             setCloneDirectoryNameTouched(true);
@@ -383,6 +486,7 @@ export function StartScreen() {
           onSubmit={() => void handleCloneRepository()}
           onUrlChange={handleCloneUrlChange}
           parentDirectory={cloneParentDirectory}
+          progress={cloneProgress}
           url={cloneUrl}
         />
       ) : null}
@@ -392,27 +496,35 @@ export function StartScreen() {
 
 interface CloneRepositoryDialogProps {
   busy: boolean;
+  cancelling: boolean;
   directoryName: string;
   error: string | null;
+  onCancelClone: () => void;
+  onChooseParentDirectory: () => void;
   onDirectoryNameChange: (value: string) => void;
   onOpenChange: (open: boolean) => void;
   onParentDirectoryChange: (value: string) => void;
   onSubmit: () => void;
   onUrlChange: (value: string) => void;
   parentDirectory: string;
+  progress: OperationProgressEvent | null;
   url: string;
 }
 
 function CloneRepositoryDialog({
   busy,
+  cancelling,
   directoryName,
   error,
+  onCancelClone,
+  onChooseParentDirectory,
   onDirectoryNameChange,
   onOpenChange,
   onParentDirectoryChange,
   onSubmit,
   onUrlChange,
   parentDirectory,
+  progress,
   url,
 }: CloneRepositoryDialogProps) {
   const { t } = useTranslation();
@@ -434,90 +546,171 @@ function CloneRepositoryDialog({
       title={t("actions.cloneProject")}
       footer={
         <div className="flex justify-end gap-2">
-          <Button
-            disabled={busy}
-            onClick={() => onOpenChange(false)}
-            type="button"
-            variant="ghost"
-          >
-            {t("actions.cancel")}
-          </Button>
-          <Button disabled={!canSubmit} type="submit" form="clone-repository">
-            {busy ? t("start.cloneBusy") : t("actions.cloneProject")}
-          </Button>
+          {busy ? (
+            <Button
+              disabled={cancelling}
+              onClick={onCancelClone}
+              type="button"
+              variant="ghost"
+            >
+              {cancelling ? t("start.cloneCancelling") : t("start.cloneCancel")}
+            </Button>
+          ) : (
+            <>
+              <Button
+                onClick={() => onOpenChange(false)}
+                type="button"
+                variant="ghost"
+              >
+                {t("actions.cancel")}
+              </Button>
+              <Button
+                disabled={!canSubmit}
+                type="submit"
+                form="clone-repository"
+              >
+                {t("actions.cloneProject")}
+              </Button>
+            </>
+          )}
         </div>
       }
     >
-      <form
-        className="flex flex-col gap-4"
-        id="clone-repository"
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (canSubmit) {
-            onSubmit();
-          }
-        }}
-      >
-        <label
-          className="flex flex-col gap-2 text-sm font-medium"
-          htmlFor={urlId}
-        >
-          {t("start.cloneUrl")}
-          <input
-            autoFocus
-            className="h-9 rounded-md border bg-background px-3 text-sm font-normal outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            disabled={busy}
-            id={urlId}
-            onChange={(event) => onUrlChange(event.currentTarget.value)}
-            placeholder="https://github.com/studio/art.git"
-            type="text"
-            value={url}
-          />
-        </label>
-        <label
-          className="flex flex-col gap-2 text-sm font-medium"
-          htmlFor={parentId}
-        >
-          {t("start.cloneParentDirectory")}
-          <input
-            className="h-9 rounded-md border bg-background px-3 text-sm font-normal outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            disabled={busy}
-            id={parentId}
-            onChange={(event) =>
-              onParentDirectoryChange(event.currentTarget.value)
+      {busy ? (
+        <CloneProgressView
+          cancelling={cancelling}
+          error={error}
+          progress={progress}
+        />
+      ) : (
+        <form
+          className="flex flex-col gap-4"
+          id="clone-repository"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (canSubmit) {
+              onSubmit();
             }
-            placeholder="/Users/artist/Projects"
-            type="text"
-            value={parentDirectory}
-          />
-        </label>
-        <label
-          className="flex flex-col gap-2 text-sm font-medium"
-          htmlFor={directoryNameId}
+          }}
         >
-          {t("start.cloneDirectoryName")}
-          <input
-            className="h-9 rounded-md border bg-background px-3 text-sm font-normal outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            disabled={busy}
-            id={directoryNameId}
-            onChange={(event) =>
-              onDirectoryNameChange(event.currentTarget.value)
-            }
-            placeholder="art"
-            type="text"
-            value={directoryName}
-          />
-        </label>
-        {error ? (
-          <div
-            className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
-            role="alert"
+          <label
+            className="flex flex-col gap-2 text-sm font-medium"
+            htmlFor={urlId}
           >
-            {error}
-          </div>
-        ) : null}
-      </form>
+            {t("start.cloneUrl")}
+            <input
+              autoFocus
+              className="h-9 rounded-md border bg-background px-3 text-sm font-normal outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              id={urlId}
+              onChange={(event) => onUrlChange(event.currentTarget.value)}
+              placeholder="https://github.com/studio/art.git"
+              type="text"
+              value={url}
+            />
+          </label>
+          <label
+            className="flex flex-col gap-2 text-sm font-medium"
+            htmlFor={parentId}
+          >
+            {t("start.cloneParentDirectory")}
+            <span className="grid grid-cols-[1fr_auto] gap-2">
+              <input
+                className="h-9 min-w-0 rounded-md border bg-background px-3 text-sm font-normal outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                id={parentId}
+                onChange={(event) =>
+                  onParentDirectoryChange(event.currentTarget.value)
+                }
+                placeholder="/Users/artist/Projects"
+                readOnly
+                type="text"
+                value={parentDirectory}
+              />
+              <Button
+                className="gap-2"
+                onClick={onChooseParentDirectory}
+                type="button"
+                variant="secondary"
+              >
+                <FolderSearch className="size-4" aria-hidden="true" />
+                {t("start.cloneBrowse")}
+              </Button>
+            </span>
+          </label>
+          <label
+            className="flex flex-col gap-2 text-sm font-medium"
+            htmlFor={directoryNameId}
+          >
+            {t("start.cloneDirectoryName")}
+            <input
+              className="h-9 rounded-md border bg-background px-3 text-sm font-normal outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              id={directoryNameId}
+              onChange={(event) =>
+                onDirectoryNameChange(event.currentTarget.value)
+              }
+              placeholder="art"
+              type="text"
+              value={directoryName}
+            />
+          </label>
+          {error ? (
+            <div
+              className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+              role="alert"
+            >
+              {error}
+            </div>
+          ) : null}
+        </form>
+      )}
     </DialogFrame>
+  );
+}
+
+interface CloneProgressViewProps {
+  cancelling: boolean;
+  error: string | null;
+  progress: OperationProgressEvent | null;
+}
+
+function CloneProgressView({
+  cancelling,
+  error,
+  progress,
+}: CloneProgressViewProps) {
+  const { t } = useTranslation();
+  const percent = progressPercent(progress?.progress);
+  const label = cancelling
+    ? t("start.cloneCancelling")
+    : cloneProgressLabel(progress?.label, t);
+
+  return (
+    <div className="flex flex-col gap-4" role="status" aria-live="polite">
+      <div className="flex items-center justify-between gap-3 text-sm">
+        <span className="font-medium">{label}</span>
+        {percent !== null ? (
+          <span className="tabular-nums text-muted-foreground">
+            {Math.round(percent)}%
+          </span>
+        ) : null}
+      </div>
+      <div className="h-2 overflow-hidden rounded-full bg-muted">
+        <div
+          className={cn(
+            "h-full rounded-full bg-primary transition-all",
+            percent === null && "w-1/2 animate-pulse",
+          )}
+          style={percent === null ? undefined : { width: `${percent}%` }}
+        />
+      </div>
+      {error ? (
+        <div
+          className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+          role="alert"
+        >
+          {error}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -567,6 +760,37 @@ function writeStoredCloneParentDirectory(path: string): void {
     window.localStorage.setItem(cloneParentStorageKey, path);
   } catch {
     // Settings persistence is best-effort in browser-only test environments.
+  }
+}
+
+function createOperationId(): string {
+  return `clone-${globalThis.crypto?.randomUUID?.() ?? Date.now().toString(36)}`;
+}
+
+function progressPercent(progress: ProgressState | undefined): number | null {
+  if (!progress || progress.kind !== "percent" || progress.value === null) {
+    return null;
+  }
+
+  return Math.max(0, Math.min(100, progress.value));
+}
+
+function cloneProgressLabel(
+  label: string | undefined,
+  t: (key: string) => string,
+): string {
+  switch (label) {
+    case "Downloading LFS objects":
+      return t("start.cloneProgressLfs");
+    case "Checking out files":
+      return t("start.cloneProgressCheckout");
+    case "Cloning submodules":
+      return t("start.cloneProgressSubmodules");
+    case "Clone complete":
+      return t("start.cloneProgressComplete");
+    case "Cloning repository":
+    default:
+      return t("start.cloneProgressClone");
   }
 }
 

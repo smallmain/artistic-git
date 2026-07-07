@@ -34,10 +34,21 @@ fn open_repository(
 
 #[tauri::command]
 fn clone_repository(
+    app_handle: tauri::AppHandle,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::CloneRepositoryRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::CloneRepositoryResponse> {
-    backend.clone_repository(request)
+    backend.clone_repository_with_progress(request, |event| {
+        let _ = app_handle.emit("operation-progress", &event);
+    })
+}
+
+#[tauri::command]
+fn cancel_clone_repository(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::CancelCloneRepositoryRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::CancelCloneRepositoryResponse> {
+    backend.cancel_clone_repository(request)
 }
 
 #[tauri::command]
@@ -529,6 +540,7 @@ fn validate_identity_for_write(
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let log_dir = app.path().app_log_dir()?;
             let logging_config = artistic_git_core::logging::LoggingConfig::new(log_dir);
@@ -549,6 +561,7 @@ pub fn run() {
             open_log_dir,
             open_repository,
             clone_repository,
+            cancel_clone_repository,
             repository_summary,
             fetch_repository,
             load_remote_settings,

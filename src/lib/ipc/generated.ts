@@ -102,6 +102,14 @@ export type BranchSummary = {
   latestCommitUnixSeconds: string | null;
 };
 
+export type CancelCloneRepositoryRequest = {
+  operationId: OperationId;
+};
+
+export type CancelCloneRepositoryResponse = {
+  cancelled: boolean;
+};
+
 export type CancelStashRestoreRequest = {
   repositoryPath: string;
   recovery: StashRecoveryPoint;
@@ -126,6 +134,7 @@ export type CloneRepositoryRequest = {
   targetParentDirectory: string;
   directoryName: string;
   toolIdentity: ToolGitIdentity | null;
+  operationId: OperationId | null;
 };
 
 export type CloneRepositoryResponse = {

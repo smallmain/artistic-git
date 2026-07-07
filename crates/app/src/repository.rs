@@ -1,26 +1,32 @@
 use artistic_git_contracts::{
     AppError, AppErrorCategory, AppResult, BranchExistence, BranchListResponse,
     BranchNameValidationRequest, BranchNameValidationResponse, BranchOperationResponse,
-    BranchSummary, CancelStashRestoreRequest, CancelStashRestoreResponse, CheckoutBranchRequest,
+    BranchSummary, CancelCloneRepositoryRequest, CancelCloneRepositoryResponse,
+    CancelStashRestoreRequest, CancelStashRestoreResponse, CheckoutBranchRequest,
     CloneRepositoryRequest, CloneRepositoryResponse, CommitSummary, CreateAutoStashRequest,
     CreateBranchRequest, CreateStashRequest, CreateStashResponse, DeleteBranchRequest,
     DeleteStashRequest, DeleteStashResponse, DiffChangeKind, FetchRepositoryRequest,
     FetchRepositoryResponse, FetchStateEvent, GitCommandError, IndexLockInfo, LocalChange,
     LocalChangesResponse, LogPageRequest, LogPageResponse, LogSearchRequest, OpenRepositoryRequest,
-    OpenRepositoryResponse, RemoteSettingsResponse, RepositoryHeadState, RepositoryHealth,
-    RepositoryMiddleState, RepositoryMiddleStateKind, RepositoryOpenWarning,
-    RepositoryOpenWarningKind, RepositoryPathRequest, RepositoryRemote, RepositoryRemoteMode,
-    RepositorySummary, RestoreStashRequest, RestoreStashResponse, SaveRemoteSettingsRequest,
-    StashDetailsRequest, StashDetailsResponse, StashEntry, StashListResponse,
+    OpenRepositoryResponse, OperationId, OperationProgressEvent, ProgressState,
+    RemoteSettingsResponse, RepositoryHeadState, RepositoryHealth, RepositoryMiddleState,
+    RepositoryMiddleStateKind, RepositoryOpenWarning, RepositoryOpenWarningKind,
+    RepositoryPathRequest, RepositoryRemote, RepositoryRemoteMode, RepositorySummary,
+    RestoreStashRequest, RestoreStashResponse, SaveRemoteSettingsRequest, StashDetailsRequest,
+    StashDetailsResponse, StashEntry, StashListResponse,
 };
 use artistic_git_core::config::{AppSettings, ConfigActor, GitUserSettings, ProjectSettings};
-use artistic_git_git_runner::{CancelToken, GitCommandPlan, GitRunner, OperationBusy};
+use artistic_git_git_runner::{
+    parse_git_progress_line, CancelToken, GitCommandPlan, GitRunner, OperationBusy,
+};
 use std::{
     collections::BTreeMap,
     ffi::{OsStr, OsString},
-    fs, io,
+    fs,
+    io::{self, Read},
     path::{Component, Path, PathBuf},
     process::{Command, Output, Stdio},
+    sync::{mpsc, Arc, Mutex},
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -34,6 +40,7 @@ pub struct RepositoryBackend {
     runner: GitRunner,
     config: Option<ConfigActor>,
     fetch_states: crate::fetch::FetchStateStore,
+    clone_operations: Arc<Mutex<BTreeMap<String, CancelToken>>>,
 }
 
 impl RepositoryBackend {
@@ -42,6 +49,7 @@ impl RepositoryBackend {
             runner,
             config,
             fetch_states: crate::fetch::FetchStateStore::default(),
+            clone_operations: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -60,7 +68,81 @@ impl RepositoryBackend {
         &self,
         request: CloneRepositoryRequest,
     ) -> AppResult<CloneRepositoryResponse> {
-        clone_repository(&self.runner, self.config.as_ref(), request)
+        self.clone_repository_with_progress(request, |_| {})
+    }
+
+    pub fn clone_repository_with_progress<F>(
+        &self,
+        request: CloneRepositoryRequest,
+        progress: F,
+    ) -> AppResult<CloneRepositoryResponse>
+    where
+        F: Fn(OperationProgressEvent),
+    {
+        let operation_id = request.operation_id.clone();
+        let token = CancelToken::new();
+        if let Some(operation_id) = &operation_id {
+            self.register_clone_operation(operation_id, token.clone())?;
+        }
+
+        let result = clone_repository_with_cancel_and_progress(
+            &self.runner,
+            self.config.as_ref(),
+            request,
+            &token,
+            progress,
+        );
+
+        if let Some(operation_id) = &operation_id {
+            self.unregister_clone_operation(operation_id);
+        }
+
+        result
+    }
+
+    pub fn cancel_clone_repository(
+        &self,
+        request: CancelCloneRepositoryRequest,
+    ) -> AppResult<CancelCloneRepositoryResponse> {
+        let token = self
+            .clone_operations
+            .lock()
+            .map_err(|_| clone_registry_error())?
+            .get(request.operation_id.as_str())
+            .cloned();
+
+        if let Some(token) = token {
+            token.cancel();
+            Ok(CancelCloneRepositoryResponse { cancelled: true })
+        } else {
+            Ok(CancelCloneRepositoryResponse { cancelled: false })
+        }
+    }
+
+    fn register_clone_operation(
+        &self,
+        operation_id: &OperationId,
+        token: CancelToken,
+    ) -> AppResult<()> {
+        let mut operations = self
+            .clone_operations
+            .lock()
+            .map_err(|_| clone_registry_error())?;
+        if operations.contains_key(operation_id.as_str()) {
+            return Err(logged(AppError::expected(
+                "clone operation is already registered",
+                "cloneRepository",
+            )));
+        }
+
+        operations.insert(operation_id.as_str().to_owned(), token);
+        Ok(())
+    }
+
+    fn unregister_clone_operation(&self, operation_id: &OperationId) {
+        if let Ok(mut operations) = self.clone_operations.lock() {
+            operations.remove(operation_id.as_str());
+        }
     }
 
     pub fn repository_summary(
@@ -320,7 +402,7 @@ pub fn clone_repository(
     config: Option<&ConfigActor>,
     request: CloneRepositoryRequest,
 ) -> AppResult<CloneRepositoryResponse> {
-    clone_repository_with_cancel(runner, config, request, &CancelToken::new())
+    clone_repository_with_cancel_and_progress(runner, config, request, &CancelToken::new(), |_| {})
 }
 
 pub fn clone_repository_with_cancel(
@@ -329,6 +411,19 @@ pub fn clone_repository_with_cancel(
     request: CloneRepositoryRequest,
     cancel_token: &CancelToken,
 ) -> AppResult<CloneRepositoryResponse> {
+    clone_repository_with_cancel_and_progress(runner, config, request, cancel_token, |_| {})
+}
+
+pub fn clone_repository_with_cancel_and_progress<F>(
+    runner: &GitRunner,
+    config: Option<&ConfigActor>,
+    request: CloneRepositoryRequest,
+    cancel_token: &CancelToken,
+    progress: F,
+) -> AppResult<CloneRepositoryResponse>
+where
+    F: Fn(OperationProgressEvent),
+{
     let target = validate_clone_target(&request)?;
     let url = request.url.trim();
     if url.is_empty() {
@@ -343,7 +438,14 @@ pub fn clone_repository_with_cancel(
         .try_begin_write()
         .map_err(clone_busy_error)?;
 
-    run_clone_command(runner, url, &target, cancel_token)?;
+    run_clone_command(
+        runner,
+        url,
+        &target,
+        cancel_token,
+        request.operation_id.as_ref(),
+        progress,
+    )?;
 
     let repository = open_repository(
         runner,
@@ -641,18 +743,30 @@ fn validate_clone_directory_name(name: &str) -> AppResult<OsString> {
     }
 }
 
-fn run_clone_command(
+fn run_clone_command<F>(
     runner: &GitRunner,
     url: &str,
     target: &CloneTarget,
     cancel_token: &CancelToken,
-) -> AppResult<()> {
+    operation_id: Option<&OperationId>,
+    progress: F,
+) -> AppResult<()>
+where
+    F: Fn(OperationProgressEvent),
+{
     const OPERATION: &str = "cloneRepository";
 
     if cancel_token.is_cancelled() {
         cleanup_clone_target(target);
         return Err(cancelled_error(OPERATION));
     }
+
+    emit_clone_progress(
+        operation_id,
+        &progress,
+        "Cloning repository",
+        ProgressState::Indeterminate,
+    );
 
     let plan = runner
         .git_command_builder()
@@ -672,27 +786,60 @@ fn run_clone_command(
     let mut child = command
         .spawn()
         .map_err(|source| spawn_error(&plan, source, OPERATION))?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let stdout_reader = stdout.map(spawn_output_reader);
+    let (progress_tx, progress_rx) = mpsc::channel();
+    let stderr_reader = stderr.map(|stderr| spawn_clone_stderr_reader(stderr, progress_tx));
 
+    let status;
     loop {
+        drain_clone_progress(operation_id, &progress, &progress_rx);
         if cancel_token.is_cancelled() {
             let _ = child.kill();
             let _ = child.wait();
+            let _ = stdout_reader.map(|reader| reader.join());
+            let _ = stderr_reader.map(|reader| reader.join());
             cleanup_clone_target(target);
             return Err(cancelled_error(OPERATION));
         }
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(exit_status)) => {
+                status = exit_status;
+                break;
+            }
             Ok(None) => thread::sleep(Duration::from_millis(20)),
             Err(source) => {
+                let _ = stdout_reader.map(|reader| reader.join());
+                let _ = stderr_reader.map(|reader| reader.join());
                 cleanup_clone_target(target);
                 return Err(spawn_error(&plan, source, OPERATION));
             }
         }
     }
+    drain_clone_progress(operation_id, &progress, &progress_rx);
 
-    let output = child
-        .wait_with_output()
-        .map_err(|source| spawn_error(&plan, source, OPERATION))?;
+    let stdout = stdout_reader
+        .and_then(|reader| reader.join().ok())
+        .unwrap_or_default();
+    let stderr = stderr_reader
+        .and_then(|reader| reader.join().ok())
+        .unwrap_or_default();
+    drain_clone_progress(operation_id, &progress, &progress_rx);
+
+    let output = Output {
+        status,
+        stdout,
+        stderr,
+    };
+    if output.status.success() {
+        emit_clone_progress(
+            operation_id,
+            &progress,
+            "Clone complete",
+            ProgressState::Percent { value: 100.0 },
+        );
+    }
     handle_clone_output(&plan, output, target)
 }
 
@@ -710,6 +857,109 @@ fn handle_clone_output(
     }
 }
 
+fn spawn_output_reader<R>(mut reader: R) -> thread::JoinHandle<Vec<u8>>
+where
+    R: Read + Send + 'static,
+{
+    thread::spawn(move || {
+        let mut output = Vec::new();
+        let _ = reader.read_to_end(&mut output);
+        output
+    })
+}
+
+fn spawn_clone_stderr_reader<R>(
+    mut reader: R,
+    progress_tx: mpsc::Sender<String>,
+) -> thread::JoinHandle<Vec<u8>>
+where
+    R: Read + Send + 'static,
+{
+    thread::spawn(move || {
+        let mut stderr = Vec::new();
+        let mut pending = String::new();
+        let mut buffer = [0_u8; 1024];
+
+        loop {
+            let read = match reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(read) => read,
+                Err(_) => break,
+            };
+            stderr.extend_from_slice(&buffer[..read]);
+
+            for character in String::from_utf8_lossy(&buffer[..read]).chars() {
+                if character == '\r' || character == '\n' {
+                    let line = pending.trim().to_owned();
+                    if !line.is_empty() {
+                        let _ = progress_tx.send(line);
+                    }
+                    pending.clear();
+                } else {
+                    pending.push(character);
+                }
+            }
+        }
+
+        let line = pending.trim().to_owned();
+        if !line.is_empty() {
+            let _ = progress_tx.send(line);
+        }
+
+        stderr
+    })
+}
+
+fn drain_clone_progress<F>(
+    operation_id: Option<&OperationId>,
+    progress: &F,
+    progress_rx: &mpsc::Receiver<String>,
+) where
+    F: Fn(OperationProgressEvent),
+{
+    while let Ok(line) = progress_rx.try_recv() {
+        emit_clone_progress(
+            operation_id,
+            progress,
+            clone_progress_label(&line),
+            parse_git_progress_line(&line),
+        );
+    }
+}
+
+fn emit_clone_progress<F>(
+    operation_id: Option<&OperationId>,
+    progress: &F,
+    label: impl Into<String>,
+    progress_state: ProgressState,
+) where
+    F: Fn(OperationProgressEvent),
+{
+    let Some(operation_id) = operation_id else {
+        return;
+    };
+
+    progress(OperationProgressEvent {
+        operation_id: operation_id.clone(),
+        label: label.into(),
+        progress: progress_state,
+        cancellable: true,
+    });
+}
+
+fn clone_progress_label(line: &str) -> &'static str {
+    let lower = line.to_ascii_lowercase();
+    if lower.contains("filtering content") || lower.contains("git-lfs") || lower.contains("lfs") {
+        "Downloading LFS objects"
+    } else if lower.contains("checking out files") || lower.contains("checkout") {
+        "Checking out files"
+    } else if lower.contains("submodule") {
+        "Cloning submodules"
+    } else {
+        "Cloning repository"
+    }
+}
+
 fn cleanup_clone_target(target: &CloneTarget) {
     if target.path.is_dir() {
         let _ = fs::remove_dir_all(&target.path);
@@ -722,6 +972,13 @@ fn clone_busy_error(error: OperationBusy) -> AppError {
         OperationBusy::BackgroundBusy => "a background operation is already in progress",
     };
     logged(AppError::expected(summary, "cloneRepository"))
+}
+
+fn clone_registry_error() -> AppError {
+    logged(AppError::unexpected(
+        "clone operation registry is unavailable",
+        "cloneRepository",
+    ))
 }
 
 fn resolve_repository_root(runner: &GitRunner, path: &Path) -> AppResult<PathBuf> {
@@ -1781,6 +2038,7 @@ mod tests {
                     name: Some("Artistic Git".to_owned()),
                     email: Some("tool@example.test".to_owned()),
                 }),
+                operation_id: None,
             },
         )
         .expect("clone repository");
@@ -1814,6 +2072,83 @@ mod tests {
     }
 
     #[test]
+    fn clone_emits_progress_events_for_local_bare_repository() {
+        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
+            return;
+        };
+        let source = TestRepo::new(&runner);
+        source.init_with_commit();
+        let branch = source
+            .git_output(["symbolic-ref", "--short", "HEAD"])
+            .trim()
+            .to_owned();
+        let bare = TestTempDir::new("ag-bare-remote").expect("bare remote");
+        git_stdout(&runner, Some(bare.path()), ["init", "--bare"], "test")
+            .expect("init bare remote");
+        let bare_path = display_path(bare.path());
+        source.git(["remote", "add", "origin", bare_path.as_str()]);
+        source.git(vec![
+            OsString::from("push"),
+            OsString::from("-u"),
+            OsString::from("origin"),
+            OsString::from(format!("HEAD:{branch}")),
+        ]);
+        git_stdout(
+            &runner,
+            Some(bare.path()),
+            vec![
+                OsString::from("symbolic-ref"),
+                OsString::from("HEAD"),
+                OsString::from(format!("refs/heads/{branch}")),
+            ],
+            "test",
+        )
+        .expect("point bare HEAD at pushed branch");
+
+        let parent = TestTempDir::new("ag-clone-parent").expect("clone parent");
+        let events = std::cell::RefCell::new(Vec::new());
+        clone_repository_with_cancel_and_progress(
+            &runner,
+            None,
+            CloneRepositoryRequest {
+                url: bare_path,
+                target_parent_directory: display_path(parent.path()),
+                directory_name: "progress-clone".to_owned(),
+                tool_identity: None,
+                operation_id: Some(OperationId::new("clone-progress-test")),
+            },
+            &CancelToken::new(),
+            |event| events.borrow_mut().push(event),
+        )
+        .expect("clone repository");
+
+        let events = events.borrow();
+        assert!(events.iter().any(|event| matches!(
+            event.progress,
+            ProgressState::Percent { value } if (value - 100.0).abs() < f32::EPSILON
+        )));
+        assert!(events
+            .iter()
+            .any(|event| event.label == "Cloning repository"));
+    }
+
+    #[test]
+    fn clone_progress_labels_lfs_checkout_and_submodules() {
+        assert_eq!(
+            clone_progress_label("Filtering content:  50% (1/2), 10.00 MiB"),
+            "Downloading LFS objects"
+        );
+        assert_eq!(
+            clone_progress_label("Checking out files: 100% (20/20), done."),
+            "Checking out files"
+        );
+        assert_eq!(
+            clone_progress_label("Submodule path 'textures': checked out 'abc123'"),
+            "Cloning submodules"
+        );
+    }
+
+    #[test]
     fn clone_rejects_existing_target_directory() {
         let Some((runner, _dist_temp)) = real_runner_or_skip() else {
             return;
@@ -1829,6 +2164,7 @@ mod tests {
                 target_parent_directory: display_path(parent.path()),
                 directory_name: "existing".to_owned(),
                 tool_identity: None,
+                operation_id: None,
             },
         )
         .expect_err("existing target should be rejected");
@@ -1853,6 +2189,7 @@ mod tests {
                 target_parent_directory: display_path(parent.path()),
                 directory_name: "cancelled".to_owned(),
                 tool_identity: None,
+                operation_id: None,
             },
             &token,
         )

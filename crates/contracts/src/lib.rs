@@ -511,6 +511,19 @@ pub struct CloneRepositoryRequest {
     pub target_parent_directory: String,
     pub directory_name: String,
     pub tool_identity: Option<ToolGitIdentity>,
+    pub operation_id: Option<OperationId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelCloneRepositoryRequest {
+    pub operation_id: OperationId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelCloneRepositoryResponse {
+    pub cancelled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]

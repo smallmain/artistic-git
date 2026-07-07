@@ -9,16 +9,17 @@ use artistic_git_app::{
 use artistic_git_contracts::{
     AbortRevertRequest, AbortRevertResponse, AppError, AppEvent, BranchListResponse,
     BranchNameValidationRequest, BranchNameValidationResponse, BranchOperationResponse,
-    CancelStashRestoreRequest, CancelStashRestoreResponse, CheckoutBranchRequest,
-    CloneRepositoryRequest, CloneRepositoryResponse, CommitRequest, CommitResponse,
-    ConflictCancelRequest, ConflictCancelResponse, ConflictCompleteRequest,
-    ConflictCompleteResponse, ConflictDetailResponse, ConflictFile, ConflictListRequest,
-    ConflictListResponse, ConflictPathRequest, ConflictSaveResolutionRequest,
-    ConflictSaveResolutionResponse, ConflictSelectSideRequest, ConflictSelectSideResponse,
-    CreateAutoStashRequest, CreateBranchRequest, CreateStashRequest, CreateStashResponse,
-    DeleteBranchRequest, DeleteStashRequest, DeleteStashResponse, DiffPayload,
-    FetchRepositoryRequest, FetchRepositoryResponse, GitDistManifest, LargeFileWarning,
-    LocalChangesResponse, LogPageRequest, LogPageResponse, LogSearchRequest, OpenRepositoryRequest,
+    CancelCloneRepositoryRequest, CancelCloneRepositoryResponse, CancelStashRestoreRequest,
+    CancelStashRestoreResponse, CheckoutBranchRequest, CloneRepositoryRequest,
+    CloneRepositoryResponse, CommitRequest, CommitResponse, ConflictCancelRequest,
+    ConflictCancelResponse, ConflictCompleteRequest, ConflictCompleteResponse,
+    ConflictDetailResponse, ConflictFile, ConflictListRequest, ConflictListResponse,
+    ConflictPathRequest, ConflictSaveResolutionRequest, ConflictSaveResolutionResponse,
+    ConflictSelectSideRequest, ConflictSelectSideResponse, CreateAutoStashRequest,
+    CreateBranchRequest, CreateStashRequest, CreateStashResponse, DeleteBranchRequest,
+    DeleteStashRequest, DeleteStashResponse, DiffPayload, FetchRepositoryRequest,
+    FetchRepositoryResponse, GitDistManifest, LargeFileWarning, LocalChangesResponse,
+    LogPageRequest, LogPageResponse, LogSearchRequest, OpenRepositoryRequest,
     OpenRepositoryResponse, RemoteSettingsResponse, RepositoryPathRequest, RepositorySummary,
     RestoreChangesRequest, RestoreChangesResponse, RestoreStashRequest, RestoreStashResponse,
     RevertCommitRequest, RevertCommitResponse, SaveRemoteSettingsRequest, StashDetailsRequest,
@@ -38,6 +39,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register::<OpenRepositoryResponse>()
         .register::<CloneRepositoryRequest>()
         .register::<CloneRepositoryResponse>()
+        .register::<CancelCloneRepositoryRequest>()
+        .register::<CancelCloneRepositoryResponse>()
         .register::<RepositoryPathRequest>()
         .register::<RepositorySummary>()
         .register::<FetchRepositoryRequest>()
