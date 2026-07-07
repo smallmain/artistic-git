@@ -66,14 +66,14 @@ graph TD
 
 **目标**：可启动的空应用 + 可运行的双端测试 + 三平台 CI。
 
-- [ ] pnpm + Vite + React + TypeScript（strict）初始化；技术栈全部取最新稳定版
-- [ ] Tauri 2 集成：productName `Artistic Git`、可执行名 `artistic-git`、identifier `com.smallmain.artistic-git`
-- [ ] Tailwind + shadcn/ui + lucide-react 接入；Vitest + Testing Library 就绪（示例测试）
-- [ ] Rust 侧拆 crate：`app`（命令入口）/ `core`（领域逻辑）/ `git-runner` / `helpers`（credential/askpass 二进制占位）；cargo test 就绪
-- [ ] 主窗口默认 1280×720、最小 960×600（低于最小尺寸出滚动不压缩布局）
-- [ ] Lint/格式化：eslint + prettier、clippy + rustfmt，pre-commit 可选
-- [ ] GitHub Actions：三平台矩阵跑 lint + 前端单测 + cargo test；**PR 只跑测试不发布**
-- [ ] 仓库文档骨架：README.md（英文）+ README_zh-CN.md；Conventional Commits 约定写入贡献说明
+- [x] pnpm + Vite + React + TypeScript（strict）初始化；技术栈全部取最新稳定版
+- [x] Tauri 2 集成：productName `Artistic Git`、可执行名 `artistic-git`、identifier `com.smallmain.artistic-git`
+- [x] Tailwind + shadcn/ui + lucide-react 接入；Vitest + Testing Library 就绪（示例测试）
+- [x] Rust 侧拆 crate：`app`（命令入口）/ `core`（领域逻辑）/ `git-runner` / `helpers`（credential/askpass 二进制占位）；cargo test 就绪
+- [x] 主窗口默认 1280×720、最小 960×600（低于最小尺寸出滚动不压缩布局）
+- [x] Lint/格式化：eslint + prettier、clippy + rustfmt，pre-commit 可选
+- [x] GitHub Actions：三平台矩阵跑 lint + 前端单测 + cargo test；**PR 只跑测试不发布**
+- [x] 仓库文档骨架：README.md（英文）+ README_zh-CN.md；Conventional Commits 约定写入贡献说明
 
 **验收**：`pnpm tauri dev` 打开空窗口；三平台 CI 全绿。
 
@@ -83,10 +83,10 @@ graph TD
 
 **目标**：把并行轨道共享的 Rust/TS 契约、resources 布局与测试 bootstrap 固化到主干。
 
-- [ ] Rust 契约类型包：`AppError` JSON、Tauri command request/response、事件 payload（`repo-changed` / `operation-progress` / `fetch-state` / `conflict-entered`）、Diff/冲突数据结构
-- [ ] TypeScript bindings 生成链路：Rust 类型为真相源，使用 `serde` + `specta`/`tauri-specta` 或等价方案生成 TS；CI 检查重新生成后 diff 为空
-- [ ] resources 目录布局契约：git 发行目录、git-lfs、Windows ssh、helper 二进制、dev resources 与打包 resources 的统一解析规则
-- [ ] Git 测试 bootstrap 契约：`ARTISTIC_GIT_DIST_DIR` 指向 dev git-dist；缺失或版本不符时测试失败，禁止 fallback 系统 git
+- [x] Rust 契约类型包：`AppError` JSON、Tauri command request/response、事件 payload（`repo-changed` / `operation-progress` / `fetch-state` / `conflict-entered`）、Diff/冲突数据结构
+- [x] TypeScript bindings 生成链路：Rust 类型为真相源，使用 `serde` + `specta`/`tauri-specta` 或等价方案生成 TS；CI 检查重新生成后 diff 为空
+- [x] resources 目录布局契约：git 发行目录、git-lfs、Windows ssh、helper 二进制、dev resources 与打包 resources 的统一解析规则
+- [x] Git 测试 bootstrap 契约：`ARTISTIC_GIT_DIST_DIR` 指向 dev git-dist；缺失或版本不符时测试失败，禁止 fallback 系统 git
 - [ ] IPC/认证契约：`operation-id` 贯穿高层操作；每条 git 命令派生 `invocation-id + one-time token`；helper 校验后 token 立即失效
 - [ ] Diff/冲突组件 props 契约：三处复用接口（本地更改/提交详情/冲突界面）与 LFS 锁状态预留位
 
@@ -105,10 +105,10 @@ graph TD
 - [ ] macOS：CI 用 Xcode 工具链从官方源码以 `RUNTIME_PREFIX` 可重定位方式构建，arm64 + x86_64 分别构建后 lipo 合成 Universal；钉死源码 tarball SHA-256
 - [ ] Linux：Ubuntu 20.04 容器（glibc 2.31）构建；libcurl/openssl/zlib/pcre2/expat 全静态链入；`NO_GETTEXT/NO_PERL/NO_TCLTK` 裁剪；glibc 动态链接（不用 musl）
 - [ ] git-lfs：全平台官方预编译包校验 SHA-256；macOS 合成 Universal
-- [ ] 产出统一 Tauri `resources` 目录布局（git 发行目录 + lfs + Windows ssh + 后续 helper 二进制的挂载点）
+- [x] 产出统一 Tauri `resources` 目录布局（git 发行目录 + lfs + Windows ssh + 后续 helper 二进制的挂载点）
 - [ ] 本地开发脚本（如 `pnpm fetch:git-dist`）：开发机一键下载/构建产物放入 dev resources，并导出/提示 `ARTISTIC_GIT_DIST_DIR`；二进制产物不提交普通 Git 仓库
 - [ ] CI cache/artifact 复用策略：git-dist 产物由 1A 生成并供后续测试/打包 job 复用；cache miss 时按 `git-dist.toml` 重新下载/构建并校验
-- [ ] 版本升级流程文档化：升级 = 修改配置文件走 PR + 全量测试 + 记入更新日志
+- [x] 版本升级流程文档化：升级 = 修改配置文件走 PR + 全量测试 + 记入更新日志
 
 **验收**：CI 三平台产出 artifact 且校验和匹配；本地脚本产物可执行 `git --version` / `git lfs version`；后续 job 可通过 `ARTISTIC_GIT_DIST_DIR` 复用产物；篡改校验和时构建失败。
 
@@ -134,8 +134,8 @@ graph TD
 - [ ] runner：`std::process::Command` 调用内嵌 git；显式内嵌路径，隔离 `GIT_EXEC_PATH`/`PATH`，**绝不回退系统 git**；`GIT_CONFIG_NOSYSTEM=1` + 受控 `HOME`；全局身份 fallback 由专用只读逻辑读取真实 `~/.gitconfig`
 - [ ] 运行期自检：启动执行 `git --version` / `git lfs version`，不符或不可执行 → 致命错误崩溃弹窗
 - [ ] 命令级注入约定（`-c`，不落盘）：`credential.helper`、`core.sshCommand`、`core.longpaths=true`（仅 Windows）、rename detection、`--progress`
-- [ ] 仓库写锁：单写锁 + 忙时拒绝（非队列）；写操作互斥串行；只读操作不受影响；后台任务 single-flight 接口（有写锁则跳过）
-- [ ] 进度框架：解析 git `--progress` stderr 输出百分比事件；拿不到进度的操作走不确定进度（spinner）
+- [x] 仓库写锁：单写锁 + 忙时拒绝（非队列）；写操作互斥串行；只读操作不受影响；后台任务 single-flight 接口（有写锁则跳过）
+- [x] 进度框架：解析 git `--progress` stderr 输出百分比事件；拿不到进度的操作走不确定进度（spinner）
 - [ ] 长操作取消：kill 子进程 + 各操作注册「恢复到操作前状态」钩子的约定
 - [ ] 事件通道骨架：`repo-changed` / `operation-progress` / `fetch-state` / `conflict-entered` 等，按 window label 路由到指定窗口
 - [ ] 写锁入口预留「身份懒校验」挂载点（3E 实装）
@@ -147,7 +147,7 @@ graph TD
 依赖：阶段 0.5。
 
 - [ ] 设计令牌落地 CSS 变量 + Tailwind 主题扩展：黑白极简主色（浅色近黑/深色白）、语义色（成功/警告/危险/同步橙）、审查青色渐变、系统字体栈、字阶 12–24 行高 1.5、等宽数字变体、圆角 8/6/6/12、4px 间距网格、柔和阴影仅浮层、动效 150/200–250ms ease-out/spring + 尊重「减少动态效果」降级淡入淡出、lucide 统一 16/20
-- [ ] 深浅主题：两套完整令牌，跟随系统 + 手动切换，shadcn theming 承载
+- [x] 深浅主题：两套完整令牌，跟随系统 + 手动切换，shadcn theming 承载
 - [ ] i18next：中英资源结构、跟随系统 + 手动即时切换（无需重启）；本地化日期/相对时间/数字/文件大小工具函数
 - [ ] 通用组件库：截断 + tooltip 文本（路径统一 `/` 分隔符工具）、仅图标按钮（强制 `aria-label` + tooltip）、确认弹窗基座、**错误详情弹窗**（语言化摘要 + 可折叠技术详情：git 命令/退出码/stderr 原文不翻译 + 复制错误信息 + 打开日志目录）、**崩溃详情弹窗**（同上 + 重启工具按钮 + 覆盖层阻止操作）
 - [ ] 前端状态骨架：TanStack Query（服务端态，按「仓库+查询类型」key）+ Zustand（UI 态）；每窗口独立 React 根/store/query client；Tauri 命令与事件的类型安全绑定层（与 1B/1C 契约对齐）

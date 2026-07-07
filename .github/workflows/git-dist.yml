@@ -1,0 +1,47 @@
+name: Git Distribution Contract
+
+on:
+  pull_request:
+    paths:
+      - "git-dist.toml"
+      - "scripts/check-git-dist.mjs"
+      - "docs/git-dist.md"
+      - "src-tauri/resources/git-dist/**"
+      - ".github/workflows/git-dist.yml"
+  workflow_dispatch:
+
+jobs:
+  contract:
+    name: Validate git-dist skeleton
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Validate git-dist config contract
+        run: node scripts/check-git-dist.mjs --schema-only
+
+      - name: Create placeholder artifact note
+        shell: bash
+        run: |
+          mkdir -p git-dist-artifact-note
+          cp git-dist.toml git-dist-artifact-note/git-dist.toml
+          cat > git-dist-artifact-note/README.txt <<'NOTE'
+          This is a phase 1A placeholder artifact.
+          The real workflow will upload artistic-git-dist-<platform> archives
+          containing manifest.json, embedded Git, Git LFS, Windows OpenSSH, and
+          helper binaries. It must reject placeholder pins from git-dist.toml.
+          NOTE
+
+      - name: Upload placeholder artifact note
+        uses: actions/upload-artifact@v4
+        with:
+          name: artistic-git-dist-contract
+          path: git-dist-artifact-note/
+          retention-days: 7

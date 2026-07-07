@@ -1,0 +1,12 @@
+/node_modules/
+/.pnpm-store/
+/dist/
+/target/
+/src-tauri/target/
+/.vscode/
+/.idea/
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example

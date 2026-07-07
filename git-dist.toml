@@ -1,0 +1,131 @@
+# Artistic Git embedded Git distribution configuration.
+#
+# Phase 1A skeleton note:
+# - Version, URL, and SHA-256 values are explicit placeholders.
+# - The real distribution pipeline must replace every placeholder source before
+#   it is allowed to download, build, cache, or package binaries.
+# - Runtime/test code must consume only ARTISTIC_GIT_DIST_DIR or packaged
+#   resources; it must never fall back to PATH or a system Git executable.
+
+schema_version = 1
+
+[versions]
+git = "0.0.0-placeholder"
+git_lfs = "0.0.0-placeholder"
+win32_openssh = "0.0.0-placeholder"
+helper = "0.0.0-placeholder"
+
+[artifacts]
+name = "git-dist"
+archive_prefix = "artistic-git-dist"
+manifest = "manifest.json"
+
+[resources.layout]
+root = "git-dist"
+manifest = "manifest.json"
+git = "git/"
+git_executable = "git/bin/git"
+git_executable_windows = "git/bin/git.exe"
+git_lfs = "git-lfs/"
+git_lfs_executable = "git-lfs/git-lfs"
+git_lfs_executable_windows = "git-lfs/git-lfs.exe"
+windows_openssh = "openssh/"
+windows_ssh_executable = "openssh/ssh.exe"
+helpers = "helpers/"
+credential_helper = "helpers/artistic-git-credential-helper"
+credential_helper_windows = "helpers/artistic-git-credential-helper.exe"
+ssh_askpass = "helpers/artistic-git-ssh-askpass"
+ssh_askpass_windows = "helpers/artistic-git-ssh-askpass.exe"
+
+[manifest]
+schema_version = 1
+format = "GitDistManifest from crates/contracts"
+path_style = "relative-to-git-dist-root"
+
+[sources.windows.x86_64.git]
+kind = "archive"
+vendor = "Git for Windows MinGit"
+url = "TODO:https://github.com/git-for-windows/git/releases/download/v${versions.git}.windows.1/MinGit-${versions.git}-64-bit.zip"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+placeholder = true
+resources_path = "git/"
+
+[sources.windows.x86_64.git_lfs]
+kind = "archive"
+vendor = "Git LFS official release"
+url = "TODO:https://github.com/git-lfs/git-lfs/releases/download/v${versions.git_lfs}/git-lfs-windows-amd64-v${versions.git_lfs}.zip"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+placeholder = true
+resources_path = "git-lfs/"
+
+[sources.windows.x86_64.win32_openssh]
+kind = "archive"
+vendor = "Win32-OpenSSH official release"
+url = "TODO:https://github.com/PowerShell/Win32-OpenSSH/releases/download/v${versions.win32_openssh}/OpenSSH-Win64.zip"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+placeholder = true
+resources_path = "openssh/"
+
+[sources.macos.universal.git]
+kind = "source-tarball"
+vendor = "Git official source"
+url = "TODO:https://www.kernel.org/pub/software/scm/git/git-${versions.git}.tar.xz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+placeholder = true
+resources_path = "git/"
+
+[sources.macos.arm64.git_lfs]
+kind = "archive"
+vendor = "Git LFS official release"
+url = "TODO:https://github.com/git-lfs/git-lfs/releases/download/v${versions.git_lfs}/git-lfs-darwin-arm64-v${versions.git_lfs}.zip"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+placeholder = true
+resources_path = "git-lfs/arm64/"
+
+[sources.macos.x86_64.git_lfs]
+kind = "archive"
+vendor = "Git LFS official release"
+url = "TODO:https://github.com/git-lfs/git-lfs/releases/download/v${versions.git_lfs}/git-lfs-darwin-amd64-v${versions.git_lfs}.zip"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+placeholder = true
+resources_path = "git-lfs/x86_64/"
+
+[sources.linux.x86_64.git]
+kind = "source-tarball"
+vendor = "Git official source"
+url = "TODO:https://www.kernel.org/pub/software/scm/git/git-${versions.git}.tar.xz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+placeholder = true
+resources_path = "git/"
+
+[sources.linux.x86_64.git_lfs]
+kind = "archive"
+vendor = "Git LFS official release"
+url = "TODO:https://github.com/git-lfs/git-lfs/releases/download/v${versions.git_lfs}/git-lfs-linux-amd64-v${versions.git_lfs}.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+placeholder = true
+resources_path = "git-lfs/"
+
+[build.macos.git]
+toolchain = "xcode"
+arches = ["arm64", "x86_64"]
+universal_binary = true
+configure_flags = ["--prefix=/", "RUNTIME_PREFIX=YesPlease", "NO_GETTEXT=YesPlease", "NO_TCLTK=YesPlease"]
+
+[build.linux.git]
+container_image = "ubuntu:20.04"
+glibc_floor = "2.31"
+linking = "glibc-dynamic-with-static-third-party-libs"
+static_libraries = ["curl", "openssl", "zlib", "pcre2", "expat"]
+make_flags = ["NO_GETTEXT=YesPlease", "NO_PERL=YesPlease", "NO_TCLTK=YesPlease", "RUNTIME_PREFIX=YesPlease"]
+
+[build.windows.git]
+strategy = "download-official-mingit"
+
+[build.git_lfs]
+strategy = "download-official-archives"
+macos_universal_binary = true
+
+[build.win32_openssh]
+strategy = "download-official-release"
+windows_only = true

@@ -1,0 +1,17 @@
+[package]
+name = "artistic-git-shell"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "artistic_git_shell"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build.workspace = true
+
+[dependencies]
+artistic-git-app.workspace = true
+tauri.workspace = true
