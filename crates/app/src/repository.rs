@@ -1,7 +1,9 @@
 use artistic_git_contracts::{
-    AppError, AppErrorCategory, AppResult, BranchExistence, BranchListResponse, BranchSummary,
-    CancelStashRestoreRequest, CancelStashRestoreResponse, CommitSummary, CreateAutoStashRequest,
-    CreateStashRequest, CreateStashResponse, DeleteStashRequest, DeleteStashResponse,
+    AppError, AppErrorCategory, AppResult, BranchExistence, BranchListResponse,
+    BranchNameValidationRequest, BranchNameValidationResponse, BranchOperationResponse,
+    BranchSummary, CancelStashRestoreRequest, CancelStashRestoreResponse, CheckoutBranchRequest,
+    CommitSummary, CreateAutoStashRequest, CreateBranchRequest, CreateStashRequest,
+    CreateStashResponse, DeleteBranchRequest, DeleteStashRequest, DeleteStashResponse,
     DiffChangeKind, GitCommandError, IndexLockInfo, LocalChange, LocalChangesResponse,
     LogPageRequest, LogPageResponse, LogSearchRequest, OpenRepositoryRequest,
     OpenRepositoryResponse, RepositoryHeadState, RepositoryHealth, RepositoryMiddleState,
@@ -57,6 +59,34 @@ impl RepositoryBackend {
 
     pub fn list_branches(&self, request: RepositoryPathRequest) -> AppResult<BranchListResponse> {
         list_branches(&self.runner, request)
+    }
+
+    pub fn validate_branch_name(
+        &self,
+        request: BranchNameValidationRequest,
+    ) -> AppResult<BranchNameValidationResponse> {
+        crate::branches::validate_branch_name(&self.runner, request)
+    }
+
+    pub fn create_branch(
+        &self,
+        request: CreateBranchRequest,
+    ) -> AppResult<BranchOperationResponse> {
+        crate::branches::create_branch(&self.runner, request)
+    }
+
+    pub fn checkout_branch(
+        &self,
+        request: CheckoutBranchRequest,
+    ) -> AppResult<BranchOperationResponse> {
+        crate::branches::checkout_branch(&self.runner, request)
+    }
+
+    pub fn delete_branch(
+        &self,
+        request: DeleteBranchRequest,
+    ) -> AppResult<BranchOperationResponse> {
+        crate::branches::delete_branch(&self.runner, request)
     }
 
     pub fn list_local_changes(
@@ -959,7 +989,11 @@ fn log_limit_and_skip(limit: Option<u16>, after: Option<&str>) -> (usize, usize)
     (limit, skip)
 }
 
-fn current_branch_name(runner: &GitRunner, root: &Path, operation_name: &str) -> AppResult<String> {
+pub(crate) fn current_branch_name(
+    runner: &GitRunner,
+    root: &Path,
+    operation_name: &str,
+) -> AppResult<String> {
     git_stdout(
         runner,
         Some(root),
@@ -988,7 +1022,7 @@ where
     })
 }
 
-fn git_stdout<I, S>(
+pub(crate) fn git_stdout<I, S>(
     runner: &GitRunner,
     root: Option<&Path>,
     args: I,
@@ -1163,7 +1197,7 @@ fn cancelled_error(operation_name: &str) -> AppError {
     logged(AppError::expected("operation cancelled", operation_name))
 }
 
-fn canonical_repository_path(path: &str, operation_name: &str) -> AppResult<PathBuf> {
+pub(crate) fn canonical_repository_path(path: &str, operation_name: &str) -> AppResult<PathBuf> {
     canonicalize_path(Path::new(path), operation_name)
 }
 
@@ -1237,11 +1271,11 @@ fn warning(kind: RepositoryOpenWarningKind, message: impl Into<String>) -> Repos
     }
 }
 
-fn display_path(path: &Path) -> String {
+pub(crate) fn display_path(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
-fn unix_now_seconds() -> u64 {
+pub(crate) fn unix_now_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()

@@ -4,8 +4,10 @@ use serde::Serialize;
 use specta::Type;
 use std::path::{Path, PathBuf};
 
+pub mod branches;
 pub mod repository;
 pub mod stash;
+pub use branches::{checkout_branch, create_branch, delete_branch, validate_branch_name};
 pub use repository::{
     list_branches, list_local_changes, list_stashes, log_page_with_cancel, open_repository,
     repository_summary, search_log_with_cancel, RepositoryBackend,

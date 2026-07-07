@@ -2,12 +2,18 @@ import { invoke } from "@tauri-apps/api/core";
 
 import type {
   AppError,
+  BranchNameValidationRequest,
+  BranchNameValidationResponse,
   BranchListResponse,
+  BranchOperationResponse,
   CancelStashRestoreRequest,
   CancelStashRestoreResponse,
+  CheckoutBranchRequest,
+  CreateBranchRequest,
   CreateAutoStashRequest,
   CreateStashRequest,
   CreateStashResponse,
+  DeleteBranchRequest,
   DeleteStashRequest,
   DeleteStashResponse,
   HealthResponse,
@@ -33,6 +39,10 @@ export interface AppCommandArgs {
   open_repository: { request: OpenRepositoryRequest };
   repository_summary: { request: RepositoryPathRequest };
   list_branches: { request: RepositoryPathRequest };
+  validate_branch_name: { request: BranchNameValidationRequest };
+  create_branch: { request: CreateBranchRequest };
+  checkout_branch: { request: CheckoutBranchRequest };
+  delete_branch: { request: DeleteBranchRequest };
   list_local_changes: { request: RepositoryPathRequest };
   list_stashes: { request: RepositoryPathRequest };
   create_stash: { request: CreateStashRequest };
@@ -51,6 +61,10 @@ export interface AppCommandResponses {
   open_repository: OpenRepositoryResponse;
   repository_summary: RepositorySummary;
   list_branches: BranchListResponse;
+  validate_branch_name: BranchNameValidationResponse;
+  create_branch: BranchOperationResponse;
+  checkout_branch: BranchOperationResponse;
+  delete_branch: BranchOperationResponse;
   list_local_changes: LocalChangesResponse;
   list_stashes: StashListResponse;
   create_stash: CreateStashResponse;
@@ -112,6 +126,30 @@ export function listBranches(
   request: RepositoryPathRequest,
 ): Promise<BranchListResponse> {
   return invokeAppCommand("list_branches", { request });
+}
+
+export function validateBranchName(
+  request: BranchNameValidationRequest,
+): Promise<BranchNameValidationResponse> {
+  return invokeAppCommand("validate_branch_name", { request });
+}
+
+export function createBranch(
+  request: CreateBranchRequest,
+): Promise<BranchOperationResponse> {
+  return invokeAppCommand("create_branch", { request });
+}
+
+export function checkoutBranch(
+  request: CheckoutBranchRequest,
+): Promise<BranchOperationResponse> {
+  return invokeAppCommand("checkout_branch", { request });
+}
+
+export function deleteBranch(
+  request: DeleteBranchRequest,
+): Promise<BranchOperationResponse> {
+  return invokeAppCommand("delete_branch", { request });
 }
 
 export function listLocalChanges(

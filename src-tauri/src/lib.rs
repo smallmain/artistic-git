@@ -49,6 +49,47 @@ fn list_branches(
 }
 
 #[tauri::command]
+fn validate_branch_name(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::BranchNameValidationRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::BranchNameValidationResponse> {
+    backend.validate_branch_name(request)
+}
+
+#[tauri::command]
+fn create_branch(
+    app_handle: tauri::AppHandle,
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::CreateBranchRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::BranchOperationResponse> {
+    let response = backend.create_branch(request)?;
+    emit_branch_operation_events(&app_handle, &response);
+    Ok(response)
+}
+
+#[tauri::command]
+fn checkout_branch(
+    app_handle: tauri::AppHandle,
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::CheckoutBranchRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::BranchOperationResponse> {
+    let response = backend.checkout_branch(request)?;
+    emit_branch_operation_events(&app_handle, &response);
+    Ok(response)
+}
+
+#[tauri::command]
+fn delete_branch(
+    app_handle: tauri::AppHandle,
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::DeleteBranchRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::BranchOperationResponse> {
+    let response = backend.delete_branch(request)?;
+    emit_branch_operation_events(&app_handle, &response);
+    Ok(response)
+}
+
+#[tauri::command]
 fn list_local_changes(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::RepositoryPathRequest,
@@ -151,6 +192,10 @@ pub fn run() {
             open_repository,
             repository_summary,
             list_branches,
+            validate_branch_name,
+            create_branch,
+            checkout_branch,
+            delete_branch,
             list_local_changes,
             list_stashes,
             create_stash,
@@ -205,4 +250,37 @@ fn git_dist_root(app: &tauri::App) -> Result<PathBuf, Box<dyn std::error::Error>
 
 fn boxed_setup_error(message: String) -> Box<dyn std::error::Error> {
     Box::new(std::io::Error::other(message))
+}
+
+fn emit_branch_operation_events(
+    app_handle: &tauri::AppHandle,
+    response: &artistic_git_contracts::BranchOperationResponse,
+) {
+    let repository_path = match response {
+        artistic_git_contracts::BranchOperationResponse::Completed {
+            repository_path, ..
+        } => repository_path,
+        artistic_git_contracts::BranchOperationResponse::Conflicts {
+            repository_path,
+            conflict,
+            ..
+        } => {
+            let _ = app_handle.emit("conflict-entered", conflict);
+            repository_path
+        }
+    };
+
+    let _ = app_handle.emit(
+        "repo-changed",
+        artistic_git_contracts::RepoChangedEvent {
+            repository_path: repository_path.clone(),
+            changed_queries: vec![
+                artistic_git_contracts::RepoQueryKind::Summary,
+                artistic_git_contracts::RepoQueryKind::Branches,
+                artistic_git_contracts::RepoQueryKind::LocalChanges,
+                artistic_git_contracts::RepoQueryKind::Stashes,
+                artistic_git_contracts::RepoQueryKind::History,
+            ],
+        },
+    );
 }

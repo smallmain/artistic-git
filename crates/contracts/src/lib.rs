@@ -418,6 +418,74 @@ pub struct BranchListResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
+pub struct BranchNameValidationRequest {
+    pub repository_path: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchNameValidationResponse {
+    pub name: String,
+    pub valid: bool,
+    pub exists: bool,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateBranchRequest {
+    pub repository_path: String,
+    pub name: String,
+    pub base_branch: String,
+    pub checkout_immediately: bool,
+    pub create_remote: bool,
+    pub local_changes_mode: CheckoutLocalChangesMode,
+    pub operation_id: Option<OperationId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckoutBranchRequest {
+    pub repository_path: String,
+    pub branch_name: String,
+    pub local_changes_mode: CheckoutLocalChangesMode,
+    pub operation_id: Option<OperationId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum CheckoutLocalChangesMode {
+    RequireClean,
+    AutoStash,
+    Discard,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteBranchRequest {
+    pub repository_path: String,
+    pub branch_name: String,
+    pub delete_remote: bool,
+    pub force_remote_only: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub enum BranchOperationResponse {
+    Completed {
+        repository_path: String,
+        branch_name: String,
+    },
+    Conflicts {
+        repository_path: String,
+        branch_name: String,
+        conflict: ConflictEnteredEvent,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
 pub struct BranchSummary {
     pub name: String,
     pub short_name: String,

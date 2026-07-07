@@ -55,6 +55,20 @@ export type BranchListResponse = {
 	branches: BranchSummary[],
 };
 
+export type BranchNameValidationRequest = {
+	repositoryPath: string,
+	name: string,
+};
+
+export type BranchNameValidationResponse = {
+	name: string,
+	valid: boolean,
+	exists: boolean,
+	message: string | null,
+};
+
+export type BranchOperationResponse = { status: "completed"; repository_path: string; branch_name: string } | { status: "conflicts"; repository_path: string; branch_name: string; conflict: ConflictEnteredEvent };
+
 export type BranchSummary = {
 	name: string,
 	shortName: string,
@@ -76,6 +90,15 @@ export type CancelStashRestoreResponse = {
 	restored: boolean,
 	droppedRecoveryStash: boolean,
 };
+
+export type CheckoutBranchRequest = {
+	repositoryPath: string,
+	branchName: string,
+	localChangesMode: CheckoutLocalChangesMode,
+	operationId: OperationId | null,
+};
+
+export type CheckoutLocalChangesMode = "requireClean" | "autoStash" | "discard";
 
 export type CommitSummary = {
 	oid: string,
@@ -111,6 +134,16 @@ export type CreateAutoStashRequest = {
 	paths: string[],
 };
 
+export type CreateBranchRequest = {
+	repositoryPath: string,
+	name: string,
+	baseBranch: string,
+	checkoutImmediately: boolean,
+	createRemote: boolean,
+	localChangesMode: CheckoutLocalChangesMode,
+	operationId: OperationId | null,
+};
+
 export type CreateStashRequest = {
 	repositoryPath: string,
 	message: string,
@@ -122,6 +155,13 @@ export type CreateStashResponse = {
 	created: boolean,
 	stash: StashEntry | null,
 	stdout: string,
+};
+
+export type DeleteBranchRequest = {
+	repositoryPath: string,
+	branchName: string,
+	deleteRemote: boolean,
+	forceRemoteOnly: boolean,
 };
 
 export type DeleteStashRequest = {

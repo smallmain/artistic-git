@@ -1,7 +1,9 @@
 use artistic_git_app::{HealthResponse, OpenLogDirResponse};
 use artistic_git_contracts::{
-    AppError, AppEvent, BranchListResponse, CancelStashRestoreRequest, CancelStashRestoreResponse,
-    ConflictFile, CreateAutoStashRequest, CreateStashRequest, CreateStashResponse,
+    AppError, AppEvent, BranchListResponse, BranchNameValidationRequest,
+    BranchNameValidationResponse, BranchOperationResponse, CancelStashRestoreRequest,
+    CancelStashRestoreResponse, CheckoutBranchRequest, ConflictFile, CreateAutoStashRequest,
+    CreateBranchRequest, CreateStashRequest, CreateStashResponse, DeleteBranchRequest,
     DeleteStashRequest, DeleteStashResponse, DiffPayload, GitDistManifest, LocalChangesResponse,
     LogPageRequest, LogPageResponse, LogSearchRequest, OpenRepositoryRequest,
     OpenRepositoryResponse, RepositoryPathRequest, RepositorySummary, RestoreStashRequest,
@@ -22,6 +24,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register::<RepositoryPathRequest>()
         .register::<RepositorySummary>()
         .register::<BranchListResponse>()
+        .register::<BranchNameValidationRequest>()
+        .register::<BranchNameValidationResponse>()
+        .register::<CreateBranchRequest>()
+        .register::<CheckoutBranchRequest>()
+        .register::<DeleteBranchRequest>()
+        .register::<BranchOperationResponse>()
         .register::<LocalChangesResponse>()
         .register::<StashListResponse>()
         .register::<CreateStashRequest>()
