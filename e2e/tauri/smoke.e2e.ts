@@ -41,6 +41,7 @@ describe("Artistic Git Tauri smoke", () => {
       throw new Error(
         `${error instanceof Error ? error.message : String(error)}\n` +
           `Last start screen state: ${JSON.stringify(lastState, null, 2)}`,
+        { cause: error },
       );
     }
 
