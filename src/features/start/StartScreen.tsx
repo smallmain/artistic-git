@@ -34,6 +34,7 @@ import {
   toolIdentityFromSettings,
 } from "@/features/settings/settings-model";
 import { useWindowStore } from "@/store/window-store";
+import { WindowCloseGuard } from "@/features/window-close-guard/WindowCloseGuard";
 
 const pickerFallbackPath = "/Users/artist/Projects/Environment Art";
 const cloneParentStorageKey = "artistic-git:last-clone-parent-dir";
@@ -244,6 +245,33 @@ export function StartScreen() {
     } catch (error) {
       setCloneError(errorSummary(error, t("start.cloneCancelFailed")));
       setCloneCancelling(false);
+    }
+  }, [cloneOperationId, t]);
+  const recoverCloneForWindowClose = React.useCallback(async () => {
+    if (!cloneOperationId) {
+      return;
+    }
+
+    cloneCancelRequestedRef.current = true;
+    setCloneCancelling(true);
+    setCloneError(null);
+    let response: Awaited<ReturnType<typeof cancelCloneRepository>>;
+    try {
+      response = await cancelCloneRepository({
+        operationId: cloneOperationId,
+      });
+    } catch (error) {
+      const message = errorSummary(error, t("start.cloneCancelFailed"));
+      setCloneError(message);
+      setCloneCancelling(false);
+      throw new Error(message, { cause: error });
+    }
+
+    if (!response.cancelled) {
+      setCloneCancelling(false);
+      const message = t("start.cloneCancelUnavailable");
+      setCloneError(message);
+      throw new Error(message);
     }
   }, [cloneOperationId, t]);
   const handleCloneUrlChange = React.useCallback(
@@ -567,6 +595,11 @@ export function StartScreen() {
           url={cloneUrl}
         />
       ) : null}
+      <WindowCloseGuard
+        active={isCloning}
+        canRecover={cloneOperationId !== null && !cloneCancelling}
+        onRecover={recoverCloneForWindowClose}
+      />
     </main>
   );
 }

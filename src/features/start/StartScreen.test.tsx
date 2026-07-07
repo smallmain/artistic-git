@@ -1,4 +1,5 @@
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -7,6 +8,7 @@ import {
   within,
 } from "@testing-library/react";
 import { I18nextProvider } from "react-i18next";
+import { listen } from "@tauri-apps/api/event";
 import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -20,11 +22,14 @@ import {
 import { StartScreen } from "./StartScreen";
 
 const commandMocks = vi.hoisted(() => ({
+  cancelPendingWindowExit: vi.fn(),
   cancelCloneRepository: vi.fn(),
   cloneRepository: vi.fn(),
+  closeCurrentWindow: vi.fn(),
   openRepository: vi.fn(),
   openRepositoryWindow: vi.fn(),
   saveAppSettings: vi.fn(),
+  setWindowCloseGuard: vi.fn(),
 }));
 const dialogMocks = vi.hoisted(() => ({
   open: vi.fn(),
@@ -49,6 +54,11 @@ vi.mock("@/lib/ipc/events", () => ({
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => dialogMocks);
 
+const tauriEventListeners = new Map<
+  string,
+  (event: { payload: unknown }) => void
+>();
+
 function renderWithStore(
   ui: ReactElement,
   initialState?: Partial<WindowStoreState>,
@@ -66,10 +76,30 @@ function renderWithStore(
   return store;
 }
 
+async function emitWindowCloseBlocked(payload: unknown) {
+  await waitFor(() =>
+    expect(tauriEventListeners.has("window-close-blocked")).toBe(true),
+  );
+  await act(async () => {
+    tauriEventListeners.get("window-close-blocked")?.({ payload });
+  });
+}
+
 beforeEach(() => {
   window.localStorage.clear();
   vi.clearAllMocks();
+  tauriEventListeners.clear();
+  vi.mocked(listen).mockImplementation(async (event, handler) => {
+    tauriEventListeners.set(
+      event,
+      handler as (event: { payload: unknown }) => void,
+    );
+    return () => undefined;
+  });
   eventMocks.listeners = [];
+  commandMocks.cancelPendingWindowExit.mockResolvedValue(undefined);
+  commandMocks.closeCurrentWindow.mockResolvedValue(undefined);
+  commandMocks.setWindowCloseGuard.mockResolvedValue(undefined);
   dialogMocks.open.mockResolvedValue("/projects");
   commandMocks.saveAppSettings.mockImplementation(
     async ({ settings }) => settings,
@@ -239,6 +269,78 @@ describe("StartScreen clone flow", () => {
         operationId: commandMocks.cloneRepository.mock.calls[0][0].operationId,
       });
     });
+  });
+
+  it("cancels an in-flight clone before closing a guarded window", async () => {
+    commandMocks.cancelCloneRepository.mockResolvedValue({ cancelled: true });
+    commandMocks.cloneRepository.mockImplementation(
+      () => new Promise(() => undefined),
+    );
+    const confirmSpy = vi.spyOn(window, "confirm");
+    renderWithStore(<StartScreen />, {
+      appSettings: { paths: { lastCloneParentDir: "/projects" } },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Clone Project" }));
+    const cloneDialog = screen.getByRole("dialog", { name: "Clone Project" });
+    fireEvent.change(within(cloneDialog).getByLabelText("Repository URL"), {
+      target: { value: "https://github.com/studio/art-project.git" },
+    });
+    fireEvent.click(
+      within(cloneDialog).getByRole("button", { name: "Clone Project" }),
+    );
+    await waitFor(() =>
+      expect(commandMocks.setWindowCloseGuard).toHaveBeenCalledWith({
+        active: true,
+      }),
+    );
+
+    await emitWindowCloseBlocked({ reason: "closeWindow" });
+    const closeDialog = await screen.findByRole("dialog", {
+      name: "Close window?",
+    });
+    expect(closeDialog).toHaveTextContent(
+      "An operation is in progress. Closing will cancel it and restore the pre-operation state.",
+    );
+    fireEvent.click(
+      within(closeDialog).getByRole("button", { name: "Close and recover" }),
+    );
+
+    await waitFor(() =>
+      expect(commandMocks.cancelCloneRepository).toHaveBeenCalledWith({
+        operationId: commandMocks.cloneRepository.mock.calls[0][0].operationId,
+      }),
+    );
+    expect(commandMocks.closeCurrentWindow).toHaveBeenCalledTimes(1);
+    expect(confirmSpy).not.toHaveBeenCalled();
+  });
+
+  it("cancels pending app quit when a guarded clone close prompt is dismissed", async () => {
+    commandMocks.cloneRepository.mockImplementation(
+      () => new Promise(() => undefined),
+    );
+    renderWithStore(<StartScreen />, {
+      appSettings: { paths: { lastCloneParentDir: "/projects" } },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Clone Project" }));
+    const cloneDialog = screen.getByRole("dialog", { name: "Clone Project" });
+    fireEvent.change(within(cloneDialog).getByLabelText("Repository URL"), {
+      target: { value: "https://github.com/studio/art-project.git" },
+    });
+    fireEvent.click(
+      within(cloneDialog).getByRole("button", { name: "Clone Project" }),
+    );
+
+    await emitWindowCloseBlocked({ reason: "quit" });
+    fireEvent.click(
+      within(
+        await screen.findByRole("dialog", { name: "Close window?" }),
+      ).getByRole("button", { name: "Cancel" }),
+    );
+
+    expect(commandMocks.cancelPendingWindowExit).toHaveBeenCalledTimes(1);
+    expect(commandMocks.closeCurrentWindow).not.toHaveBeenCalled();
   });
 });
 
