@@ -131,14 +131,14 @@ graph TD
 
 依赖：阶段 0.5；与 1A 仅目录布局契约（开发期通过 `ARTISTIC_GIT_DIST_DIR` 指向 dev git-dist）。
 
-- [ ] runner：`std::process::Command` 调用内嵌 git；显式内嵌路径，隔离 `GIT_EXEC_PATH`/`PATH`，**绝不回退系统 git**；`GIT_CONFIG_NOSYSTEM=1` + 受控 `HOME`；全局身份 fallback 由专用只读逻辑读取真实 `~/.gitconfig`
-- [ ] 运行期自检：启动执行 `git --version` / `git lfs version`，不符或不可执行 → 致命错误崩溃弹窗
-- [ ] 命令级注入约定（`-c`，不落盘）：`credential.helper`、`core.sshCommand`、`core.longpaths=true`（仅 Windows）、rename detection、`--progress`
+- [x] runner：`std::process::Command` 调用内嵌 git；显式内嵌路径，隔离 `GIT_EXEC_PATH`/`PATH`，**绝不回退系统 git**；`GIT_CONFIG_NOSYSTEM=1` + 受控 `HOME`；全局身份 fallback 由专用只读逻辑读取真实 `~/.gitconfig`
+- [x] 运行期自检：启动执行 `git --version` / `git lfs version`，不符或不可执行 → 致命错误崩溃弹窗
+- [x] 命令级注入约定（`-c`，不落盘）：`credential.helper`、`core.sshCommand`、`core.longpaths=true`（仅 Windows）、rename detection、`--progress`
 - [x] 仓库写锁：单写锁 + 忙时拒绝（非队列）；写操作互斥串行；只读操作不受影响；后台任务 single-flight 接口（有写锁则跳过）
 - [x] 进度框架：解析 git `--progress` stderr 输出百分比事件；拿不到进度的操作走不确定进度（spinner）
-- [ ] 长操作取消：kill 子进程 + 各操作注册「恢复到操作前状态」钩子的约定
-- [ ] 事件通道骨架：`repo-changed` / `operation-progress` / `fetch-state` / `conflict-entered` 等，按 window label 路由到指定窗口
-- [ ] 写锁入口预留「身份懒校验」挂载点（3E 实装）
+- [x] 长操作取消：kill 子进程 + 各操作注册「恢复到操作前状态」钩子的约定
+- [x] 事件通道骨架：`repo-changed` / `operation-progress` / `fetch-state` / `conflict-entered` 等，按 window label 路由到指定窗口
+- [x] 写锁入口预留「身份懒校验」挂载点（3E 实装）
 
 **验收**：Rust 集成测试（真实临时仓库 + 内嵌 git）：写锁互斥与忙时拒绝、取消后状态恢复、进度解析、环境隔离（系统/全局 config 注入不生效）、缺失 `ARTISTIC_GIT_DIST_DIR` 不回退系统 git、自检失败路径。
 

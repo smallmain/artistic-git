@@ -15,8 +15,8 @@ pub struct InvocationId(pub String);
 pub struct AppError {
     pub category: AppErrorCategory,
     pub summary: String,
-    pub context: OperationContext,
-    pub git: Option<GitCommandError>,
+    pub context: Box<OperationContext>,
+    pub git: Option<Box<GitCommandError>>,
 }
 
 impl AppError {
@@ -28,7 +28,7 @@ impl AppError {
         Self {
             category,
             summary: summary.into(),
-            context,
+            context: Box::new(context),
             git: None,
         }
     }
@@ -58,12 +58,12 @@ impl AppError {
     }
 
     pub fn with_context(mut self, context: OperationContext) -> Self {
-        self.context = context;
+        self.context = Box::new(context);
         self
     }
 
     pub fn with_git(mut self, git: GitCommandError) -> Self {
-        self.git = Some(git);
+        self.git = Some(Box::new(git));
         self
     }
 
@@ -149,6 +149,17 @@ pub enum AppEvent {
     OperationProgress(OperationProgressEvent),
     FetchState(FetchStateEvent),
     ConflictEntered(ConflictEnteredEvent),
+}
+
+impl AppEvent {
+    pub fn event_name(&self) -> &'static str {
+        match self {
+            Self::RepoChanged(_) => "repo-changed",
+            Self::OperationProgress(_) => "operation-progress",
+            Self::FetchState(_) => "fetch-state",
+            Self::ConflictEntered(_) => "conflict-entered",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]

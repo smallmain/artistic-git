@@ -152,11 +152,24 @@ pub fn write_git_dist_manifest(
 }
 
 pub fn write_executable_file(path: &Path) -> io::Result<()> {
+    write_executable_script(path, "#!/bin/sh\nexit 0\n", "@echo off\r\nexit /b 0\r\n")
+}
+
+pub fn write_executable_script(
+    path: &Path,
+    unix_script: &str,
+    windows_script: &str,
+) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
 
-    fs::write(path, executable_script())?;
+    if cfg!(windows) {
+        fs::write(path, windows_script)?;
+    } else {
+        fs::write(path, unix_script)?;
+    }
+
     mark_executable(path)
 }
 
@@ -165,14 +178,6 @@ fn executable_path(path: &str) -> String {
         format!("{path}.exe")
     } else {
         path.to_owned()
-    }
-}
-
-fn executable_script() -> &'static [u8] {
-    if cfg!(windows) {
-        b"@echo off\r\nexit /b 0\r\n"
-    } else {
-        b"#!/bin/sh\nexit 0\n"
     }
 }
 
