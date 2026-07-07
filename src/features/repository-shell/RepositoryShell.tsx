@@ -48,6 +48,7 @@ import {
   validateBranchName,
 } from "@/lib/ipc/commands";
 import type {
+  BranchOperationResponse,
   BranchNameValidationResponse,
   BranchSummary,
   CheckoutLocalChangesMode,
@@ -455,6 +456,20 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     setBranchNameValidation(null);
   }, []);
 
+  const rememberBranchStashRecovery = React.useCallback(
+    (response: BranchOperationResponse) => {
+      if (response.status !== "conflicts" || !response.stashRecovery) {
+        return;
+      }
+
+      setStashRecoveryByOperation((current) => ({
+        ...current,
+        [response.conflict.operationId]: response.stashRecovery!,
+      }));
+    },
+    [],
+  );
+
   const runCheckoutBranch = React.useCallback(async () => {
     if (!branchToCheckout) {
       return;
@@ -470,6 +485,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       });
 
       if (response.status === "conflicts") {
+        rememberBranchStashRecovery(response);
         setConflictEntered(response.conflict);
       } else {
         handleBranchCompleted(response.branchName);
@@ -486,6 +502,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     branchToCheckout,
     checkoutMode,
     handleBranchCompleted,
+    rememberBranchStashRecovery,
     repositoryPath,
     setConflictEntered,
   ]);
@@ -514,6 +531,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       });
 
       if (response.status === "conflicts") {
+        rememberBranchStashRecovery(response);
         setConflictEntered(response.conflict);
       } else {
         handleBranchCompleted(response.branchName);
@@ -534,6 +552,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     branchNameValidation?.valid,
     checkoutMode,
     handleBranchCompleted,
+    rememberBranchStashRecovery,
     newBranchCheckout,
     newBranchName,
     repositoryPath,

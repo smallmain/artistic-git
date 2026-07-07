@@ -87,6 +87,7 @@ export type BranchOperationResponse =
       repositoryPath: string;
       branchName: string;
       conflict: ConflictEnteredEvent;
+      stashRecovery: StashRecoveryPoint | null;
     };
 
 export type BranchSummary = {

@@ -719,6 +719,7 @@ pub enum BranchOperationResponse {
         repository_path: String,
         branch_name: String,
         conflict: ConflictEnteredEvent,
+        stash_recovery: Option<StashRecoveryPoint>,
     },
 }
 

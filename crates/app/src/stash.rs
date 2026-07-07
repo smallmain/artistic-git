@@ -151,12 +151,38 @@ pub fn restore_stash(
         )));
     }
 
-    let oid = resolve_revision(runner, &root, selector, operation_name)?;
-    let recovery = create_recovery_point(runner, &root, operation_name)?;
+    restore_stash_for_root(
+        runner,
+        &root,
+        selector,
+        request.drop_on_success,
+        operation_name,
+        None,
+    )
+}
+
+pub(crate) fn restore_stash_for_root(
+    runner: &GitRunner,
+    root: &Path,
+    selector: &str,
+    drop_on_success: bool,
+    operation_name: &str,
+    recovery_id: Option<&OperationId>,
+) -> AppResult<RestoreStashResponse> {
+    let selector = selector.trim();
+    if selector.is_empty() {
+        return Err(logged(AppError::expected(
+            "stash selector is empty",
+            operation_name,
+        )));
+    }
+
+    let oid = resolve_revision(runner, root, selector, operation_name)?;
+    let recovery = create_recovery_point(runner, root, operation_name, recovery_id)?;
     if let Some(recovery_selector) = recovery.stash_selector.as_deref() {
         git_stdout(
             runner,
-            Some(&root),
+            Some(root),
             ["stash", "apply", "--index", recovery_selector],
             operation_name,
         )?;
@@ -164,18 +190,18 @@ pub fn restore_stash(
 
     let apply_result = run_git(
         runner,
-        Some(&root),
+        Some(root),
         ["stash", "apply", oid.as_str()],
         operation_name,
     );
     match apply_result {
         Ok(_) => {
             let mut dropped = false;
-            if request.drop_on_success {
-                dropped = drop_stash_by_oid(runner, &root, &oid, operation_name)?;
+            if drop_on_success {
+                dropped = drop_stash_by_oid(runner, root, &oid, operation_name)?;
             }
             if let Some(recovery_oid) = recovery.stash_oid.as_deref() {
-                let _ = drop_stash_by_oid(runner, &root, recovery_oid, operation_name);
+                let _ = drop_stash_by_oid(runner, root, recovery_oid, operation_name);
             }
             Ok(RestoreStashResponse {
                 selector: selector.to_owned(),
@@ -184,12 +210,12 @@ pub fn restore_stash(
                 outcome: StashRestoreOutcome::Applied { dropped },
             })
         }
-        Err(_error) if repository_has_conflicts(runner, &root) => {
+        Err(_error) if repository_has_conflicts(runner, root) => {
             let conflict = ConflictEnteredEvent {
                 operation_id: OperationId(recovery.id.clone()),
-                repository_path: display_path(&root),
+                repository_path: display_path(root),
                 operation_name: operation_name.to_owned(),
-                files: list_conflict_files(runner, &root, operation_name)?,
+                files: list_conflict_files(runner, root, operation_name)?,
             };
             Ok(RestoreStashResponse {
                 selector: selector.to_owned(),
@@ -290,6 +316,7 @@ fn create_recovery_point(
     runner: &GitRunner,
     root: &Path,
     operation_name: &str,
+    requested_id: Option<&OperationId>,
 ) -> AppResult<StashRecoveryPoint> {
     let head_oid = git_stdout(
         runner,
@@ -300,7 +327,10 @@ fn create_recovery_point(
     .ok()
     .map(|value| value.trim().to_owned())
     .filter(|value| !value.is_empty());
-    let id = format!("stash-restore-{}", unix_now_millis());
+    let id = requested_id
+        .map(|value| value.0.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| format!("stash-restore-{}", unix_now_millis()));
 
     if !has_local_changes(runner, root, operation_name)? {
         return Ok(StashRecoveryPoint {

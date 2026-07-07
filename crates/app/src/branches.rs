@@ -1,8 +1,8 @@
 use artistic_git_contracts::{
     AppError, AppResult, BranchNameValidationRequest, BranchNameValidationResponse,
-    BranchOperationResponse, CheckoutBranchRequest, CheckoutLocalChangesMode, ConflictEnteredEvent,
-    ConflictFile, ConflictResolutionStatus, CreateBranchRequest, DeleteBranchRequest, DiffFileKind,
-    GitCommandError, OperationContext, OperationId, RepositoryPathRequest,
+    BranchOperationResponse, CheckoutBranchRequest, CheckoutLocalChangesMode,
+    CreateAutoStashRequest, CreateBranchRequest, DeleteBranchRequest, GitCommandError,
+    OperationContext, OperationId, RepositoryPathRequest, StashRestoreOutcome,
 };
 use artistic_git_git_runner::GitRunner;
 use std::{
@@ -277,50 +277,51 @@ fn checkout_with_auto_stash(
     operation_id: OperationId,
     operation_name: &str,
 ) -> AppResult<BranchOperationResponse> {
-    let stash_message = format!("Auto Stash: before switching to {branch_name}");
-    let stash_output = crate::repository::git_stdout(
+    let stash = crate::stash_impl::create_auto_stash(
         runner,
-        Some(root),
-        [
-            "stash",
-            "push",
-            "--include-untracked",
-            "-m",
-            stash_message.as_str(),
-        ],
-        operation_name,
-    )?;
-    let created_stash = !stash_output.contains("No local changes to save");
+        CreateAutoStashRequest {
+            repository_path: crate::repository::display_path(root),
+            reason: format!("before switching to {branch_name}"),
+            include_untracked: true,
+            paths: Vec::new(),
+        },
+    )?
+    .stash;
 
     if let Err(error) =
         crate::repository::git_stdout(runner, Some(root), checkout_args, operation_name)
     {
-        if created_stash {
-            let _ =
-                crate::repository::git_stdout(runner, Some(root), ["stash", "pop"], operation_name);
+        if let Some(stash) = stash.as_ref() {
+            let _ = crate::stash_impl::restore_stash_for_root(
+                runner,
+                root,
+                &stash.selector,
+                true,
+                operation_name,
+                Some(&operation_id),
+            );
         }
         return Err(error);
     }
 
-    if created_stash {
-        match crate::repository::git_stdout(runner, Some(root), ["stash", "pop"], operation_name) {
-            Ok(_) => {}
-            Err(error) => {
-                let files = conflict_files(runner, root, operation_name).unwrap_or_default();
-                if !files.is_empty() || git_error_indicates_conflict(&error) {
-                    let conflict = ConflictEnteredEvent {
-                        operation_id,
-                        repository_path: crate::repository::display_path(root),
-                        operation_name: operation_name.to_owned(),
-                        files,
-                    };
-                    return Ok(BranchOperationResponse::Conflicts {
-                        repository_path: crate::repository::display_path(root),
-                        branch_name: branch_name.to_owned(),
-                        conflict,
-                    });
-                }
-                return Err(error);
+    if let Some(stash) = stash {
+        let response = crate::stash_impl::restore_stash_for_root(
+            runner,
+            root,
+            &stash.selector,
+            true,
+            operation_name,
+            Some(&operation_id),
+        )?;
+        match response.outcome {
+            StashRestoreOutcome::Applied { .. } => {}
+            StashRestoreOutcome::Conflicts { conflict } => {
+                return Ok(BranchOperationResponse::Conflicts {
+                    repository_path: crate::repository::display_path(root),
+                    branch_name: branch_name.to_owned(),
+                    conflict,
+                    stash_recovery: Some(response.recovery),
+                });
             }
         }
     }
@@ -426,34 +427,6 @@ fn trash_base_dir() -> PathBuf {
     }
 
     std::env::temp_dir()
-}
-
-fn conflict_files(
-    runner: &GitRunner,
-    root: &Path,
-    operation_name: &str,
-) -> AppResult<Vec<ConflictFile>> {
-    let output = crate::repository::git_stdout(
-        runner,
-        Some(root),
-        ["status", "--porcelain=v1", "-z"],
-        operation_name,
-    )?;
-
-    Ok(output
-        .split('\0')
-        .filter(|entry| entry.len() >= 3)
-        .filter_map(|entry| {
-            let index_status = &entry[0..1];
-            let worktree_status = &entry[1..2];
-            let path = entry[3..].to_owned();
-            is_unmerged_status(index_status, worktree_status).then_some(ConflictFile {
-                path,
-                status: ConflictResolutionStatus::Unresolved,
-                file_kind: DiffFileKind::Text,
-            })
-        })
-        .collect())
 }
 
 fn has_local_changes(runner: &GitRunner, root: &Path, operation_name: &str) -> AppResult<bool> {
@@ -678,24 +651,6 @@ fn git_error_indicates_unborn(error: &AppError) -> bool {
         .unwrap_or(false)
 }
 
-fn git_error_indicates_conflict(error: &AppError) -> bool {
-    error
-        .git
-        .as_ref()
-        .map(|git| {
-            let text = format!("{}\n{}", git.stdout, git.stderr).to_ascii_lowercase();
-            text.contains("conflict") || text.contains("unmerged") || text.contains("needs merge")
-        })
-        .unwrap_or(false)
-}
-
-fn is_unmerged_status(index_status: &str, worktree_status: &str) -> bool {
-    matches!(
-        (index_status, worktree_status),
-        ("D", "D") | ("A", "U") | ("U", "D") | ("U", "A") | ("D", "U") | ("A", "A") | ("U", "U")
-    )
-}
-
 fn first_output_line(output: &[u8]) -> Option<String> {
     String::from_utf8_lossy(output)
         .lines()
@@ -859,12 +814,21 @@ mod tests {
         )
         .expect("checkout with auto stash conflict");
 
-        let BranchOperationResponse::Conflicts { conflict, .. } = response else {
+        let BranchOperationResponse::Conflicts {
+            conflict,
+            stash_recovery,
+            ..
+        } = response
+        else {
             panic!("expected checkout conflict");
         };
         assert_eq!(conflict.operation_id.0, "op-conflict");
         assert_eq!(conflict.operation_name, CHECKOUT_BRANCH_OPERATION);
         assert!(conflict.files.iter().any(|file| file.path == "tracked.txt"));
+        assert_eq!(
+            stash_recovery.expect("stash recovery").id,
+            conflict.operation_id.0
+        );
         assert!(repo
             .git_output(["stash", "list"])
             .contains("Auto Stash: before switching to feature/conflict"));
