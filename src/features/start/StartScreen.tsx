@@ -134,6 +134,8 @@ export function StartScreen() {
         label: "Opening repository",
         operationId: "open-repository",
         progress: { kind: "indeterminate" },
+        repositoryPath: null,
+        windowLabel: null,
       });
       try {
         const response = await openRepository({
@@ -164,6 +166,8 @@ export function StartScreen() {
       label: "Cloning repository",
       operationId,
       progress: { kind: "indeterminate" },
+      repositoryPath: null,
+      windowLabel: null,
     });
     cloneCancelRequestedRef.current = false;
     try {

@@ -274,6 +274,8 @@ export const resources = {
         about: {
           checkForUpdates: "Check for updates",
           installBlocked: "Update installation is not available yet.",
+          installBlockedCloseGuard:
+            "Finish the active window operation before restarting to install the update.",
           installBlockedConflict:
             "Resolve active conflicts before restarting to install the update.",
           installBlockedGitOperation:
@@ -928,6 +930,8 @@ export const resources = {
         about: {
           checkForUpdates: "检查更新",
           installBlocked: "更新安装暂不可用。",
+          installBlockedCloseGuard:
+            "请先完成窗口中的当前操作，再重启安装更新。",
           installBlockedConflict: "请先解决当前冲突，再重启安装更新。",
           installBlockedGitOperation:
             "请等待当前 Git 操作完成后再重启安装更新。",

@@ -34,6 +34,7 @@ struct WindowRegistryInner {
     focused_window_labels: VecDeque<String>,
     pending_crashes_by_label: BTreeMap<String, CrashDialogPayload>,
     pending_exit_after_close_guards: bool,
+    update_install_closing_windows: bool,
     next_window_id: u64,
 }
 
@@ -1601,11 +1602,31 @@ fn registry_pending_exit_after_close_guards(registry: &WindowRegistry) -> bool {
         .unwrap_or(false)
 }
 
-fn registry_has_close_guards(registry: &WindowRegistry) -> bool {
+pub(crate) fn registry_has_close_guards(registry: &WindowRegistry) -> bool {
     registry
         .inner
         .lock()
         .map(|inner| !inner.close_guard_labels.is_empty())
+        .unwrap_or(false)
+}
+
+pub(crate) fn registry_set_update_install_closing_windows(
+    registry: &WindowRegistry,
+    closing: bool,
+) -> artistic_git_contracts::AppResult<()> {
+    let mut inner = registry
+        .inner
+        .lock()
+        .map_err(|_| window_command_error("window registry lock poisoned", "installReadyUpdate"))?;
+    inner.update_install_closing_windows = closing;
+    Ok(())
+}
+
+fn registry_update_install_closing_windows(registry: &WindowRegistry) -> bool {
+    registry
+        .inner
+        .lock()
+        .map(|inner| inner.update_install_closing_windows)
         .unwrap_or(false)
 }
 
@@ -1835,10 +1856,13 @@ fn handle_window_event(window: &tauri::Window, event: &WindowEvent) {
         WindowEvent::Destroyed => {
             let label = window.label().to_owned();
             let mut next_update_prompt_label = None;
+            let mut update_install_closing_windows = false;
             if let Some(registry) = app.try_state::<WindowRegistry>() {
                 registry_unregister(&registry, &label);
                 next_update_prompt_label = registry_recent_focused_label(&registry);
-                if registry_pending_exit_after_close_guards(&registry)
+                update_install_closing_windows = registry_update_install_closing_windows(&registry);
+                if !update_install_closing_windows
+                    && registry_pending_exit_after_close_guards(&registry)
                     && !registry_has_close_guards(&registry)
                 {
                     app.exit(0);
@@ -1846,7 +1870,9 @@ fn handle_window_event(window: &tauri::Window, event: &WindowEvent) {
                 }
             }
             updater_runtime::retarget_ready_update_prompt(app, &label, next_update_prompt_label);
-            exit_if_last_window_closed(app, &label);
+            if !update_install_closing_windows {
+                exit_if_last_window_closed(app, &label);
+            }
         }
         _ => {}
     }
@@ -2209,6 +2235,25 @@ mod tests {
             registry_close_guard_labels(&registry),
             vec!["repo-1".to_owned(), "repo-2".to_owned()]
         );
+        assert!(registry_has_close_guards(&registry));
+
+        registry_unregister(&registry, "repo-1");
+        assert!(registry_has_close_guards(&registry));
+
+        registry_unregister(&registry, "repo-2");
+        assert!(!registry_has_close_guards(&registry));
+    }
+
+    #[test]
+    fn window_menu_registry_tracks_updater_install_window_close() {
+        let registry = WindowRegistry::default();
+        assert!(!registry_update_install_closing_windows(&registry));
+
+        registry_set_update_install_closing_windows(&registry, true).expect("set install close");
+        assert!(registry_update_install_closing_windows(&registry));
+
+        registry_set_update_install_closing_windows(&registry, false).expect("clear install close");
+        assert!(!registry_update_install_closing_windows(&registry));
     }
 
     #[test]

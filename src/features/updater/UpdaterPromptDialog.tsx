@@ -232,6 +232,8 @@ function updateInstallGateMessage(
     case "gitOperation":
     case "backgroundOperation":
       return t("settings.about.installBlockedGitOperation");
+    case "closeGuard":
+      return t("settings.about.installBlockedCloseGuard");
     case "conflict":
       return t("settings.about.installBlockedConflict");
     case "reviewMode":

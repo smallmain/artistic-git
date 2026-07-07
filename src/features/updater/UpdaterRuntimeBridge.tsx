@@ -5,7 +5,7 @@ import {
   installReadyUpdate,
   updateInstallGate,
 } from "@/lib/ipc/commands";
-import { listenAppEvent } from "@/lib/ipc/events";
+import { emitAppEvent, listenAppEvent } from "@/lib/ipc/events";
 import type {
   UpdateInstallGateResponse,
   UpdateStatusEvent,
@@ -17,12 +17,15 @@ import { UpdaterPromptDialog } from "./UpdaterPromptDialog";
 export const AUTO_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 export const AUTO_UPDATE_INITIAL_DELAY_MS = 1000;
 const INSTALL_GATE_REFRESH_INTERVAL_MS = 5000;
+export const INSTALL_GATE_WINDOW_RESPONSE_WAIT_MS = 100;
 
 const noReadyUpdateGate: UpdateInstallGateResponse = {
   blocked: true,
   message: "no downloaded update is ready to install",
   reason: "noReadyUpdate",
 };
+
+let nextInstallGateRequestId = 0;
 
 export function UpdaterRuntimeBridge() {
   const appSettings = useWindowStore((state) => state.appSettings);
@@ -108,6 +111,12 @@ export function UpdaterRuntimeBridge() {
       return frontendGate;
     }
 
+    const windowGate = await queryWindowInstallGate(windowLabelRef.current);
+    if (windowGate) {
+      setUpdateInstallGate(windowGate);
+      return windowGate;
+    }
+
     try {
       const gate = await updateInstallGate();
       setUpdateInstallGate(gate);
@@ -117,6 +126,43 @@ export function UpdaterRuntimeBridge() {
       return noReadyUpdateGate;
     }
   }, [frontendInstallGate, setUpdateInstallGate]);
+
+  React.useEffect(() => {
+    let active = true;
+    let unlisten: (() => void) | null = null;
+
+    void listenAppEvent("update-install-gate-request", (event) => {
+      if (!active) {
+        return;
+      }
+
+      const gate = frontendInstallGate();
+      if (!gate) {
+        return;
+      }
+
+      void emitAppEvent("update-install-gate-response", {
+        gate,
+        requestId: event.payload.requestId,
+        responderWindowLabel: windowLabelRef.current,
+      }).catch(() => undefined);
+    })
+      .then((resolvedUnlisten) => {
+        if (active) {
+          unlisten = resolvedUnlisten;
+        } else {
+          resolvedUnlisten();
+        }
+      })
+      .catch(() => {
+        // Browser-only tests and previews do not have a Tauri event runtime.
+      });
+
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, [frontendInstallGate]);
 
   React.useEffect(() => {
     let active = true;
@@ -331,4 +377,58 @@ function errorMessage(error: unknown): string {
     return error.summary;
   }
   return typeof error === "string" ? error : "Update check failed";
+}
+
+function queryWindowInstallGate(
+  requesterWindowLabel: string | null,
+): Promise<UpdateInstallGateResponse | null> {
+  const requestId = `update-install-gate-${Date.now()}-${++nextInstallGateRequestId}`;
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let timeoutId: number | null = null;
+    let unlisten: (() => void) | null = null;
+
+    const settle = (gate: UpdateInstallGateResponse | null) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+      unlisten?.();
+      resolve(gate);
+    };
+
+    void listenAppEvent("update-install-gate-response", (event) => {
+      const payload = event.payload;
+      if (payload.requestId !== requestId || !payload.gate.blocked) {
+        return;
+      }
+
+      settle(payload.gate);
+    })
+      .then((resolvedUnlisten) => {
+        if (settled) {
+          resolvedUnlisten();
+          return;
+        }
+
+        unlisten = resolvedUnlisten;
+        timeoutId = window.setTimeout(() => {
+          settle(null);
+        }, INSTALL_GATE_WINDOW_RESPONSE_WAIT_MS);
+        void emitAppEvent("update-install-gate-request", {
+          requestId,
+          requesterWindowLabel,
+        }).catch(() => {
+          settle(null);
+        });
+      })
+      .catch(() => {
+        settle(null);
+      });
+  });
 }
