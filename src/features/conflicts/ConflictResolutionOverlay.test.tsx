@@ -70,9 +70,8 @@ describe("ConflictResolutionOverlay", () => {
     );
 
     expect(screen.getByRole("button", { name: "Complete" })).toBeDisabled();
-    expect(
-      await screen.findByLabelText("Resolution content"),
-    ).toBeInTheDocument();
+    const editor = await screen.findByLabelText("Resolution content");
+    expect(editor).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
 
     const hunk = screen.getByLabelText("Conflict at line 2");
@@ -83,7 +82,8 @@ describe("ConflictResolutionOverlay", () => {
     expect(
       screen.queryByText(/<<<<<<<|=======|>>>>>>>/),
     ).not.toBeInTheDocument();
-    expect(screen.getByLabelText("Resolution content")).toHaveValue(
+    expectResolutionEditorValue(
+      editor,
       "before\nown line\nother line\nafter\n",
     );
 
@@ -130,20 +130,18 @@ describe("ConflictResolutionOverlay", () => {
     );
 
     const editor = await screen.findByLabelText("Resolution content");
-    fireEvent.change(editor, {
-      target: { value: "before\nmanual\n<<<<<<< HEAD\nafter\n" },
-    });
+    editResolutionContent(editor, "before\nmanual\n<<<<<<< HEAD\nafter\n");
 
     expect(
-      screen.getByText("Conflict markers remain in the resolution."),
+      await screen.findByText("Conflict markers remain in the resolution."),
     ).toBeVisible();
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
 
-    fireEvent.change(editor, {
-      target: { value: "before\nmanual\nafter\n" },
-    });
+    editResolutionContent(editor, "before\nmanual\nafter\n");
 
-    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    });
     fireEvent.click(screen.getByLabelText("Mark resolved"));
     expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -319,6 +317,18 @@ describe("ConflictResolutionOverlay", () => {
     });
   });
 });
+
+function editResolutionContent(editor: HTMLElement, value: string) {
+  fireEvent.input(editor, {
+    target: {
+      textContent: value,
+    },
+  });
+}
+
+function expectResolutionEditorValue(editor: HTMLElement, value: string) {
+  expect(editor).toHaveAttribute("data-editor-value", value);
+}
 
 function createApi(
   overrides: Partial<ConflictResolutionApi> = {},

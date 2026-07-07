@@ -466,6 +466,42 @@ describe("RepositoryShell branch flow", () => {
     });
   });
 
+  it("keeps checked local-change files after switching branches", async () => {
+    mockBranchList();
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: /Local Changes/ }),
+    );
+    await screen.findAllByText("src/app.ts");
+    fireEvent.click(screen.getByLabelText("Toggle src/app.ts"));
+
+    const checkoutDialog = await openCheckoutBranchDialog("feature/lookdev");
+    fireEvent.click(
+      within(checkoutDialog).getByRole("button", { name: "Switch branch" }),
+    );
+    await waitFor(() => expect(commandMocks.checkoutBranch).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole("button", { name: /Local Changes/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Commit" }));
+    const commitDialog = screen.getByRole("dialog", {
+      name: "Commit changes",
+    });
+    fireEvent.change(within(commitDialog).getByLabelText("Commit message"), {
+      target: { value: "Commit selected after switch" },
+    });
+    fireEvent.click(
+      within(commitDialog).getByRole("button", { name: "Commit" }),
+    );
+
+    await waitFor(() => expect(commandMocks.commitChanges).toHaveBeenCalled());
+    expect(commandMocks.commitChanges).toHaveBeenCalledWith(
+      expect.objectContaining({
+        paths: ["src/app.ts"],
+      }),
+    );
+  });
+
   it("protects the current branch and warns before deleting an unmerged local branch", async () => {
     mockBranchList();
     renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);

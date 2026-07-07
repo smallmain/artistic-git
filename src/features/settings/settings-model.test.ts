@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { validateGitUser } from "./settings-model";
+import {
+  defaultAppSettings,
+  identityRepositoryPaths,
+  sameGitUser,
+  settingsWithGitUser,
+  validateGitUser,
+} from "./settings-model";
 
 describe("validateGitUser", () => {
   it("requires author name and email", () => {
@@ -34,5 +40,29 @@ describe("validateGitUser", () => {
       valid: true,
       messageKey: null,
     });
+  });
+
+  it("deduplicates open repository paths for identity application", () => {
+    expect(
+      identityRepositoryPaths([" /repo/one ", null, "/repo/two", "/repo/one"]),
+    ).toEqual(["/repo/one", "/repo/two"]);
+  });
+
+  it("compares cleaned author identity across settings updates", () => {
+    const current = settingsWithGitUser(defaultAppSettings, {
+      name: " Art User ",
+      email: "art@example.test",
+    });
+    const next = settingsWithGitUser(defaultAppSettings, {
+      name: "Art User",
+      email: " art@example.test ",
+    });
+    const changed = settingsWithGitUser(defaultAppSettings, {
+      name: "Other User",
+      email: "art@example.test",
+    });
+
+    expect(sameGitUser(current, next)).toBe(true);
+    expect(sameGitUser(current, changed)).toBe(false);
   });
 });

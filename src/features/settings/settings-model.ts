@@ -201,6 +201,28 @@ export function cleanGitUser(user: GitUserSettings): GitUserSettings {
   };
 }
 
+export function sameGitUser(
+  left: AppSettings | null | undefined,
+  right: AppSettings | null | undefined,
+): boolean {
+  const leftUser = cleanGitUser(gitUserFromSettings(left));
+  const rightUser = cleanGitUser(gitUserFromSettings(right));
+  return leftUser.name === rightUser.name && leftUser.email === rightUser.email;
+}
+
+export function identityRepositoryPaths(
+  paths: Array<string | null | undefined>,
+): string[] {
+  const seen = new Set<string>();
+  for (const path of paths) {
+    const normalized = path?.trim();
+    if (normalized) {
+      seen.add(normalized);
+    }
+  }
+  return Array.from(seen);
+}
+
 export interface GitUserValidation {
   emailInvalid: boolean;
   emailMissing: boolean;

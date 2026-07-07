@@ -169,6 +169,21 @@ describe("HistoryWorkbench", () => {
     const dialog = screen.getByRole("dialog", {
       name: "Revert this commit?",
     });
+    expect(
+      within(dialog).getByText(
+        "Create a new commit that reverses d4512aa: Refine branch filter interactions.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByText(
+        "New commit message: Revert: Refine branch filter interactions",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByText(
+        "This uses git revert and does not rewrite history.",
+      ),
+    ).toBeInTheDocument();
 
     await act(async () => {
       fireEvent.click(

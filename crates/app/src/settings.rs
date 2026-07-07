@@ -650,6 +650,16 @@ fn display_path(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use artistic_git_contracts::AppErrorCategory;
+    use artistic_git_core::config::{ConfigChangeEvent, ConfigPaths};
+    use artistic_git_git_runner::GitDistribution;
+    use artistic_git_test_support::{require_git_dist, GitDistError, TestTempDir};
+    use std::{
+        ffi::OsString,
+        sync::{Arc, Mutex},
+    };
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn parses_real_gitconfig_user_section_only() {
@@ -719,5 +729,258 @@ mod tests {
         assert_eq!(identity.email.as_deref(), Some("global@example.test"));
         assert_eq!(identity.source, IdentitySource::Repository);
         assert!(identity.complete);
+    }
+
+    #[test]
+    fn validate_identity_for_write_skips_non_identity_operations() {
+        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
+            return;
+        };
+
+        let response = validate_identity_for_write(
+            &runner,
+            IdentityValidationRequest {
+                repository_path: Some("/definitely/missing/repository".to_owned()),
+                operation_name: "listBranches".to_owned(),
+                requires_identity: false,
+            },
+        )
+        .expect("non-identity validation should not read repository");
+
+        assert!(!response.requires_identity);
+        assert!(response.identity.complete);
+        assert_eq!(response.identity.source, IdentitySource::Missing);
+    }
+
+    #[test]
+    fn validate_identity_for_write_reads_real_global_gitconfig_fallback() {
+        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
+            return;
+        };
+        let _env_lock = ENV_LOCK.lock().expect("lock env");
+        let real_home = TestTempDir::new("ag-settings-real-home").expect("temp home");
+        fs::write(
+            real_home.path().join(".gitconfig"),
+            "[user]\n  name = Global User\n  email = global@example.test\n",
+        )
+        .expect("write real global gitconfig");
+        let _home = EnvGuard::set("HOME", real_home.path().as_os_str());
+        let repo = TestRepo::new(&runner);
+        repo.init();
+
+        let response = validate_identity_for_write(
+            &runner,
+            IdentityValidationRequest {
+                repository_path: Some(display_path(&repo.path)),
+                operation_name: "commitChanges".to_owned(),
+                requires_identity: true,
+            },
+        )
+        .expect("validate identity");
+
+        assert_eq!(response.identity.name.as_deref(), Some("Global User"));
+        assert_eq!(
+            response.identity.email.as_deref(),
+            Some("global@example.test")
+        );
+        assert_eq!(response.identity.source, IdentitySource::GlobalGitconfig);
+        assert!(response.identity.complete);
+    }
+
+    #[test]
+    fn lazy_identity_validator_blocks_missing_identity() {
+        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
+            return;
+        };
+        let _env_lock = ENV_LOCK.lock().expect("lock env");
+        let real_home = TestTempDir::new("ag-settings-empty-home").expect("temp home");
+        let _home = EnvGuard::set("HOME", real_home.path().as_os_str());
+        let repo = TestRepo::new(&runner);
+        repo.init();
+
+        let validator = LazyIdentityValidator::new(&runner);
+        let request = WriteOperationRequest::new("commitChanges")
+            .with_repository_path(&repo.path)
+            .requiring_identity();
+        let error = validator
+            .validate_write_entry(&request)
+            .expect_err("missing identity blocks write");
+
+        assert_eq!(error.category, AppErrorCategory::Expected);
+        assert_eq!(error.summary, "Git author identity is required");
+        assert_eq!(error.context.operation_name, "commitChanges");
+        let repo_path = display_path(&repo.path);
+        assert_eq!(
+            error.context.repository_path.as_deref(),
+            Some(repo_path.as_str())
+        );
+    }
+
+    #[test]
+    fn save_app_settings_broadcasts_and_applies_identity_to_open_repositories() {
+        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
+            return;
+        };
+        let _env_lock = ENV_LOCK.lock().expect("lock env");
+        let real_home = TestTempDir::new("ag-settings-save-home").expect("temp home");
+        let _home = EnvGuard::set("HOME", real_home.path().as_os_str());
+        let config_dir = TestTempDir::new("ag-settings-config").expect("temp config");
+        let config = ConfigActor::load(ConfigPaths::new(
+            config_dir.path().join("settings.json"),
+            config_dir.path().join("projects.json"),
+        ))
+        .expect("load config actor");
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured_events = Arc::clone(&events);
+        config
+            .subscribe(Arc::new(move |event| {
+                captured_events.lock().expect("events lock").push(event);
+            }))
+            .expect("subscribe");
+        let repo_one = TestRepo::new(&runner);
+        repo_one.init();
+        let repo_two = TestRepo::new(&runner);
+        repo_two.init();
+
+        let mut settings = AppSettings::default();
+        settings.git.user = GitUserSettings {
+            name: Some("Art User".to_owned()),
+            email: Some("art@example.test".to_owned()),
+        };
+        let saved = save_app_settings(
+            &runner,
+            Some(&config),
+            SaveAppSettingsRequest {
+                settings,
+                open_repository_paths: vec![
+                    display_path(&repo_one.path),
+                    "  ".to_owned(),
+                    display_path(&repo_two.path),
+                    display_path(&repo_one.path),
+                ],
+                validate_identity: true,
+            },
+        )
+        .expect("save app settings");
+
+        assert_eq!(saved.git.user.name.as_deref(), Some("Art User"));
+        assert_eq!(saved.git.user.email.as_deref(), Some("art@example.test"));
+        assert_eq!(
+            repo_one.local_config("user.name").as_deref(),
+            Some("Art User")
+        );
+        assert_eq!(
+            repo_one.local_config("user.email").as_deref(),
+            Some("art@example.test")
+        );
+        assert_eq!(
+            repo_two.local_config("user.name").as_deref(),
+            Some("Art User")
+        );
+        assert_eq!(
+            repo_two.local_config("user.email").as_deref(),
+            Some("art@example.test")
+        );
+        assert!(
+            !real_home.path().join(".gitconfig").exists(),
+            "settings save must not write the user's global gitconfig"
+        );
+        let events = events.lock().expect("events lock");
+        assert!(matches!(
+            events.as_slice(),
+            [ConfigChangeEvent::SettingsUpdated { settings }]
+                if settings.git.user.name.as_deref() == Some("Art User")
+        ));
+    }
+
+    fn real_runner_or_skip() -> Option<(GitRunner, TestTempDir)> {
+        let dist = match require_git_dist() {
+            Ok(dist) => dist,
+            Err(GitDistError::MissingEnvironment) => return None,
+            Err(error) => panic!("invalid embedded git distribution: {error}"),
+        };
+        let distribution = GitDistribution::from_manifest(dist.root, dist.manifest)
+            .expect("load embedded git distribution");
+        let temp = TestTempDir::new("ag-settings-runner-home").expect("temp home");
+        let runner = GitRunner::from_distribution(distribution, temp.path().join("home"));
+        Some((runner, temp))
+    }
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &std::ffi::OsStr) -> Self {
+            let previous = env::var_os(key);
+            env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                env::set_var(self.key, previous);
+            } else {
+                env::remove_var(self.key);
+            }
+        }
+    }
+
+    struct TestRepo {
+        path: PathBuf,
+        _temp: TestTempDir,
+        runner: GitRunner,
+    }
+
+    impl TestRepo {
+        fn new(runner: &GitRunner) -> Self {
+            let temp = TestTempDir::new("ag-settings-repo").expect("temp repo");
+            Self {
+                path: temp.path().to_path_buf(),
+                _temp: temp,
+                runner: runner.clone(),
+            }
+        }
+
+        fn init(&self) {
+            self.git(["init"]);
+        }
+
+        fn local_config(&self, key: &str) -> Option<String> {
+            let output = self
+                .runner
+                .git_command_builder()
+                .args([OsString::from("-C"), self.path.as_os_str().to_owned()])
+                .args(["config", "--local", "--get", key].map(OsString::from))
+                .build()
+                .to_command()
+                .output()
+                .expect("run git config");
+            output
+                .status
+                .success()
+                .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+                .filter(|value| !value.is_empty())
+        }
+
+        fn git<const N: usize>(&self, args: [&str; N]) {
+            let output = self
+                .runner
+                .git_command_builder()
+                .args([OsString::from("-C"), self.path.as_os_str().to_owned()])
+                .args(args.map(OsString::from))
+                .build()
+                .to_command()
+                .output()
+                .expect("run git");
+            assert!(
+                output.status.success(),
+                "git failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
     }
 }

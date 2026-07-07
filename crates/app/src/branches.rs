@@ -831,6 +831,43 @@ mod tests {
             fs::read_to_string(repo.path.join("tracked.txt")).expect("tracked file"),
             "local change\n"
         );
+        assert!(repo.git_output(["stash", "list"]).trim().is_empty());
+    }
+
+    #[test]
+    fn checkout_with_auto_stash_conflict_enters_resolution_and_keeps_stash() {
+        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
+            return;
+        };
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        repo.git(["checkout", "-b", "feature/conflict"]);
+        repo.write("tracked.txt", "feature side\n");
+        repo.git(["add", "."]);
+        repo.git(["commit", "-m", "feature side"]);
+        repo.git(["checkout", "main"]);
+        repo.write("tracked.txt", "local side\n");
+
+        let response = checkout_branch(
+            &runner,
+            CheckoutBranchRequest {
+                repository_path: display_path(&repo.path),
+                branch_name: "feature/conflict".to_owned(),
+                local_changes_mode: CheckoutLocalChangesMode::AutoStash,
+                operation_id: Some(OperationId("op-conflict".to_owned())),
+            },
+        )
+        .expect("checkout with auto stash conflict");
+
+        let BranchOperationResponse::Conflicts { conflict, .. } = response else {
+            panic!("expected checkout conflict");
+        };
+        assert_eq!(conflict.operation_id.0, "op-conflict");
+        assert_eq!(conflict.operation_name, CHECKOUT_BRANCH_OPERATION);
+        assert!(conflict.files.iter().any(|file| file.path == "tracked.txt"));
+        assert!(repo
+            .git_output(["stash", "list"])
+            .contains("Auto Stash: before switching to feature/conflict"));
     }
 
     #[test]

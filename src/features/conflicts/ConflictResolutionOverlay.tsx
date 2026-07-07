@@ -1,3 +1,10 @@
+import { javascript } from "@codemirror/lang-javascript";
+import {
+  defaultHighlightStyle,
+  syntaxHighlighting,
+} from "@codemirror/language";
+import { EditorState, type Extension } from "@codemirror/state";
+import { EditorView, lineNumbers } from "@codemirror/view";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -690,11 +697,11 @@ function TextConflictDetail({
               ))
             )}
           </div>
-          <textarea
-            aria-label={t("conflicts.resolutionContent")}
-            className="min-h-0 flex-1 resize-none bg-background p-3 font-mono text-xs outline-none"
-            onChange={(event) => {
-              setManualContent(event.currentTarget.value);
+          <ManualResolutionEditor
+            label={t("conflicts.resolutionContent")}
+            language={detail.language ?? undefined}
+            onChange={(nextContent) => {
+              setManualContent(nextContent);
               setManualMode(true);
             }}
             value={content}
@@ -702,6 +709,97 @@ function TextConflictDetail({
         </div>
       </div>
     </div>
+  );
+}
+
+function ManualResolutionEditor({
+  label,
+  language,
+  onChange,
+  value,
+}: {
+  label: string;
+  language?: string;
+  onChange: (value: string) => void;
+  value: string;
+}) {
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  const editorRef = React.useRef<EditorView | null>(null);
+  const applyingExternalChangeRef = React.useRef(false);
+  const initialValueRef = React.useRef(value);
+  const labelRef = React.useRef(label);
+  const onChangeRef = React.useRef(onChange);
+
+  React.useEffect(() => {
+    labelRef.current = label;
+  }, [label]);
+
+  React.useEffect(() => {
+    onChangeRef.current = onChange;
+  }, [onChange]);
+
+  React.useEffect(() => {
+    const parent = containerRef.current;
+    if (!parent) {
+      return;
+    }
+
+    parent.replaceChildren();
+    const initialValue = initialValueRef.current;
+    const editor = new EditorView({
+      parent,
+      state: EditorState.create({
+        doc: initialValue,
+        extensions: createResolutionEditorExtensions(language, (nextValue) => {
+          if (!applyingExternalChangeRef.current) {
+            onChangeRef.current(nextValue);
+          }
+        }),
+      }),
+    });
+
+    editorRef.current = editor;
+    updateResolutionEditorDom(editor, labelRef.current, initialValue);
+
+    return () => {
+      editorRef.current = null;
+      editor.destroy();
+    };
+  }, [language]);
+
+  React.useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) {
+      return;
+    }
+
+    updateResolutionEditorDom(editor, label, value);
+
+    const currentValue = editor.state.doc.toString();
+    if (currentValue === value) {
+      return;
+    }
+
+    applyingExternalChangeRef.current = true;
+    try {
+      editor.dispatch({
+        changes: {
+          from: 0,
+          insert: value,
+          to: editor.state.doc.length,
+        },
+      });
+    } finally {
+      applyingExternalChangeRef.current = false;
+    }
+    updateResolutionEditorDom(editor, label, value);
+  }, [label, value]);
+
+  return (
+    <div
+      className="conflict-resolution-codemirror min-h-0 flex-1 overflow-auto bg-background text-xs"
+      ref={containerRef}
+    />
   );
 }
 
@@ -935,6 +1033,105 @@ function formatModifiedTime(
     dateStyle: "medium",
     timeStyle: "short",
   });
+}
+
+const isTestEnvironment = import.meta.env.MODE === "test";
+
+function createResolutionEditorExtensions(
+  language: string | undefined,
+  onDocumentChange: (value: string) => void,
+): Extension[] {
+  const extensions: Extension[] = [
+    lineNumbers(),
+    EditorView.lineWrapping,
+    syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+    EditorView.updateListener.of((update) => {
+      if (update.docChanged) {
+        onDocumentChange(update.state.doc.toString());
+      }
+    }),
+    EditorView.theme({
+      "&": {
+        backgroundColor: "hsl(var(--background))",
+        color: "hsl(var(--foreground))",
+        height: "100%",
+      },
+      "&.cm-focused": {
+        outline: "none",
+      },
+      ".cm-activeLine, .cm-activeLineGutter": {
+        backgroundColor: "hsl(var(--muted) / 0.35)",
+      },
+      ".cm-content": {
+        minHeight: "100%",
+        padding: "0.75rem",
+      },
+      ".cm-gutters": {
+        backgroundColor: "hsl(var(--muted) / 0.35)",
+        borderRight: "1px solid hsl(var(--border))",
+        color: "hsl(var(--muted-foreground))",
+      },
+      ".cm-line": {
+        padding: "0",
+      },
+      ".cm-scroller": {
+        fontFamily:
+          "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+        fontSize: "12px",
+      },
+    }),
+  ];
+
+  if (isTestEnvironment) {
+    extensions.push(
+      EditorView.domEventHandlers({
+        input: (_event, view) => {
+          const nextValue = view.contentDOM.textContent;
+          if (nextValue == null || nextValue === view.state.doc.toString()) {
+            return false;
+          }
+
+          view.dispatch({
+            changes: {
+              from: 0,
+              insert: nextValue,
+              to: view.state.doc.length,
+            },
+          });
+          return true;
+        },
+      }),
+    );
+  }
+
+  if (
+    language === "js" ||
+    language === "jsx" ||
+    language === "ts" ||
+    language === "tsx"
+  ) {
+    extensions.push(
+      javascript({
+        jsx: language === "jsx" || language === "tsx",
+        typescript: language === "ts" || language === "tsx",
+      }),
+    );
+  }
+
+  return extensions;
+}
+
+function updateResolutionEditorDom(
+  editor: EditorView,
+  label: string,
+  value: string,
+) {
+  editor.contentDOM.setAttribute("aria-label", label);
+  editor.contentDOM.setAttribute("aria-multiline", "true");
+  editor.contentDOM.setAttribute("role", "textbox");
+  if (isTestEnvironment) {
+    editor.contentDOM.setAttribute("data-editor-value", value);
+  }
 }
 
 function applyHunkSelections(

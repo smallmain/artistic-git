@@ -154,6 +154,9 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     React.useState<StashDetailsResponse | null>(null);
   const [stashRecoveryByOperation, setStashRecoveryByOperation] =
     React.useState<Record<string, StashRecoveryPoint>>({});
+  const [localChangeCheckedIds, setLocalChangeCheckedIds] = React.useState<
+    string[]
+  >([]);
   const [focusedBranch, setFocusedBranch] = React.useState<BranchListItem>(
     demoBranches[0],
   );
@@ -825,6 +828,8 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
             <LocalChangesPanel
               busy={busy}
               changes={localChanges}
+              initialCheckedIds={localChangeCheckedIds}
+              onCheckedChange={setLocalChangeCheckedIds}
               onCommit={setCommitIds}
               onRestore={setRestoreIds}
               onStash={openCreateStashDialog}

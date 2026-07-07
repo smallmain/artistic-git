@@ -285,16 +285,20 @@ mod tests {
     use std::{ffi::OsString, fs, io::Write};
 
     #[test]
-    fn revert_creates_new_commit_with_phase_message() {
+    fn revert_creates_new_commit_for_current_branch_ancestor_with_phase_message() {
         let Some((runner, _dist_temp)) = real_runner_or_skip() else {
             return;
         };
         let repo = TestRepo::new(&runner);
         repo.init_with_commit();
-        repo.write("tracked.txt", "two\n");
+        repo.write("target.txt", "target\n");
         repo.git(["add", "."]);
-        repo.git(["commit", "-m", "second"]);
+        repo.git(["commit", "-m", "add target artifact"]);
         let target = repo.git_output(["rev-parse", "HEAD"]).trim().to_owned();
+        repo.write("later.txt", "later\n");
+        repo.git(["add", "."]);
+        repo.git(["commit", "-m", "later independent work"]);
+        let previous_head = repo.git_output(["rev-parse", "HEAD"]).trim().to_owned();
 
         let response = revert_commit(
             &runner,
@@ -306,15 +310,22 @@ mod tests {
         .expect("revert commit");
 
         match response {
-            RevertCommitResponse::Reverted { message, .. } => {
-                assert_eq!(message, "Revert: second");
+            RevertCommitResponse::Reverted { message, oid } => {
+                assert_eq!(message, "Revert: add target artifact");
+                assert_eq!(oid, repo.git_output(["rev-parse", "HEAD"]).trim());
             }
             other => panic!("unexpected response: {other:?}"),
         }
         assert_eq!(
             repo.git_output(["log", "-1", "--format=%s"]).trim(),
-            "Revert: second"
+            "Revert: add target artifact"
         );
+        assert_eq!(
+            repo.git_output(["log", "-1", "--format=%P"]).trim(),
+            previous_head
+        );
+        assert!(!repo.path.join("target.txt").exists());
+        assert_eq!(repo.read("later.txt"), "later\n");
     }
 
     #[test]
@@ -350,6 +361,105 @@ mod tests {
                 reason: RevertDisabledReason::MergeCommit
             }
         ));
+    }
+
+    #[test]
+    fn revert_disables_commits_outside_current_branch() {
+        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
+            return;
+        };
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        repo.git(["checkout", "-b", "feature"]);
+        repo.write("feature.txt", "feature\n");
+        repo.git(["add", "."]);
+        repo.git(["commit", "-m", "feature only"]);
+        let feature_oid = repo.git_output(["rev-parse", "HEAD"]).trim().to_owned();
+        repo.git(["checkout", "master"]);
+        repo.write("main.txt", "main\n");
+        repo.git(["add", "."]);
+        repo.git(["commit", "-m", "main only"]);
+        let original_head = repo.git_output(["rev-parse", "HEAD"]).trim().to_owned();
+
+        let response = revert_commit(
+            &runner,
+            RevertCommitRequest {
+                repository_path: display_path(&repo.path),
+                oid: feature_oid,
+            },
+        )
+        .expect("outside branch disabled");
+
+        assert!(matches!(
+            response,
+            RevertCommitResponse::Disabled {
+                reason: RevertDisabledReason::NotOnCurrentBranch
+            }
+        ));
+        assert_eq!(repo.git_output(["rev-parse", "HEAD"]).trim(), original_head);
+        assert_eq!(repo.git_output(["status", "--porcelain"]).trim(), "");
+    }
+
+    #[test]
+    fn conflicted_revert_returns_conflict_files_and_abort_restores_original_state() {
+        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
+            return;
+        };
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        repo.write("tracked.txt", "target\n");
+        repo.git(["add", "."]);
+        repo.git(["commit", "-m", "target line"]);
+        let target = repo.git_output(["rev-parse", "HEAD"]).trim().to_owned();
+        repo.write("tracked.txt", "later\n");
+        repo.git(["add", "."]);
+        repo.git(["commit", "-m", "later line"]);
+        let original_head = repo.git_output(["rev-parse", "HEAD"]).trim().to_owned();
+
+        let response = revert_commit(
+            &runner,
+            RevertCommitRequest {
+                repository_path: display_path(&repo.path),
+                oid: target,
+            },
+        )
+        .expect("conflicted revert response");
+
+        match response {
+            RevertCommitResponse::Conflicted {
+                operation_id,
+                files,
+            } => {
+                assert!(operation_id.0.starts_with("revert-"));
+                assert_eq!(
+                    files,
+                    vec![ConflictFile {
+                        path: "tracked.txt".to_owned(),
+                        status: ConflictResolutionStatus::Unresolved,
+                        file_kind: DiffFileKind::Text,
+                    }]
+                );
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+        assert!(repo.read("tracked.txt").contains("<<<<<<<"));
+
+        let abort = abort_revert(
+            &runner,
+            AbortRevertRequest {
+                repository_path: display_path(&repo.path),
+            },
+        )
+        .expect("abort conflicted revert");
+
+        assert!(abort.aborted);
+        assert_eq!(repo.git_output(["rev-parse", "HEAD"]).trim(), original_head);
+        assert_eq!(repo.read("tracked.txt"), "later\n");
+        assert_eq!(repo.git_output(["status", "--porcelain"]).trim(), "");
+        assert!(!git_common_dir(&runner, &repo.path, "test")
+            .expect("git common dir")
+            .join("REVERT_HEAD")
+            .exists());
     }
 
     fn real_runner_or_skip() -> Option<(GitRunner, TestTempDir)> {
@@ -413,6 +523,10 @@ mod tests {
             }
             let mut file = fs::File::create(path).expect("create file");
             file.write_all(content.as_bytes()).expect("write file");
+        }
+
+        fn read(&self, relative: &str) -> String {
+            fs::read_to_string(self.path.join(relative)).expect("read file")
         }
     }
 }

@@ -133,6 +133,7 @@ impl GitDistribution {
 pub struct GitRunner {
     distribution: Arc<GitDistribution>,
     environment: CommandEnvironmentPlan,
+    concurrency: Arc<OperationConcurrency>,
 }
 
 impl GitRunner {
@@ -162,6 +163,7 @@ impl GitRunner {
         Self {
             distribution: Arc::new(distribution),
             environment,
+            concurrency: Arc::new(OperationConcurrency::default()),
         }
     }
 
@@ -171,6 +173,10 @@ impl GitRunner {
 
     pub fn environment_plan(&self) -> &CommandEnvironmentPlan {
         &self.environment
+    }
+
+    pub fn operation_concurrency(&self) -> &OperationConcurrency {
+        &self.concurrency
     }
 
     pub fn git_command_plan<I, S>(&self, args: I) -> GitCommandPlan
@@ -1384,6 +1390,27 @@ mod tests {
         concurrency
             .try_begin_write()
             .expect("identity failure releases write lock");
+    }
+
+    #[test]
+    fn cloned_runner_shares_operation_concurrency() {
+        let temp = fake_distribution().expect("create fake distribution");
+        let distribution =
+            GitDistribution::from_root(temp.path()).expect("distribution should load");
+        let runner = GitRunner::from_distribution(distribution, temp.path().join("home"));
+        let cloned = runner.clone();
+        let _permit = runner
+            .operation_concurrency()
+            .try_begin_write()
+            .expect("first write starts");
+
+        assert_eq!(
+            cloned
+                .operation_concurrency()
+                .try_begin_write()
+                .expect_err("cloned runner observes held write lock"),
+            OperationBusy::WriteBusy
+        );
     }
 
     #[test]

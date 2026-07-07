@@ -41,6 +41,7 @@ import {
   appThemeToUiTheme,
   defaultLargeFileCheck,
   gitUserFromSettings,
+  identityRepositoryPaths,
   isValidEmail,
   normalizeAppSettings,
   normalizeProjectSettings,
@@ -236,7 +237,7 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
     try {
       const saved = await saveAppSettings({
         settings: normalizeAppSettings(nextSettings),
-        openRepositoryPaths: activeRepositoryPath ? [activeRepositoryPath] : [],
+        openRepositoryPaths: identityRepositoryPaths([activeRepositoryPath]),
         validateIdentity: options.validateIdentity,
       });
       const normalized = normalizeAppSettings(saved);
