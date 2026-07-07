@@ -528,8 +528,8 @@ graph TD
 - [x] Release 工作流：推送 main 自动构建发布，但受 GitHub Environment 或仓库变量（如 `ENABLE_MAIN_RELEASE=true`）闸门保护，未开启时只测试 + dry-run 打包；`workflow_dispatch` 手动触发（默认自动计算版本，可手动指定级别覆盖）；PR 只测试不发布
 - [x] 版本计算：初始 `0.1.0`；解析自上一 tag 提交（Conventional Commits）：仅 fix→patch；feat/refactor→minor；BREAKING CHANGE/`!`→major；无法解析→patch；自动打 tag
 - [x] 更新日志 = 自上一 tag 以来所有提交信息，写入 Release notes
-- [ ] 上传全平台二进制到 GitHub Releases + 生成 `latest.json`；Tauri 更新签名（私钥存 GitHub Secrets）；仓库与 Releases 公开
-- [ ] 内嵌 git 分发产物（1A）接入打包 resources；三平台产物内自检通过
+- [x] 上传全平台二进制到 GitHub Releases + 生成 `latest.json`；Tauri 更新签名（私钥存 GitHub Secrets）；仓库与 Releases 公开
+- [x] 内嵌 git 分发产物（1A）接入打包 resources；三平台产物内自检通过
 - [x] README 补全：最低支持版本（macOS 13+ / Windows 10 1809+ / Linux 见上）；无 OS 签名的绕过说明（macOS 右键打开 + 移动到 /Applications；Windows SmartScreen）；main 自动发布闸门说明
 
 **验收**：测试 tag 端到端演练：三平台产物生成、安装可运行、内嵌 git 自检通过、latest.json 与签名正确；版本计算规则单测。

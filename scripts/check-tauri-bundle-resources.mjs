@@ -1,40 +1,32 @@
 #!/usr/bin/env node
 /* global console, process */
 
-import { access, readFile, stat } from "node:fs/promises";
+import { access, readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const repoRoot = path.resolve(
+export const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
 );
-const tauriConfigPath = path.join(repoRoot, "src-tauri", "tauri.conf.json");
-const requiredTargets = ["app", "dmg", "nsis", "appimage", "deb"];
+export const defaultTauriConfigPath = path.join(
+  repoRoot,
+  "src-tauri",
+  "tauri.conf.json",
+);
+export const requiredTargets = ["app", "dmg", "nsis", "appimage", "deb"];
+export const releaseLatestJsonEndpoint =
+  "https://github.com/smallmain/artistic-git/releases/latest/download/latest.json";
 
-const args = process.argv.slice(2);
-const help = args.includes("--help") || args.includes("-h");
-const requireManifest = args.includes("--require-manifest");
-const releaseMode = args.includes("--release");
-
-const usage = `Usage:
-  node scripts/check-tauri-bundle-resources.mjs
-  node scripts/check-tauri-bundle-resources.mjs --require-manifest
-  node scripts/check-tauri-bundle-resources.mjs --require-manifest --release
-
-Checks that Tauri bundles the embedded git-dist resource tree at the packaged
-resource path expected by release builds. --require-manifest is for real release
-jobs after the git-dist artifact has been staged. --release also requires the
-public updater configuration to be ready for publishing.`;
-
-if (help) {
-  console.log(usage);
-  process.exit(0);
-}
+const ignoredBuildOutputDirectories = new Set([
+  ".fingerprint",
+  "build",
+  "deps",
+  "incremental",
+]);
 
 function fail(message) {
-  console.error(`tauri bundle resource check failed: ${message}`);
-  process.exit(1);
+  throw new Error(message);
 }
 
 function info(message) {
@@ -50,94 +42,250 @@ async function pathExists(filePath) {
   }
 }
 
-const raw = await readFile(tauriConfigPath, "utf8");
-const config = JSON.parse(raw);
-const bundle = config.bundle ?? {};
-
-if (bundle.active !== true) {
-  fail("bundle.active must be true for release packaging.");
+function normalizeResourcePath(value) {
+  return String(value ?? "")
+    .replaceAll("\\", "/")
+    .replace(/\/+$/, "");
 }
 
-if (bundle.createUpdaterArtifacts !== true) {
-  fail(
-    "bundle.createUpdaterArtifacts must be true for signed updater artifacts.",
+function requireObject(value, message) {
+  if (!value || Array.isArray(value) || typeof value !== "object") {
+    fail(message);
+  }
+  return value;
+}
+
+export async function findBundledGitDistManifests(buildOutput) {
+  const root = path.resolve(buildOutput);
+  const rootStat = await stat(root).catch(() => null);
+  if (!rootStat?.isDirectory()) {
+    return [];
+  }
+
+  const manifests = [];
+
+  async function walk(directory) {
+    const entries = await readdir(directory, { withFileTypes: true }).catch(
+      () => [],
+    );
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+
+      if (ignoredBuildOutputDirectories.has(entry.name)) {
+        continue;
+      }
+
+      const child = path.join(directory, entry.name);
+      if (entry.name === "git-dist") {
+        const manifestPath = path.join(child, "manifest.json");
+        if (await pathExists(manifestPath)) {
+          manifests.push(manifestPath);
+        }
+        continue;
+      }
+
+      await walk(child);
+    }
+  }
+
+  await walk(root);
+  return manifests.sort();
+}
+
+export async function checkTauriBundleResources({
+  configPath = defaultTauriConfigPath,
+  requireManifest = false,
+  releaseMode = false,
+  bundleOutput = null,
+  requireBundledResource = false,
+} = {}) {
+  const resolvedConfigPath = path.resolve(configPath);
+  const raw = await readFile(resolvedConfigPath, "utf8");
+  const config = JSON.parse(raw);
+  const bundle = config.bundle ?? {};
+
+  if (bundle.active !== true) {
+    fail("bundle.active must be true for release packaging.");
+  }
+
+  if (bundle.createUpdaterArtifacts !== true) {
+    fail(
+      "bundle.createUpdaterArtifacts must be true for signed updater artifacts.",
+    );
+  }
+
+  const targets = bundle.targets === "all" ? requiredTargets : bundle.targets;
+  if (!Array.isArray(targets)) {
+    fail("bundle.targets must be an explicit target array for release packaging.");
+  }
+
+  const missingTargets = requiredTargets.filter(
+    (target) => !targets.includes(target),
   );
-}
+  if (missingTargets.length > 0) {
+    fail(`bundle.targets is missing: ${missingTargets.join(", ")}`);
+  }
 
-const targets = bundle.targets === "all" ? requiredTargets : bundle.targets;
-if (!Array.isArray(targets)) {
-  fail(
-    "bundle.targets must be an explicit target array for release packaging.",
-  );
-}
-
-const missingTargets = requiredTargets.filter(
-  (target) => !targets.includes(target),
-);
-if (missingTargets.length > 0) {
-  fail(`bundle.targets is missing: ${missingTargets.join(", ")}`);
-}
-
-const resources = bundle.resources;
-if (!resources || Array.isArray(resources) || typeof resources !== "object") {
-  fail(
+  const resources = requireObject(
+    bundle.resources,
     "bundle.resources must map the git-dist directory to the packaged path.",
   );
-}
+  const gitDistEntry = Object.entries(resources).find(([source, target]) => {
+    return (
+      normalizeResourcePath(source) === "resources/git-dist" &&
+      normalizeResourcePath(target) === "git-dist"
+    );
+  });
 
-const gitDistEntry = Object.entries(resources).find(([source, target]) => {
-  const normalizedSource = source.replaceAll("\\", "/").replace(/\/+$/, "");
-  const normalizedTarget = target.replaceAll("\\", "/").replace(/\/+$/, "");
-  return (
-    normalizedSource === "resources/git-dist" && normalizedTarget === "git-dist"
-  );
-});
+  if (!gitDistEntry) {
+    fail('bundle.resources must include "resources/git-dist/": "git-dist/".');
+  }
 
-if (!gitDistEntry) {
-  fail('bundle.resources must include "resources/git-dist/": "git-dist/".');
-}
+  const [source] = gitDistEntry;
+  const tauriDir = path.dirname(resolvedConfigPath);
+  const sourcePath = path.resolve(tauriDir, source);
+  const sourceStat = await stat(sourcePath).catch(() => null);
+  if (!sourceStat?.isDirectory()) {
+    fail(`git-dist resource source must be a directory: ${sourcePath}`);
+  }
 
-const [source] = gitDistEntry;
-const sourcePath = path.join(repoRoot, "src-tauri", source);
-const sourceStat = await stat(sourcePath).catch(() => null);
-if (!sourceStat?.isDirectory()) {
-  fail(`git-dist resource source must be a directory: ${sourcePath}`);
-}
-
-if (requireManifest) {
   const manifestPath = path.join(sourcePath, "manifest.json");
-  if (!(await pathExists(manifestPath))) {
+  if (requireManifest && !(await pathExists(manifestPath))) {
     fail(`real release packaging requires staged ${manifestPath}`);
   }
-}
 
-if (releaseMode) {
-  const pubkey = config.plugins?.updater?.pubkey;
-  if (
-    typeof pubkey !== "string" ||
-    pubkey.length === 0 ||
-    /REPLACE|TODO|PLACEHOLDER/i.test(pubkey)
-  ) {
+  if (releaseMode) {
+    const pubkey = config.plugins?.updater?.pubkey;
+    if (
+      typeof pubkey !== "string" ||
+      pubkey.length === 0 ||
+      /REPLACE|TODO|PLACEHOLDER/i.test(pubkey)
+    ) {
+      fail(
+        "release packaging requires plugins.updater.pubkey to be the generated Tauri updater public key, not a placeholder.",
+      );
+    }
+
+    const endpoints = config.plugins?.updater?.endpoints;
+    if (
+      !Array.isArray(endpoints) ||
+      !endpoints.includes(releaseLatestJsonEndpoint)
+    ) {
+      fail(
+        "release packaging requires the GitHub Releases latest.json updater endpoint.",
+      );
+    }
+  }
+
+  const bundledManifestPaths = bundleOutput
+    ? await findBundledGitDistManifests(bundleOutput)
+    : [];
+  if (requireBundledResource && bundledManifestPaths.length === 0) {
     fail(
-      "release packaging requires plugins.updater.pubkey to be the generated Tauri updater public key, not a placeholder.",
+      `packaged output must contain git-dist/manifest.json under ${path.resolve(
+        bundleOutput ?? ".",
+      )}`,
     );
   }
 
-  const endpoints = config.plugins?.updater?.endpoints;
-  if (
-    !Array.isArray(endpoints) ||
-    !endpoints.includes(
-      "https://github.com/smallmain/artistic-git/releases/latest/download/latest.json",
-    )
-  ) {
-    fail(
-      "release packaging requires the GitHub Releases latest.json updater endpoint.",
-    );
-  }
+  return {
+    sourcePath,
+    manifestPath,
+    bundledManifestPaths,
+  };
 }
 
-info(
-  requireManifest
-    ? `git-dist resources and release manifest are wired${releaseMode ? "; updater release config is publish-ready." : "."}`
-    : "git-dist resources are wired; manifest staging is deferred to release jobs.",
-);
+function parseArgs(argv) {
+  const options = {
+    configPath: defaultTauriConfigPath,
+    requireManifest: false,
+    releaseMode: false,
+    bundleOutput: null,
+    requireBundledResource: false,
+    help: false,
+  };
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    const readValue = (name) => {
+      if (arg.includes("=")) {
+        return arg.slice(arg.indexOf("=") + 1);
+      }
+      index += 1;
+      if (!argv[index]) {
+        fail(`${name} requires a value`);
+      }
+      return argv[index];
+    };
+
+    if (arg === "--help" || arg === "-h") {
+      options.help = true;
+    } else if (arg === "--config" || arg.startsWith("--config=")) {
+      options.configPath = readValue("--config");
+    } else if (arg === "--require-manifest") {
+      options.requireManifest = true;
+    } else if (arg === "--release") {
+      options.releaseMode = true;
+    } else if (arg === "--bundle-output" || arg.startsWith("--bundle-output=")) {
+      options.bundleOutput = readValue("--bundle-output");
+    } else if (arg === "--require-bundled-resource") {
+      options.requireBundledResource = true;
+    } else {
+      fail(`unknown argument: ${arg}`);
+    }
+  }
+
+  return options;
+}
+
+function usage() {
+  return `Usage:
+  node scripts/check-tauri-bundle-resources.mjs
+  node scripts/check-tauri-bundle-resources.mjs --require-manifest
+  node scripts/check-tauri-bundle-resources.mjs --require-manifest --release
+  node scripts/check-tauri-bundle-resources.mjs --require-manifest --release --bundle-output src-tauri/target/<triple>/release --require-bundled-resource
+
+Checks that Tauri bundles the embedded git-dist resource tree at the packaged
+resource path expected by release builds. --require-manifest is for real release
+jobs after the git-dist artifact has been staged. --release also requires the
+public updater configuration to be ready for publishing. --require-bundled-resource
+checks built output directories for git-dist/manifest.json.`;
+}
+
+async function main() {
+  const options = parseArgs(process.argv.slice(2));
+  if (options.help) {
+    console.log(usage());
+    return;
+  }
+
+  const result = await checkTauriBundleResources(options);
+  const status = [
+    options.requireManifest
+      ? "git-dist resources and release manifest are wired"
+      : "git-dist resources are wired; manifest staging is deferred to release jobs",
+  ];
+  if (options.releaseMode) {
+    status.push("updater release config is publish-ready");
+  }
+  if (options.requireBundledResource) {
+    status.push(
+      `packaged git-dist manifests found: ${result.bundledManifestPaths.length}`,
+    );
+  }
+  info(`${status.join("; ")}.`);
+}
+
+const isDirectRun =
+  process.argv[1] &&
+  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (isDirectRun) {
+  main().catch((error) => {
+    console.error(`tauri bundle resource check failed: ${error.message}`);
+    process.exit(1);
+  });
+}
