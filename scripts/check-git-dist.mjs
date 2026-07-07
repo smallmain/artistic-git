@@ -26,6 +26,9 @@ const schemaOnly = args.includes("--schema-only");
 const explain = args.includes("--explain");
 const noExec = args.includes("--no-exec");
 const realBuild = args.includes("--real-build");
+const expectPlaceholderRejection = args.includes(
+  "--expect-placeholder-rejection",
+);
 const help = args.includes("--help") || args.includes("-h");
 const targetArg = args.find((arg) => arg.startsWith("--target="));
 const targetName = normalizeTargetArg(
@@ -34,7 +37,7 @@ const targetName = normalizeTargetArg(
 
 const usage = `Usage:
   node scripts/check-git-dist.mjs --schema-only
-  node scripts/check-git-dist.mjs --schema-only --real-build [--target=${supportedTargets.join("|")}]
+  node scripts/check-git-dist.mjs --schema-only --real-build [--expect-placeholder-rejection] [--target=${supportedTargets.join("|")}]
   ARTISTIC_GIT_DIST_DIR=/path/to/git-dist node scripts/check-git-dist.mjs [--no-exec] [--target=${supportedTargets.join("|")}]
 
 This checker never searches PATH and never falls back to a system Git.`;
@@ -81,6 +84,38 @@ async function assertRegularFile(filePath, label) {
 }
 
 async function checkConfigContract(config, options = {}) {
+  if (expectPlaceholderRejection) {
+    if (!schemaOnly || !realBuild) {
+      fail(
+        "--expect-placeholder-rejection must be used with --schema-only --real-build.",
+      );
+    }
+
+    try {
+      validateGitDistConfig(config, options);
+    } catch (error) {
+      if (
+        error instanceof GitDistConfigError &&
+        error.details?.some((detail) =>
+          detail.startsWith("real build mode rejects placeholder pins:"),
+        )
+      ) {
+        for (const detail of error.details) {
+          info(detail);
+        }
+        info(
+          "git-dist.toml real-build contract is blocked by documented placeholders as expected.",
+        );
+        return;
+      }
+      throw error;
+    }
+
+    fail(
+      "expected real-build mode to reject placeholder pins, but the config is now release-ready. Remove --expect-placeholder-rejection from the caller.",
+    );
+  }
+
   const { warnings, placeholders } = validateGitDistConfig(config, options);
   for (const warning of warnings) {
     info(`warning: ${warning}`);

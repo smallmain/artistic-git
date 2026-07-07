@@ -51,6 +51,15 @@ node scripts/check-git-dist.mjs --schema-only --real-build
 ```
 
 That failure is intentional until the Windows OpenSSH pin is resolved.
+The package script is wired for CI-friendly reporting of that expected block:
+
+```sh
+pnpm git-dist:check:real
+```
+
+It succeeds only when real build mode rejects the documented placeholder. Once
+all pins are release-ready, this command will fail and tell the caller to
+remove the expected-placeholder mode.
 
 ## Fetch Pipeline
 
@@ -253,3 +262,22 @@ runs tests and a Tauri `--no-bundle` dry-run package build without creating a
 GitHub Release.
 Manual dispatches may keep the automatic bump or override it with `patch`,
 `minor`, or `major`.
+
+Formal publishing also requires a completed Git Distribution workflow run id.
+Pass it as the `git_dist_run_id` manual-dispatch input or set the
+`GIT_DIST_RUN_ID` repository variable for main-push releases. The package matrix
+downloads `artistic-git-dist-<target>` from that workflow run into
+`src-tauri/resources/git-dist`, then runs:
+
+```sh
+node scripts/check-tauri-bundle-resources.mjs --require-manifest --release
+ARTISTIC_GIT_DIST_DIR=src-tauri/resources/git-dist \
+  node scripts/check-git-dist.mjs --no-exec --target=<target>
+```
+
+`--release` additionally rejects the placeholder Tauri updater public key and
+requires the GitHub Releases `latest.json` endpoint. The publish job generates
+`latest.json` from signed updater artifacts, preferring Tauri updater packages
+such as Windows `.exe.zip` and Linux `.AppImage.tar.gz` when those are present,
+then uploads installers, updater artifacts, signatures, and `latest.json` to
+GitHub Releases.

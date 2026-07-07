@@ -15,14 +15,17 @@ const requiredTargets = ["app", "dmg", "nsis", "appimage", "deb"];
 const args = process.argv.slice(2);
 const help = args.includes("--help") || args.includes("-h");
 const requireManifest = args.includes("--require-manifest");
+const releaseMode = args.includes("--release");
 
 const usage = `Usage:
   node scripts/check-tauri-bundle-resources.mjs
   node scripts/check-tauri-bundle-resources.mjs --require-manifest
+  node scripts/check-tauri-bundle-resources.mjs --require-manifest --release
 
 Checks that Tauri bundles the embedded git-dist resource tree at the packaged
 resource path expected by release builds. --require-manifest is for real release
-jobs after the git-dist artifact has been staged.`;
+jobs after the git-dist artifact has been staged. --release also requires the
+public updater configuration to be ready for publishing.`;
 
 if (help) {
   console.log(usage);
@@ -108,8 +111,33 @@ if (requireManifest) {
   }
 }
 
+if (releaseMode) {
+  const pubkey = config.plugins?.updater?.pubkey;
+  if (
+    typeof pubkey !== "string" ||
+    pubkey.length === 0 ||
+    /REPLACE|TODO|PLACEHOLDER/i.test(pubkey)
+  ) {
+    fail(
+      "release packaging requires plugins.updater.pubkey to be the generated Tauri updater public key, not a placeholder.",
+    );
+  }
+
+  const endpoints = config.plugins?.updater?.endpoints;
+  if (
+    !Array.isArray(endpoints) ||
+    !endpoints.includes(
+      "https://github.com/smallmain/artistic-git/releases/latest/download/latest.json",
+    )
+  ) {
+    fail(
+      "release packaging requires the GitHub Releases latest.json updater endpoint.",
+    );
+  }
+}
+
 info(
   requireManifest
-    ? "git-dist resources and release manifest are wired."
+    ? `git-dist resources and release manifest are wired${releaseMode ? "; updater release config is publish-ready." : "."}`
     : "git-dist resources are wired; manifest staging is deferred to release jobs.",
 );

@@ -145,15 +145,17 @@ test("selects one updater asset per Tauri platform", () => {
       "Artistic Git.app.tar.gz",
       "Artistic Git.app.tar.gz.sig",
       "Artistic Git_0.1.0_x64-setup.exe",
-      "Artistic Git_0.1.0_x64-setup.exe.sig",
+      "Artistic Git_0.1.0_x64-setup.exe.zip",
+      "Artistic Git_0.1.0_x64-setup.exe.zip.sig",
       "artistic-git_0.1.0_amd64.deb",
       "artistic-git_0.1.0_amd64.AppImage",
-      "artistic-git_0.1.0_amd64.AppImage.sig",
+      "artistic-git_0.1.0_amd64.AppImage.tar.gz",
+      "artistic-git_0.1.0_amd64.AppImage.tar.gz.sig",
     ]),
     [
       "Artistic Git.app.tar.gz",
-      "Artistic Git_0.1.0_x64-setup.exe",
-      "artistic-git_0.1.0_amd64.AppImage",
+      "Artistic Git_0.1.0_x64-setup.exe.zip",
+      "artistic-git_0.1.0_amd64.AppImage.tar.gz",
     ],
   );
 
@@ -178,14 +180,20 @@ test("builds Tauri latest.json from signed release artifacts", async () => {
       path.join(tmpDir, "Artistic Git.app.tar.gz.sig"),
       "macsig\n",
     );
-    await writeFile(path.join(tmpDir, "Artistic Git_0.1.0_x64-setup.exe"), "");
     await writeFile(
-      path.join(tmpDir, "Artistic Git_0.1.0_x64-setup.exe.sig"),
+      path.join(tmpDir, "Artistic Git_0.1.0_x64-setup.exe.zip"),
+      "",
+    );
+    await writeFile(
+      path.join(tmpDir, "Artistic Git_0.1.0_x64-setup.exe.zip.sig"),
       "winsig\n",
     );
-    await writeFile(path.join(tmpDir, "artistic-git_0.1.0_amd64.AppImage"), "");
     await writeFile(
-      path.join(tmpDir, "artistic-git_0.1.0_amd64.AppImage.sig"),
+      path.join(tmpDir, "artistic-git_0.1.0_amd64.AppImage.tar.gz"),
+      "",
+    );
+    await writeFile(
+      path.join(tmpDir, "artistic-git_0.1.0_amd64.AppImage.tar.gz.sig"),
       "linuxsig\n",
     );
 

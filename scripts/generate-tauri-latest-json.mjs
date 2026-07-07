@@ -49,7 +49,9 @@ function encodeReleaseAssetUrl({ repo, tag, filename }) {
 function isUpdateCandidate(file) {
   return (
     file.endsWith(".app.tar.gz") ||
+    file.endsWith(".AppImage.tar.gz") ||
     file.endsWith(".AppImage") ||
+    file.endsWith(".exe.zip") ||
     file.endsWith(".exe")
   );
 }
@@ -58,24 +60,26 @@ function classifyUpdaterAsset(file) {
   if (file.endsWith(".app.tar.gz")) {
     return ["darwin-x86_64", "darwin-aarch64"];
   }
-  if (file.endsWith(".exe")) {
+  if (file.endsWith(".exe.zip") || file.endsWith(".exe")) {
     return ["windows-x86_64"];
   }
-  if (file.endsWith(".AppImage")) {
+  if (file.endsWith(".AppImage.tar.gz") || file.endsWith(".AppImage")) {
     return ["linux-x86_64"];
   }
   return [];
 }
 
-function choosePreferredAsset(files, predicate, description) {
-  const matches = files.filter(predicate).sort();
-  if (matches.length === 0) {
-    fail(`missing ${description} updater asset`);
+function choosePreferredAsset(files, predicates, description) {
+  for (const predicate of predicates) {
+    const matches = files.filter(predicate).sort();
+    if (matches.length > 1) {
+      fail(`multiple ${description} updater assets: ${matches.join(", ")}`);
+    }
+    if (matches.length === 1) {
+      return matches[0];
+    }
   }
-  if (matches.length > 1) {
-    fail(`multiple ${description} updater assets: ${matches.join(", ")}`);
-  }
-  return matches[0];
+  fail(`missing ${description} updater asset`);
 }
 
 export function selectUpdaterAssets(files) {
@@ -83,18 +87,21 @@ export function selectUpdaterAssets(files) {
   return [
     choosePreferredAsset(
       candidates,
-      (file) => file.endsWith(".app.tar.gz"),
+      [(file) => file.endsWith(".app.tar.gz")],
       "macOS .app.tar.gz",
     ),
     choosePreferredAsset(
       candidates,
-      (file) => file.endsWith(".exe"),
-      "Windows NSIS .exe",
+      [(file) => file.endsWith(".exe.zip"), (file) => file.endsWith(".exe")],
+      "Windows NSIS updater .exe.zip or .exe",
     ),
     choosePreferredAsset(
       candidates,
-      (file) => file.endsWith(".AppImage"),
-      "Linux .AppImage",
+      [
+        (file) => file.endsWith(".AppImage.tar.gz"),
+        (file) => file.endsWith(".AppImage"),
+      ],
+      "Linux AppImage updater .tar.gz or .AppImage",
     ),
   ];
 }
@@ -195,8 +202,9 @@ function usage() {
   node scripts/generate-tauri-latest-json.mjs --assets-dir release-assets --version 0.1.0 --tag v0.1.0 --repo owner/repo --notes-file RELEASE_NOTES.md --output release-assets/latest.json
 
 Generates Tauri updater latest.json from signed release artifacts. The assets
-directory must contain exactly one macOS .app.tar.gz, Windows .exe, and Linux
-.AppImage updater asset plus matching .sig files.`;
+directory must contain exactly one macOS .app.tar.gz updater asset, one Windows
+.exe.zip updater asset or .exe fallback, and one Linux .AppImage.tar.gz updater
+asset or .AppImage fallback, each with a matching .sig file.`;
 }
 
 async function main() {

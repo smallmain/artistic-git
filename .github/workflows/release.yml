@@ -19,9 +19,14 @@ on:
           - patch
           - minor
           - major
+      git_dist_run_id:
+        description: "Completed Git Distribution workflow run id that uploaded artistic-git-dist-* artifacts."
+        type: string
+        default: ""
 
 permissions:
   contents: write
+  actions: read
 
 env:
   CI: true
@@ -38,6 +43,7 @@ jobs:
       latest_json_path: ${{ steps.release.outputs.latest_json_path }}
       publish_release: ${{ steps.mode.outputs.publish_release }}
       mode_reason: ${{ steps.mode.outputs.mode_reason }}
+      git_dist_run_id: ${{ steps.mode.outputs.git_dist_run_id }}
 
     steps:
       - name: Checkout
@@ -76,6 +82,7 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
           ENABLE_MAIN_RELEASE: ${{ vars.ENABLE_MAIN_RELEASE }}
           DISPATCH_PUBLISH: ${{ github.event.inputs.publish || 'false' }}
+          GIT_DIST_RUN_ID: ${{ github.event.inputs.git_dist_run_id || vars.GIT_DIST_RUN_ID || '' }}
           HAS_CHANGES: ${{ steps.release.outputs.has_changes }}
         run: |
           set -euo pipefail
@@ -92,8 +99,14 @@ jobs:
             reason="release: manual publish with ENABLE_MAIN_RELEASE=true"
           fi
 
+          if [ "$publish_release" = "true" ] && [ -z "$GIT_DIST_RUN_ID" ]; then
+            publish_release=false
+            reason="dry-run: publish requires git_dist_run_id input or GIT_DIST_RUN_ID repository variable for staged embedded Git artifacts"
+          fi
+
           echo "publish_release=$publish_release" >> "$GITHUB_OUTPUT"
           echo "mode_reason=$reason" >> "$GITHUB_OUTPUT"
+          echo "git_dist_run_id=$GIT_DIST_RUN_ID" >> "$GITHUB_OUTPUT"
           echo "$reason"
 
       - name: Upload release plan
@@ -216,6 +229,14 @@ jobs:
       - name: Check release scripts and bundle resources
         run: pnpm release:check
 
+      - name: Download staged embedded Git resources
+        uses: actions/download-artifact@v4
+        with:
+          name: artistic-git-dist-${{ matrix.gitDistTarget }}
+          path: src-tauri/resources/git-dist
+          run-id: ${{ needs.plan.outputs.git_dist_run_id }}
+          github-token: ${{ github.token }}
+
       - name: Apply release version to package manifests
         shell: bash
         env:
@@ -251,7 +272,7 @@ jobs:
           ARTISTIC_GIT_DIST_DIR: src-tauri/resources/git-dist
         run: |
           set -euo pipefail
-          node scripts/check-tauri-bundle-resources.mjs --require-manifest
+          node scripts/check-tauri-bundle-resources.mjs --require-manifest --release
           node scripts/check-git-dist.mjs --no-exec --target="${{ matrix.gitDistTarget }}"
 
       - name: Build Tauri bundles

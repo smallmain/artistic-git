@@ -38,6 +38,12 @@ Downloaded Git, Git LFS, OpenSSH, and generated manifests are local build
 outputs; do not commit them. See [docs/git-dist.md](docs/git-dist.md) for the
 current pins, CI artifact/cache policy, and build limitations.
 
+While the Win32-OpenSSH pin remains a documented preview placeholder,
+`pnpm git-dist:check:real` is expected to pass only by confirming that real
+build mode rejects the placeholder. Direct real build/fetch/package jobs stay
+blocked until that source is replaced with a stable official package or a
+separate release risk exception is recorded.
+
 ## Release Baseline
 
 Minimum supported release targets:
@@ -58,6 +64,10 @@ publishes only when `ENABLE_MAIN_RELEASE=true` and the `release` GitHub
 Environment allows the job. When the gate is not enabled, the workflow runs
 tests and a Tauri `--no-bundle` dry-run build without publishing. Manual runs
 can keep the automatic version calculation or override the SemVer bump level.
+Publishing also requires a completed Git Distribution workflow run id, supplied
+as the `git_dist_run_id` dispatch input or the `GIT_DIST_RUN_ID` repository
+variable, so each platform package stages and verifies the matching
+`artistic-git-dist-*` artifact before bundling.
 
 Publishing requires a Tauri updater key pair generated outside the repository.
 Store the private key in GitHub Secrets as `TAURI_SIGNING_PRIVATE_KEY` and, when

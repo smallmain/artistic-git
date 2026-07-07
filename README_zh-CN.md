@@ -36,6 +36,11 @@ pnpm git-dist:check
 Git 仓库。当前版本钉死、CI artifact/cache 策略与构建限制见
 [docs/git-dist.md](docs/git-dist.md)。
 
+在 Win32-OpenSSH 仍是记录明确的 preview 占位源期间，
+`pnpm git-dist:check:real` 只有在确认 real build 模式会拒绝该占位源时才通过。
+真正的下载、构建与打包任务仍会阻断，直到替换为稳定官方包，或在占位模式之外记录
+单独的发布风险例外。
+
 ## 发布基线
 
 最低支持的发布目标：
@@ -53,7 +58,10 @@ SmartScreen 可能需要选择「更多信息」→「仍要运行」。
 release workflow 会在 `main` push 与 `workflow_dispatch` 运行，但只有在
 `ENABLE_MAIN_RELEASE=true` 且 GitHub `release` Environment 放行时才发布。闸门未
 开启时，只执行测试与 Tauri `--no-bundle` dry-run 构建，不发布产物。手动运行可以
-使用自动版本计算，也可以覆盖 SemVer 升级级别。
+使用自动版本计算，也可以覆盖 SemVer 升级级别。正式发布还需要提供已经完成的 Git
+Distribution workflow run id，可通过 `git_dist_run_id` 手动输入或
+`GIT_DIST_RUN_ID` 仓库变量传入；每个平台打包前都会下载并校验对应的
+`artistic-git-dist-*` artifact。
 
 发布需要在仓库外生成 Tauri updater 密钥对。私钥保存到 GitHub Secrets 的
 `TAURI_SIGNING_PRIVATE_KEY`，如设置密码则保存到

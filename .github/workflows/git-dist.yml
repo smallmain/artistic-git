@@ -53,14 +53,8 @@ jobs:
       - name: Verify real build mode rejects placeholders
         shell: bash
         run: |
-          set +e
-          node scripts/check-git-dist.mjs --schema-only --real-build > real-build.log 2>&1
-          status=$?
-          cat real-build.log
-          if [ "$status" -eq 0 ]; then
-            echo "Expected real-build validation to reject the current Win32-OpenSSH placeholder." >&2
-            exit 1
-          fi
+          set -euo pipefail
+          node scripts/check-git-dist.mjs --schema-only --real-build --expect-placeholder-rejection
 
       - name: Validate bundle resource mapping
         run: node scripts/check-tauri-bundle-resources.mjs
