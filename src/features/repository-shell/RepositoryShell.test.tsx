@@ -204,8 +204,10 @@ beforeEach(() => {
   commandMocks.syncCurrentBranch.mockResolvedValue({
     attempts: 1,
     branchName: "main",
+    conflict: null,
     repositoryPath: "/repo/art",
     status: "alreadyUpToDate",
+    stashRecovery: null,
     upstream: "origin/main",
   });
   commandMocks.restoreStash.mockResolvedValue({

@@ -448,6 +448,10 @@ export const resources = {
         stashOtherVersion: "Stashed version",
         stashOwnSection: "Current branch content",
         stashOwnVersion: "Current branch version",
+        syncOtherSection: "Remote content",
+        syncOtherVersion: "Remote version",
+        syncOwnSection: "Local commit content",
+        syncOwnVersion: "Local commit version",
         status: {
           resolved: "resolved",
           unresolved: "unresolved",
@@ -466,6 +470,10 @@ export const resources = {
         useStashOtherHunk: "Use stashed section",
         useStashOwn: "Use current branch",
         useStashOwnHunk: "Use current branch section",
+        useSyncOther: "Use remote",
+        useSyncOtherHunk: "Use remote section",
+        useSyncOwn: "Use local commit",
+        useSyncOwnHunk: "Use local commit section",
       },
       language: {
         en: "English",
@@ -952,6 +960,10 @@ export const resources = {
         stashOtherVersion: "储藏的版本",
         stashOwnSection: "当前分支的内容",
         stashOwnVersion: "当前分支的版本",
+        syncOtherSection: "远程内容",
+        syncOtherVersion: "远程版本",
+        syncOwnSection: "本地提交内容",
+        syncOwnVersion: "本地提交版本",
         status: {
           resolved: "已解决",
           unresolved: "未解决",
@@ -970,6 +982,10 @@ export const resources = {
         useStashOtherHunk: "采用储藏这段",
         useStashOwn: "使用当前分支",
         useStashOwnHunk: "采用当前分支这段",
+        useSyncOther: "使用远程",
+        useSyncOtherHunk: "采用远程这段",
+        useSyncOwn: "使用本地提交",
+        useSyncOwnHunk: "采用本地提交这段",
       },
       language: {
         en: "English",

@@ -527,7 +527,20 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
 
     setSyncBusy(true);
     try {
-      await syncCurrentBranch({ operationId: null, repositoryPath });
+      const response = await syncCurrentBranch({
+        operationId: null,
+        repositoryPath,
+      });
+      const { conflict, stashRecovery } = response;
+      if (conflict) {
+        if (stashRecovery) {
+          setStashRecoveryByOperation((current) => ({
+            ...current,
+            [conflict.operationId]: stashRecovery,
+          }));
+        }
+        setConflictEntered(conflict);
+      }
       await Promise.all([
         queryClient.invalidateQueries({
           queryKey: repoQueryKeys.summary(repositoryPath),
@@ -549,7 +562,13 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     } finally {
       setSyncBusy(false);
     }
-  }, [queryClient, repository.hasRemote, repositoryPath, syncBusy]);
+  }, [
+    queryClient,
+    repository.hasRemote,
+    repositoryPath,
+    setConflictEntered,
+    syncBusy,
+  ]);
 
   React.useEffect(() => {
     if (

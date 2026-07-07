@@ -315,6 +315,9 @@ fn sync_current_branch(
     request: artistic_git_contracts::SyncCurrentBranchRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::SyncCurrentBranchResponse> {
     let response = backend.sync_current_branch(request)?;
+    if let Some(conflict) = response.conflict.as_ref() {
+        let _ = app_handle.emit("conflict-entered", conflict);
+    }
     emit_repo_changed(
         &app_handle,
         response.repository_path.clone(),

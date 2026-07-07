@@ -25,6 +25,7 @@ import {
 } from "./ConflictResolutionOverlay";
 
 const mergeOperation: ConflictOperation = { kind: "merge", label: "Merge" };
+const rebaseOperation: ConflictOperation = { kind: "rebase", label: "Rebase" };
 
 function renderWithProviders(ui: ReactElement) {
   return render(
@@ -188,6 +189,37 @@ describe("ConflictResolutionOverlay", () => {
       within(hunk).getByRole("button", {
         name: "Use stashed section",
       }),
+    ).toBeInTheDocument();
+  });
+
+  it("labels sync conflicts as remote content and local commits", async () => {
+    const file = createFile({ status: "unresolved" });
+    const api = createApi({
+      conflictDetail: vi.fn(async () => createTextDetail(file)),
+      listConflicts: vi.fn(async () => ({
+        files: [file],
+        operation: rebaseOperation,
+      })),
+    });
+
+    renderWithProviders(
+      <ConflictResolutionOverlay
+        api={api}
+        event={createEvent([file], { operationName: "syncCurrentBranch" })}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const hunk = await screen.findByLabelText("Conflict at line 2");
+    expect(screen.getByText("Remote version")).toBeInTheDocument();
+    expect(screen.getByText("Local commit version")).toBeInTheDocument();
+    expect(within(hunk).getByText("Remote content")).toBeInTheDocument();
+    expect(within(hunk).getByText("Local commit content")).toBeInTheDocument();
+    expect(
+      within(hunk).getByRole("button", { name: "Use remote section" }),
+    ).toBeInTheDocument();
+    expect(
+      within(hunk).getByRole("button", { name: "Use local commit section" }),
     ).toBeInTheDocument();
   });
 

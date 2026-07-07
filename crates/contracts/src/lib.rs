@@ -279,6 +279,7 @@ pub enum SyncCurrentBranchStatus {
     Pushed,
     PulledAndPushed,
     Published,
+    Conflicts,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -289,6 +290,8 @@ pub struct SyncCurrentBranchResponse {
     pub upstream: Option<String>,
     pub status: SyncCurrentBranchStatus,
     pub attempts: u8,
+    pub conflict: Option<ConflictEnteredEvent>,
+    pub stash_recovery: Option<StashRecoveryPoint>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]

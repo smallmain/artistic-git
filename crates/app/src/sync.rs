@@ -1,13 +1,22 @@
 use artistic_git_contracts::{
-    AppError, AppResult, GitCommandError, OperationContext, SyncCurrentBranchRequest,
-    SyncCurrentBranchResponse, SyncCurrentBranchStatus,
+    AppError, AppResult, ConflictEnteredEvent, ConflictListRequest, CreateAutoStashRequest,
+    GitCommandError, OperationContext, OperationId, StashEntry, StashRecoveryPoint,
+    StashRestoreOutcome, SyncCurrentBranchRequest, SyncCurrentBranchResponse,
+    SyncCurrentBranchStatus,
 };
 use artistic_git_git_runner::{GitCommandPlan, GitRunner};
-use std::{ffi::OsString, path::Path, process::Output, thread, time::Duration};
+use std::{
+    ffi::OsString,
+    path::Path,
+    process::Output,
+    thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use crate::git_ops::{canonical_repository_path, display_path, run_git_raw};
 
 const SYNC_OPERATION: &str = "syncCurrentBranch";
+const SYNC_STASH_RESTORE_OPERATION: &str = "syncCurrentBranch:restoreStash";
 const MAX_SYNC_ATTEMPTS: u8 = 3;
 
 pub fn sync_current_branch(
@@ -15,32 +24,46 @@ pub fn sync_current_branch(
     request: SyncCurrentBranchRequest,
 ) -> AppResult<SyncCurrentBranchResponse> {
     let root = canonical_repository_path(&request.repository_path, SYNC_OPERATION)?;
-    ensure_clean_worktree(runner, &root)?;
     ensure_committed_head(runner, &root)?;
     ensure_origin(runner, &root)?;
 
     let branch_name = crate::repository::current_branch_name(runner, &root, SYNC_OPERATION)?;
     let starting_head = rev_parse(runner, &root, "HEAD")?;
+    let operation_id = request
+        .operation_id
+        .clone()
+        .unwrap_or_else(sync_operation_id);
+    let auto_stash = create_sync_auto_stash(runner, &root)?;
+
+    let sync_result =
+        sync_current_branch_clean(runner, &root, &branch_name, &starting_head, &operation_id);
+    match sync_result {
+        Ok(response) if response.status == SyncCurrentBranchStatus::Conflicts => Ok(response),
+        Ok(response) => {
+            restore_auto_stash_after_success(runner, &root, response, auto_stash, &operation_id)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn sync_current_branch_clean(
+    runner: &GitRunner,
+    root: &Path,
+    branch_name: &str,
+    starting_head: &str,
+    operation_id: &OperationId,
+) -> AppResult<SyncCurrentBranchResponse> {
     let mut last_non_fast_forward = false;
 
     for attempt in 1..=MAX_SYNC_ATTEMPTS {
-        run_retryable_git(
-            runner,
-            &root,
-            ["fetch", "origin", "--prune"],
-            SYNC_OPERATION,
-        )?;
-        ensure_clean_worktree(runner, &root)?;
+        run_retryable_git(runner, root, ["fetch", "origin", "--prune"], SYNC_OPERATION)?;
+        ensure_clean_worktree(runner, root)?;
 
-        let Some(upstream) = upstream_branch(runner, &root)? else {
-            push_with_retry(
-                runner,
-                &root,
-                ["push", "-u", "origin", branch_name.as_str()],
-            )?;
+        let Some(upstream) = upstream_branch(runner, root)? else {
+            push_with_retry(runner, root, ["push", "-u", "origin", branch_name])?;
             return Ok(response(
-                &root,
-                &branch_name,
+                root,
+                branch_name,
                 None,
                 SyncCurrentBranchStatus::Published,
                 attempt,
@@ -50,16 +73,26 @@ pub fn sync_current_branch(
         if !upstream.starts_with("origin/") {
             return Err(expected_repo_error(
                 "当前分支的上游不属于 origin，无法由 Artistic Git 同步。",
-                &root,
+                root,
             ));
         }
 
-        let before_push = sync_local_to_upstream(runner, &root, &upstream)?;
-        let (ahead, _) = ahead_behind(runner, &root, "HEAD", upstream.as_str())?;
+        let before_push = sync_local_to_upstream(runner, root, &upstream, operation_id)?;
+        if let Some(conflict) = before_push.conflict {
+            return Ok(conflict_response(
+                root,
+                branch_name,
+                Some(upstream),
+                attempt,
+                conflict,
+                None,
+            ));
+        }
+        let (ahead, _) = ahead_behind(runner, root, "HEAD", upstream.as_str())?;
         if ahead == 0 {
             return Ok(response(
-                &root,
-                &branch_name,
+                root,
+                branch_name,
                 Some(upstream),
                 if before_push.pulled {
                     SyncCurrentBranchStatus::Pulled
@@ -70,56 +103,53 @@ pub fn sync_current_branch(
             ));
         }
 
-        match push_with_retry_raw(runner, &root, ["push"]) {
+        match push_with_retry_raw(runner, root, ["push"]) {
             PushOutcome::Success => {
                 let status = match (before_push.pulled, before_push.rebased) {
                     (true, _) => SyncCurrentBranchStatus::PulledAndPushed,
                     (false, _) => SyncCurrentBranchStatus::Pushed,
                 };
-                return Ok(response(
-                    &root,
-                    &branch_name,
-                    Some(upstream),
-                    status,
-                    attempt,
-                ));
+                return Ok(response(root, branch_name, Some(upstream), status, attempt));
             }
             PushOutcome::NonFastForward if attempt < MAX_SYNC_ATTEMPTS => {
                 last_non_fast_forward = true;
                 continue;
             }
             PushOutcome::NonFastForward => {
-                reset_to_start(runner, &root, &starting_head);
-                return Err(expected_repo_error("远程更新过于频繁，请稍后重试。", &root));
+                reset_to_start(runner, root, starting_head);
+                return Err(expected_repo_error("远程更新过于频繁，请稍后重试。", root));
             }
             PushOutcome::Failed(error) => return Err(error),
         }
     }
 
     if last_non_fast_forward {
-        reset_to_start(runner, &root, &starting_head);
-        Err(expected_repo_error("远程更新过于频繁，请稍后重试。", &root))
+        reset_to_start(runner, root, starting_head);
+        Err(expected_repo_error("远程更新过于频繁，请稍后重试。", root))
     } else {
-        Err(expected_repo_error("同步失败，请稍后重试。", &root))
+        Err(expected_repo_error("同步失败，请稍后重试。", root))
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct LocalSyncOutcome {
     pulled: bool,
     rebased: bool,
+    conflict: Option<ConflictEnteredEvent>,
 }
 
 fn sync_local_to_upstream(
     runner: &GitRunner,
     root: &Path,
     upstream: &str,
+    operation_id: &OperationId,
 ) -> AppResult<LocalSyncOutcome> {
     let (ahead, behind) = ahead_behind(runner, root, "HEAD", upstream)?;
     if behind == 0 {
         return Ok(LocalSyncOutcome {
             pulled: false,
             rebased: false,
+            conflict: None,
         });
     }
     if ahead == 0 {
@@ -132,6 +162,7 @@ fn sync_local_to_upstream(
         return Ok(LocalSyncOutcome {
             pulled: true,
             rebased: false,
+            conflict: None,
         });
     }
 
@@ -140,6 +171,15 @@ fn sync_local_to_upstream(
         return Ok(LocalSyncOutcome {
             pulled: true,
             rebased: true,
+            conflict: None,
+        });
+    }
+
+    if has_conflicts(runner, root)? {
+        return Ok(LocalSyncOutcome {
+            pulled: true,
+            rebased: true,
+            conflict: Some(conflict_event(runner, root, operation_id)?),
         });
     }
 
@@ -239,6 +279,92 @@ fn reset_to_start(runner: &GitRunner, root: &Path, oid: &str) {
     let _ = run_git_raw(runner, Some(root), ["reset", "--hard", oid], SYNC_OPERATION);
 }
 
+fn create_sync_auto_stash(runner: &GitRunner, root: &Path) -> AppResult<Option<StashEntry>> {
+    Ok(crate::stash_impl::create_auto_stash(
+        runner,
+        CreateAutoStashRequest {
+            repository_path: display_path(root),
+            reason: "before syncing current branch".to_owned(),
+            include_untracked: true,
+            paths: Vec::new(),
+        },
+    )?
+    .stash)
+}
+
+fn restore_auto_stash_after_success(
+    runner: &GitRunner,
+    root: &Path,
+    mut response: SyncCurrentBranchResponse,
+    auto_stash: Option<StashEntry>,
+    operation_id: &OperationId,
+) -> AppResult<SyncCurrentBranchResponse> {
+    let Some(auto_stash) = auto_stash else {
+        return Ok(response);
+    };
+
+    let restore = crate::stash_impl::restore_stash_for_root(
+        runner,
+        root,
+        &auto_stash.selector,
+        true,
+        SYNC_STASH_RESTORE_OPERATION,
+        Some(operation_id),
+    )?;
+    match restore.outcome {
+        StashRestoreOutcome::Applied { .. } => Ok(response),
+        StashRestoreOutcome::Conflicts { conflict } => {
+            response.conflict = Some(conflict);
+            response.stash_recovery = Some(restore.recovery);
+            Ok(response)
+        }
+    }
+}
+
+fn has_conflicts(runner: &GitRunner, root: &Path) -> AppResult<bool> {
+    Ok(crate::conflicts::list_conflicts(
+        runner,
+        ConflictListRequest {
+            repository_path: display_path(root),
+        },
+    )?
+    .files
+    .into_iter()
+    .any(|file| {
+        matches!(
+            file.status,
+            artistic_git_contracts::ConflictResolutionStatus::Unresolved
+        )
+    }))
+}
+
+fn conflict_event(
+    runner: &GitRunner,
+    root: &Path,
+    operation_id: &OperationId,
+) -> AppResult<ConflictEnteredEvent> {
+    let response = crate::conflicts::list_conflicts(
+        runner,
+        ConflictListRequest {
+            repository_path: display_path(root),
+        },
+    )?;
+    Ok(ConflictEnteredEvent {
+        operation_id: operation_id.clone(),
+        repository_path: display_path(root),
+        operation_name: SYNC_OPERATION.to_owned(),
+        files: response.files,
+    })
+}
+
+fn sync_operation_id() -> OperationId {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    OperationId(format!("sync-current-branch-{millis}"))
+}
+
 fn run_retryable_git<I, S>(
     runner: &GitRunner,
     root: &Path,
@@ -259,7 +385,7 @@ where
             return Err(command_failure(&plan, output, "Git 网络操作失败。"));
         }
         last_error = Some(command_failure(&plan, output, "Git 网络操作失败。"));
-        thread::sleep(Duration::from_millis(25 * u64::from(attempt)));
+        thread::sleep(retry_delay(attempt));
     }
 
     Err(last_error.unwrap_or_else(|| expected_repo_error("Git 网络操作失败。", root)))
@@ -298,7 +424,7 @@ where
             return PushOutcome::NonFastForward;
         }
         if is_network_error(&output) && attempt < MAX_SYNC_ATTEMPTS {
-            thread::sleep(Duration::from_millis(25 * u64::from(attempt)));
+            thread::sleep(retry_delay(attempt));
             continue;
         }
         return PushOutcome::Failed(command_failure(&plan, output, "Git 推送失败。"));
@@ -347,6 +473,11 @@ fn combined_output(output: &Output) -> String {
     )
 }
 
+fn retry_delay(attempt: u8) -> Duration {
+    let exponent = u32::from(attempt.saturating_sub(1));
+    Duration::from_millis(25 * 2_u64.saturating_pow(exponent))
+}
+
 fn response(
     root: &Path,
     branch_name: &str,
@@ -360,6 +491,27 @@ fn response(
         upstream,
         status,
         attempts,
+        conflict: None,
+        stash_recovery: None,
+    }
+}
+
+fn conflict_response(
+    root: &Path,
+    branch_name: &str,
+    upstream: Option<String>,
+    attempts: u8,
+    conflict: ConflictEnteredEvent,
+    stash_recovery: Option<StashRecoveryPoint>,
+) -> SyncCurrentBranchResponse {
+    SyncCurrentBranchResponse {
+        repository_path: display_path(root),
+        branch_name: branch_name.to_owned(),
+        upstream,
+        status: SyncCurrentBranchStatus::Conflicts,
+        attempts,
+        conflict: Some(conflict),
+        stash_recovery,
     }
 }
 
@@ -388,7 +540,11 @@ mod tests {
     use artistic_git_contracts::SyncCurrentBranchStatus;
     use artistic_git_git_runner::{GitDistribution, GitRunner};
     use artistic_git_test_support::{require_git_dist, TestTempDir};
-    use std::{fs, io::Write, path::PathBuf};
+    use std::{
+        fs,
+        io::Write,
+        path::{Path, PathBuf},
+    };
 
     #[test]
     fn sync_current_branch_fast_forwards_remote_changes() {
@@ -483,23 +639,36 @@ mod tests {
     }
 
     #[test]
-    fn sync_current_branch_rejects_dirty_worktree() {
+    fn sync_current_branch_restores_dirty_worktree_after_success() {
         let Some((runner, _home)) = real_runner_or_skip() else {
             return;
         };
         let fixture = DoubleClone::new(&runner);
-        fixture.local.write("dirty.txt", "dirty\n");
+        fixture.local.write("tracked.txt", "dirty local\n");
+        fixture.local.write("scratch.txt", "scratch\n");
+        fixture.peer.write("remote.txt", "remote\n");
+        fixture.peer.git(["add", "remote.txt"]);
+        fixture.peer.git(["commit", "-m", "remote change"]);
+        fixture.peer.git(["push"]);
 
-        let error = sync_current_branch(
+        let response = sync_current_branch(
             &runner,
             SyncCurrentBranchRequest {
                 repository_path: display_path(&fixture.local.path),
                 operation_id: None,
             },
         )
-        .expect_err("dirty tree should be rejected");
+        .expect("sync dirty tree");
 
-        assert!(error.summary.contains("存在本地更改"));
+        assert_eq!(response.status, SyncCurrentBranchStatus::Pulled);
+        assert_eq!(fixture.local.read("tracked.txt"), "dirty local\n");
+        assert_eq!(fixture.local.read("scratch.txt"), "scratch\n");
+        assert!(fixture.local.path.join("remote.txt").exists());
+        assert!(fixture
+            .local
+            .git_output(["stash", "list"])
+            .trim()
+            .is_empty());
     }
 
     #[test]
@@ -524,6 +693,182 @@ mod tests {
         .expect_err("missing origin should be rejected");
 
         assert!(error.summary.contains("未配置远程仓库"));
+    }
+
+    #[test]
+    fn sync_current_branch_recovers_from_push_race_without_force() {
+        let Some((runner, _home)) = real_runner_or_skip() else {
+            return;
+        };
+        let fixture = DoubleClone::new(&runner);
+        fixture.local.write("local.txt", "local\n");
+        fixture.local.git(["add", "local.txt"]);
+        fixture.local.git(["commit", "-m", "local change"]);
+        fixture.install_one_shot_push_race_hook();
+
+        let response = sync_current_branch(
+            &runner,
+            SyncCurrentBranchRequest {
+                repository_path: display_path(&fixture.local.path),
+                operation_id: None,
+            },
+        )
+        .expect("sync push race");
+
+        assert_eq!(response.status, SyncCurrentBranchStatus::PulledAndPushed);
+        assert_eq!(response.attempts, 2);
+        fixture.peer.git(["pull", "--ff-only"]);
+        assert!(fixture.peer.path.join("local.txt").exists());
+        assert!(fixture.peer.path.join("race.txt").exists());
+        assert!(fixture.local.status_clean());
+    }
+
+    #[test]
+    fn sync_current_branch_caps_push_race_retries_and_restores_start() {
+        let Some((runner, _home)) = real_runner_or_skip() else {
+            return;
+        };
+        let fixture = DoubleClone::new(&runner);
+        fixture.local.write("local.txt", "local\n");
+        fixture.local.git(["add", "local.txt"]);
+        fixture.local.git(["commit", "-m", "local change"]);
+        let starting_head = fixture.local.git_output(["rev-parse", "HEAD"]);
+        fixture.install_repeating_push_race_hook();
+
+        let error = sync_current_branch(
+            &runner,
+            SyncCurrentBranchRequest {
+                repository_path: display_path(&fixture.local.path),
+                operation_id: None,
+            },
+        )
+        .expect_err("push race should stop after capped retries");
+
+        assert!(error.summary.contains("远程更新过于频繁"));
+        assert_eq!(
+            fixture.local.git_output(["rev-parse", "HEAD"]),
+            starting_head
+        );
+        assert!(fixture.local.status_clean());
+    }
+
+    #[test]
+    fn sync_current_branch_rebase_conflict_returns_conflict_response() {
+        let Some((runner, _home)) = real_runner_or_skip() else {
+            return;
+        };
+        let fixture = DoubleClone::new(&runner);
+        fixture.local.write("tracked.txt", "local committed\n");
+        fixture.local.git(["add", "tracked.txt"]);
+        fixture.local.git(["commit", "-m", "local change"]);
+        fixture.peer.write("tracked.txt", "remote committed\n");
+        fixture.peer.git(["add", "tracked.txt"]);
+        fixture.peer.git(["commit", "-m", "remote change"]);
+        fixture.peer.git(["push"]);
+        let starting_head = fixture.local.git_output(["rev-parse", "HEAD"]);
+        fixture.local.write("scratch.txt", "dirty scratch\n");
+
+        let response = sync_current_branch(
+            &runner,
+            SyncCurrentBranchRequest {
+                repository_path: display_path(&fixture.local.path),
+                operation_id: Some(OperationId("sync-conflict-test".to_owned())),
+            },
+        )
+        .expect("sync conflict response");
+
+        assert_eq!(response.status, SyncCurrentBranchStatus::Conflicts);
+        let conflict = response.conflict.expect("conflict payload");
+        assert_eq!(conflict.operation_id.0, "sync-conflict-test");
+        assert_eq!(conflict.operation_name, SYNC_OPERATION);
+        assert!(conflict.files.iter().any(|file| file.path == "tracked.txt"));
+        assert!(fixture
+            .local
+            .git_output(["status", "--porcelain=v1"])
+            .contains("UU tracked.txt"));
+        assert!(fixture
+            .local
+            .git_output(["stash", "list"])
+            .contains("Auto Stash: before syncing current branch"));
+
+        crate::conflicts::cancel_conflict_resolution(
+            &runner,
+            artistic_git_contracts::ConflictCancelRequest {
+                repository_path: display_path(&fixture.local.path),
+                operation_id: OperationId("sync-conflict-test".to_owned()),
+            },
+        )
+        .expect("cancel rebase conflict");
+        assert_eq!(
+            fixture.local.git_output(["rev-parse", "HEAD"]),
+            starting_head
+        );
+        assert!(fixture.local.status_clean());
+        assert!(fixture
+            .local
+            .git_output(["stash", "list"])
+            .contains("Auto Stash: before syncing current branch"));
+    }
+
+    #[test]
+    fn sync_current_branch_stash_restore_conflict_returns_recovery() {
+        let Some((runner, _home)) = real_runner_or_skip() else {
+            return;
+        };
+        let fixture = DoubleClone::new(&runner);
+        fixture.local.write("tracked.txt", "dirty local\n");
+        fixture.peer.write("tracked.txt", "remote committed\n");
+        fixture.peer.git(["add", "tracked.txt"]);
+        fixture.peer.git(["commit", "-m", "remote change"]);
+        fixture.peer.git(["push"]);
+
+        let response = sync_current_branch(
+            &runner,
+            SyncCurrentBranchRequest {
+                repository_path: display_path(&fixture.local.path),
+                operation_id: Some(OperationId("sync-stash-conflict-test".to_owned())),
+            },
+        )
+        .expect("sync stash restore conflict response");
+
+        assert_eq!(response.status, SyncCurrentBranchStatus::Pulled);
+        let conflict = response.conflict.expect("conflict payload");
+        assert_eq!(conflict.operation_id.0, "sync-stash-conflict-test");
+        assert_eq!(conflict.operation_name, SYNC_STASH_RESTORE_OPERATION);
+        assert!(conflict.files.iter().any(|file| file.path == "tracked.txt"));
+        assert_eq!(
+            response.stash_recovery.expect("stash recovery").id,
+            "sync-stash-conflict-test"
+        );
+        assert!(fixture
+            .local
+            .git_output(["stash", "list"])
+            .contains("Auto Stash: before syncing current branch"));
+        assert!(fixture
+            .local
+            .git_output(["status", "--porcelain=v1"])
+            .contains("UU tracked.txt"));
+    }
+
+    #[test]
+    fn sync_source_does_not_contain_force_push_flags() {
+        let source = include_str!("sync.rs");
+        let long_force = ["--", "force"].concat();
+        let long_force_with_lease = ["--", "force-with-lease"].concat();
+        let short_force_arg = ['"', '-', 'f', '"'].into_iter().collect::<String>();
+        let forced_refspec = ["+", "refs/"].concat();
+
+        for needle in [
+            long_force.as_str(),
+            long_force_with_lease.as_str(),
+            short_force_arg.as_str(),
+            forced_refspec.as_str(),
+        ] {
+            assert!(
+                !source.contains(needle),
+                "sync source must not contain force-push flag or refspec: {needle}"
+            );
+        }
     }
 
     struct DoubleClone {
@@ -574,6 +919,72 @@ mod tests {
                 peer,
                 _parent: parent,
             }
+        }
+
+        fn install_one_shot_push_race_hook(&self) {
+            let marker = self.local.path.join(".git").join("ag-push-race-once");
+            fs::write(&marker, "race\n").expect("write race marker");
+            let hook = self.local.path.join(".git").join("hooks").join("pre-push");
+            let script = format!(
+                r#"#!/bin/sh
+set -e
+marker={marker}
+peer={peer}
+if [ -f "$marker" ]; then
+  rm "$marker"
+  git -C "$peer" pull --ff-only
+  printf '%s\n' race > "$peer/race.txt"
+  git -C "$peer" add race.txt
+  git -C "$peer" commit -m 'race change'
+  git -C "$peer" push
+fi
+exit 0
+"#,
+                marker = shell_quote(&marker),
+                peer = shell_quote(&self.peer.path),
+            );
+            fs::write(&hook, script).expect("write pre-push hook");
+            make_executable(&hook);
+        }
+
+        fn install_repeating_push_race_hook(&self) {
+            let counter = self.local.path.join(".git").join("ag-push-race-counter");
+            let hook = self.local.path.join(".git").join("hooks").join("pre-push");
+            let script = format!(
+                r#"#!/bin/sh
+set -e
+counter_file={counter}
+peer={peer}
+counter=0
+if [ -f "$counter_file" ]; then
+  counter=$(cat "$counter_file")
+fi
+counter=$((counter + 1))
+printf '%s\n' "$counter" > "$counter_file"
+git -C "$peer" pull --ff-only
+printf '%s\n' "$counter" > "$peer/race-$counter.txt"
+git -C "$peer" add "race-$counter.txt"
+git -C "$peer" commit -m "race change $counter"
+git -C "$peer" push
+exit 0
+"#,
+                counter = shell_quote(&counter),
+                peer = shell_quote(&self.peer.path),
+            );
+            fs::write(&hook, script).expect("write repeating pre-push hook");
+            make_executable(&hook);
+        }
+    }
+
+    fn make_executable(path: &Path) {
+        let _ = path;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mut permissions = fs::metadata(path).expect("hook metadata").permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(path, permissions).expect("make hook executable");
         }
     }
 
@@ -637,6 +1048,14 @@ mod tests {
             let mut file = fs::File::create(path).expect("create file");
             file.write_all(content.as_bytes()).expect("write file");
         }
+
+        fn read(&self, relative: &str) -> String {
+            fs::read_to_string(self.path.join(relative)).expect("read file")
+        }
+    }
+
+    fn shell_quote(path: &Path) -> String {
+        format!("'{}'", display_path(path).replace('\'', "'\\''"))
     }
 
     fn real_runner_or_skip() -> Option<(GitRunner, TestTempDir)> {

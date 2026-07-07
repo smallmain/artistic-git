@@ -909,10 +909,17 @@ export type SyncCurrentBranchResponse = {
   upstream: string | null;
   status: SyncCurrentBranchStatus;
   attempts: number;
+  conflict: ConflictEnteredEvent | null;
+  stashRecovery: StashRecoveryPoint | null;
 };
 
 export type SyncCurrentBranchStatus =
-  "alreadyUpToDate" | "pulled" | "pushed" | "pulledAndPushed" | "published";
+  | "alreadyUpToDate"
+  | "pulled"
+  | "pushed"
+  | "pulledAndPushed"
+  | "published"
+  | "conflicts";
 
 export type ThemePreference = "system" | "light" | "dark";
 

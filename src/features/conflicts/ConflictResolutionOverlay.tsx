@@ -1185,7 +1185,8 @@ function conflictSideLabels(
   t: (key: string) => string,
   operationName: string,
 ): ConflictSideLabels {
-  if (operationName.toLowerCase().includes("stash")) {
+  const normalizedOperationName = operationName.toLowerCase();
+  if (normalizedOperationName.includes("stash")) {
     return {
       otherSection: t("conflicts.stashOtherSection"),
       otherVersion: t("conflicts.stashOtherVersion"),
@@ -1195,6 +1196,19 @@ function conflictSideLabels(
       useOtherHunk: t("conflicts.useStashOtherHunk"),
       useOwn: t("conflicts.useStashOwn"),
       useOwnHunk: t("conflicts.useStashOwnHunk"),
+    };
+  }
+
+  if (normalizedOperationName.includes("sync")) {
+    return {
+      otherSection: t("conflicts.syncOtherSection"),
+      otherVersion: t("conflicts.syncOtherVersion"),
+      ownSection: t("conflicts.syncOwnSection"),
+      ownVersion: t("conflicts.syncOwnVersion"),
+      useOther: t("conflicts.useSyncOther"),
+      useOtherHunk: t("conflicts.useSyncOtherHunk"),
+      useOwn: t("conflicts.useSyncOwn"),
+      useOwnHunk: t("conflicts.useSyncOwnHunk"),
     };
   }
 
