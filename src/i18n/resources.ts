@@ -116,6 +116,40 @@ export const resources = {
           title: "Error Details",
         },
       },
+      history: {
+        columns: {
+          author: "Author",
+          commit: "Commit",
+          graph: "Graph",
+          time: "Time",
+        },
+        details: {
+          close: "Close commit details",
+          copyHash: "Copy hash",
+          diffPlaceholder: "2D diff preview placeholder for the selected file.",
+          noFile: "No file selected",
+          revert: "Revert commit",
+        },
+        empty: "No commits match the current filters.",
+        filters: {
+          all: "All",
+          auto: "Auto",
+          current: "current",
+          custom: "{{count}} selected",
+        },
+        search: {
+          clear: "Clear search",
+          label: "Search history",
+          matches: {
+            author: "author",
+            content: "content",
+            message: "message",
+          },
+          placeholder: "Message, author, or content",
+        },
+        subtitle: "Virtualized commit graph with local-only avatars",
+        title: "Commit History",
+      },
       language: {
         en: "English",
         label: "Language",
@@ -232,6 +266,40 @@ export const resources = {
           showDetails: "显示技术详情",
           title: "错误详情",
         },
+      },
+      history: {
+        columns: {
+          author: "作者",
+          commit: "提交",
+          graph: "图表",
+          time: "时间",
+        },
+        details: {
+          close: "关闭提交详情",
+          copyHash: "复制提交号",
+          diffPlaceholder: "所选文件的 2D Diff 预览占位。",
+          noFile: "未选择文件",
+          revert: "撤回此提交",
+        },
+        empty: "没有提交匹配当前筛选。",
+        filters: {
+          all: "全部",
+          auto: "自动",
+          current: "当前",
+          custom: "已选 {{count}} 项",
+        },
+        search: {
+          clear: "清空搜索",
+          label: "搜索历史",
+          matches: {
+            author: "作者",
+            content: "内容",
+            message: "消息",
+          },
+          placeholder: "提交信息、作者或内容",
+        },
+        subtitle: "虚拟化提交图表与本地默认头像",
+        title: "提交历史",
       },
       language: {
         en: "English",

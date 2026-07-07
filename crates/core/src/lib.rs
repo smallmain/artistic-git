@@ -1,4 +1,5 @@
 pub mod config;
+pub mod history_graph;
 pub mod keyring;
 pub mod logging;
 pub mod realtime;
