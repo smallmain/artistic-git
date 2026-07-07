@@ -1,7 +1,7 @@
 import { AlertTriangle, FileText, History } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   type BranchListItem,
@@ -34,6 +34,7 @@ import {
   createStash,
   deleteBranch,
   deleteStash,
+  fetchRepository,
   listBranches,
   listConflicts,
   listLocalChanges,
@@ -50,6 +51,7 @@ import type {
   BranchNameValidationResponse,
   BranchSummary,
   CheckoutLocalChangesMode,
+  FetchStateEvent,
   LargeFileWarning,
   LocalChange,
   StashEntry,
@@ -59,6 +61,10 @@ import type {
 import { repoQueryKeys } from "@/lib/realtime/query-keys";
 import { cn } from "@/lib/utils";
 import { useWindowStore } from "@/store/window-store";
+import {
+  normalizeAppSettings,
+  validateFetchIntervalSeconds,
+} from "@/features/settings/settings-model";
 
 type MainTab = "history" | "localChanges";
 type StashScope = "all" | "selected";
@@ -112,6 +118,7 @@ interface RepositoryShellProps {
 export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   const { t } = useTranslation();
   const formatters = useLocalizedFormatters();
+  const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = React.useState<MainTab>("history");
   const [commitIds, setCommitIds] = React.useState<string[] | null>(null);
   const [commitMessage, setCommitMessage] = React.useState("");
@@ -130,6 +137,9 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   const [restoreIds, setRestoreIds] = React.useState<string[] | null>(null);
   const [restoreBusy, setRestoreBusy] = React.useState(false);
   const [branchActionBusy, setBranchActionBusy] = React.useState(false);
+  const [fetchBusy, setFetchBusy] = React.useState(false);
+  const [liveFetchState, setLiveFetchState] =
+    React.useState<FetchStateEvent | null>(null);
   const [branchToCheckout, setBranchToCheckout] =
     React.useState<BranchListItem | null>(null);
   const [checkoutMode, setCheckoutMode] =
@@ -210,6 +220,10 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     [branches, currentBranch, focusedBranch],
   );
   const operations = useWindowStore((state) => state.operationsById);
+  const appSettings = useWindowStore((state) => state.appSettings);
+  const storedFetchState = useWindowStore(
+    (state) => state.fetchStatesByRepository[repositoryPath] ?? null,
+  );
   const openSettings = useWindowStore((state) => state.openSettings);
   const conflict = useWindowStore(
     (state) => state.conflictsByRepository[repositoryPath] ?? null,
@@ -222,6 +236,21 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     () => Object.values(operations).at(-1) ?? null,
     [operations],
   );
+  const fetchState = liveFetchState ?? storedFetchState;
+
+  React.useEffect(() => {
+    const handleFetchState = (event: Event) => {
+      const payload = (event as CustomEvent<FetchStateEvent>).detail;
+      if (payload?.repositoryPath === repositoryPath) {
+        setLiveFetchState(payload);
+      }
+    };
+
+    window.addEventListener("artistic-git:fetch-state", handleFetchState);
+    return () => {
+      window.removeEventListener("artistic-git:fetch-state", handleFetchState);
+    };
+  }, [repositoryPath]);
 
   React.useEffect(() => {
     const name = newBranchName.trim();
@@ -285,21 +314,24 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     : undefined;
   const busy =
     activeOperation !== null ||
+    fetchBusy ||
     commitBusy ||
     restoreBusy ||
     branchActionBusy ||
     stashActionBusy;
   const busyLabel = activeOperation
     ? activeOperation.label
-    : commitBusy
-      ? t("localChanges.commitBusy")
-      : restoreBusy
-        ? t("localChanges.restoreBusy")
-        : branchActionBusy
-          ? t("repository.branchBusy")
-          : stashActionBusy
-            ? t("repository.stashBusy")
-            : t("repository.ready");
+    : fetchBusy
+      ? t("repository.sync")
+      : commitBusy
+        ? t("localChanges.commitBusy")
+        : restoreBusy
+          ? t("localChanges.restoreBusy")
+          : branchActionBusy
+            ? t("repository.branchBusy")
+            : stashActionBusy
+              ? t("repository.stashBusy")
+              : t("repository.ready");
   const selectedCommitPaths = React.useMemo(
     () => pathsForChangeIds(commitIds ?? [], localChanges),
     [commitIds, localChanges],
@@ -322,6 +354,66 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       }),
     [formatters, t],
   );
+
+  const fetchPreferences = normalizeAppSettings(appSettings).git;
+  const fetchInterval = validateFetchIntervalSeconds(
+    fetchPreferences?.fetchIntervalSeconds,
+  );
+
+  const runFetch = React.useCallback(async () => {
+    if (fetchBusy || !repository.hasRemote) {
+      return;
+    }
+
+    setFetchBusy(true);
+    try {
+      const response = await fetchRepository({ repositoryPath });
+      setLiveFetchState(response.event);
+      if (!response.skipped && response.event.state === "idle") {
+        await Promise.all([
+          queryClient.invalidateQueries({
+            queryKey: repoQueryKeys.summary(repositoryPath),
+          }),
+          queryClient.invalidateQueries({
+            queryKey: repoQueryKeys.branches(repositoryPath),
+          }),
+          queryClient.invalidateQueries({
+            queryKey: repoQueryKeys.history(repositoryPath),
+          }),
+        ]);
+      }
+    } catch (error) {
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:error", { detail: error }),
+      );
+    } finally {
+      setFetchBusy(false);
+    }
+  }, [fetchBusy, queryClient, repository.hasRemote, repositoryPath]);
+
+  React.useEffect(() => {
+    if (
+      !fetchPreferences?.autoFetch ||
+      !fetchInterval.valid ||
+      !repository.hasRemote
+    ) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      void runFetch();
+    }, fetchInterval.value * 1000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [
+    fetchInterval.valid,
+    fetchInterval.value,
+    fetchPreferences?.autoFetch,
+    repository.hasRemote,
+    runFetch,
+  ]);
 
   const handleBranchCompleted = React.useCallback(
     (branchName: string) => {
@@ -731,6 +823,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         branchActionsDisabledReason={branchActionsDisabledReason}
         branches={branches}
         busy={busy}
+        fetchState={fetchState}
         onApplyStash={(stash) => void applyStash(stash)}
         onBranchFocus={(branch) => {
           setFocusedBranch(branch);
@@ -745,6 +838,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
           setBranchToDelete(branch);
         }}
         onDeleteStash={setStashToDelete}
+        onFetch={() => void runFetch()}
         onOpenSettings={() => openSettings("general")}
         onShowStashDetails={(stash) => void showStashDetails(stash)}
         repository={repository}

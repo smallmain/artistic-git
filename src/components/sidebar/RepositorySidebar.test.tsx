@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import type { ReactElement } from "react";
+import type { ComponentProps, ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AppProviders } from "@/AppProviders";
@@ -141,10 +141,28 @@ describe("RepositorySidebar", () => {
       expect.objectContaining({ id: "stash@{0}" }),
     );
   });
+
+  it("shows fetch offline status with the failure summary", () => {
+    renderSidebar({
+      fetchState: {
+        lastSuccessAt: "1760000000",
+        message: "Could not resolve host: example.test",
+        repositoryPath: "/repo/art",
+        state: "offline",
+      },
+    });
+
+    expect(
+      screen.getByRole("tooltip", {
+        name: /Could not resolve host: example.test/,
+      }),
+    ).toBeInTheDocument();
+  });
 });
 
 function renderSidebar({
   branchActionsDisabledReason,
+  fetchState,
   onApplyStash,
   onCheckoutBranch,
   onCreateBranchFromBase,
@@ -153,6 +171,7 @@ function renderSidebar({
   onShowStashDetails,
 }: {
   branchActionsDisabledReason?: string;
+  fetchState?: ComponentProps<typeof RepositorySidebar>["fetchState"];
   onApplyStash?: (stash: StashListItem) => void;
   onCheckoutBranch?: (branch: BranchListItem) => void;
   onCreateBranchFromBase?: (branch: BranchListItem) => void;
@@ -165,6 +184,7 @@ function renderSidebar({
       branchActionsDisabledReason={branchActionsDisabledReason}
       branches={branches}
       busy={false}
+      fetchState={fetchState}
       onApplyStash={onApplyStash}
       onBranchFocus={vi.fn()}
       onCheckoutBranch={onCheckoutBranch}

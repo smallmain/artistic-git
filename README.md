@@ -25,6 +25,27 @@ The project intentionally uses an embedded Git distribution for production Git
 operations. Core Git-flow tests must use `ARTISTIC_GIT_DIST_DIR` or packaged
 resources and must never fall back to the system Git executable.
 
+## Release Baseline
+
+Minimum supported release targets:
+
+- macOS 13 or newer (`.app`, `.dmg`, and signed updater tar artifacts)
+- Windows 10 1809 or newer with Microsoft Edge WebView2 (`.exe` NSIS
+  current-user installer)
+- Linux distributions compatible with the Ubuntu 22.04 WebKitGTK 4.1 stack
+  (`.AppImage` and `.deb`)
+
+Official releases must be signed and, on macOS, notarized. For unsigned
+development artifacts, move the macOS app to `/Applications` and use
+right-click → Open once to approve it in Gatekeeper. On Windows, SmartScreen may
+require More info → Run anyway for unsigned CI artifacts.
+
+The release workflow runs on `main` pushes and `workflow_dispatch`, but it
+publishes only when `ENABLE_MAIN_RELEASE=true` and the `release` GitHub
+Environment allows the job. When the gate is not enabled, the workflow runs
+tests and a Tauri `--no-bundle` dry-run build without publishing. Manual runs
+can keep the automatic version calculation or override the SemVer bump level.
+
 ## Commit Convention
 
 Use Conventional Commits in English, for example:

@@ -87,8 +87,8 @@ graph TD
 - [x] TypeScript bindings 生成链路：Rust 类型为真相源，使用 `serde` + `specta`/`tauri-specta` 或等价方案生成 TS；CI 检查重新生成后 diff 为空
 - [x] resources 目录布局契约：git 发行目录、git-lfs、Windows ssh、helper 二进制、dev resources 与打包 resources 的统一解析规则
 - [x] Git 测试 bootstrap 契约：`ARTISTIC_GIT_DIST_DIR` 指向 dev git-dist；缺失或版本不符时测试失败，禁止 fallback 系统 git
-- [ ] IPC/认证契约：`operation-id` 贯穿高层操作；每条 git 命令派生 `invocation-id + one-time token`；helper 校验后 token 立即失效
-- [ ] Diff/冲突组件 props 契约：三处复用接口（本地更改/提交详情/冲突界面）与 LFS 锁状态预留位
+- [x] IPC/认证契约：`operation-id` 贯穿高层操作；每条 git 命令派生 `invocation-id + one-time token`；helper 校验后 token 立即失效
+- [x] Diff/冲突组件 props 契约：三处复用接口（本地更改/提交详情/冲突界面）与 LFS 锁状态预留位
 
 **验收**：TS bindings 生成稳定且 CI 漂移检查通过；1A–1D 可仅依赖契约并行开工；无内嵌 Git 路径时相关测试明确失败。
 
@@ -369,11 +369,11 @@ graph TD
 
 依赖：1C、2A。
 
-- [ ] 定时 `git fetch origin --prune --recurse-submodules=on-demand`；间隔设置项（秒，默认 60，校验 10–3600 越界红字禁用保存）
+- [x] 定时 `git fetch origin --prune --recurse-submodules=on-demand`；间隔设置项（秒，默认 60，校验 10–3600 越界红字禁用保存）
 - [ ] 额外触发：打开项目时/窗口重获焦点时/执行同步、提交、撤回等操作前；全局 single-flight：有写锁跳过本轮
-- [ ] 失败表现：网络类失败不弹窗 → 项目信息区离线小图标 + tooltip（最后成功 Fetch 时间），恢复自动消失；非网络类意外错误走错误弹窗
+- [x] 失败表现：网络类失败不弹窗 → 项目信息区离线小图标 + tooltip（最后成功 Fetch 时间），恢复自动消失；非网络类意外错误走错误弹窗
 - [ ] `fetch-state` 事件 → 分支 Badge（ahead+behind）与同步按钮橙色态数据链路（按钮行为 5A 实装）
-- [ ] 项目设置-远程仓库地址：显示 + 复制 + 修改（写 `remote.origin.url`）+ 清空（二次确认 → 删除 origin 进入无远程模式）
+- [x] 项目设置-远程仓库地址：显示 + 复制 + 修改（写 `remote.origin.url`）+ 清空（二次确认 → 删除 origin 进入无远程模式）
 - [ ] 无远程模式整合：隐藏所有同步入口/待同步 Badge/「立即推送」复选框；提交撤回跳过前置同步；全功能离线可用；顶部警告条引导
 
 **验收**：集成测试：prune 同步删除远程分支/断网降级与恢复/聚焦与操作前触发/写锁跳过/清空 origin 进入无远程模式全套 UI 断言。
@@ -522,12 +522,12 @@ graph TD
 ## 阶段 10 — 构建发布管线（依赖 1A；**自阶段 1 后可随时并行推进**） **\[P\]**
 
 - [ ] Tauri 打包配置：macOS 13+ Universal `.dmg` + `.app.tar.gz` + 更新签名；Windows x64 NSIS `.exe`（**perUser/currentUser** 安装，自更新免 UAC 可静默）；Linux `.AppImage`（主推，自带 webkit，glibc 2.31+）+ `.deb`（Ubuntu 22.04+ / webkit2gtk-4.1）
-- [ ] Release 工作流：推送 main 自动构建发布，但受 GitHub Environment 或仓库变量（如 `ENABLE_MAIN_RELEASE=true`）闸门保护，未开启时只测试 + dry-run 打包；`workflow_dispatch` 手动触发（默认自动计算版本，可手动指定级别覆盖）；PR 只测试不发布
-- [ ] 版本计算：初始 `0.1.0`；解析自上一 tag 提交（Conventional Commits）：仅 fix→patch；feat/refactor→minor；BREAKING CHANGE/`!`→major；无法解析→patch；自动打 tag
-- [ ] 更新日志 = 自上一 tag 以来所有提交信息，写入 Release notes
+- [x] Release 工作流：推送 main 自动构建发布，但受 GitHub Environment 或仓库变量（如 `ENABLE_MAIN_RELEASE=true`）闸门保护，未开启时只测试 + dry-run 打包；`workflow_dispatch` 手动触发（默认自动计算版本，可手动指定级别覆盖）；PR 只测试不发布
+- [x] 版本计算：初始 `0.1.0`；解析自上一 tag 提交（Conventional Commits）：仅 fix→patch；feat/refactor→minor；BREAKING CHANGE/`!`→major；无法解析→patch；自动打 tag
+- [x] 更新日志 = 自上一 tag 以来所有提交信息，写入 Release notes
 - [ ] 上传全平台二进制到 GitHub Releases + 生成 `latest.json`；Tauri 更新签名（私钥存 GitHub Secrets）；仓库与 Releases 公开
 - [ ] 内嵌 git 分发产物（1A）接入打包 resources；三平台产物内自检通过
-- [ ] README 补全：最低支持版本（macOS 13+ / Windows 10 1809+ / Linux 见上）；无 OS 签名的绕过说明（macOS 右键打开 + 移动到 /Applications；Windows SmartScreen）；main 自动发布闸门说明
+- [x] README 补全：最低支持版本（macOS 13+ / Windows 10 1809+ / Linux 见上）；无 OS 签名的绕过说明（macOS 右键打开 + 移动到 /Applications；Windows SmartScreen）；main 自动发布闸门说明
 
 **验收**：测试 tag 端到端演练：三平台产物生成、安装可运行、内嵌 git 自检通过、latest.json 与签名正确；版本计算规则单测。
 

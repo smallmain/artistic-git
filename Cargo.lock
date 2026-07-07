@@ -60,11 +60,14 @@ dependencies = [
  "artistic-git-contracts",
  "artistic-git-core",
  "artistic-git-git-runner",
+ "artistic-git-helpers",
  "artistic-git-test-support",
+ "getrandom 0.3.4",
  "serde",
  "specta",
  "specta-serde",
  "specta-typescript",
+ "tempfile",
  "tracing",
 ]
 
@@ -106,7 +109,10 @@ dependencies = [
 name = "artistic-git-helpers"
 version = "0.1.0"
 dependencies = [
+ "artistic-git-contracts",
  "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

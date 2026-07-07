@@ -2,6 +2,7 @@ import {
   ChevronDown,
   ChevronRight,
   Cloud,
+  CloudOff,
   GitBranch,
   GitFork,
   History,
@@ -19,6 +20,7 @@ import { useTranslation } from "react-i18next";
 import { IconButton } from "@/components/ui/icon-button";
 import { Tooltip } from "@/components/ui/tooltip";
 import { TruncatedText } from "@/components/ui/truncated-text";
+import type { FetchStateEvent } from "@/lib/ipc/generated";
 import { cn } from "@/lib/utils";
 import { useWindowStore } from "@/store/window-store";
 
@@ -48,12 +50,14 @@ interface RepositorySidebarProps {
   branchActionsDisabledReason?: string;
   branches: BranchListItem[];
   busy: boolean;
+  fetchState?: FetchStateEvent | null;
   onApplyStash?: (stash: StashListItem) => void;
   onBranchFocus: (branch: BranchListItem) => void;
   onCheckoutBranch?: (branch: BranchListItem) => void;
   onCreateBranchFromBase?: (branch: BranchListItem) => void;
   onDeleteBranch?: (branch: BranchListItem) => void;
   onDeleteStash?: (stash: StashListItem) => void;
+  onFetch?: () => void;
   onOpenSettings?: () => void;
   onShowStashDetails?: (stash: StashListItem) => void;
   repository: RepositorySummary;
@@ -69,12 +73,14 @@ export function RepositorySidebar({
   branchActionsDisabledReason,
   branches,
   busy,
+  fetchState,
   onApplyStash,
   onBranchFocus,
   onCheckoutBranch,
   onCreateBranchFromBase,
   onDeleteBranch,
   onDeleteStash,
+  onFetch,
   onOpenSettings,
   onShowStashDetails,
   repository,
@@ -181,11 +187,28 @@ export function RepositorySidebar({
             text={repository.path}
           />
         </div>
-        <DisabledActionButton
-          busy={busy}
-          icon={<RefreshCw className="size-4" aria-hidden="true" />}
-          label={t("repository.sync")}
-        />
+        <div className="flex shrink-0 items-center gap-1">
+          <RepositoryRemoteStatus
+            fetchState={fetchState}
+            hasRemote={repository.hasRemote}
+          />
+          <IconButton
+            disabled={busy || !repository.hasRemote || !onFetch}
+            label={t("repository.sync")}
+            onClick={onFetch}
+            tooltip={
+              busy
+                ? t("repository.busyTooltip")
+                : repository.hasRemote
+                  ? t("repository.sync")
+                  : t("repository.noRemote")
+            }
+            type="button"
+            variant="ghost"
+          >
+            <RefreshCw className="size-4" aria-hidden="true" />
+          </IconButton>
+        </div>
       </section>
 
       <section className="flex shrink-0 items-center gap-2 border-b px-3 py-2">
@@ -283,6 +306,63 @@ export function RepositorySidebar({
         role="separator"
       />
     </aside>
+  );
+}
+
+function RepositoryRemoteStatus({
+  fetchState,
+  hasRemote,
+}: {
+  fetchState?: FetchStateEvent | null;
+  hasRemote: boolean;
+}) {
+  const { t } = useTranslation();
+  if (!hasRemote) {
+    return (
+      <Tooltip content={t("repository.noRemote")}>
+        {({ describedBy }) => (
+          <span
+            aria-describedby={describedBy}
+            className="flex size-8 items-center justify-center text-muted-foreground"
+          >
+            <CloudOff className="size-4" aria-hidden="true" />
+          </span>
+        )}
+      </Tooltip>
+    );
+  }
+
+  if (fetchState?.state !== "offline" && fetchState?.state !== "failed") {
+    return null;
+  }
+
+  const message =
+    fetchState.message ??
+    (fetchState.state === "offline"
+      ? t("repository.fetchOffline")
+      : t("repository.fetchFailed"));
+  const lastSuccess = fetchState.lastSuccessAt
+    ? ` ${t("repository.fetchLastSuccess", {
+        timestamp: fetchState.lastSuccessAt,
+      })}`
+    : "";
+
+  return (
+    <Tooltip content={`${message}.${lastSuccess}`}>
+      {({ describedBy }) => (
+        <span
+          aria-describedby={describedBy}
+          className={cn(
+            "flex size-8 items-center justify-center",
+            fetchState.state === "offline"
+              ? "text-warning"
+              : "text-destructive",
+          )}
+        >
+          <CloudOff className="size-4" aria-hidden="true" />
+        </span>
+      )}
+    </Tooltip>
   );
 }
 

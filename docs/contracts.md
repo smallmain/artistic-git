@@ -52,6 +52,23 @@ git-dist/
 Git execution code must accept an explicit distribution root only. Searching
 `PATH` or falling back to system Git is not allowed.
 
+## Auth Helper IPC
+
+Git commands that may need credentials receive a per-invocation local IPC
+context through environment variables:
+
+- `ARTISTIC_GIT_AUTH_SOCKET`: Unix socket path or future Windows named-pipe
+  endpoint.
+- `ARTISTIC_GIT_AUTH_TOKEN`: one-time token scoped to the invocation.
+- `ARTISTIC_GIT_AUTH_INVOCATION_ID`: helper callback invocation id.
+- `ARTISTIC_GIT_AUTH_OPERATION_ID`: parent app operation id.
+
+The app injects `credential.helper`, `core.sshCommand`, `GIT_ASKPASS`, and
+`SSH_ASKPASS` per command. Helpers must call only the local IPC endpoint from
+the environment; they must not open network listeners. Unix sockets are
+owner-only (`0600`). Windows named-pipe ACL enforcement is represented as a
+platform security plan until the Windows implementation is added.
+
 ## Test Bootstrap
 
 Core Git integration tests must call `artistic_git_test_support::require_git_dist`.

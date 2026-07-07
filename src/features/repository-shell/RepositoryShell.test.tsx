@@ -26,6 +26,7 @@ const commandMocks = vi.hoisted(() => ({
   createStash: vi.fn(),
   deleteBranch: vi.fn(),
   deleteStash: vi.fn(),
+  fetchRepository: vi.fn(),
   listBranches: vi.fn(),
   listConflicts: vi.fn(),
   listLocalChanges: vi.fn(),
@@ -157,6 +158,15 @@ beforeEach(() => {
     branchName: "feature/lookdev",
     repositoryPath: "/repo/art",
     status: "completed",
+  });
+  commandMocks.fetchRepository.mockResolvedValue({
+    event: {
+      lastSuccessAt: "1760000000",
+      message: null,
+      repositoryPath: "/repo/art",
+      state: "idle",
+    },
+    skipped: false,
   });
   commandMocks.restoreChanges.mockResolvedValue({
     backedUpPaths: ["assets/texture.png"],

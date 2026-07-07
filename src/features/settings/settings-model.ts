@@ -12,13 +12,17 @@ import type {
 } from "@/i18n/resources";
 import type { ThemePreference } from "@/theme/ThemeProvider";
 
+export const MIN_FETCH_INTERVAL_SECONDS = 10;
+export const MAX_FETCH_INTERVAL_SECONDS = 3600;
+export const DEFAULT_FETCH_INTERVAL_SECONDS = 60;
+
 export const defaultAppSettings: AppSettings = {
   schemaVersion: 1,
   language: "system",
   appearance: { theme: "system" },
   git: {
     autoFetch: true,
-    fetchIntervalSeconds: 60,
+    fetchIntervalSeconds: DEFAULT_FETCH_INTERVAL_SECONDS,
     user: { name: null, email: null },
     rememberSshPassphrase: false,
   },
@@ -47,6 +51,15 @@ export const defaultLargeFileCheck: Required<LargeFileCheckSettings> = {
 export function normalizeAppSettings(
   settings?: AppSettings | null,
 ): AppSettings {
+  const normalizedGit = {
+    ...defaultAppSettings.git,
+    ...settings?.git,
+    user: {
+      ...defaultAppSettings.git?.user,
+      ...settings?.git?.user,
+    },
+  };
+
   return {
     ...defaultAppSettings,
     ...settings,
@@ -55,12 +68,10 @@ export function normalizeAppSettings(
       ...settings?.appearance,
     },
     git: {
-      ...defaultAppSettings.git,
-      ...settings?.git,
-      user: {
-        ...defaultAppSettings.git?.user,
-        ...settings?.git?.user,
-      },
+      ...normalizedGit,
+      fetchIntervalSeconds: normalizeFetchIntervalSeconds(
+        normalizedGit.fetchIntervalSeconds,
+      ),
     },
     updates: {
       ...defaultAppSettings.updates,
@@ -170,6 +181,23 @@ export function settingsWithGitUser(
   };
 }
 
+export function settingsWithFetchPreferences(
+  settings: AppSettings | null | undefined,
+  preferences: { autoFetch?: boolean; fetchIntervalSeconds?: number },
+): AppSettings {
+  const normalized = normalizeAppSettings(settings);
+  return {
+    ...normalized,
+    git: {
+      ...normalized.git,
+      ...preferences,
+      fetchIntervalSeconds:
+        preferences.fetchIntervalSeconds ??
+        normalized.git?.fetchIntervalSeconds,
+    },
+  };
+}
+
 export function settingsWithOnboarded(
   settings: AppSettings | null | undefined,
   onboarded: boolean,
@@ -229,6 +257,28 @@ export interface GitUserValidation {
   messageKey: string | null;
   nameMissing: boolean;
   valid: boolean;
+}
+
+export interface FetchIntervalValidation {
+  max: number;
+  min: number;
+  valid: boolean;
+  value: number;
+}
+
+export function validateFetchIntervalSeconds(
+  value: number | null | undefined,
+): FetchIntervalValidation {
+  const normalized = normalizeFetchIntervalSeconds(value);
+  return {
+    max: MAX_FETCH_INTERVAL_SECONDS,
+    min: MIN_FETCH_INTERVAL_SECONDS,
+    valid:
+      Number.isInteger(normalized) &&
+      normalized >= MIN_FETCH_INTERVAL_SECONDS &&
+      normalized <= MAX_FETCH_INTERVAL_SECONDS,
+    value: normalized,
+  };
 }
 
 export function validateGitUser(user: GitUserSettings): GitUserValidation {
@@ -296,4 +346,14 @@ export function supportedLanguageFromUi(
 function cleanOptionalText(value: string | null | undefined): string | null {
   const trimmed = value?.trim() ?? "";
   return trimmed ? trimmed : null;
+}
+
+function normalizeFetchIntervalSeconds(
+  value: number | null | undefined,
+): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT_FETCH_INTERVAL_SECONDS;
+  }
+
+  return Math.trunc(value);
 }

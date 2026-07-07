@@ -162,6 +162,10 @@ pub fn save_app_settings(
     let config = require_config(config, "saveAppSettings")?;
     let mut next_settings = request.settings;
     next_settings.git.user = clean_identity(next_settings.git.user);
+    crate::fetch::validate_fetch_interval_seconds(
+        next_settings.git.fetch_interval_seconds,
+        "saveAppSettings",
+    )?;
     let previous_settings = config
         .settings()
         .map_err(|source| config_error(source, "saveAppSettings"))?;

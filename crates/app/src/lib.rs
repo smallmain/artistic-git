@@ -9,10 +9,13 @@ use serde::Serialize;
 use specta::Type;
 use std::path::{Path, PathBuf};
 
+pub mod auth_ipc;
 pub mod branches;
 pub mod commit;
 pub mod conflicts;
+pub mod fetch;
 pub(crate) mod git_ops;
+pub mod remote;
 pub mod repository;
 pub mod restore;
 pub mod revert;
@@ -70,6 +73,11 @@ pub mod stash {
     }
 }
 pub use branches::{checkout_branch, create_branch, delete_branch, validate_branch_name};
+pub use fetch::{
+    fetch_changed_queries, fetch_repository, plan_scheduled_fetch, FetchScheduleDecision,
+    FetchStateStore,
+};
+pub use remote::{load_remote_settings, save_remote_settings};
 pub use repository::{
     list_branches, list_local_changes, list_stashes, log_page_with_cancel, open_repository,
     repository_summary, search_log_with_cancel, RepositoryBackend,

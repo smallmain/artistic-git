@@ -123,8 +123,8 @@ describe("App", () => {
     });
 
     expect(
-      screen.getByText("No remote repository configured"),
-    ).toBeInTheDocument();
+      screen.getAllByText("No remote repository configured").length,
+    ).toBeGreaterThan(0);
     expect(
       screen.getByRole("button", { name: /Local Changes/ }),
     ).toHaveTextContent("4");

@@ -347,6 +347,15 @@ export type DiffPayload = {
   metadata: { [key in string]: string };
 };
 
+export type FetchRepositoryRequest = {
+  repositoryPath: string;
+};
+
+export type FetchRepositoryResponse = {
+  event: FetchStateEvent;
+  skipped: boolean;
+};
+
 export type FetchState = "idle" | "fetching" | "offline" | "failed";
 
 export type FetchStateEvent = {
@@ -581,6 +590,12 @@ export type ProjectsDocument = {
   projects?: { [key in string]: ProjectSettings };
 };
 
+export type RemoteSettingsResponse = {
+  repositoryPath: string;
+  remoteMode: RepositoryRemoteMode;
+  originUrl: string | null;
+};
+
 export type RepoChangedEvent = {
   repositoryPath: string;
   changedQueries: RepoQueryKind[];
@@ -718,6 +733,12 @@ export type SaveGitignoreRequest = {
 export type SaveProjectSettingsRequest = {
   repositoryPath: string;
   largeFileCheck: LargeFileCheckSettings;
+};
+
+export type SaveRemoteSettingsRequest = {
+  repositoryPath: string;
+  originUrl: string | null;
+  removeOrigin?: boolean;
 };
 
 export type SettingsSnapshot = {

@@ -1,0 +1,290 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish when ENABLE_MAIN_RELEASE=true and the release environment approves."
+        type: boolean
+        default: false
+      bump:
+        description: "Override the calculated SemVer bump for manual releases."
+        type: choice
+        default: auto
+        options:
+          - auto
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write
+
+env:
+  CI: true
+
+jobs:
+  plan:
+    name: Version and notes
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+      has_changes: ${{ steps.release.outputs.has_changes }}
+      notes_path: ${{ steps.release.outputs.notes_path }}
+      latest_json_path: ${{ steps.release.outputs.latest_json_path }}
+      publish_release: ${{ steps.mode.outputs.publish_release }}
+      mode_reason: ${{ steps.mode.outputs.mode_reason }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Calculate release version
+        id: release
+        shell: bash
+        env:
+          BUMP_OVERRIDE: ${{ github.event.inputs.bump || 'auto' }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/release"
+          args=(
+            --output-dir "$RUNNER_TEMP/release"
+            --github-output "$GITHUB_OUTPUT"
+          )
+          if [ "$BUMP_OVERRIDE" != "auto" ]; then
+            args+=(--bump "$BUMP_OVERRIDE")
+          fi
+          node scripts/release-version.mjs \
+            "${args[@]}"
+
+      - name: Determine release mode
+        id: mode
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          ENABLE_MAIN_RELEASE: ${{ vars.ENABLE_MAIN_RELEASE }}
+          DISPATCH_PUBLISH: ${{ github.event.inputs.publish || 'false' }}
+          HAS_CHANGES: ${{ steps.release.outputs.has_changes }}
+        run: |
+          set -euo pipefail
+          publish_release=false
+          reason="dry-run: ENABLE_MAIN_RELEASE is not true or publish was not requested"
+
+          if [ "$HAS_CHANGES" != "true" ]; then
+            reason="dry-run: no commits after the previous release tag"
+          elif [ "$EVENT_NAME" = "push" ] && [ "$REF_NAME" = "main" ] && [ "$ENABLE_MAIN_RELEASE" = "true" ]; then
+            publish_release=true
+            reason="release: main push with ENABLE_MAIN_RELEASE=true"
+          elif [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$DISPATCH_PUBLISH" = "true" ] && [ "$ENABLE_MAIN_RELEASE" = "true" ]; then
+            publish_release=true
+            reason="release: manual publish with ENABLE_MAIN_RELEASE=true"
+          fi
+
+          echo "publish_release=$publish_release" >> "$GITHUB_OUTPUT"
+          echo "mode_reason=$reason" >> "$GITHUB_OUTPUT"
+          echo "$reason"
+
+      - name: Upload release plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-plan
+          path: ${{ runner.temp }}/release/
+          retention-days: 14
+
+  dry-run:
+    name: Dry-run package (${{ matrix.os }})
+    needs: plan
+    if: needs.plan.outputs.publish_release != 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-latest, windows-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Linux Tauri dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            pkg-config \
+            libssl-dev
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check release scripts and bundle resources
+        run: pnpm release:check
+
+      - name: Dry-run Tauri package build
+        run: pnpm tauri build --ci --no-bundle
+
+  package:
+    name: Package release (${{ matrix.os }})
+    needs: plan
+    if: needs.plan.outputs.publish_release == 'true'
+    environment: release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            bundles: app,dmg
+            gitDistTarget: macos-universal
+            artifactName: artistic-git-macos
+          - os: windows-latest
+            bundles: nsis
+            gitDistTarget: windows-x86_64
+            artifactName: artistic-git-windows
+          - os: ubuntu-22.04
+            bundles: appimage,deb
+            gitDistTarget: linux-x86_64
+            artifactName: artistic-git-linux
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Linux Tauri dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            pkg-config \
+            libssl-dev
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check release scripts and bundle resources
+        run: pnpm release:check
+
+      - name: Validate staged embedded Git resources
+        shell: bash
+        env:
+          ARTISTIC_GIT_DIST_DIR: src-tauri/resources/git-dist
+        run: |
+          set -euo pipefail
+          node scripts/check-tauri-bundle-resources.mjs --require-manifest
+          node scripts/check-git-dist.mjs --no-exec --target="${{ matrix.gitDistTarget }}"
+
+      - name: Build Tauri bundles
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pnpm tauri build --ci --bundles "${{ matrix.bundles }}"
+
+      - name: Stage release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          if [ -d src-tauri/target/release/bundle ]; then
+            find src-tauri/target/release/bundle -type f \
+              \( -name '*.dmg' \
+              -o -name '*.app.tar.gz' \
+              -o -name '*.app.tar.gz.sig' \
+              -o -name '*.AppImage' \
+              -o -name '*.AppImage.tar.gz' \
+              -o -name '*.AppImage.tar.gz.sig' \
+              -o -name '*.deb' \
+              -o -name '*.exe' \
+              -o -name '*.exe.zip' \
+              -o -name '*.exe.zip.sig' \
+              -o -name '*.sig' \) \
+              -exec cp {} release-assets/ \;
+          fi
+          test -n "$(find release-assets -type f -print -quit)"
+
+      - name: Upload release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifactName }}
+          path: release-assets/
+          retention-days: 14
+
+  publish:
+    name: Publish GitHub Release
+    needs: [plan, package]
+    if: needs.plan.outputs.publish_release == 'true'
+    environment: release
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Download release plan
+        uses: actions/download-artifact@v4
+        with:
+          name: release-plan
+          path: release-plan
+
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: artistic-git-*
+          merge-multiple: true
+
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ needs.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          cp release-plan/latest.json release-assets/latest.json
+          gh release create "$TAG_NAME" release-assets/* \
+            --title "Artistic Git $TAG_NAME" \
+            --notes-file release-plan/RELEASE_NOTES.md

@@ -1,12 +1,15 @@
 import {
   Check,
   Clipboard,
+  Cloud,
   FolderCog,
   Info,
   KeyRound,
   Palette,
+  RefreshCw,
   Save,
   Settings2,
+  Trash2,
   UserRound,
 } from "lucide-react";
 import * as React from "react";
@@ -20,15 +23,18 @@ import type {
   GitignoreFileResponse,
   IdentitySourcesResponse,
   ProjectSettings,
+  RemoteSettingsResponse,
   SshKeyStatus,
 } from "@/lib/ipc/generated";
 import {
   generateSshKey,
   loadGitignore,
   loadProjectSettings,
+  loadRemoteSettings,
   saveAppSettings,
   saveGitignore,
   saveProjectSettings,
+  saveRemoteSettings,
   settingsSnapshot,
 } from "@/lib/ipc/commands";
 import { cn } from "@/lib/utils";
@@ -45,8 +51,11 @@ import {
   isValidEmail,
   normalizeAppSettings,
   normalizeProjectSettings,
+  settingsWithFetchPreferences,
   settingsWithLanguage,
   settingsWithTheme,
+  validateFetchIntervalSeconds,
+  type FetchIntervalValidation,
   validateGitUser,
   type GitUserValidation,
 } from "./settings-model";
@@ -103,15 +112,25 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
   const [project, setProject] = React.useState<ProjectSettings | null>(null);
   const [gitignore, setGitignore] =
     React.useState<GitignoreFileResponse | null>(null);
+  const [remoteSettings, setRemoteSettings] =
+    React.useState<RemoteSettingsResponse | null>(null);
   const [gitignoreDraft, setGitignoreDraft] = React.useState("");
+  const [remoteUrlDraft, setRemoteUrlDraft] = React.useState("");
   const [loading, setLoading] = React.useState(open);
   const [savingSettings, setSavingSettings] = React.useState(false);
   const [savingProject, setSavingProject] = React.useState(false);
   const [savingGitignore, setSavingGitignore] = React.useState(false);
+  const [savingRemote, setSavingRemote] = React.useState(false);
   const [status, setStatus] = React.useState<string | null>(null);
+  const [remoteRemoveArmed, setRemoteRemoveArmed] = React.useState(false);
   const [identityTouched, setIdentityTouched] = React.useState(false);
   const [identitySaveAttempted, setIdentitySaveAttempted] =
     React.useState(false);
+  const appSettingsFallbackRef = React.useRef(appSettings);
+
+  React.useEffect(() => {
+    appSettingsFallbackRef.current = appSettings;
+  }, [appSettings]);
 
   React.useEffect(() => {
     if (!open) {
@@ -141,7 +160,7 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
         setIdentitySaveAttempted(false);
       })
       .catch((error) => {
-        setDraft(normalizeAppSettings(appSettings));
+        setDraft(normalizeAppSettings(appSettingsFallbackRef.current));
         window.dispatchEvent(
           new CustomEvent("artistic-git:error", { detail: error }),
         );
@@ -155,7 +174,7 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
     return () => {
       active = false;
     };
-  }, [appSettings, open, setAppSettings, setAppVersion]);
+  }, [open, setAppSettings, setAppVersion]);
 
   React.useEffect(() => {
     if (!open || !activeRepositoryPath) {
@@ -166,8 +185,9 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
     void Promise.all([
       loadProjectSettings({ repositoryPath: activeRepositoryPath }),
       loadGitignore({ repositoryPath: activeRepositoryPath }),
+      loadRemoteSettings({ repositoryPath: activeRepositoryPath }),
     ])
-      .then(([loadedProject, loadedGitignore]) => {
+      .then(([loadedProject, loadedGitignore, loadedRemoteSettings]) => {
         if (!active) {
           return;
         }
@@ -175,6 +195,9 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
         setProjectSettings(activeRepositoryPath, loadedProject);
         setGitignore(loadedGitignore);
         setGitignoreDraft(loadedGitignore.content);
+        setRemoteSettings(loadedRemoteSettings);
+        setRemoteUrlDraft(loadedRemoteSettings.originUrl ?? "");
+        setRemoteRemoveArmed(false);
       })
       .catch((error) => {
         window.dispatchEvent(
@@ -195,12 +218,19 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
   const visibleGitignore = open && activeRepositoryPath ? gitignore : null;
   const visibleGitignoreDraft =
     open && activeRepositoryPath ? gitignoreDraft : "";
+  const visibleRemoteSettings =
+    open && activeRepositoryPath ? remoteSettings : null;
+  const visibleRemoteUrlDraft =
+    open && activeRepositoryPath ? remoteUrlDraft : "";
   const normalizedProject = normalizeProjectSettings(visibleProject);
   const largeFileCheck =
     normalizedProject.largeFileCheck ?? defaultLargeFileCheck;
   const gitUser = gitUserFromSettings(draft);
   const email = gitUser.email ?? "";
   const identityValidation = validateGitUser(gitUser);
+  const fetchIntervalValidation = validateFetchIntervalSeconds(
+    draft.git?.fetchIntervalSeconds,
+  );
   const showIdentityValidation =
     identityTouched ||
     identitySaveAttempted ||
@@ -230,6 +260,18 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
         );
         return null;
       }
+    }
+    const intervalValidation = validateFetchIntervalSeconds(
+      nextSettings.git?.fetchIntervalSeconds,
+    );
+    if (!intervalValidation.valid) {
+      setStatus(
+        t("settings.general.fetchIntervalRange", {
+          max: intervalValidation.max,
+          min: intervalValidation.min,
+        }),
+      );
+      return null;
     }
 
     setSavingSettings(true);
@@ -327,6 +369,57 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
     }
   };
 
+  const persistRemote = async () => {
+    if (!activeRepositoryPath) {
+      return;
+    }
+
+    const trimmedUrl = remoteUrlDraft.trim();
+    const hasExistingOrigin = Boolean(remoteSettings?.originUrl);
+    if (!trimmedUrl && hasExistingOrigin && !remoteRemoveArmed) {
+      setRemoteRemoveArmed(true);
+      setStatus(t("settings.status.remoteRemoveArmed"));
+      return;
+    }
+
+    setSavingRemote(true);
+    setStatus(null);
+    try {
+      const saved = await saveRemoteSettings({
+        repositoryPath: activeRepositoryPath,
+        originUrl: trimmedUrl ? trimmedUrl : null,
+        removeOrigin: hasExistingOrigin && !trimmedUrl && remoteRemoveArmed,
+      });
+      setRemoteSettings(saved);
+      setRemoteUrlDraft(saved.originUrl ?? "");
+      setRemoteRemoveArmed(false);
+      setStatus(
+        saved.originUrl
+          ? t("settings.status.remoteSaved")
+          : t("settings.status.originRemoved"),
+      );
+    } catch (error) {
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:error", { detail: error }),
+      );
+    } finally {
+      setSavingRemote(false);
+    }
+  };
+
+  const copyRemoteUrl = async () => {
+    const remoteUrl = remoteUrlDraft.trim() || remoteSettings?.originUrl;
+    if (!remoteUrl) {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(remoteUrl);
+      setStatus(t("settings.status.copied"));
+    } catch {
+      setStatus(t("settings.status.copyFailed"));
+    }
+  };
+
   const copyPublicKey = async () => {
     if (!sshKey?.publicKey) {
       return;
@@ -403,6 +496,7 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
           {section === "general" ? (
             <GeneralSettings
               draft={draft}
+              fetchIntervalValidation={fetchIntervalValidation}
               gitUser={gitUser}
               identitySources={identitySources}
               identityValidation={identityValidation}
@@ -412,6 +506,7 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
               onSave={() =>
                 void persistSettings(draft, { validateIdentity: true })
               }
+              onSaveFetch={() => void persistSettings(draft)}
               onThemeChange={persistTheme}
               onUpdateDraft={setDraft}
               onUpdateUser={updateDraftUser}
@@ -435,10 +530,20 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
                   largeFileCheck: next,
                 }));
               }}
+              onRemoteChange={(value) => {
+                setRemoteUrlDraft(value);
+                setRemoteRemoveArmed(false);
+              }}
+              onRemoteCopy={() => void copyRemoteUrl()}
+              onSaveRemote={() => void persistRemote()}
               onSaveGitignore={() => void persistGitignore()}
               onSaveProject={() => void persistProject()}
+              remoteRemoveArmed={remoteRemoveArmed}
+              remoteSettings={visibleRemoteSettings}
+              remoteUrlDraft={visibleRemoteUrlDraft}
               savingGitignore={savingGitignore}
               savingProject={savingProject}
+              savingRemote={savingRemote}
             />
           ) : null}
 
@@ -455,6 +560,7 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
 
 function GeneralSettings({
   draft,
+  fetchIntervalValidation,
   gitUser,
   identitySources,
   identityValidation,
@@ -462,6 +568,7 @@ function GeneralSettings({
   onGenerateSshKey,
   onLanguageChange,
   onSave,
+  onSaveFetch,
   onThemeChange,
   onUpdateDraft,
   onUpdateUser,
@@ -470,6 +577,7 @@ function GeneralSettings({
   sshKey,
 }: {
   draft: AppSettings;
+  fetchIntervalValidation: FetchIntervalValidation;
   gitUser: GitUserSettings;
   identitySources: IdentitySourcesResponse | null;
   identityValidation: GitUserValidation;
@@ -477,6 +585,7 @@ function GeneralSettings({
   onGenerateSshKey: () => void;
   onLanguageChange: (value: "system" | "en" | "zh-CN") => void;
   onSave: () => void;
+  onSaveFetch: () => void;
   onThemeChange: (value: "system" | "light" | "dark") => void;
   onUpdateDraft: React.Dispatch<React.SetStateAction<AppSettings>>;
   onUpdateUser: (user: GitUserSettings) => void;
@@ -578,6 +687,62 @@ function GeneralSettings({
       </SettingsGroup>
 
       <SettingsGroup
+        icon={<RefreshCw className="size-4" aria-hidden="true" />}
+        title={t("settings.general.fetch")}
+      >
+        <ToggleRow
+          checked={draft.git?.autoFetch ?? true}
+          label={t("settings.general.autoFetch")}
+          onChange={(checked) => {
+            onUpdateDraft((current) =>
+              settingsWithFetchPreferences(current, { autoFetch: checked }),
+            );
+          }}
+        />
+        <label className="grid gap-1 text-sm">
+          <span className="font-medium">
+            {t("settings.general.fetchIntervalSeconds")}
+          </span>
+          <input
+            aria-invalid={!fetchIntervalValidation.valid}
+            className={cn(
+              "h-9 w-36 rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              !fetchIntervalValidation.valid &&
+                "border-destructive focus-visible:ring-destructive",
+            )}
+            max={fetchIntervalValidation.max}
+            min={fetchIntervalValidation.min}
+            onChange={(event) => {
+              onUpdateDraft((current) =>
+                settingsWithFetchPreferences(current, {
+                  fetchIntervalSeconds: Number(event.target.value),
+                }),
+              );
+            }}
+            type="number"
+            value={draft.git?.fetchIntervalSeconds ?? 60}
+          />
+        </label>
+        {!fetchIntervalValidation.valid ? (
+          <p className="text-sm text-destructive">
+            {t("settings.general.fetchIntervalRange", {
+              max: fetchIntervalValidation.max,
+              min: fetchIntervalValidation.min,
+            })}
+          </p>
+        ) : null}
+        <Button
+          className="gap-2"
+          disabled={saving || !fetchIntervalValidation.valid}
+          onClick={onSaveFetch}
+          type="button"
+        >
+          <Save className="size-4" aria-hidden="true" />
+          {t("settings.general.saveFetch")}
+        </Button>
+      </SettingsGroup>
+
+      <SettingsGroup
         icon={<Palette className="size-4" aria-hidden="true" />}
         title={t("settings.general.appearance")}
       >
@@ -624,7 +789,6 @@ function GeneralSettings({
 
       <SettingsGroup title={t("settings.general.placeholders")}>
         <PlaceholderRow label={t("settings.general.credentialsPlaceholder")} />
-        <PlaceholderRow label={t("settings.general.fetchPlaceholder")} />
         <PlaceholderRow label={t("settings.general.updatePlaceholder")} />
       </SettingsGroup>
     </section>
@@ -638,10 +802,17 @@ function ProjectSettingsPanel({
   largeFileCheck,
   onGitignoreChange,
   onLargeFileChange,
+  onRemoteChange,
+  onRemoteCopy,
   onSaveGitignore,
   onSaveProject,
+  onSaveRemote,
+  remoteRemoveArmed,
+  remoteSettings,
+  remoteUrlDraft,
   savingGitignore,
   savingProject,
+  savingRemote,
 }: {
   activeRepositoryPath: string | null;
   gitignore: GitignoreFileResponse | null;
@@ -651,10 +822,17 @@ function ProjectSettingsPanel({
   onLargeFileChange: (
     value: Required<{ enabled: boolean; thresholdMb: number }>,
   ) => void;
+  onRemoteChange: (value: string) => void;
+  onRemoteCopy: () => void;
   onSaveGitignore: () => void;
   onSaveProject: () => void;
+  onSaveRemote: () => void;
+  remoteRemoveArmed: boolean;
+  remoteSettings: RemoteSettingsResponse | null;
+  remoteUrlDraft: string;
   savingGitignore: boolean;
   savingProject: boolean;
+  savingRemote: boolean;
 }) {
   const { t } = useTranslation();
 
@@ -731,7 +909,58 @@ function ProjectSettingsPanel({
       </SettingsGroup>
 
       <SettingsGroup title={t("settings.project.remote")}>
-        <PlaceholderRow label={t("settings.project.remotePlaceholder")} />
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          {remoteSettings?.remoteMode === "origin" ? (
+            <Cloud className="size-4" aria-hidden="true" />
+          ) : (
+            <Trash2 className="size-4" aria-hidden="true" />
+          )}
+          <span>
+            {remoteSettings?.remoteMode === "origin"
+              ? t("settings.project.originConfigured")
+              : t("settings.project.noOriginConfigured")}
+          </span>
+        </div>
+        <div className="flex items-end gap-2">
+          <div className="min-w-0 flex-1">
+            <TextField
+              label={t("settings.project.originUrl")}
+              onChange={onRemoteChange}
+              value={remoteUrlDraft}
+            />
+          </div>
+          <Button
+            className="gap-2"
+            disabled={!remoteUrlDraft.trim()}
+            onClick={onRemoteCopy}
+            type="button"
+            variant="secondary"
+          >
+            <Clipboard className="size-4" aria-hidden="true" />
+            {t("actions.copy")}
+          </Button>
+        </div>
+        {remoteRemoveArmed ? (
+          <p className="text-sm text-destructive">
+            {t("settings.project.removeOriginWarning")}
+          </p>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            {t("settings.project.clearOriginHelp")}
+          </p>
+        )}
+        <Button
+          className="gap-2"
+          disabled={savingRemote}
+          onClick={onSaveRemote}
+          type="button"
+          variant={remoteRemoveArmed ? "destructive" : "default"}
+        >
+          <Save className="size-4" aria-hidden="true" />
+          {remoteRemoveArmed
+            ? t("settings.project.removeOrigin")
+            : t("settings.project.saveRemote")}
+        </Button>
       </SettingsGroup>
     </section>
   );

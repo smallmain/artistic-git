@@ -41,6 +41,64 @@ fn repository_summary(
 }
 
 #[tauri::command]
+fn fetch_repository(
+    app_handle: tauri::AppHandle,
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::FetchRepositoryRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::FetchRepositoryResponse> {
+    let repository_path = request.repository_path.clone();
+    let started = backend.fetch_started_event(&repository_path);
+    emit_fetch_state(&app_handle, &started);
+
+    match backend.fetch_repository(request) {
+        Ok(response) => {
+            emit_fetch_state(&app_handle, &response.event);
+            let changed_queries = artistic_git_app::fetch_changed_queries(&response);
+            if !changed_queries.is_empty() {
+                emit_repo_changed(
+                    &app_handle,
+                    response.event.repository_path.clone(),
+                    changed_queries,
+                );
+            }
+            Ok(response)
+        }
+        Err(error) => {
+            let failed = backend.fetch_state_event(&repository_path);
+            emit_fetch_state(&app_handle, &failed);
+            Err(error)
+        }
+    }
+}
+
+#[tauri::command]
+fn load_remote_settings(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::RepositoryPathRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::RemoteSettingsResponse> {
+    backend.load_remote_settings(request)
+}
+
+#[tauri::command]
+fn save_remote_settings(
+    app_handle: tauri::AppHandle,
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::SaveRemoteSettingsRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::RemoteSettingsResponse> {
+    let response = backend.save_remote_settings(request)?;
+    emit_repo_changed(
+        &app_handle,
+        response.repository_path.clone(),
+        vec![
+            artistic_git_contracts::RepoQueryKind::Summary,
+            artistic_git_contracts::RepoQueryKind::Branches,
+            artistic_git_contracts::RepoQueryKind::History,
+        ],
+    );
+    Ok(response)
+}
+
+#[tauri::command]
 fn list_branches(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::RepositoryPathRequest,
@@ -483,6 +541,9 @@ pub fn run() {
             open_log_dir,
             open_repository,
             repository_summary,
+            fetch_repository,
+            load_remote_settings,
+            save_remote_settings,
             list_branches,
             validate_branch_name,
             create_branch,
@@ -611,4 +672,11 @@ fn emit_repo_changed(
             changed_queries,
         },
     );
+}
+
+fn emit_fetch_state(
+    app_handle: &tauri::AppHandle,
+    event: &artistic_git_contracts::FetchStateEvent,
+) {
+    let _ = app_handle.emit("fetch-state", event);
 }

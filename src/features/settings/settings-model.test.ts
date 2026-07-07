@@ -4,7 +4,9 @@ import {
   defaultAppSettings,
   identityRepositoryPaths,
   sameGitUser,
+  settingsWithFetchPreferences,
   settingsWithGitUser,
+  validateFetchIntervalSeconds,
   validateGitUser,
 } from "./settings-model";
 
@@ -64,5 +66,29 @@ describe("validateGitUser", () => {
 
     expect(sameGitUser(current, next)).toBe(true);
     expect(sameGitUser(current, changed)).toBe(false);
+  });
+});
+
+describe("fetch interval settings", () => {
+  it("validates the supported 10-3600 second range", () => {
+    expect(validateFetchIntervalSeconds(10)).toMatchObject({ valid: true });
+    expect(validateFetchIntervalSeconds(3600)).toMatchObject({ valid: true });
+    expect(validateFetchIntervalSeconds(9)).toMatchObject({ valid: false });
+    expect(validateFetchIntervalSeconds(3601)).toMatchObject({ valid: false });
+  });
+
+  it("updates fetch preferences without touching author identity", () => {
+    const current = settingsWithGitUser(defaultAppSettings, {
+      email: "art@example.test",
+      name: "Art User",
+    });
+    const next = settingsWithFetchPreferences(current, {
+      autoFetch: false,
+      fetchIntervalSeconds: 120,
+    });
+
+    expect(next.git?.autoFetch).toBe(false);
+    expect(next.git?.fetchIntervalSeconds).toBe(120);
+    expect(next.git?.user).toEqual(current.git?.user);
   });
 });

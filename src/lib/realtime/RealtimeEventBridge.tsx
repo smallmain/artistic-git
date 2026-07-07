@@ -4,6 +4,7 @@ import * as React from "react";
 import type { listenAppEvent } from "@/lib/ipc/events";
 import type {
   ConflictEnteredEvent,
+  FetchStateEvent,
   RepoChangedEvent,
 } from "@/lib/ipc/generated";
 import { installRealtimeEventBridge } from "@/lib/realtime/events";
@@ -14,12 +15,14 @@ type RealtimeUnsubscribe = () => void;
 interface RealtimeEventBridgeProps {
   listen?: AppEventListener;
   onConflictEntered?: (event: ConflictEnteredEvent) => void;
+  onFetchState?: (event: FetchStateEvent) => void;
   onRepoChanged?: (event: RepoChangedEvent) => void;
 }
 
 export function RealtimeEventBridge({
   listen,
   onConflictEntered,
+  onFetchState,
   onRepoChanged,
 }: RealtimeEventBridgeProps) {
   const queryClient = useQueryClient();
@@ -31,6 +34,7 @@ export function RealtimeEventBridge({
     void installRealtimeEventBridge({
       listen,
       onConflictEntered,
+      onFetchState,
       onRepoChanged,
       queryClient,
     })
@@ -50,7 +54,7 @@ export function RealtimeEventBridge({
       active = false;
       unsubscribe?.();
     };
-  }, [listen, onConflictEntered, onRepoChanged, queryClient]);
+  }, [listen, onConflictEntered, onFetchState, onRepoChanged, queryClient]);
 
   return null;
 }

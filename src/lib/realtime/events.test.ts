@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AppEventName } from "@/lib/ipc/events";
 import type {
   ConflictEnteredEvent,
+  FetchStateEvent,
   RepoChangedEvent,
 } from "@/lib/ipc/generated";
 import {
@@ -52,13 +53,14 @@ describe("realtime query invalidation", () => {
     });
   });
 
-  it("subscribes to repo-changed and conflict-entered events", async () => {
+  it("subscribes to repo-changed, fetch-state, and conflict-entered events", async () => {
     const queryClient = new QueryClient();
     const invalidateQueries = vi
       .spyOn(queryClient, "invalidateQueries")
       .mockResolvedValue();
     const onRepoChanged = vi.fn();
     const onConflictEntered = vi.fn();
+    const onFetchState = vi.fn();
     const unlisten = vi.fn();
     const handlers = new Map<
       AppEventName,
@@ -78,30 +80,40 @@ describe("realtime query invalidation", () => {
       operationName: "Rebase",
       repositoryPath: "/repo/art",
     };
+    const fetchPayload: FetchStateEvent = {
+      lastSuccessAt: null,
+      message: "offline",
+      repositoryPath: "/repo/art",
+      state: "offline",
+    };
 
     const unsubscribe = await installRealtimeEventBridge({
       listen,
       onConflictEntered,
+      onFetchState,
       onRepoChanged,
       queryClient,
     });
 
     handlers.get("repo-changed")?.({ payload });
     handlers.get("conflict-entered")?.({ payload: conflictPayload });
+    handlers.get("fetch-state")?.({ payload: fetchPayload });
 
     expect(listen).toHaveBeenCalledWith("repo-changed", expect.any(Function));
     expect(listen).toHaveBeenCalledWith(
       "conflict-entered",
       expect.any(Function),
     );
+    expect(listen).toHaveBeenCalledWith("fetch-state", expect.any(Function));
     expect(onRepoChanged).toHaveBeenCalledWith(payload);
     expect(onConflictEntered).toHaveBeenCalledWith(conflictPayload);
+    expect(onFetchState).toHaveBeenCalledWith(fetchPayload);
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: ["repository", "/repo/art", "summary"],
     });
 
     unsubscribe();
 
-    expect(unlisten).toHaveBeenCalledTimes(2);
+    expect(unlisten).toHaveBeenCalledTimes(3);
   });
 });

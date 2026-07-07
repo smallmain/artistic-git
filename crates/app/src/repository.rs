@@ -4,13 +4,14 @@ use artistic_git_contracts::{
     BranchSummary, CancelStashRestoreRequest, CancelStashRestoreResponse, CheckoutBranchRequest,
     CommitSummary, CreateAutoStashRequest, CreateBranchRequest, CreateStashRequest,
     CreateStashResponse, DeleteBranchRequest, DeleteStashRequest, DeleteStashResponse,
-    DiffChangeKind, GitCommandError, IndexLockInfo, LocalChange, LocalChangesResponse,
-    LogPageRequest, LogPageResponse, LogSearchRequest, OpenRepositoryRequest,
-    OpenRepositoryResponse, RepositoryHeadState, RepositoryHealth, RepositoryMiddleState,
+    DiffChangeKind, FetchRepositoryRequest, FetchRepositoryResponse, FetchStateEvent,
+    GitCommandError, IndexLockInfo, LocalChange, LocalChangesResponse, LogPageRequest,
+    LogPageResponse, LogSearchRequest, OpenRepositoryRequest, OpenRepositoryResponse,
+    RemoteSettingsResponse, RepositoryHeadState, RepositoryHealth, RepositoryMiddleState,
     RepositoryMiddleStateKind, RepositoryOpenWarning, RepositoryOpenWarningKind,
     RepositoryPathRequest, RepositoryRemote, RepositoryRemoteMode, RepositorySummary,
-    RestoreStashRequest, RestoreStashResponse, StashDetailsRequest, StashDetailsResponse,
-    StashEntry, StashListResponse,
+    RestoreStashRequest, RestoreStashResponse, SaveRemoteSettingsRequest, StashDetailsRequest,
+    StashDetailsResponse, StashEntry, StashListResponse,
 };
 use artistic_git_core::config::{AppSettings, ConfigActor, GitUserSettings, ProjectSettings};
 use artistic_git_git_runner::{CancelToken, GitCommandPlan, GitRunner};
@@ -32,11 +33,16 @@ const TOOL_WORKTREE_PREFIX: &str = "artistic-git-";
 pub struct RepositoryBackend {
     runner: GitRunner,
     config: Option<ConfigActor>,
+    fetch_states: crate::fetch::FetchStateStore,
 }
 
 impl RepositoryBackend {
     pub fn new(runner: GitRunner, config: Option<ConfigActor>) -> Self {
-        Self { runner, config }
+        Self {
+            runner,
+            config,
+            fetch_states: crate::fetch::FetchStateStore::default(),
+        }
     }
 
     pub fn runner(&self) -> &GitRunner {
@@ -55,6 +61,35 @@ impl RepositoryBackend {
         request: RepositoryPathRequest,
     ) -> AppResult<RepositorySummary> {
         repository_summary(&self.runner, request)
+    }
+
+    pub fn fetch_started_event(&self, repository_path: &str) -> FetchStateEvent {
+        self.fetch_states.started_event(repository_path)
+    }
+
+    pub fn fetch_state_event(&self, repository_path: &str) -> FetchStateEvent {
+        self.fetch_states.snapshot_event(repository_path)
+    }
+
+    pub fn fetch_repository(
+        &self,
+        request: FetchRepositoryRequest,
+    ) -> AppResult<FetchRepositoryResponse> {
+        crate::fetch::fetch_repository(&self.runner, &self.fetch_states, request)
+    }
+
+    pub fn load_remote_settings(
+        &self,
+        request: RepositoryPathRequest,
+    ) -> AppResult<RemoteSettingsResponse> {
+        crate::remote::load_remote_settings(&self.runner, request.repository_path)
+    }
+
+    pub fn save_remote_settings(
+        &self,
+        request: SaveRemoteSettingsRequest,
+    ) -> AppResult<RemoteSettingsResponse> {
+        crate::remote::save_remote_settings(&self.runner, request)
     }
 
     pub fn list_branches(&self, request: RepositoryPathRequest) -> AppResult<BranchListResponse> {

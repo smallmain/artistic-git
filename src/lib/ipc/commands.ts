@@ -33,6 +33,8 @@ import type {
   DeleteBranchRequest,
   DeleteStashRequest,
   DeleteStashResponse,
+  FetchRepositoryRequest,
+  FetchRepositoryResponse,
   GenerateSshKeyRequest,
   GitignoreFileResponse,
   GitignoreRequest,
@@ -48,6 +50,7 @@ import type {
   OpenRepositoryResponse,
   ProjectSettings,
   ProjectSettingsRequest,
+  RemoteSettingsResponse,
   RepositoryPathRequest,
   RepositorySummary,
   RestoreChangesRequest,
@@ -59,6 +62,7 @@ import type {
   SaveAppSettingsRequest,
   SaveGitignoreRequest,
   SaveProjectSettingsRequest,
+  SaveRemoteSettingsRequest,
   SettingsSnapshot,
   SshKeyStatus,
   StashDetailsRequest,
@@ -71,6 +75,9 @@ export interface AppCommandArgs {
   open_log_dir: undefined;
   open_repository: { request: OpenRepositoryRequest };
   repository_summary: { request: RepositoryPathRequest };
+  fetch_repository: { request: FetchRepositoryRequest };
+  load_remote_settings: { request: RepositoryPathRequest };
+  save_remote_settings: { request: SaveRemoteSettingsRequest };
   list_branches: { request: RepositoryPathRequest };
   validate_branch_name: { request: BranchNameValidationRequest };
   create_branch: { request: CreateBranchRequest };
@@ -113,6 +120,9 @@ export interface AppCommandResponses {
   open_log_dir: OpenLogDirResponse;
   open_repository: OpenRepositoryResponse;
   repository_summary: RepositorySummary;
+  fetch_repository: FetchRepositoryResponse;
+  load_remote_settings: RemoteSettingsResponse;
+  save_remote_settings: RemoteSettingsResponse;
   list_branches: BranchListResponse;
   validate_branch_name: BranchNameValidationResponse;
   create_branch: BranchOperationResponse;
@@ -193,6 +203,24 @@ export function repositorySummary(
   request: RepositoryPathRequest,
 ): Promise<RepositorySummary> {
   return invokeAppCommand("repository_summary", { request });
+}
+
+export function fetchRepository(
+  request: FetchRepositoryRequest,
+): Promise<FetchRepositoryResponse> {
+  return invokeAppCommand("fetch_repository", { request });
+}
+
+export function loadRemoteSettings(
+  request: RepositoryPathRequest,
+): Promise<RemoteSettingsResponse> {
+  return invokeAppCommand("load_remote_settings", { request });
+}
+
+export function saveRemoteSettings(
+  request: SaveRemoteSettingsRequest,
+): Promise<RemoteSettingsResponse> {
+  return invokeAppCommand("save_remote_settings", { request });
 }
 
 export function listBranches(

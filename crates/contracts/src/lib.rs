@@ -12,6 +12,40 @@ pub struct OperationId(pub String);
 #[serde(rename_all = "camelCase")]
 pub struct InvocationId(pub String);
 
+impl InvocationId {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl OperationId {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct IpcToken(pub String);
+
+impl IpcToken {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AppError {
@@ -215,6 +249,19 @@ pub enum FetchState {
     Fetching,
     Offline,
     Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct FetchRepositoryRequest {
+    pub repository_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct FetchRepositoryResponse {
+    pub event: FetchStateEvent,
+    pub skipped: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -563,6 +610,23 @@ pub struct RepositorySummary {
 #[serde(rename_all = "camelCase")]
 pub struct RepositoryPathRequest {
     pub repository_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteSettingsResponse {
+    pub repository_path: String,
+    pub remote_mode: RepositoryRemoteMode,
+    pub origin_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveRemoteSettingsRequest {
+    pub repository_path: String,
+    pub origin_url: Option<String>,
+    #[serde(default)]
+    pub remove_origin: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]

@@ -13,12 +13,13 @@ use artistic_git_contracts::{
     ConflictListResponse, ConflictPathRequest, ConflictSaveResolutionRequest,
     ConflictSaveResolutionResponse, ConflictSelectSideRequest, ConflictSelectSideResponse,
     CreateAutoStashRequest, CreateBranchRequest, CreateStashRequest, CreateStashResponse,
-    DeleteBranchRequest, DeleteStashRequest, DeleteStashResponse, DiffPayload, GitDistManifest,
-    LargeFileWarning, LocalChangesResponse, LogPageRequest, LogPageResponse, LogSearchRequest,
-    OpenRepositoryRequest, OpenRepositoryResponse, RepositoryPathRequest, RepositorySummary,
+    DeleteBranchRequest, DeleteStashRequest, DeleteStashResponse, DiffPayload,
+    FetchRepositoryRequest, FetchRepositoryResponse, GitDistManifest, LargeFileWarning,
+    LocalChangesResponse, LogPageRequest, LogPageResponse, LogSearchRequest, OpenRepositoryRequest,
+    OpenRepositoryResponse, RemoteSettingsResponse, RepositoryPathRequest, RepositorySummary,
     RestoreChangesRequest, RestoreChangesResponse, RestoreStashRequest, RestoreStashResponse,
-    RevertCommitRequest, RevertCommitResponse, StashDetailsRequest, StashDetailsResponse,
-    StashListResponse,
+    RevertCommitRequest, RevertCommitResponse, SaveRemoteSettingsRequest, StashDetailsRequest,
+    StashDetailsResponse, StashListResponse,
 };
 use artistic_git_core::config::{
     AppSettings, ConfigChangeEvent, ProjectSettings, ProjectsDocument,
@@ -34,6 +35,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register::<OpenRepositoryResponse>()
         .register::<RepositoryPathRequest>()
         .register::<RepositorySummary>()
+        .register::<FetchRepositoryRequest>()
+        .register::<FetchRepositoryResponse>()
+        .register::<RemoteSettingsResponse>()
+        .register::<SaveRemoteSettingsRequest>()
         .register::<BranchListResponse>()
         .register::<BranchNameValidationRequest>()
         .register::<BranchNameValidationResponse>()

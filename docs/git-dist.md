@@ -141,6 +141,32 @@ present, accessible, covered by `manifest.sha256`, and byte-for-byte matches its
 declared SHA-256. It also verifies that manifest paths exactly match
 `git-dist.toml`.
 
+## Tauri Bundle Resources
+
+Release packaging maps `src-tauri/resources/git-dist/` to the packaged Tauri
+resource path `git-dist/` through `src-tauri/tauri.conf.json`. This keeps the
+development resource layout and packaged resource layout aligned with
+`GitDistManifest` paths.
+
+Config-only self-check:
+
+```sh
+node scripts/check-tauri-bundle-resources.mjs
+```
+
+Real release packaging must stage a complete embedded Git distribution before
+bundling:
+
+```sh
+ARTISTIC_GIT_DIST_DIR=src-tauri/resources/git-dist \
+  node scripts/check-git-dist.mjs --no-exec --target=linux-x86_64
+node scripts/check-tauri-bundle-resources.mjs --require-manifest
+```
+
+The release workflow runs the config-only check during dry-run builds. The
+gated publish path additionally requires `manifest.json` and the target-specific
+embedded Git executables to be present under `src-tauri/resources/git-dist/`.
+
 ## CI Artifact And Cache Strategy
 
 `.github/workflows/git-dist.yml` currently runs contract checks and verifies
@@ -171,3 +197,19 @@ Future distribution jobs should use this policy:
    Rust integration tests using `ARTISTIC_GIT_DIST_DIR`.
 5. Review binary provenance in the pull request.
 6. Record user-visible toolchain changes in the release notes or changelog.
+
+## App Release Gate
+
+`.github/workflows/release.yml` calculates the next SemVer version and release
+notes from Conventional Commits since the previous semver tag. `fix` commits
+produce a patch bump, `feat` and `refactor` commits produce a minor bump,
+`!`/`BREAKING CHANGE` commits produce a major bump, and unparsed commit messages
+fall back to a patch bump. With no previous tag, the initial version is
+`0.1.0`.
+
+`main` pushes and manual dispatches publish only when `ENABLE_MAIN_RELEASE=true`
+and the GitHub `release` Environment allows the job. Otherwise the workflow
+runs tests and a Tauri `--no-bundle` dry-run package build without creating a
+GitHub Release.
+Manual dispatches may keep the automatic bump or override it with `patch`,
+`minor`, or `major`.

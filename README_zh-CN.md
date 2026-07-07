@@ -24,6 +24,25 @@ pnpm tauri:dev
 `ARTISTIC_GIT_DIST_DIR` 或打包 resources 获取显式 Git 路径，禁止回退到系统
 Git。
 
+## 发布基线
+
+最低支持的发布目标：
+
+- macOS 13 或更新版本（`.app`、`.dmg` 与带签名的 updater tar artifacts）
+- Windows 10 1809 或更新版本，并安装 Microsoft Edge WebView2（NSIS 当前用户
+  `.exe` 安装器）
+- 与 Ubuntu 22.04 WebKitGTK 4.1 运行栈兼容的 Linux 发行版（`.AppImage` 与
+  `.deb`）
+
+正式发布必须签名；macOS 正式发布还必须完成 notarization。对于未签名的开发产物，
+macOS 请先移动到 `/Applications`，再右键选择「打开」并确认一次；Windows
+SmartScreen 可能需要选择「更多信息」→「仍要运行」。
+
+release workflow 会在 `main` push 与 `workflow_dispatch` 运行，但只有在
+`ENABLE_MAIN_RELEASE=true` 且 GitHub `release` Environment 放行时才发布。闸门未
+开启时，只执行测试与 Tauri `--no-bundle` dry-run 构建，不发布产物。手动运行可以
+使用自动版本计算，也可以覆盖 SemVer 升级级别。
+
 ## 提交约定
 
 提交信息使用英文 Conventional Commits，例如：
