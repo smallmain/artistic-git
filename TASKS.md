@@ -563,7 +563,7 @@ graph TD
 - [ ] i18n 审计：全部 UI 双语无遗漏；git 写入文本恒英文（`Revert:`/`Auto Stash:`/`backup/`）；stderr 原文不翻译；日期/相对时间/数字/大小本地化
 - [x] 隐私审计：无遥测无第三方上报；默认零第三方连接（Gravatar 默认关）；仅更新源（GitHub Releases）与用户远程仓库；无任何指向开发者服务器的连接
 - [ ] LFS 锁定预留位复查（列表项/提交前检查/.gitattributes 处理接入点存在且不影响 v1 行为）；「非目标：任意分支合并」确认无入口泄漏
-- [ ] 文档收尾：README.md / README_zh-CN.md 完整（功能/最低版本 macOS 13+ / 签名绕过 / git-dist 升级流程 / main 自动发布闸门）
+- [x] 文档收尾：README.md / README_zh-CN.md 完整（功能/最低版本 macOS 13+ / 签名绕过 / git-dist 升级流程 / main 自动发布闸门）
 - [ ] `0.1.0` 正式发布演练：走完整 Release 流程 + 三平台安装冒烟 + 自动更新升级到 `0.1.1` 演练
 
 **验收**：三平台 CI（单元 + 集成）与 Linux/Windows E2E 全绿；发布演练成功。

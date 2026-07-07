@@ -4,6 +4,23 @@ Artistic Git is a Git desktop client designed for artists and binary-heavy
 asset workflows. It is built with Tauri 2, React, TypeScript, Vite, shadcn/ui,
 Tailwind CSS, and Rust.
 
+## Features
+
+- Open existing Git repositories, clone HTTPS or SSH remotes, and manage recent
+  projects across multiple windows.
+- Browse branch history with a virtualized commit graph, branch/tag badges,
+  commit search, and reusable diff details.
+- Review local changes with text, image, binary, oversized-file, LFS pointer,
+  submodule pointer, and lock-aware diff surfaces.
+- Commit selected files, stash all or selected changes, switch/create/delete
+  branches, revert commits, and recover conflicts through one shared conflict
+  workflow.
+- Sync current and non-current branches without force-push, handle rewritten
+  remote history through local safety backups, and apply project automatic
+  tracking rules with fast-forward-only semantics.
+- Use review mode, crash/close guards, scheduled fetch, updater prompts, and
+  embedded Git/Git LFS resources designed for reproducible releases.
+
 ## Development
 
 Prerequisites:
