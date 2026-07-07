@@ -1,8 +1,8 @@
 use artistic_git_contracts::{
     AcceptRemoteHistoryRequest, AcceptRemoteHistoryResponse, AppError, AppErrorCategory, AppResult,
     CommitRequest, CommitResponse, DeleteSafetyBackupRequest, DeleteSafetyBackupResponse,
-    OperationContext, SyncBranchRequest, SyncBranchResponse, SyncCurrentBranchRequest,
-    SyncCurrentBranchResponse,
+    OperationContext, OperationProgressEvent, SyncBranchRequest, SyncBranchResponse,
+    SyncCurrentBranchRequest, SyncCurrentBranchResponse,
 };
 use artistic_git_core::AppInfo;
 use artistic_git_git_runner::{
@@ -120,17 +120,39 @@ pub fn sync_current_branch(
     runner: &GitRunner,
     request: SyncCurrentBranchRequest,
 ) -> AppResult<SyncCurrentBranchResponse> {
+    sync_current_branch_with_progress(runner, request, |_| {})
+}
+
+pub fn sync_current_branch_with_progress<F>(
+    runner: &GitRunner,
+    request: SyncCurrentBranchRequest,
+    progress: F,
+) -> AppResult<SyncCurrentBranchResponse>
+where
+    F: Fn(OperationProgressEvent),
+{
     let _permit =
         begin_identity_write(runner, "syncCurrentBranch", &request.repository_path, false)?;
-    sync::sync_current_branch(runner, request)
+    sync::sync_current_branch_with_progress(runner, request, progress)
 }
 
 pub fn sync_branch(
     runner: &GitRunner,
     request: SyncBranchRequest,
 ) -> AppResult<SyncBranchResponse> {
+    sync_branch_with_progress(runner, request, |_| {})
+}
+
+pub fn sync_branch_with_progress<F>(
+    runner: &GitRunner,
+    request: SyncBranchRequest,
+    progress: F,
+) -> AppResult<SyncBranchResponse>
+where
+    F: Fn(OperationProgressEvent),
+{
     let _permit = begin_identity_write(runner, "syncBranch", &request.repository_path, false)?;
-    sync::sync_branch(runner, request)
+    sync::sync_branch_with_progress(runner, request, progress)
 }
 
 pub fn accept_remote_history(

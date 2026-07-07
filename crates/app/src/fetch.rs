@@ -356,6 +356,12 @@ mod tests {
     }
 
     #[test]
+    fn fetch_source_uses_on_demand_submodules() {
+        let source = include_str!("fetch.rs");
+        assert!(source.contains("\"--recurse-submodules=on-demand\""));
+    }
+
+    #[test]
     fn skips_fetch_when_write_lock_is_busy_without_running_git() {
         let (runner, _dist_temp) = fake_runner();
         let repo = TestTempDir::new("ag-fetch-lock-repo").expect("temp repo");

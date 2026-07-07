@@ -466,10 +466,10 @@ graph TD
 
 ### 8A Tier 0 消费型
 
-- [ ] 打开含 `.gitmodules` 仓库自动 `git submodule update --init --recursive`（持写锁 + 显进度 + 含子模块内 LFS）
-- [ ] 克隆已 `--recurse-submodules`（4D）；定时 Fetch 已 `--recurse-submodules=on-demand`（4E）——补充子模块对象/LFS 可用性断言
-- [ ] 同步：超级项目 ff 拉取后自动 `git submodule update --init --recursive` 检出到新锁定提交，全程无感
-- [ ] 超级项目指针变化显示为友好行「子模块 X 更新到新版本」（不显示裸 gitlink diff）
+- [x] 打开含 `.gitmodules` 仓库自动 `git submodule update --init --recursive`（持写锁 + 显进度 + 含子模块内 LFS）
+- [x] 克隆已 `--recurse-submodules`（4D）；定时 Fetch 已 `--recurse-submodules=on-demand`（4E）——补充子模块对象/LFS 可用性断言
+- [x] 同步：超级项目 ff 拉取后自动 `git submodule update --init --recursive` 检出到新锁定提交，全程无感
+- [x] 超级项目指针变化显示为友好行「子模块 X 更新到新版本」（不显示裸 gitlink diff）
 
 **验收**：真实子模块夹具（含 LFS 子模块）：克隆/打开/同步全透明；指针行展示。
 

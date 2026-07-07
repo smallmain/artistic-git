@@ -4,6 +4,7 @@ import { listenAppEvent, type AppEventPayloads } from "@/lib/ipc/events";
 import type {
   ConflictEnteredEvent,
   FetchStateEvent,
+  OperationProgressEvent,
   RepoChangedEvent,
 } from "@/lib/ipc/generated";
 import { repoChangedQueryKeys, repoQueryKeys } from "@/lib/realtime/query-keys";
@@ -15,6 +16,7 @@ export interface RealtimeEventBridgeOptions {
   listen?: AppEventListener;
   onConflictEntered?: (event: ConflictEnteredEvent) => void;
   onFetchState?: (event: FetchStateEvent) => void;
+  onOperationProgress?: (event: OperationProgressEvent) => void;
   onRepoChanged?: (event: RepoChangedEvent) => void;
   queryClient: QueryClient;
 }
@@ -51,6 +53,7 @@ export async function installRealtimeEventBridge({
   listen = listenAppEvent,
   onConflictEntered,
   onFetchState,
+  onOperationProgress,
   onRepoChanged,
   queryClient,
 }: RealtimeEventBridgeOptions): Promise<RealtimeUnsubscribe> {
@@ -74,10 +77,19 @@ export async function installRealtimeEventBridge({
       new CustomEvent("artistic-git:fetch-state", { detail: payload }),
     );
   });
+  const unlistenOperationProgress = await listen(
+    "operation-progress",
+    (event) => {
+      const payload = event.payload as AppEventPayloads["operation-progress"];
+
+      onOperationProgress?.(payload);
+    },
+  );
 
   return () => {
     unlistenRepoChanged();
     unlistenConflictEntered();
     unlistenFetchState();
+    unlistenOperationProgress();
   };
 }

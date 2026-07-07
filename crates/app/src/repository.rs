@@ -78,6 +78,17 @@ impl RepositoryBackend {
         open_repository(&self.runner, self.config.as_ref(), request)
     }
 
+    pub fn open_repository_with_progress<F>(
+        &self,
+        request: OpenRepositoryRequest,
+        progress: F,
+    ) -> AppResult<OpenRepositoryResponse>
+    where
+        F: Fn(OperationProgressEvent),
+    {
+        open_repository_with_progress(&self.runner, self.config.as_ref(), request, progress)
+    }
+
     pub fn clone_repository(
         &self,
         request: CloneRepositoryRequest,
@@ -188,11 +199,33 @@ impl RepositoryBackend {
         crate::sync_current_branch(&self.runner, request)
     }
 
+    pub fn sync_current_branch_with_progress<F>(
+        &self,
+        request: artistic_git_contracts::SyncCurrentBranchRequest,
+        progress: F,
+    ) -> AppResult<artistic_git_contracts::SyncCurrentBranchResponse>
+    where
+        F: Fn(OperationProgressEvent),
+    {
+        crate::sync_current_branch_with_progress(&self.runner, request, progress)
+    }
+
     pub fn sync_branch(
         &self,
         request: artistic_git_contracts::SyncBranchRequest,
     ) -> AppResult<artistic_git_contracts::SyncBranchResponse> {
         crate::sync_branch(&self.runner, request)
+    }
+
+    pub fn sync_branch_with_progress<F>(
+        &self,
+        request: artistic_git_contracts::SyncBranchRequest,
+        progress: F,
+    ) -> AppResult<artistic_git_contracts::SyncBranchResponse>
+    where
+        F: Fn(OperationProgressEvent),
+    {
+        crate::sync_branch_with_progress(&self.runner, request, progress)
     }
 
     pub fn accept_remote_history(
@@ -472,6 +505,37 @@ pub fn open_repository(
     config: Option<&ConfigActor>,
     request: OpenRepositoryRequest,
 ) -> AppResult<OpenRepositoryResponse> {
+    open_repository_impl(runner, config, request, None, &|_| {}, true)
+}
+
+pub fn open_repository_with_progress<F>(
+    runner: &GitRunner,
+    config: Option<&ConfigActor>,
+    request: OpenRepositoryRequest,
+    progress: F,
+) -> AppResult<OpenRepositoryResponse>
+where
+    F: Fn(OperationProgressEvent),
+{
+    let operation_id = open_operation_id();
+    open_repository_impl(
+        runner,
+        config,
+        request,
+        Some(&operation_id),
+        &progress,
+        true,
+    )
+}
+
+fn open_repository_impl(
+    runner: &GitRunner,
+    config: Option<&ConfigActor>,
+    request: OpenRepositoryRequest,
+    operation_id: Option<&OperationId>,
+    progress: &dyn Fn(OperationProgressEvent),
+    acquire_write_lock: bool,
+) -> AppResult<OpenRepositoryResponse> {
     let input_path = PathBuf::from(request.path.trim());
     if input_path.as_os_str().is_empty() {
         return Err(logged(AppError::expected(
@@ -490,6 +554,17 @@ pub fn open_repository(
     )?;
     reject_unsupported_repository_type(runner, &root, &git_dir, &git_common_dir)?;
 
+    let _permit = if acquire_write_lock {
+        Some(
+            runner
+                .operation_concurrency()
+                .try_begin_write()
+                .map_err(open_busy_error)?,
+        )
+    } else {
+        None
+    };
+
     clean_tool_worktree_residue(&git_common_dir);
     crate::sync::cleanup_sync_worktree_residue(runner, &root);
     apply_tool_identity(
@@ -499,6 +574,7 @@ pub fn open_repository(
         "openRepository",
     )?;
     install_lfs_if_needed(runner, &root)?;
+    update_submodules_after_checkout(runner, &root, "openRepository", operation_id, progress)?;
 
     let remotes = list_remotes(runner, &root)?;
     let remote_mode = remote_mode(&remotes);
@@ -588,13 +664,16 @@ where
         progress,
     )?;
 
-    let repository = open_repository(
+    let repository = open_repository_impl(
         runner,
         config,
         OpenRepositoryRequest {
             path: display_path(&target.path),
             tool_identity: request.tool_identity,
         },
+        None,
+        &|_| {},
+        false,
     )?;
 
     Ok(CloneRepositoryResponse { repository })
@@ -1114,6 +1193,302 @@ fn clone_progress_label(line: &str) -> &'static str {
     }
 }
 
+pub(crate) fn update_submodules_after_checkout<F>(
+    runner: &GitRunner,
+    root: &Path,
+    operation_name: &str,
+    operation_id: Option<&OperationId>,
+    progress: &F,
+) -> AppResult<()>
+where
+    F: Fn(OperationProgressEvent) + ?Sized,
+{
+    if !repository_has_submodules(root) {
+        return Ok(());
+    }
+
+    emit_operation_progress(
+        operation_id,
+        progress,
+        "Updating submodules",
+        ProgressState::Indeterminate,
+        false,
+    );
+
+    let plan = runner
+        .git_command_builder()
+        .default_credential_helper()
+        .enable_windows_longpaths()
+        .args([
+            OsString::from("-C"),
+            root.as_os_str().to_owned(),
+            OsString::from("submodule"),
+            OsString::from("update"),
+            OsString::from("--init"),
+            OsString::from("--recursive"),
+            OsString::from("--progress"),
+        ])
+        .build();
+    run_command_with_progress(
+        plan,
+        operation_name,
+        operation_id,
+        progress,
+        submodule_progress_label,
+    )?;
+
+    pull_submodule_lfs_objects(runner, root, operation_name, operation_id, progress)?;
+
+    emit_operation_progress(
+        operation_id,
+        progress,
+        "Submodules ready",
+        ProgressState::Percent { value: 100.0 },
+        false,
+    );
+
+    Ok(())
+}
+
+fn repository_has_submodules(root: &Path) -> bool {
+    root.join(".gitmodules").is_file()
+}
+
+fn submodule_progress_label(line: &str) -> &'static str {
+    let lower = line.to_ascii_lowercase();
+    if lower.contains("filtering content") || lower.contains("git-lfs") || lower.contains("lfs") {
+        "Downloading submodule LFS objects"
+    } else {
+        "Updating submodules"
+    }
+}
+
+fn pull_submodule_lfs_objects<F>(
+    runner: &GitRunner,
+    root: &Path,
+    operation_name: &str,
+    operation_id: Option<&OperationId>,
+    progress: &F,
+) -> AppResult<()>
+where
+    F: Fn(OperationProgressEvent) + ?Sized,
+{
+    for submodule in initialized_submodule_paths(runner, root, operation_name)? {
+        if !submodule_has_lfs_files(runner, &submodule, operation_name)? {
+            continue;
+        }
+
+        emit_operation_progress(
+            operation_id,
+            progress,
+            "Downloading submodule LFS objects",
+            ProgressState::Indeterminate,
+            false,
+        );
+        run_git_lfs_for_submodule(runner, &submodule, ["install", "--local"], operation_name)?;
+        run_git_lfs_for_submodule_with_progress(
+            runner,
+            &submodule,
+            ["pull"],
+            operation_name,
+            operation_id,
+            progress,
+        )?;
+        run_git_lfs_for_submodule(runner, &submodule, ["checkout"], operation_name)?;
+    }
+
+    Ok(())
+}
+
+fn initialized_submodule_paths(
+    runner: &GitRunner,
+    root: &Path,
+    operation_name: &str,
+) -> AppResult<Vec<PathBuf>> {
+    let output = git_stdout(
+        runner,
+        Some(root),
+        [
+            "submodule",
+            "foreach",
+            "--quiet",
+            "--recursive",
+            "printf '%s\t%s\n' \"$toplevel\" \"$sm_path\"",
+        ],
+        operation_name,
+    )?;
+    let mut paths = Vec::new();
+    for line in output.lines().filter(|line| !line.trim().is_empty()) {
+        let Some((toplevel, submodule_path)) = line.split_once('\t') else {
+            continue;
+        };
+        let path = PathBuf::from(toplevel).join(submodule_path);
+        paths.push(canonical_or_self(&path));
+    }
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
+fn submodule_has_lfs_files(
+    runner: &GitRunner,
+    submodule: &Path,
+    operation_name: &str,
+) -> AppResult<bool> {
+    let mut args = vec![OsString::from("-C"), submodule.as_os_str().to_owned()];
+    args.push(OsString::from("ls-files"));
+    let plan = runner.git_lfs_command_plan(args);
+    let output = plan
+        .to_command()
+        .output()
+        .map_err(|source| spawn_error(&plan, source, operation_name))?;
+    if output.status.success() {
+        Ok(!String::from_utf8_lossy(&output.stdout).trim().is_empty())
+    } else {
+        Err(command_failure(&plan, output, operation_name))
+    }
+}
+
+fn run_git_lfs_for_submodule<I, S>(
+    runner: &GitRunner,
+    submodule: &Path,
+    args: I,
+    operation_name: &str,
+) -> AppResult<()>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<OsString>,
+{
+    let mut planned_args = vec![OsString::from("-C"), submodule.as_os_str().to_owned()];
+    planned_args.extend(args.into_iter().map(Into::into));
+    let plan = runner.git_lfs_command_plan(planned_args);
+    command_to_output(plan.to_command(), &plan, operation_name).map(|_| ())
+}
+
+fn run_git_lfs_for_submodule_with_progress<F, I, S>(
+    runner: &GitRunner,
+    submodule: &Path,
+    args: I,
+    operation_name: &str,
+    operation_id: Option<&OperationId>,
+    progress: &F,
+) -> AppResult<()>
+where
+    F: Fn(OperationProgressEvent) + ?Sized,
+    I: IntoIterator<Item = S>,
+    S: Into<OsString>,
+{
+    let mut planned_args = vec![OsString::from("-C"), submodule.as_os_str().to_owned()];
+    planned_args.extend(args.into_iter().map(Into::into));
+    let plan = runner.git_lfs_command_plan(planned_args);
+    run_command_with_progress(
+        plan,
+        operation_name,
+        operation_id,
+        progress,
+        submodule_progress_label,
+    )
+}
+
+fn run_command_with_progress<F>(
+    plan: GitCommandPlan,
+    operation_name: &str,
+    operation_id: Option<&OperationId>,
+    progress: &F,
+    label_for_line: fn(&str) -> &'static str,
+) -> AppResult<()>
+where
+    F: Fn(OperationProgressEvent) + ?Sized,
+{
+    let mut command = plan.to_command();
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|source| spawn_error(&plan, source, operation_name))?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let stdout_reader = stdout.map(spawn_output_reader);
+    let (progress_tx, progress_rx) = mpsc::channel();
+    let stderr_reader = stderr.map(|stderr| spawn_clone_stderr_reader(stderr, progress_tx));
+
+    let status;
+    loop {
+        drain_operation_progress(operation_id, progress, &progress_rx, label_for_line);
+        match child.try_wait() {
+            Ok(Some(exit_status)) => {
+                status = exit_status;
+                break;
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(20)),
+            Err(source) => {
+                let _ = stdout_reader.map(|reader| reader.join());
+                let _ = stderr_reader.map(|reader| reader.join());
+                return Err(spawn_error(&plan, source, operation_name));
+            }
+        }
+    }
+    drain_operation_progress(operation_id, progress, &progress_rx, label_for_line);
+
+    let stdout = stdout_reader
+        .and_then(|reader| reader.join().ok())
+        .unwrap_or_default();
+    let stderr = stderr_reader
+        .and_then(|reader| reader.join().ok())
+        .unwrap_or_default();
+    drain_operation_progress(operation_id, progress, &progress_rx, label_for_line);
+
+    let output = Output {
+        status,
+        stdout,
+        stderr,
+    };
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(command_failure(&plan, output, operation_name))
+    }
+}
+
+fn drain_operation_progress<F>(
+    operation_id: Option<&OperationId>,
+    progress: &F,
+    progress_rx: &mpsc::Receiver<String>,
+    label_for_line: fn(&str) -> &'static str,
+) where
+    F: Fn(OperationProgressEvent) + ?Sized,
+{
+    while let Ok(line) = progress_rx.try_recv() {
+        emit_operation_progress(
+            operation_id,
+            progress,
+            label_for_line(&line),
+            parse_git_progress_line(&line),
+            false,
+        );
+    }
+}
+
+fn emit_operation_progress<F>(
+    operation_id: Option<&OperationId>,
+    progress: &F,
+    label: impl Into<String>,
+    progress_state: ProgressState,
+    cancellable: bool,
+) where
+    F: Fn(OperationProgressEvent) + ?Sized,
+{
+    let Some(operation_id) = operation_id else {
+        return;
+    };
+
+    progress(OperationProgressEvent {
+        operation_id: operation_id.clone(),
+        label: label.into(),
+        progress: progress_state,
+        cancellable,
+    });
+}
+
 fn cleanup_clone_target(target: &CloneTarget) {
     if target.path.is_dir() {
         let _ = fs::remove_dir_all(&target.path);
@@ -1128,11 +1503,27 @@ fn clone_busy_error(error: OperationBusy) -> AppError {
     logged(AppError::expected(summary, "cloneRepository"))
 }
 
+fn open_busy_error(error: OperationBusy) -> AppError {
+    let summary = match error {
+        OperationBusy::WriteBusy => "another write operation is already in progress",
+        OperationBusy::BackgroundBusy => "a background operation is already in progress",
+    };
+    logged(AppError::expected(summary, "openRepository"))
+}
+
 fn clone_registry_error() -> AppError {
     logged(AppError::unexpected(
         "clone operation registry is unavailable",
         "cloneRepository",
     ))
+}
+
+fn open_operation_id() -> OperationId {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    OperationId(format!("open-repository-{millis}"))
 }
 
 fn resolve_repository_root(runner: &GitRunner, path: &Path) -> AppResult<PathBuf> {
@@ -1744,6 +2135,18 @@ fn local_change_diff(
     index_status: &str,
     worktree_status: &str,
 ) -> AppResult<(DiffPayload, DiffContent)> {
+    if let Some(submodule) = submodule_pointer_change(
+        runner,
+        root,
+        path,
+        old_path,
+        change_kind,
+        index_status,
+        worktree_status,
+    )? {
+        return Ok(submodule);
+    }
+
     let mut contents = local_change_contents(
         runner,
         root,
@@ -1822,6 +2225,150 @@ struct LocalChangeContents {
     lfs_pointer_seen: bool,
     lfs_fetch_attempted: bool,
     lfs_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GitlinkPointer {
+    oid: String,
+}
+
+fn submodule_pointer_change(
+    runner: &GitRunner,
+    root: &Path,
+    path: &str,
+    old_path: Option<&str>,
+    change_kind: DiffChangeKind,
+    index_status: &str,
+    worktree_status: &str,
+) -> AppResult<Option<(DiffPayload, DiffContent)>> {
+    let old_gitlink = gitlink_at_head(runner, root, old_path.unwrap_or(path))?;
+    let Some(old_gitlink) = old_gitlink else {
+        return Ok(None);
+    };
+
+    let new_gitlink = if worktree_status != " " {
+        gitlink_at_worktree_head(runner, root, path, "listLocalChanges")?
+    } else if index_status != " " && index_status != "?" {
+        gitlink_at_index(runner, root, path)?
+    } else {
+        gitlink_at_worktree_head(runner, root, path, "listLocalChanges")?
+    };
+    let Some(new_gitlink) = new_gitlink else {
+        return Ok(None);
+    };
+
+    if old_gitlink.oid == new_gitlink.oid {
+        return Ok(None);
+    }
+
+    let mut metadata = BTreeMap::new();
+    metadata.insert("indexStatus".to_owned(), index_status.to_owned());
+    metadata.insert("worktreeStatus".to_owned(), worktree_status.to_owned());
+    metadata.insert("submodule".to_owned(), "true".to_owned());
+    metadata.insert("oldOid".to_owned(), old_gitlink.oid);
+    metadata.insert("newOid".to_owned(), new_gitlink.oid);
+
+    Ok(Some((
+        DiffPayload {
+            old_path: old_path.map(ToOwned::to_owned),
+            new_path: path.to_owned(),
+            change_kind,
+            file_kind: DiffFileKind::Binary,
+            lfs_lock: None,
+            metadata,
+        },
+        DiffContent::Moved { message: None },
+    )))
+}
+
+fn gitlink_at_head(
+    runner: &GitRunner,
+    root: &Path,
+    path: &str,
+) -> AppResult<Option<GitlinkPointer>> {
+    gitlink_at_tree(runner, root, "HEAD", path, "listLocalChanges")
+}
+
+fn gitlink_at_tree(
+    runner: &GitRunner,
+    root: &Path,
+    rev: &str,
+    path: &str,
+    operation_name: &str,
+) -> AppResult<Option<GitlinkPointer>> {
+    let output = git_output_bytes(
+        runner,
+        Some(root),
+        ["ls-tree", "-z", rev, "--", path],
+        operation_name,
+    )?;
+    let record = output
+        .split(|byte| *byte == 0)
+        .find(|record| !record.is_empty());
+    Ok(record.and_then(parse_ls_tree_gitlink))
+}
+
+fn gitlink_at_index(
+    runner: &GitRunner,
+    root: &Path,
+    path: &str,
+) -> AppResult<Option<GitlinkPointer>> {
+    let output = git_output_bytes(
+        runner,
+        Some(root),
+        ["ls-files", "-s", "-z", "--", path],
+        "listLocalChanges",
+    )?;
+    let record = output
+        .split(|byte| *byte == 0)
+        .find(|record| !record.is_empty());
+    Ok(record.and_then(parse_ls_files_gitlink))
+}
+
+fn gitlink_at_worktree_head(
+    runner: &GitRunner,
+    root: &Path,
+    path: &str,
+    operation_name: &str,
+) -> AppResult<Option<GitlinkPointer>> {
+    let submodule = repository_relative_path(root, path, operation_name)?;
+    if !submodule.is_dir() {
+        return Ok(None);
+    }
+
+    let oid = match git_stdout(
+        runner,
+        Some(&submodule),
+        ["rev-parse", "--verify", "HEAD"],
+        operation_name,
+    ) {
+        Ok(output) => output.trim().to_owned(),
+        Err(_) => return Ok(None),
+    };
+    Ok((is_full_oid(&oid)).then_some(GitlinkPointer { oid }))
+}
+
+fn parse_ls_tree_gitlink(record: &[u8]) -> Option<GitlinkPointer> {
+    let record = String::from_utf8_lossy(record);
+    let (header, _path) = record.split_once('\t')?;
+    let mut fields = header.split_whitespace();
+    let mode = fields.next()?;
+    let object_type = fields.next()?;
+    let oid = fields.next()?;
+    (mode == "160000" && object_type == "commit" && is_full_oid(oid)).then(|| GitlinkPointer {
+        oid: oid.to_owned(),
+    })
+}
+
+fn parse_ls_files_gitlink(record: &[u8]) -> Option<GitlinkPointer> {
+    let record = String::from_utf8_lossy(record);
+    let (header, _path) = record.split_once('\t')?;
+    let mut fields = header.split_whitespace();
+    let mode = fields.next()?;
+    let oid = fields.next()?;
+    (mode == "160000" && is_full_oid(oid)).then(|| GitlinkPointer {
+        oid: oid.to_owned(),
+    })
 }
 
 fn local_change_contents(
@@ -2134,6 +2681,10 @@ fn local_lfs_object_path(
 
 fn is_sha256_oid(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn is_full_oid(value: &str) -> bool {
+    matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn repository_relative_path(root: &Path, path: &str, operation_name: &str) -> AppResult<PathBuf> {
@@ -2850,6 +3401,117 @@ mod tests {
     }
 
     #[test]
+    fn clone_source_uses_recurse_submodules_flag() {
+        let source = include_str!("repository.rs");
+        assert!(source.contains("OsString::from(\"--recurse-submodules\")"));
+    }
+
+    #[test]
+    fn open_repository_initializes_submodules_and_emits_progress() {
+        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
+            return;
+        };
+        allow_file_protocol_for_local_submodule_fixtures(&runner);
+        let child = TestRepo::new(&runner);
+        child.init_with_commit();
+        let repo = TestRepo::new(&runner);
+        repo.git(["init"]);
+        repo.git(["config", "user.name", "Tester"]);
+        repo.git(["config", "user.email", "tester@example.test"]);
+        repo.git(vec![
+            OsString::from("-c"),
+            OsString::from("protocol.file.allow=always"),
+            OsString::from("submodule"),
+            OsString::from("add"),
+            OsString::from(display_path(&child.path)),
+            OsString::from("deps/lib"),
+        ]);
+        repo.git(["commit", "-m", "add submodule"]);
+        repo.git(["submodule", "deinit", "-f", "deps/lib"]);
+        let _ = fs::remove_dir_all(repo.path.join(".git/modules/deps/lib"));
+        let _ = fs::remove_dir_all(repo.path.join("deps/lib"));
+
+        let events = std::cell::RefCell::new(Vec::new());
+        open_repository_with_progress(
+            &runner,
+            None,
+            OpenRepositoryRequest {
+                path: display_path(&repo.path),
+                tool_identity: None,
+            },
+            |event| events.borrow_mut().push(event),
+        )
+        .expect("open repository with submodule");
+
+        assert!(repo.path.join("deps/lib/tracked.txt").exists());
+        let labels = events
+            .borrow()
+            .iter()
+            .map(|event| event.label.clone())
+            .collect::<Vec<_>>();
+        assert!(labels.iter().any(|label| label == "Updating submodules"));
+        assert!(labels.iter().any(|label| label == "Submodules ready"));
+    }
+
+    #[test]
+    fn local_changes_render_gitlink_pointer_as_submodule_card() {
+        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
+            return;
+        };
+        allow_file_protocol_for_local_submodule_fixtures(&runner);
+        let child = TestRepo::new(&runner);
+        child.init_with_commit();
+        let old_oid = child.git_output(["rev-parse", "HEAD"]).trim().to_owned();
+        let repo = TestRepo::new(&runner);
+        repo.git(["init"]);
+        repo.git(["config", "user.name", "Tester"]);
+        repo.git(["config", "user.email", "tester@example.test"]);
+        repo.git(vec![
+            OsString::from("-c"),
+            OsString::from("protocol.file.allow=always"),
+            OsString::from("submodule"),
+            OsString::from("add"),
+            OsString::from(display_path(&child.path)),
+            OsString::from("deps/lib"),
+        ]);
+        repo.git(["commit", "-m", "add submodule"]);
+
+        child.write("tracked.txt", "two\n");
+        child.git(["add", "tracked.txt"]);
+        child.git(["commit", "-m", "update child"]);
+        let new_oid = child.git_output(["rev-parse", "HEAD"]).trim().to_owned();
+        let submodule = repo.path.join("deps/lib");
+        git_stdout(&runner, Some(&submodule), ["fetch", "origin"], "test")
+            .expect("fetch submodule update");
+        git_stdout(
+            &runner,
+            Some(&submodule),
+            ["checkout", new_oid.as_str()],
+            "test",
+        )
+        .expect("checkout new submodule commit");
+
+        let changes = list_local_changes(
+            &runner,
+            RepositoryPathRequest {
+                repository_path: display_path(&repo.path),
+            },
+        )
+        .expect("local changes");
+        let change = changes
+            .changes
+            .iter()
+            .find(|change| change.path == "deps/lib")
+            .expect("submodule change");
+
+        assert_eq!(change.payload.metadata["submodule"], "true");
+        assert_eq!(change.payload.metadata["oldOid"], old_oid);
+        assert_eq!(change.payload.metadata["newOid"], new_oid);
+        assert_eq!(change.payload.file_kind, DiffFileKind::Binary);
+        assert!(matches!(change.diff, DiffContent::Moved { .. }));
+    }
+
+    #[test]
     fn clone_rejects_existing_target_directory() {
         let Some((runner, _dist_temp)) = real_runner_or_skip() else {
             return;
@@ -3289,6 +3951,16 @@ size 16\n"
         let temp = TestTempDir::new("ag-app-runner-home").expect("temp home");
         let runner = GitRunner::from_distribution(distribution, temp.path().join("home"));
         Some((runner, temp))
+    }
+
+    fn allow_file_protocol_for_local_submodule_fixtures(runner: &GitRunner) {
+        git_stdout(
+            runner,
+            None,
+            ["config", "--global", "protocol.file.allow", "always"],
+            "test",
+        )
+        .expect("allow file protocol for local submodule fixtures");
     }
 
     struct TestRepo {

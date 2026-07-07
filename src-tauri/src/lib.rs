@@ -281,10 +281,13 @@ fn open_log_dir(
 
 #[tauri::command]
 fn open_repository(
+    app_handle: tauri::AppHandle,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::OpenRepositoryRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::OpenRepositoryResponse> {
-    backend.open_repository(request)
+    backend.open_repository_with_progress(request, |event| {
+        let _ = app_handle.emit("operation-progress", &event);
+    })
 }
 
 #[tauri::command]
@@ -351,7 +354,9 @@ fn sync_current_branch(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::SyncCurrentBranchRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::SyncCurrentBranchResponse> {
-    let response = backend.sync_current_branch(request)?;
+    let response = backend.sync_current_branch_with_progress(request, |event| {
+        let _ = app_handle.emit("operation-progress", &event);
+    })?;
     if let Some(conflict) = response.conflict.as_ref() {
         let _ = app_handle.emit("conflict-entered", conflict);
     }
@@ -374,7 +379,9 @@ fn sync_branch(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::SyncBranchRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::SyncBranchResponse> {
-    let response = backend.sync_branch(request)?;
+    let response = backend.sync_branch_with_progress(request, |event| {
+        let _ = app_handle.emit("operation-progress", &event);
+    })?;
     if let Some(conflict) = response.conflict.as_ref() {
         let _ = app_handle.emit("conflict-entered", conflict);
     }

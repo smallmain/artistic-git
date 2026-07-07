@@ -5,6 +5,7 @@ import type { listenAppEvent } from "@/lib/ipc/events";
 import type {
   ConflictEnteredEvent,
   FetchStateEvent,
+  OperationProgressEvent,
   RepoChangedEvent,
 } from "@/lib/ipc/generated";
 import { installRealtimeEventBridge } from "@/lib/realtime/events";
@@ -16,6 +17,7 @@ interface RealtimeEventBridgeProps {
   listen?: AppEventListener;
   onConflictEntered?: (event: ConflictEnteredEvent) => void;
   onFetchState?: (event: FetchStateEvent) => void;
+  onOperationProgress?: (event: OperationProgressEvent) => void;
   onRepoChanged?: (event: RepoChangedEvent) => void;
 }
 
@@ -23,6 +25,7 @@ export function RealtimeEventBridge({
   listen,
   onConflictEntered,
   onFetchState,
+  onOperationProgress,
   onRepoChanged,
 }: RealtimeEventBridgeProps) {
   const queryClient = useQueryClient();
@@ -35,6 +38,7 @@ export function RealtimeEventBridge({
       listen,
       onConflictEntered,
       onFetchState,
+      onOperationProgress,
       onRepoChanged,
       queryClient,
     })
@@ -54,7 +58,14 @@ export function RealtimeEventBridge({
       active = false;
       unsubscribe?.();
     };
-  }, [listen, onConflictEntered, onFetchState, onRepoChanged, queryClient]);
+  }, [
+    listen,
+    onConflictEntered,
+    onFetchState,
+    onOperationProgress,
+    onRepoChanged,
+    queryClient,
+  ]);
 
   return null;
 }

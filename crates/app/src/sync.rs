@@ -1,9 +1,9 @@
 use artistic_git_contracts::{
     AcceptRemoteHistoryRequest, AcceptRemoteHistoryResponse, AppError, AppResult,
     ConflictEnteredEvent, ConflictListRequest, CreateAutoStashRequest, GitCommandError,
-    OperationContext, OperationId, RemoteHistoryChange, StashEntry, StashRecoveryPoint,
-    StashRestoreOutcome, SyncBranchRequest, SyncBranchResponse, SyncCurrentBranchRequest,
-    SyncCurrentBranchResponse, SyncCurrentBranchStatus,
+    OperationContext, OperationId, OperationProgressEvent, RemoteHistoryChange, StashEntry,
+    StashRecoveryPoint, StashRestoreOutcome, SyncBranchRequest, SyncBranchResponse,
+    SyncCurrentBranchRequest, SyncCurrentBranchResponse, SyncCurrentBranchStatus,
 };
 use artistic_git_git_runner::{GitCommandPlan, GitRunner};
 use serde::{Deserialize, Serialize};
@@ -31,6 +31,17 @@ pub fn sync_current_branch(
     runner: &GitRunner,
     request: SyncCurrentBranchRequest,
 ) -> AppResult<SyncCurrentBranchResponse> {
+    sync_current_branch_with_progress(runner, request, |_| {})
+}
+
+pub fn sync_current_branch_with_progress<F>(
+    runner: &GitRunner,
+    request: SyncCurrentBranchRequest,
+    progress: F,
+) -> AppResult<SyncCurrentBranchResponse>
+where
+    F: Fn(OperationProgressEvent),
+{
     let root = canonical_repository_path(&request.repository_path, SYNC_OPERATION)?;
     ensure_committed_head(runner, &root)?;
     ensure_origin(runner, &root)?;
@@ -43,8 +54,14 @@ pub fn sync_current_branch(
         .unwrap_or_else(sync_operation_id);
     let auto_stash = create_sync_auto_stash(runner, &root)?;
 
-    let sync_result =
-        sync_current_branch_clean(runner, &root, &branch_name, &starting_head, &operation_id);
+    let sync_result = sync_current_branch_clean(
+        runner,
+        &root,
+        &branch_name,
+        &starting_head,
+        &operation_id,
+        &progress,
+    );
     match sync_result {
         Ok(response) if response.status == SyncCurrentBranchStatus::Conflicts => Ok(response),
         Ok(response) => {
@@ -58,6 +75,17 @@ pub fn sync_branch(
     runner: &GitRunner,
     request: SyncBranchRequest,
 ) -> AppResult<SyncBranchResponse> {
+    sync_branch_with_progress(runner, request, |_| {})
+}
+
+pub fn sync_branch_with_progress<F>(
+    runner: &GitRunner,
+    request: SyncBranchRequest,
+    progress: F,
+) -> AppResult<SyncBranchResponse>
+where
+    F: Fn(OperationProgressEvent),
+{
     let root = canonical_repository_path(&request.repository_path, SYNC_BRANCH_OPERATION)?;
     ensure_committed_head(runner, &root)?;
     ensure_origin(runner, &root)?;
@@ -68,12 +96,13 @@ pub fn sync_branch(
         .unwrap_or_else(|| sync_branch_operation_id(&branch_name));
 
     if current_branch_name(runner, &root)?.as_deref() == Some(branch_name.as_str()) {
-        return sync_current_branch(
+        return sync_current_branch_with_progress(
             runner,
             SyncCurrentBranchRequest {
                 repository_path: display_path(&root),
                 operation_id: Some(operation_id),
             },
+            progress,
         )
         .map(sync_branch_response_from_current);
     }
@@ -84,7 +113,7 @@ pub fn sync_branch(
     match sync_branch_fast_path(runner, &root, &branch_name)? {
         FastPathOutcome::Synced(response) => Ok(response),
         FastPathOutcome::NeedsWorktree => {
-            sync_branch_via_worktree(runner, &root, &branch_name, &operation_id)
+            sync_branch_via_worktree(runner, &root, &branch_name, &operation_id, &progress)
         }
     }
 }
@@ -194,13 +223,17 @@ pub fn accept_remote_history(
     })
 }
 
-fn sync_current_branch_clean(
+fn sync_current_branch_clean<F>(
     runner: &GitRunner,
     root: &Path,
     branch_name: &str,
     starting_head: &str,
     operation_id: &OperationId,
-) -> AppResult<SyncCurrentBranchResponse> {
+    progress: &F,
+) -> AppResult<SyncCurrentBranchResponse>
+where
+    F: Fn(OperationProgressEvent) + ?Sized,
+{
     let mut last_non_fast_forward = false;
 
     for attempt in 1..=MAX_SYNC_ATTEMPTS {
@@ -208,7 +241,17 @@ fn sync_current_branch_clean(
         let previous_remote_head = previous_upstream
             .as_deref()
             .and_then(|upstream| rev_parse(runner, root, upstream).ok());
-        run_retryable_git(runner, root, ["fetch", "origin", "--prune"], SYNC_OPERATION)?;
+        run_retryable_git(
+            runner,
+            root,
+            [
+                "fetch",
+                "origin",
+                "--prune",
+                "--recurse-submodules=on-demand",
+            ],
+            SYNC_OPERATION,
+        )?;
         ensure_clean_worktree(runner, root)?;
 
         let Some(upstream) = upstream_branch(runner, root)? else {
@@ -250,7 +293,7 @@ fn sync_current_branch_clean(
             ));
         }
 
-        let before_push = sync_local_to_upstream(runner, root, &upstream, operation_id)?;
+        let before_push = sync_local_to_upstream(runner, root, &upstream, operation_id, progress)?;
         if let Some(conflict) = before_push.conflict {
             return Ok(conflict_response(
                 root,
@@ -429,6 +472,7 @@ fn fetch_branch_ref_fast_forward(
             [
                 OsString::from("fetch"),
                 OsString::from("origin"),
+                OsString::from("--recurse-submodules=on-demand"),
                 OsString::from(refspec),
             ],
             SYNC_BRANCH_OPERATION,
@@ -449,16 +493,26 @@ fn fetch_branch_ref_fast_forward(
     Err(expected_repo_error("Git 拉取失败。", root))
 }
 
-fn sync_branch_via_worktree(
+fn sync_branch_via_worktree<F>(
     runner: &GitRunner,
     root: &Path,
     branch_name: &str,
     operation_id: &OperationId,
-) -> AppResult<SyncBranchResponse> {
+    progress: &F,
+) -> AppResult<SyncBranchResponse>
+where
+    F: Fn(OperationProgressEvent) + ?Sized,
+{
     let worktree = create_sync_worktree(runner, root, branch_name, operation_id)?;
     let starting_head = rev_parse(runner, &worktree, "HEAD")?;
-    let sync_result =
-        sync_current_branch_clean(runner, &worktree, branch_name, &starting_head, operation_id);
+    let sync_result = sync_current_branch_clean(
+        runner,
+        &worktree,
+        branch_name,
+        &starting_head,
+        operation_id,
+        progress,
+    );
 
     match sync_result {
         Ok(response) if response.status == SyncCurrentBranchStatus::Conflicts => {
@@ -486,12 +540,16 @@ struct LocalSyncOutcome {
     conflict: Option<ConflictEnteredEvent>,
 }
 
-fn sync_local_to_upstream(
+fn sync_local_to_upstream<F>(
     runner: &GitRunner,
     root: &Path,
     upstream: &str,
     operation_id: &OperationId,
-) -> AppResult<LocalSyncOutcome> {
+    progress: &F,
+) -> AppResult<LocalSyncOutcome>
+where
+    F: Fn(OperationProgressEvent) + ?Sized,
+{
     let (ahead, behind) = ahead_behind(runner, root, "HEAD", upstream)?;
     if behind == 0 {
         return Ok(LocalSyncOutcome {
@@ -507,6 +565,13 @@ fn sync_local_to_upstream(
             ["merge", "--ff-only", upstream],
             SYNC_OPERATION,
         )?;
+        crate::repository::update_submodules_after_checkout(
+            runner,
+            root,
+            SYNC_OPERATION,
+            Some(operation_id),
+            progress,
+        )?;
         return Ok(LocalSyncOutcome {
             pulled: true,
             rebased: false,
@@ -516,6 +581,13 @@ fn sync_local_to_upstream(
 
     let (plan, output) = run_git_raw(runner, Some(root), ["rebase", upstream], SYNC_OPERATION)?;
     if output.status.success() {
+        crate::repository::update_submodules_after_checkout(
+            runner,
+            root,
+            SYNC_OPERATION,
+            Some(operation_id),
+            progress,
+        )?;
         return Ok(LocalSyncOutcome {
             pulled: true,
             rebased: true,
@@ -1454,6 +1526,70 @@ mod tests {
     }
 
     #[test]
+    fn sync_current_branch_updates_submodule_after_fast_forward_pull() {
+        let Some((runner, _home)) = real_runner_or_skip() else {
+            return;
+        };
+        allow_file_protocol_for_local_submodule_fixtures(&runner);
+        let fixture = SubmoduleSyncFixture::new(&runner);
+
+        fixture.child.write("tracked.txt", "two\n");
+        fixture.child.git(["add", "tracked.txt"]);
+        fixture.child.git(["commit", "-m", "update child"]);
+        let new_child_oid = fixture
+            .child
+            .git_output(["rev-parse", "HEAD"])
+            .trim()
+            .to_owned();
+
+        let peer_submodule = fixture.peer.path.join("deps/lib");
+        crate::git_ops::git_stdout(&runner, Some(&peer_submodule), ["fetch", "origin"], "test")
+            .expect("fetch child update");
+        crate::git_ops::git_stdout(
+            &runner,
+            Some(&peer_submodule),
+            ["checkout", new_child_oid.as_str()],
+            "test",
+        )
+        .expect("checkout child update");
+        fixture.peer.git(["add", "deps/lib"]);
+        fixture
+            .peer
+            .git(["commit", "-m", "update submodule pointer"]);
+        fixture.peer.git(["push"]);
+
+        let events = std::cell::RefCell::new(Vec::new());
+        let response = sync_current_branch_with_progress(
+            &runner,
+            SyncCurrentBranchRequest {
+                repository_path: display_path(&fixture.local.path),
+                operation_id: None,
+            },
+            |event| events.borrow_mut().push(event),
+        )
+        .expect("sync current branch");
+
+        assert_eq!(response.status, SyncCurrentBranchStatus::Pulled);
+        assert_eq!(fixture.local.read("deps/lib/tracked.txt"), "two\n");
+        assert_eq!(
+            crate::git_ops::git_stdout(
+                &runner,
+                Some(&fixture.local.path.join("deps/lib")),
+                ["rev-parse", "HEAD"],
+                "test",
+            )
+            .expect("local child head")
+            .trim(),
+            new_child_oid
+        );
+        assert!(fixture.local.status_clean());
+        assert!(events
+            .borrow()
+            .iter()
+            .any(|event| event.label == "Updating submodules"));
+    }
+
+    #[test]
     fn sync_current_branch_publishes_branch_without_upstream() {
         let Some((runner, _home)) = real_runner_or_skip() else {
             return;
@@ -2293,6 +2429,95 @@ exit 0
             fs::write(&hook, script).expect("write repeating pre-push hook");
             make_executable(&hook);
         }
+    }
+
+    struct SubmoduleSyncFixture {
+        child: TestRepo,
+        local: TestRepo,
+        peer: TestRepo,
+        _remote: TestRepo,
+        _seed: TestRepo,
+        _parent: TestTempDir,
+    }
+
+    impl SubmoduleSyncFixture {
+        fn new(runner: &GitRunner) -> Self {
+            let parent = TestTempDir::new("ag-sync-submodule").expect("submodule parent");
+            let child = TestRepo::at(runner, parent.path().join("child"));
+            child.git(["init"]);
+            child.configure_identity();
+            child.write("tracked.txt", "one\n");
+            child.git(["add", "tracked.txt"]);
+            child.git(["commit", "-m", "initial child"]);
+
+            let remote = TestRepo::at(runner, parent.path().join("remote.git"));
+            remote.git(["init", "--bare"]);
+
+            let seed = TestRepo::at(runner, parent.path().join("seed"));
+            seed.git(["init", "-b", "main"]);
+            seed.configure_identity();
+            seed.git([
+                OsString::from("-c"),
+                OsString::from("protocol.file.allow=always"),
+                OsString::from("submodule"),
+                OsString::from("add"),
+                OsString::from(display_path(&child.path)),
+                OsString::from("deps/lib"),
+            ]);
+            seed.git(["commit", "-m", "add submodule"]);
+            seed.git([
+                "remote",
+                "add",
+                "origin",
+                display_path(&remote.path).as_str(),
+            ]);
+            seed.git(["push", "-u", "origin", "main"]);
+            remote.git(["symbolic-ref", "HEAD", "refs/heads/main"]);
+
+            let local = TestRepo::at(runner, parent.path().join("local"));
+            git_clone_recurse_submodules(runner, &remote.path, &local.path);
+            local.configure_identity();
+
+            let peer = TestRepo::at(runner, parent.path().join("peer"));
+            git_clone_recurse_submodules(runner, &remote.path, &peer.path);
+            peer.configure_identity();
+
+            Self {
+                child,
+                local,
+                peer,
+                _remote: remote,
+                _seed: seed,
+                _parent: parent,
+            }
+        }
+    }
+
+    fn git_clone_recurse_submodules(runner: &GitRunner, remote: &Path, destination: &Path) {
+        crate::git_ops::git_stdout(
+            runner,
+            None,
+            [
+                OsString::from("-c"),
+                OsString::from("protocol.file.allow=always"),
+                OsString::from("clone"),
+                OsString::from("--recurse-submodules"),
+                OsString::from(display_path(remote)),
+                OsString::from(display_path(destination)),
+            ],
+            "test",
+        )
+        .expect("clone recurse submodules");
+    }
+
+    fn allow_file_protocol_for_local_submodule_fixtures(runner: &GitRunner) {
+        crate::git_ops::git_stdout(
+            runner,
+            None,
+            ["config", "--global", "protocol.file.allow", "always"],
+            "test",
+        )
+        .expect("allow file protocol for local submodule fixtures");
     }
 
     fn make_executable(path: &Path) {

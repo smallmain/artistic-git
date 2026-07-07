@@ -95,7 +95,7 @@ describe("realtime query invalidation", () => {
     expect(invalidateQueries).not.toHaveBeenCalled();
   });
 
-  it("subscribes to repo-changed, fetch-state, and conflict-entered events", async () => {
+  it("subscribes to repo-changed, fetch-state, conflict-entered, and operation-progress events", async () => {
     const queryClient = new QueryClient();
     const invalidateQueries = vi
       .spyOn(queryClient, "invalidateQueries")
@@ -103,6 +103,7 @@ describe("realtime query invalidation", () => {
     const onRepoChanged = vi.fn();
     const onConflictEntered = vi.fn();
     const onFetchState = vi.fn();
+    const onOperationProgress = vi.fn();
     const unlisten = vi.fn();
     const handlers = new Map<
       AppEventName,
@@ -128,11 +129,18 @@ describe("realtime query invalidation", () => {
       repositoryPath: "/repo/art",
       state: "offline",
     };
+    const progressPayload = {
+      cancellable: false,
+      label: "Updating submodules",
+      operationId: "op-progress",
+      progress: { kind: "indeterminate" as const },
+    };
 
     const unsubscribe = await installRealtimeEventBridge({
       listen,
       onConflictEntered,
       onFetchState,
+      onOperationProgress,
       onRepoChanged,
       queryClient,
     });
@@ -140,6 +148,7 @@ describe("realtime query invalidation", () => {
     handlers.get("repo-changed")?.({ payload });
     handlers.get("conflict-entered")?.({ payload: conflictPayload });
     handlers.get("fetch-state")?.({ payload: fetchPayload });
+    handlers.get("operation-progress")?.({ payload: progressPayload });
 
     expect(listen).toHaveBeenCalledWith("repo-changed", expect.any(Function));
     expect(listen).toHaveBeenCalledWith(
@@ -147,15 +156,20 @@ describe("realtime query invalidation", () => {
       expect.any(Function),
     );
     expect(listen).toHaveBeenCalledWith("fetch-state", expect.any(Function));
+    expect(listen).toHaveBeenCalledWith(
+      "operation-progress",
+      expect.any(Function),
+    );
     expect(onRepoChanged).toHaveBeenCalledWith(payload);
     expect(onConflictEntered).toHaveBeenCalledWith(conflictPayload);
     expect(onFetchState).toHaveBeenCalledWith(fetchPayload);
+    expect(onOperationProgress).toHaveBeenCalledWith(progressPayload);
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: ["repository", "/repo/art", "summary"],
     });
 
     unsubscribe();
 
-    expect(unlisten).toHaveBeenCalledTimes(3);
+    expect(unlisten).toHaveBeenCalledTimes(4);
   });
 });

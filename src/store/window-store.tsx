@@ -181,12 +181,19 @@ export function createWindowStore(
       set({ onboarded });
     },
     setOperationProgress: (event) => {
-      set((state) => ({
-        operationsById: {
-          ...state.operationsById,
-          [event.operationId]: event,
-        },
-      }));
+      set((state) => {
+        const operationsById = { ...state.operationsById };
+        if (
+          event.progress.kind === "percent" &&
+          event.progress.value !== null &&
+          event.progress.value >= 100
+        ) {
+          delete operationsById[event.operationId];
+        } else {
+          operationsById[event.operationId] = event;
+        }
+        return { operationsById };
+      });
     },
     setProjectSettings: (repositoryPath, project) => {
       set((state) => ({
@@ -269,6 +276,12 @@ export function WindowStoreProvider({
     },
     [storeApi],
   );
+  const setOperationProgress = React.useCallback(
+    (event: OperationProgressEvent) => {
+      storeApi.getState().setOperationProgress(event);
+    },
+    [storeApi],
+  );
 
   return (
     <WindowStoreContext.Provider value={storeApi}>
@@ -276,6 +289,7 @@ export function WindowStoreProvider({
         <RealtimeEventBridge
           onConflictEntered={setConflictEntered}
           onFetchState={setFetchState}
+          onOperationProgress={setOperationProgress}
           onRepoChanged={setRepoChanged}
         />
       ) : null}

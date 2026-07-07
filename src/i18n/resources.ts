@@ -149,6 +149,7 @@ export const resources = {
         noSafetyBackups: "No safety backups",
         openProjectSettings: "Project settings",
         ready: "Ready",
+        downloadingSubmoduleLfs: "Downloading submodule LFS objects",
         resizeSections: "Resize branch and stash sections",
         resizeSidebar: "Resize sidebar",
         remoteHistoryChangedBody:
@@ -179,8 +180,10 @@ export const resources = {
         sync: "Sync",
         syncBadge: "↑{{ahead}} to push ↓{{behind}} to pull",
         syncCurrentOnly: "Only the current branch can be synced in this phase",
+        submodulesReady: "Submodules ready",
         tabs: "Repository tabs",
         untitledProject: "Untitled project",
+        updatingSubmodules: "Updating submodules",
         unbornBranchActionsDisabled:
           "Create the first commit before managing branches",
       },
@@ -229,6 +232,7 @@ export const resources = {
         cloneUrl: "Repository URL",
         missingProject:
           "{{path}} was deleted or moved. Remove it from the recent projects list?",
+        openingRepository: "Opening repository",
         openOnboarding: "Open setup wizard",
         openOnboardingPlaceholder:
           "The setup wizard is implemented in Phase 3E",
@@ -445,6 +449,7 @@ export const resources = {
           lfsPointer: "Git LFS content is not available locally yet",
           moved: "File moved with no content changes",
           oversizedText: "File is too large to render",
+          submoduleUpdated: "Submodule {{path}} updated to a new version",
         },
         changeKind: {
           added: "Added",
@@ -474,7 +479,9 @@ export const resources = {
         },
         locked: "Locked",
         newImage: "New",
+        newVersion: "New version",
         oldImage: "Old",
+        oldVersion: "Old version",
         sizeChange: "Size",
         splitMode: "Split diff",
         viewerLabel: "Diff viewer",
@@ -744,6 +751,7 @@ export const resources = {
         noSafetyBackups: "暂无安全备份",
         openProjectSettings: "项目设置",
         ready: "就绪",
+        downloadingSubmoduleLfs: "正在下载子模块 LFS 对象",
         resizeSections: "调整分支和储藏区比例",
         resizeSidebar: "调整侧栏宽度",
         remoteHistoryChangedBody:
@@ -774,8 +782,10 @@ export const resources = {
         sync: "同步",
         syncBadge: "↑{{ahead}} 待推送 ↓{{behind}} 待拉取",
         syncCurrentOnly: "本阶段仅可同步当前分支",
+        submodulesReady: "子模块已就绪",
         tabs: "仓库选项卡",
         untitledProject: "未命名项目",
+        updatingSubmodules: "正在更新子模块",
         unbornBranchActionsDisabled: "创建首次提交后才能管理分支",
       },
       review: {
@@ -820,6 +830,7 @@ export const resources = {
         cloneProgressSubmodules: "正在克隆子模块",
         cloneUrl: "仓库地址",
         missingProject: "{{path}} 已删除或移动。是否从最近项目列表移除？",
+        openingRepository: "正在打开仓库",
         openOnboarding: "打开设置向导",
         openOnboardingPlaceholder: "设置向导在 3E 阶段实现",
         removeFromList: "从列表中移除",
@@ -1024,6 +1035,7 @@ export const resources = {
           lfsPointer: "Git LFS 内容尚未在本地可用",
           moved: "文件已移动，内容无变化",
           oversizedText: "文件过大，无法渲染",
+          submoduleUpdated: "子模块 {{path}} 更新到新版本",
         },
         changeKind: {
           added: "新增",
@@ -1053,7 +1065,9 @@ export const resources = {
         },
         locked: "已锁定",
         newImage: "新版本",
+        newVersion: "新版本",
         oldImage: "旧版本",
+        oldVersion: "旧版本",
         sizeChange: "大小",
         splitMode: "分栏 Diff",
         viewerLabel: "Diff 查看器",

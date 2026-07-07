@@ -153,7 +153,9 @@ function TextDiff({
     parent.replaceChildren();
     const oldText = content.oldText ?? "";
     const newText = content.newText ?? "";
-    const extensions = createCodeMirrorExtensions(content.language ?? undefined);
+    const extensions = createCodeMirrorExtensions(
+      content.language ?? undefined,
+    );
 
     if (effectiveMode === "split") {
       const mergeView = new MergeView({
@@ -360,12 +362,16 @@ function FileDiffCard({
   const oldBytes = parseOptionalNumber(payload.metadata.oldBytes);
   const newBytes = parseOptionalNumber(payload.metadata.newBytes);
   const lfsStatus = content.kind === "lfsPointer" ? content.status : undefined;
+  const isSubmodule = payload.metadata.submodule === "true";
   const title =
     content.kind === "lfsPointer" && content.status === "loading"
       ? t("diff.card.lfsLoading")
       : content.kind === "lfsPointer" && content.status === "error"
         ? (content.message ?? t("diff.card.lfsError"))
-        : (content.message ?? t(`diff.card.${content.kind}`));
+        : (content.message ??
+          (isSubmodule
+            ? t("diff.card.submoduleUpdated", { path: payload.newPath })
+            : t(`diff.card.${content.kind}`)));
   const role =
     lfsStatus === "loading"
       ? "status"
@@ -414,6 +420,18 @@ function FileDiffCard({
                 <MetadataRow
                   label={t("diff.lfsLock")}
                   value={payload.lfsLock.owner ?? t("diff.locked")}
+                />
+              ) : null}
+              {isSubmodule && payload.metadata.oldOid ? (
+                <MetadataRow
+                  label={t("diff.oldVersion")}
+                  value={shortOid(payload.metadata.oldOid)}
+                />
+              ) : null}
+              {isSubmodule && payload.metadata.newOid ? (
+                <MetadataRow
+                  label={t("diff.newVersion")}
+                  value={shortOid(payload.metadata.newOid)}
                 />
               ) : null}
             </dl>
@@ -497,4 +515,8 @@ function formatSize(
   formatFileSize: (bytes: number) => string,
 ): string {
   return value === undefined ? "-" : formatFileSize(value);
+}
+
+function shortOid(value: string): string {
+  return value.slice(0, 12);
 }

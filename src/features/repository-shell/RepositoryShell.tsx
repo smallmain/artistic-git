@@ -471,7 +471,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     reviewRecoveryPrompt;
   const interactionBusy = busy || reviewActive;
   const busyLabel = activeOperation
-    ? activeOperation.label
+    ? operationLabel(activeOperation.label, t)
     : fetchBusy
       ? t("repository.sync")
       : syncBusy
@@ -1951,6 +1951,29 @@ function closeBlockedReasonFromPayload(
   }
 
   return "closeWindow";
+}
+
+function operationLabel(label: string, t: (key: string) => string): string {
+  switch (label) {
+    case "Updating submodules":
+      return t("repository.updatingSubmodules");
+    case "Downloading submodule LFS objects":
+      return t("repository.downloadingSubmoduleLfs");
+    case "Submodules ready":
+      return t("repository.submodulesReady");
+    case "Downloading LFS objects":
+      return t("start.cloneProgressLfs");
+    case "Checking out files":
+      return t("start.cloneProgressCheckout");
+    case "Cloning submodules":
+      return t("start.cloneProgressSubmodules");
+    case "Clone complete":
+      return t("start.cloneProgressComplete");
+    case "Cloning repository":
+      return t("start.cloneProgressClone");
+    default:
+      return label;
+  }
 }
 
 function mapBranchSummaryToItem(branch: BranchSummary): BranchListItem {

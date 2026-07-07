@@ -76,6 +76,8 @@ export function StartScreen() {
   );
   const [cloneProgress, setCloneProgress] =
     React.useState<OperationProgressEvent | null>(null);
+  const [openProgress, setOpenProgress] =
+    React.useState<OperationProgressEvent | null>(null);
   const cloneCancelRequestedRef = React.useRef(false);
   const activateRepository = React.useCallback(
     (repositoryPath: string) => {
@@ -127,6 +129,12 @@ export function StartScreen() {
   const handleOpenRepository = React.useCallback(
     async (path: string) => {
       setOpeningPath(path);
+      setOpenProgress({
+        cancellable: false,
+        label: "Opening repository",
+        operationId: "open-repository",
+        progress: { kind: "indeterminate" },
+      });
       try {
         const response = await openRepository({
           path,
@@ -139,6 +147,7 @@ export function StartScreen() {
         );
       } finally {
         setOpeningPath(null);
+        setOpenProgress(null);
       }
     },
     [appSettings, routeRepository],
@@ -269,6 +278,31 @@ export function StartScreen() {
   }, [cloneOperationId]);
 
   React.useEffect(() => {
+    if (!openingPath) {
+      return undefined;
+    }
+
+    let disposed = false;
+    let unlistenProgress: (() => void) | null = null;
+    void listenAppEvent("operation-progress", (event) => {
+      if (!disposed && isOpenRepositoryProgress(event.payload)) {
+        setOpenProgress(event.payload);
+      }
+    }).then((unlisten) => {
+      if (disposed) {
+        unlisten();
+      } else {
+        unlistenProgress = unlisten;
+      }
+    });
+
+    return () => {
+      disposed = true;
+      unlistenProgress?.();
+    };
+  }, [openingPath]);
+
+  React.useEffect(() => {
     const openProject = () => {
       fileInputRef.current?.click();
     };
@@ -361,6 +395,9 @@ export function StartScreen() {
                 <GitBranchPlus className="size-5" aria-hidden="true" />
                 {t("actions.cloneProject")}
               </Button>
+              {openingPath ? (
+                <OpenProgressView progress={openProgress} />
+              ) : null}
             </div>
           </div>
 
@@ -745,6 +782,42 @@ function CloneProgressView({
   );
 }
 
+function OpenProgressView({
+  progress,
+}: {
+  progress: OperationProgressEvent | null;
+}) {
+  const { t } = useTranslation();
+  const percent = progressPercent(progress?.progress);
+  const label = openProgressLabel(progress?.label, t);
+
+  return (
+    <div
+      className="rounded-md border bg-card px-3 py-2"
+      role="status"
+      aria-live="polite"
+    >
+      <div className="flex items-center justify-between gap-3 text-xs">
+        <span className="font-medium">{label}</span>
+        {percent !== null ? (
+          <span className="tabular-nums text-muted-foreground">
+            {Math.round(percent)}%
+          </span>
+        ) : null}
+      </div>
+      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted">
+        <div
+          className={cn(
+            "h-full rounded-full bg-primary transition-all",
+            percent === null && "w-1/2 animate-pulse",
+          )}
+          style={percent === null ? undefined : { width: `${percent}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
 function displayNameFromPath(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
 }
@@ -823,6 +896,32 @@ function cloneProgressLabel(
     default:
       return t("start.cloneProgressClone");
   }
+}
+
+function openProgressLabel(
+  label: string | undefined,
+  t: (key: string) => string,
+): string {
+  switch (label) {
+    case "Updating submodules":
+      return t("repository.updatingSubmodules");
+    case "Downloading submodule LFS objects":
+      return t("repository.downloadingSubmoduleLfs");
+    case "Submodules ready":
+      return t("repository.submodulesReady");
+    case "Opening repository":
+    default:
+      return t("start.openingRepository");
+  }
+}
+
+function isOpenRepositoryProgress(event: OperationProgressEvent): boolean {
+  return (
+    event.operationId.startsWith("open-repository") &&
+    (event.label === "Updating submodules" ||
+      event.label === "Downloading submodule LFS objects" ||
+      event.label === "Submodules ready")
+  );
 }
 
 function errorSummary(error: unknown, fallback: string): string {
