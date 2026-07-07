@@ -373,7 +373,9 @@ export const resources = {
           },
           generatedMessage: "New commit message: {{message}}",
           noRewrite: "This uses git revert and does not rewrite history.",
+          pushNow: "Push immediately",
           reverted: "Created {{message}} at {{shortId}}.",
+          revertedAndPushed: "Created and pushed {{message}} at {{shortId}}.",
           title: "Revert this commit?",
         },
         search: {
@@ -907,7 +909,9 @@ export const resources = {
           },
           generatedMessage: "新提交信息：{{message}}",
           noRewrite: "此操作使用 git revert，不会改写历史。",
+          pushNow: "立即推送",
           reverted: "已创建 {{message}}，提交号 {{shortId}}。",
+          revertedAndPushed: "已创建并推送 {{message}}，提交号 {{shortId}}。",
           title: "撤回此提交？",
         },
         search: {

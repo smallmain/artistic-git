@@ -92,7 +92,7 @@ pub use repository::{
     search_log_with_cancel, RepositoryBackend,
 };
 pub use restore::restore_changes;
-pub use revert::{abort_revert, revert_commit};
+pub use revert::abort_revert;
 pub use settings::{
     generate_ssh_key, identity_sources, load_app_settings, load_gitignore, load_project_settings,
     save_app_settings, save_gitignore, save_project_settings, settings_snapshot, ssh_key_status,
@@ -126,6 +126,14 @@ pub fn sync_branch(
 pub fn commit_changes(runner: &GitRunner, request: CommitRequest) -> AppResult<CommitResponse> {
     let _permit = begin_identity_write(runner, "commitChanges", &request.repository_path, true)?;
     commit::commit_changes(runner, request)
+}
+
+pub fn revert_commit(
+    runner: &GitRunner,
+    request: artistic_git_contracts::RevertCommitRequest,
+) -> AppResult<artistic_git_contracts::RevertCommitResponse> {
+    let _permit = begin_identity_write(runner, "revertCommit", &request.repository_path, true)?;
+    revert::revert_commit(runner, request)
 }
 
 fn begin_identity_write<'a>(

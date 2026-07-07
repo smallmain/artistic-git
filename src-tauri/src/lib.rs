@@ -693,17 +693,8 @@ fn revert_commit(
                 ],
             );
         }
-        artistic_git_contracts::RevertCommitResponse::Conflicted {
-            operation_id,
-            files,
-        } => {
-            let conflict = artistic_git_contracts::ConflictEnteredEvent {
-                operation_id: operation_id.clone(),
-                repository_path: repository_path.clone(),
-                operation_name: "revertCommit".to_owned(),
-                files: files.clone(),
-            };
-            let _ = app_handle.emit("conflict-entered", &conflict);
+        artistic_git_contracts::RevertCommitResponse::Conflicted { conflict, .. } => {
+            let _ = app_handle.emit("conflict-entered", conflict);
             emit_repo_changed(
                 &app_handle,
                 repository_path,

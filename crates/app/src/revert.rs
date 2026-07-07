@@ -1,8 +1,9 @@
-use crate::git_ops::{canonical_repository_path, git_stdout, run_git, run_git_raw};
+use crate::git_ops::{canonical_repository_path, display_path, git_stdout, run_git, run_git_raw};
 use artistic_git_contracts::{
-    AbortRevertRequest, AbortRevertResponse, AppError, AppResult, ConflictFile,
-    ConflictResolutionStatus, DiffFileKind, OperationId, RevertCommitRequest, RevertCommitResponse,
-    RevertDisabledReason,
+    AbortRevertRequest, AbortRevertResponse, AppError, AppResult, ConflictEnteredEvent,
+    ConflictFile, ConflictResolutionStatus, CreateAutoStashRequest, DiffFileKind, OperationId,
+    RevertCommitRequest, RevertCommitResponse, RevertDisabledReason, StashEntry,
+    StashRecoveryPoint, StashRestoreOutcome, SyncCurrentBranchRequest,
 };
 use artistic_git_git_runner::GitRunner;
 use std::{
@@ -12,6 +13,7 @@ use std::{
 };
 
 const OPERATION: &str = "revertCommit";
+const REVERT_STASH_RESTORE_OPERATION: &str = "revertCommit:restoreStash";
 
 pub fn revert_commit(
     runner: &GitRunner,
@@ -54,15 +56,36 @@ pub fn revert_commit(
         });
     }
 
+    let has_remote = crate::remote::read_origin_url(runner, &root, OPERATION)?.is_some();
+    if has_remote {
+        let sync = crate::sync::sync_current_branch(
+            runner,
+            SyncCurrentBranchRequest {
+                repository_path: display_path(&root),
+                operation_id: Some(OperationId(operation_id())),
+            },
+        )?;
+        if let Some(conflict) = sync.conflict {
+            return Ok(conflicted_response(conflict, sync.stash_recovery, None));
+        }
+    }
+
+    let auto_stash = create_revert_auto_stash(runner, &root)?;
     let subject = commit_subject(runner, &root, oid)?;
     match run_revert_no_commit(runner, &root, oid) {
         Ok(()) => {}
         Err(error) if has_revert_conflict(&error, &git_common_dir) => {
             let files = conflict_files(runner, &root)?;
-            return Ok(RevertCommitResponse::Conflicted {
-                operation_id: OperationId(operation_id()),
-                files,
-            });
+            return Ok(conflicted_response(
+                ConflictEnteredEvent {
+                    operation_id: OperationId(operation_id()),
+                    repository_path: display_path(&root),
+                    operation_name: OPERATION.to_owned(),
+                    files,
+                },
+                None,
+                auto_stash,
+            ));
         }
         Err(error) => return Err(error),
     }
@@ -72,10 +95,21 @@ pub fn revert_commit(
     let revert_oid = git_stdout(runner, Some(&root), ["rev-parse", "HEAD"], OPERATION)?
         .trim()
         .to_owned();
+    let mut pushed = false;
+    if request.push_after_revert && has_remote {
+        match push_revert_with_sync_retry(runner, &root, auto_stash.clone())? {
+            RevertPushOutcome::Pushed => pushed = true,
+            RevertPushOutcome::Conflicted(response) => return Ok(response),
+        }
+    }
+    if let Some(response) = restore_revert_auto_stash_after_success(runner, &root, auto_stash)? {
+        return Ok(response);
+    }
 
     Ok(RevertCommitResponse::Reverted {
         oid: revert_oid,
         message,
+        pushed,
     })
 }
 
@@ -258,6 +292,121 @@ fn conflict_files(runner: &GitRunner, root: &Path) -> AppResult<Vec<ConflictFile
         .collect())
 }
 
+fn create_revert_auto_stash(runner: &GitRunner, root: &Path) -> AppResult<Option<StashEntry>> {
+    Ok(crate::stash_impl::create_auto_stash(
+        runner,
+        CreateAutoStashRequest {
+            repository_path: display_path(root),
+            reason: "before reverting commit".to_owned(),
+            include_untracked: true,
+            paths: Vec::new(),
+        },
+    )?
+    .stash)
+}
+
+fn restore_revert_auto_stash_after_success(
+    runner: &GitRunner,
+    root: &Path,
+    auto_stash: Option<StashEntry>,
+) -> AppResult<Option<RevertCommitResponse>> {
+    let Some(auto_stash) = auto_stash else {
+        return Ok(None);
+    };
+
+    let restore = crate::stash_impl::restore_stash_for_root(
+        runner,
+        root,
+        &auto_stash.selector,
+        true,
+        REVERT_STASH_RESTORE_OPERATION,
+        None,
+    )?;
+    match restore.outcome {
+        StashRestoreOutcome::Applied { .. } => Ok(None),
+        StashRestoreOutcome::Conflicts { conflict } => Ok(Some(conflicted_response(
+            conflict,
+            Some(restore.recovery),
+            None,
+        ))),
+    }
+}
+
+fn push_revert_with_sync_retry(
+    runner: &GitRunner,
+    root: &Path,
+    auto_stash: Option<StashEntry>,
+) -> AppResult<RevertPushOutcome> {
+    match push_once(runner, root) {
+        PushAttempt::Success => Ok(RevertPushOutcome::Pushed),
+        PushAttempt::Failed(error) if !is_non_fast_forward_error(&error) => Err(error),
+        PushAttempt::Failed(_error) => {
+            let sync = crate::sync::sync_current_branch(
+                runner,
+                SyncCurrentBranchRequest {
+                    repository_path: display_path(root),
+                    operation_id: Some(OperationId(operation_id())),
+                },
+            )?;
+            if let Some(conflict) = sync.conflict {
+                return Ok(RevertPushOutcome::Conflicted(conflicted_response(
+                    conflict,
+                    sync.stash_recovery,
+                    auto_stash,
+                )));
+            }
+            Ok(RevertPushOutcome::Pushed)
+        }
+    }
+}
+
+enum RevertPushOutcome {
+    Pushed,
+    Conflicted(RevertCommitResponse),
+}
+
+fn push_once(runner: &GitRunner, root: &Path) -> PushAttempt {
+    let (plan, output) = match run_git_raw(runner, Some(root), ["push"], OPERATION) {
+        Ok(value) => value,
+        Err(error) => return PushAttempt::Failed(error),
+    };
+    if output.status.success() {
+        PushAttempt::Success
+    } else {
+        PushAttempt::Failed(crate::git_ops::command_failure(&plan, output, OPERATION))
+    }
+}
+
+enum PushAttempt {
+    Success,
+    Failed(AppError),
+}
+
+fn is_non_fast_forward_error(error: &AppError) -> bool {
+    error
+        .git
+        .as_ref()
+        .map(|git| {
+            let text = format!("{}\n{}", git.stdout, git.stderr).to_ascii_lowercase();
+            text.contains("non-fast-forward")
+                || text.contains("fetch first")
+                || text.contains("failed to push some refs")
+        })
+        .unwrap_or(false)
+}
+
+fn conflicted_response(
+    conflict: ConflictEnteredEvent,
+    stash_recovery: Option<StashRecoveryPoint>,
+    auto_stash: Option<StashEntry>,
+) -> RevertCommitResponse {
+    RevertCommitResponse::Conflicted {
+        conflict,
+        stash_recovery,
+        auto_stash,
+    }
+}
+
 fn operation_id() -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -282,7 +431,7 @@ mod tests {
     use crate::git_ops::display_path;
     use artistic_git_git_runner::{GitDistribution, GitRunner};
     use artistic_git_test_support::{require_git_dist, GitDistError, TestTempDir};
-    use std::{ffi::OsString, fs, io::Write};
+    use std::{ffi::OsString, fs, io::Write, os::unix::fs::PermissionsExt};
 
     #[test]
     fn revert_creates_new_commit_for_current_branch_ancestor_with_phase_message() {
@@ -305,14 +454,20 @@ mod tests {
             RevertCommitRequest {
                 repository_path: display_path(&repo.path),
                 oid: target,
+                push_after_revert: false,
             },
         )
         .expect("revert commit");
 
         match response {
-            RevertCommitResponse::Reverted { message, oid } => {
+            RevertCommitResponse::Reverted {
+                message,
+                oid,
+                pushed,
+            } => {
                 assert_eq!(message, "Revert: add target artifact");
                 assert_eq!(oid, repo.git_output(["rev-parse", "HEAD"]).trim());
+                assert!(!pushed);
             }
             other => panic!("unexpected response: {other:?}"),
         }
@@ -351,6 +506,7 @@ mod tests {
             RevertCommitRequest {
                 repository_path: display_path(&repo.path),
                 oid: merge_oid,
+                push_after_revert: false,
             },
         )
         .expect("merge disabled");
@@ -386,6 +542,7 @@ mod tests {
             RevertCommitRequest {
                 repository_path: display_path(&repo.path),
                 oid: feature_oid,
+                push_after_revert: false,
             },
         )
         .expect("outside branch disabled");
@@ -421,18 +578,24 @@ mod tests {
             RevertCommitRequest {
                 repository_path: display_path(&repo.path),
                 oid: target,
+                push_after_revert: false,
             },
         )
         .expect("conflicted revert response");
 
         match response {
             RevertCommitResponse::Conflicted {
-                operation_id,
-                files,
+                conflict,
+                stash_recovery,
+                auto_stash,
             } => {
-                assert!(operation_id.0.starts_with("revert-"));
+                assert!(conflict.operation_id.0.starts_with("revert-"));
+                assert_eq!(conflict.operation_name, OPERATION);
+                assert_eq!(conflict.repository_path, display_path(&repo.path));
+                assert!(stash_recovery.is_none());
+                assert!(auto_stash.is_none());
                 assert_eq!(
-                    files,
+                    conflict.files,
                     vec![ConflictFile {
                         path: "tracked.txt".to_owned(),
                         status: ConflictResolutionStatus::Unresolved,
@@ -462,6 +625,273 @@ mod tests {
             .exists());
     }
 
+    #[test]
+    fn revert_pushes_published_history_commit_in_double_clone() {
+        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
+            return;
+        };
+        let fixture = DoubleClone::new(&runner);
+        fixture.local.write("target.txt", "target\n");
+        fixture.local.git(["add", "target.txt"]);
+        fixture.local.git(["commit", "-m", "add target"]);
+        let target = fixture
+            .local
+            .git_output(["rev-parse", "HEAD"])
+            .trim()
+            .to_owned();
+        fixture.local.write("later.txt", "later\n");
+        fixture.local.git(["add", "later.txt"]);
+        fixture.local.git(["commit", "-m", "later"]);
+        fixture.local.git(["push"]);
+
+        let response = revert_commit(
+            &runner,
+            RevertCommitRequest {
+                repository_path: display_path(&fixture.local.path),
+                oid: target,
+                push_after_revert: true,
+            },
+        )
+        .expect("revert and push");
+
+        match response {
+            RevertCommitResponse::Reverted {
+                message, pushed, ..
+            } => {
+                assert_eq!(message, "Revert: add target");
+                assert!(pushed);
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+        fixture.peer.git(["pull", "--ff-only"]);
+        assert!(!fixture.peer.path.join("target.txt").exists());
+        assert_eq!(
+            fixture.peer.git_output(["log", "-1", "--format=%s"]).trim(),
+            "Revert: add target"
+        );
+        assert!(fixture.local.status_clean());
+    }
+
+    #[test]
+    fn revert_pushes_unpublished_commit_with_same_flow() {
+        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
+            return;
+        };
+        let fixture = DoubleClone::new(&runner);
+        fixture.local.write("target.txt", "target\n");
+        fixture.local.git(["add", "target.txt"]);
+        fixture.local.git(["commit", "-m", "local target"]);
+        let target = fixture
+            .local
+            .git_output(["rev-parse", "HEAD"])
+            .trim()
+            .to_owned();
+        fixture.local.write("later.txt", "later\n");
+        fixture.local.git(["add", "later.txt"]);
+        fixture.local.git(["commit", "-m", "local later"]);
+
+        let response = revert_commit(
+            &runner,
+            RevertCommitRequest {
+                repository_path: display_path(&fixture.local.path),
+                oid: target,
+                push_after_revert: true,
+            },
+        )
+        .expect("sync unpublished commits, revert, and push");
+
+        match response {
+            RevertCommitResponse::Reverted {
+                message, pushed, ..
+            } => {
+                assert_eq!(message, "Revert: local target");
+                assert!(pushed);
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+        fixture.peer.git(["pull", "--ff-only"]);
+        assert!(!fixture.peer.path.join("target.txt").exists());
+        assert_eq!(fixture.peer.read("later.txt"), "later\n");
+        assert_eq!(
+            fixture.peer.git_output(["log", "-1", "--format=%s"]).trim(),
+            "Revert: local target"
+        );
+        assert!(fixture.local.status_clean());
+    }
+
+    #[test]
+    fn revert_push_retries_by_syncing_after_non_fast_forward() {
+        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
+            return;
+        };
+        let fixture = DoubleClone::new(&runner);
+        fixture.local.write("target.txt", "target\n");
+        fixture.local.git(["add", "target.txt"]);
+        fixture.local.git(["commit", "-m", "race target"]);
+        let target = fixture
+            .local
+            .git_output(["rev-parse", "HEAD"])
+            .trim()
+            .to_owned();
+        fixture.local.write("later.txt", "later\n");
+        fixture.local.git(["add", "later.txt"]);
+        fixture.local.git(["commit", "-m", "race later"]);
+        fixture.local.git(["push"]);
+        fixture.install_one_shot_push_race_hook();
+
+        let response = revert_commit(
+            &runner,
+            RevertCommitRequest {
+                repository_path: display_path(&fixture.local.path),
+                oid: target,
+                push_after_revert: true,
+            },
+        )
+        .expect("revert push sync retry");
+
+        match response {
+            RevertCommitResponse::Reverted {
+                message, pushed, ..
+            } => {
+                assert_eq!(message, "Revert: race target");
+                assert!(pushed);
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+        fixture.peer.git(["pull", "--ff-only"]);
+        assert_eq!(fixture.peer.read("race.txt"), "race\n");
+        assert!(!fixture.peer.path.join("target.txt").exists());
+        assert_eq!(
+            fixture.peer.git_output(["log", "-1", "--format=%s"]).trim(),
+            "Revert: race target"
+        );
+        assert!(fixture.local.status_clean());
+    }
+
+    #[test]
+    fn revert_push_publishes_branch_without_upstream_via_sync() {
+        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
+            return;
+        };
+        let fixture = DoubleClone::new(&runner);
+        fixture
+            .local
+            .git(["checkout", "-b", "feature/revert-publish"]);
+        fixture.local.write("target.txt", "target\n");
+        fixture.local.git(["add", "target.txt"]);
+        fixture.local.git(["commit", "-m", "publish target"]);
+        let target = fixture
+            .local
+            .git_output(["rev-parse", "HEAD"])
+            .trim()
+            .to_owned();
+        fixture.local.write("later.txt", "later\n");
+        fixture.local.git(["add", "later.txt"]);
+        fixture.local.git(["commit", "-m", "publish later"]);
+
+        let response = revert_commit(
+            &runner,
+            RevertCommitRequest {
+                repository_path: display_path(&fixture.local.path),
+                oid: target,
+                push_after_revert: true,
+            },
+        )
+        .expect("publish branch, revert, and push");
+
+        match response {
+            RevertCommitResponse::Reverted {
+                message, pushed, ..
+            } => {
+                assert_eq!(message, "Revert: publish target");
+                assert!(pushed);
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+        assert_eq!(
+            fixture
+                .local
+                .git_output(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+                .trim(),
+            "origin/feature/revert-publish"
+        );
+        assert!(fixture
+            .remote
+            .git_output([
+                "for-each-ref",
+                "--format=%(refname)",
+                "refs/heads/feature/revert-publish"
+            ])
+            .contains("refs/heads/feature/revert-publish"));
+    }
+
+    #[test]
+    fn conflicted_revert_with_auto_stash_can_abort_and_restore_local_changes() {
+        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
+            return;
+        };
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        repo.write("tracked.txt", "target\n");
+        repo.git(["add", "."]);
+        repo.git(["commit", "-m", "target line"]);
+        let target = repo.git_output(["rev-parse", "HEAD"]).trim().to_owned();
+        repo.write("tracked.txt", "later\n");
+        repo.git(["add", "."]);
+        repo.git(["commit", "-m", "later line"]);
+        let original_head = repo.git_output(["rev-parse", "HEAD"]).trim().to_owned();
+        repo.write("draft.txt", "local draft\n");
+
+        let response = revert_commit(
+            &runner,
+            RevertCommitRequest {
+                repository_path: display_path(&repo.path),
+                oid: target,
+                push_after_revert: false,
+            },
+        )
+        .expect("conflicted revert response");
+
+        let auto_stash = match response {
+            RevertCommitResponse::Conflicted {
+                conflict,
+                auto_stash,
+                ..
+            } => {
+                assert_eq!(conflict.operation_name, OPERATION);
+                auto_stash.expect("local changes should be auto-stashed")
+            }
+            other => panic!("unexpected response: {other:?}"),
+        };
+        assert!(!repo.path.join("draft.txt").exists());
+        assert!(repo.read("tracked.txt").contains("<<<<<<<"));
+
+        let abort = abort_revert(
+            &runner,
+            AbortRevertRequest {
+                repository_path: display_path(&repo.path),
+            },
+        )
+        .expect("abort conflicted revert");
+        assert!(abort.aborted);
+        crate::stash_impl::restore_stash_for_root(
+            &runner,
+            &repo.path,
+            &auto_stash.selector,
+            true,
+            "testRestoreRevertAutoStash",
+            None,
+        )
+        .expect("restore revert auto stash");
+
+        assert_eq!(repo.git_output(["rev-parse", "HEAD"]).trim(), original_head);
+        assert_eq!(repo.read("tracked.txt"), "later\n");
+        assert_eq!(repo.read("draft.txt"), "local draft\n");
+        assert!(repo
+            .git_output(["status", "--porcelain"])
+            .contains("?? draft.txt"));
+    }
+
     fn real_runner_or_skip() -> Option<(GitRunner, TestTempDir)> {
         let dist = match require_git_dist() {
             Ok(dist) => dist,
@@ -477,7 +907,7 @@ mod tests {
 
     struct TestRepo {
         path: PathBuf,
-        _temp: TestTempDir,
+        _temp: Option<TestTempDir>,
         runner: GitRunner,
     }
 
@@ -486,7 +916,15 @@ mod tests {
             let temp = TestTempDir::new("ag-revert-repo").expect("temp repo");
             Self {
                 path: temp.path().to_path_buf(),
-                _temp: temp,
+                _temp: Some(temp),
+                runner: runner.clone(),
+            }
+        }
+
+        fn at(runner: &GitRunner, path: PathBuf) -> Self {
+            Self {
+                path,
+                _temp: None,
                 runner: runner.clone(),
             }
         }
@@ -527,6 +965,127 @@ mod tests {
 
         fn read(&self, relative: &str) -> String {
             fs::read_to_string(self.path.join(relative)).expect("read file")
+        }
+
+        fn configure_identity(&self) {
+            self.git(["config", "user.name", "Tester"]);
+            self.git(["config", "user.email", "tester@example.test"]);
+        }
+
+        fn status_clean(&self) -> bool {
+            self.git_output(["status", "--porcelain"]).trim().is_empty()
+        }
+    }
+
+    struct DoubleClone {
+        remote: TestRepo,
+        local: TestRepo,
+        peer: TestRepo,
+        _parent: TestTempDir,
+    }
+
+    impl DoubleClone {
+        fn new(runner: &GitRunner) -> Self {
+            let parent = TestTempDir::new("ag-revert-double").expect("double clone parent");
+            let remote_path = parent.path().join("remote.git");
+            git_stdout(
+                runner,
+                None::<&Path>,
+                [
+                    OsString::from("init"),
+                    OsString::from("--bare"),
+                    remote_path.as_os_str().to_owned(),
+                ],
+                "test",
+            )
+            .expect("init bare remote");
+
+            let seed = TestRepo::at(runner, parent.path().join("seed"));
+            git_stdout(
+                runner,
+                None::<&Path>,
+                [
+                    OsString::from("init"),
+                    OsString::from("-b"),
+                    OsString::from("main"),
+                    seed.path.as_os_str().to_owned(),
+                ],
+                "test",
+            )
+            .expect("init seed");
+            seed.configure_identity();
+            seed.write("tracked.txt", "initial\n");
+            seed.git(["add", "tracked.txt"]);
+            seed.git(["commit", "-m", "initial"]);
+            seed.git([
+                "remote",
+                "add",
+                "origin",
+                display_path(&remote_path).as_str(),
+            ]);
+            seed.git(["push", "-u", "origin", "main"]);
+
+            let local = TestRepo::at(runner, parent.path().join("local"));
+            git_stdout(
+                runner,
+                None::<&Path>,
+                [
+                    OsString::from("clone"),
+                    remote_path.as_os_str().to_owned(),
+                    local.path.as_os_str().to_owned(),
+                ],
+                "test",
+            )
+            .expect("clone local");
+            local.configure_identity();
+
+            let peer = TestRepo::at(runner, parent.path().join("peer"));
+            git_stdout(
+                runner,
+                None::<&Path>,
+                [
+                    OsString::from("clone"),
+                    remote_path.as_os_str().to_owned(),
+                    peer.path.as_os_str().to_owned(),
+                ],
+                "test",
+            )
+            .expect("clone peer");
+            peer.configure_identity();
+
+            Self {
+                remote: TestRepo::at(runner, remote_path),
+                local,
+                peer,
+                _parent: parent,
+            }
+        }
+
+        fn install_one_shot_push_race_hook(&self) {
+            let marker = self.local.path.join(".git").join("ag-push-race-once");
+            fs::write(&marker, "race\n").expect("write race marker");
+            let hook = self.local.path.join(".git").join("hooks").join("pre-push");
+            let script = format!(
+                r#"#!/bin/sh
+set -e
+marker={marker}
+peer={peer}
+if [ -f "$marker" ]; then
+  rm "$marker"
+  git -C "$peer" pull --ff-only
+  printf '%s\n' race > "$peer/race.txt"
+  git -C "$peer" add race.txt
+  git -C "$peer" commit -m 'race change'
+  git -C "$peer" push
+fi
+"#,
+                marker = display_path(&marker),
+                peer = display_path(&self.peer.path),
+            );
+            fs::write(&hook, script).expect("write pre-push hook");
+            let mut permissions = fs::metadata(&hook).expect("hook metadata").permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&hook, permissions).expect("chmod pre-push hook");
         }
     }
 }

@@ -784,12 +784,18 @@ export type RestoreStashResponse = {
 export type RevertCommitRequest = {
   repositoryPath: string;
   oid: string;
+  pushAfterRevert: boolean;
 };
 
 export type RevertCommitResponse =
-  | { status: "reverted"; oid: string; message: string }
+  | { status: "reverted"; oid: string; message: string; pushed: boolean }
   | { status: "disabled"; reason: RevertDisabledReason }
-  | { status: "conflicted"; operationId: OperationId; files: ConflictFile[] };
+  | {
+      status: "conflicted";
+      conflict: ConflictEnteredEvent;
+      stashRecovery: StashRecoveryPoint | null;
+      autoStash: StashEntry | null;
+    };
 
 export type RevertDisabledReason =
   | "mergeCommit"

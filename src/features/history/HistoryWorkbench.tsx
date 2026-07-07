@@ -30,6 +30,8 @@ import type {
   DiffPayload,
   LogPageResponse,
   RevertDisabledReason,
+  StashEntry,
+  StashRecoveryPoint,
 } from "@/lib/ipc/generated";
 import { repoQueryKeys } from "@/lib/realtime/query-keys";
 import { cn } from "@/lib/utils";
@@ -68,9 +70,15 @@ type RevertUnavailableReason = RevertDisabledReason | "missingRepository";
 interface HistoryWorkbenchProps {
   branches?: HistoryBranch[];
   gravatarEnabled?: boolean;
+  hasRemote?: boolean;
   historyRepositoryPath?: string | null;
   now?: string;
   onBeforeRevert?: () => Promise<void> | void;
+  onRevertAutoStash?: (operationId: string, stash: StashEntry) => void;
+  onRevertStashRecovery?: (
+    operationId: string,
+    recovery: StashRecoveryPoint,
+  ) => void;
   rows?: HistoryRow[];
   searchSource?: HistorySearchSource;
 }
@@ -201,9 +209,12 @@ function compareCommitSummaryTime(
 export function HistoryWorkbench({
   branches = mockHistoryBranches,
   gravatarEnabled = false,
+  hasRemote = true,
   historyRepositoryPath = null,
   now = "2026-07-07T06:30:00Z",
   onBeforeRevert,
+  onRevertAutoStash,
+  onRevertStashRecovery,
   rows = mockHistoryRows,
   searchSource,
 }: HistoryWorkbenchProps) {
@@ -579,6 +590,7 @@ export function HistoryWorkbench({
       <CommitDetailPanel
         commit={selectedCommit}
         gravatarEnabled={gravatarEnabled}
+        hasRemote={hasRemote}
         now={now}
         onBeforeRevert={onBeforeRevert}
         onOpenChange={(open) => {
@@ -586,6 +598,8 @@ export function HistoryWorkbench({
             setSelectedCommitId(null);
           }
         }}
+        onRevertAutoStash={onRevertAutoStash}
+        onRevertStashRecovery={onRevertStashRecovery}
         repositoryPath={repositoryPath}
         setConflictEntered={setConflictEntered}
       />
@@ -887,17 +901,26 @@ function GraphSegmentLine({
 function CommitDetailPanel({
   commit,
   gravatarEnabled,
+  hasRemote,
   now,
   onBeforeRevert,
   onOpenChange,
+  onRevertAutoStash,
+  onRevertStashRecovery,
   repositoryPath,
   setConflictEntered,
 }: {
   commit: HistoryCommit | null;
   gravatarEnabled: boolean;
+  hasRemote: boolean;
   now: string;
   onBeforeRevert?: () => Promise<void> | void;
   onOpenChange: (open: boolean) => void;
+  onRevertAutoStash?: (operationId: string, stash: StashEntry) => void;
+  onRevertStashRecovery?: (
+    operationId: string,
+    recovery: StashRecoveryPoint,
+  ) => void;
   repositoryPath: string | null;
   setConflictEntered: (event: ConflictEnteredEvent) => void;
 }) {
@@ -912,6 +935,8 @@ function CommitDetailPanel({
   );
   const [revertBusy, setRevertBusy] = React.useState(false);
   const [revertError, setRevertError] = React.useState<string | null>(null);
+  const [revertPushAfterRevert, setRevertPushAfterRevert] =
+    React.useState(true);
   const [revertStatus, setRevertStatus] = React.useState<string | null>(null);
   const activeRevertTarget =
     revertTarget && revertTarget.id === commit?.id ? revertTarget : null;
@@ -941,15 +966,21 @@ function CommitDetailPanel({
 
       const response = await revertCommit({
         oid: activeRevertTarget.id,
+        pushAfterRevert: hasRemote && revertPushAfterRevert,
         repositoryPath,
       });
 
       if (response.status === "reverted") {
         setRevertStatus(
-          t("history.revert.reverted", {
-            message: response.message,
-            shortId: response.oid.slice(0, 7),
-          }),
+          t(
+            response.pushed
+              ? "history.revert.revertedAndPushed"
+              : "history.revert.reverted",
+            {
+              message: response.message,
+              shortId: response.oid.slice(0, 7),
+            },
+          ),
         );
         return;
       }
@@ -959,12 +990,16 @@ function CommitDetailPanel({
         return;
       }
 
-      setConflictEntered({
-        files: response.files,
-        operationId: response.operationId,
-        operationName: "revertCommit",
-        repositoryPath,
-      });
+      if (response.stashRecovery) {
+        onRevertStashRecovery?.(
+          response.conflict.operationId,
+          response.stashRecovery,
+        );
+      }
+      if (response.autoStash) {
+        onRevertAutoStash?.(response.conflict.operationId, response.autoStash);
+      }
+      setConflictEntered(response.conflict);
       setRevertTarget(null);
       onOpenChange(false);
     } catch (error) {
@@ -974,9 +1009,13 @@ function CommitDetailPanel({
     }
   }, [
     activeRevertTarget,
+    hasRemote,
     onBeforeRevert,
     onOpenChange,
+    onRevertAutoStash,
+    onRevertStashRecovery,
     repositoryPath,
+    revertPushAfterRevert,
     setConflictEntered,
     t,
   ]);
@@ -1038,6 +1077,7 @@ function CommitDetailPanel({
                 onClick={() => {
                   setRevertTarget(commit);
                   setRevertError(null);
+                  setRevertPushAfterRevert(true);
                   setRevertStatus(null);
                 }}
                 repositoryPath={repositoryPath}
@@ -1114,8 +1154,11 @@ function CommitDetailPanel({
         busy={revertBusy}
         commit={activeRevertTarget}
         error={activeRevertTarget ? revertError : null}
+        hasRemote={hasRemote}
         onConfirm={() => void runRevert()}
         onOpenChange={closeRevertDialog}
+        pushAfterRevert={revertPushAfterRevert}
+        setPushAfterRevert={setRevertPushAfterRevert}
         status={activeRevertTarget ? revertStatus : null}
       />
     </div>
@@ -1164,15 +1207,21 @@ function RevertCommitDialog({
   busy,
   commit,
   error,
+  hasRemote,
   onConfirm,
   onOpenChange,
+  pushAfterRevert,
+  setPushAfterRevert,
   status,
 }: {
   busy: boolean;
   commit: HistoryCommit | null;
   error: string | null;
+  hasRemote: boolean;
   onConfirm: () => void;
   onOpenChange: (open: boolean) => void;
+  pushAfterRevert: boolean;
+  setPushAfterRevert: (value: boolean) => void;
   status: string | null;
 }) {
   const { t } = useTranslation();
@@ -1232,6 +1281,20 @@ function RevertCommitDialog({
           </p>
         </div>
       </div>
+      {hasRemote ? (
+        <label className="flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm">
+          <input
+            checked={pushAfterRevert}
+            className="size-4"
+            disabled={busy || status !== null}
+            onChange={(event) => {
+              setPushAfterRevert(event.currentTarget.checked);
+            }}
+            type="checkbox"
+          />
+          <span>{t("history.revert.pushNow")}</span>
+        </label>
+      ) : null}
       {error ? (
         <div
           className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive"

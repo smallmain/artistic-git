@@ -297,6 +297,7 @@ describe("HistoryWorkbench", () => {
     revertCommitMock.mockResolvedValue({
       message: "Revert: Refine branch filter interactions",
       oid: "abc123456789",
+      pushed: false,
       status: "reverted",
     });
 
@@ -321,6 +322,9 @@ describe("HistoryWorkbench", () => {
       ),
     ).toBeInTheDocument();
     expect(
+      within(dialog).getByRole("checkbox", { name: "Push immediately" }),
+    ).toBeChecked();
+    expect(
       within(dialog).getByText(
         "This uses git revert and does not rewrite history.",
       ),
@@ -334,6 +338,7 @@ describe("HistoryWorkbench", () => {
 
     expect(revertCommitMock).toHaveBeenCalledWith({
       oid: "d4512aa7e8fb9ec3f93a545cb658f7de71f18291",
+      pushAfterRevert: true,
       repositoryPath: "/repo/art",
     });
     expect(
@@ -344,13 +349,34 @@ describe("HistoryWorkbench", () => {
   });
 
   it("stores conflicted revert responses for the existing conflict overlay", async () => {
+    const onRevertAutoStash = vi.fn();
     revertCommitMock.mockResolvedValue({
-      files: [{ fileKind: "text", path: "src/main.ts", status: "unresolved" }],
-      operationId: "op-revert",
+      autoStash: {
+        branch: "main",
+        createdAtUnixSeconds: "1783488000",
+        index: 0,
+        isAutoStash: true,
+        message: "Auto Stash: before reverting commit",
+        origin: null,
+        oid: "stash-oid",
+        selector: "stash@{0}",
+      },
+      conflict: {
+        files: [
+          { fileKind: "text", path: "src/main.ts", status: "unresolved" },
+        ],
+        operationId: "op-revert",
+        operationName: "revertCommit",
+        repositoryPath: "/repo/art",
+      },
+      stashRecovery: null,
       status: "conflicted",
     });
     const { windowStore } = renderWithProviders(
-      <HistoryWorkbench rows={mockHistoryRows} />,
+      <HistoryWorkbench
+        onRevertAutoStash={onRevertAutoStash}
+        rows={mockHistoryRows}
+      />,
       {
         initialWindowState: { activeRepositoryPath: "/repo/art" },
       },
@@ -375,6 +401,26 @@ describe("HistoryWorkbench", () => {
       operationName: "revertCommit",
       repositoryPath: "/repo/art",
     });
+    expect(onRevertAutoStash).toHaveBeenCalledWith(
+      "op-revert",
+      expect.objectContaining({ selector: "stash@{0}" }),
+    );
+  });
+
+  it("hides the immediate push checkbox without a remote", () => {
+    renderWithProviders(
+      <HistoryWorkbench hasRemote={false} rows={mockHistoryRows} />,
+      {
+        initialWindowState: { activeRepositoryPath: "/repo/art" },
+      },
+    );
+
+    fireEvent.click(screen.getByText("Refine branch filter interactions"));
+    fireEvent.click(screen.getByRole("button", { name: "Revert commit" }));
+
+    expect(
+      screen.queryByRole("checkbox", { name: "Push immediately" }),
+    ).not.toBeInTheDocument();
   });
 
   it("shows backend disabled reasons without closing the confirmation dialog", async () => {

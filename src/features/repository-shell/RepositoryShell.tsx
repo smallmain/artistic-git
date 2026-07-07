@@ -176,6 +176,8 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     React.useState<StashDetailsResponse | null>(null);
   const [stashRecoveryByOperation, setStashRecoveryByOperation] =
     React.useState<Record<string, StashRecoveryPoint>>({});
+  const [revertAutoStashByOperation, setRevertAutoStashByOperation] =
+    React.useState<Record<string, StashEntry>>({});
   const [localChangeCheckedIds, setLocalChangeCheckedIds] = React.useState<
     string[]
   >([]);
@@ -1026,34 +1028,74 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       cancelConflictResolution: async (request) => {
         const recovery = stashRecoveryByOperation[request.operationId];
 
-        if (!recovery) {
-          return cancelConflictResolution(request);
+        if (recovery) {
+          await cancelStashRestore({
+            recovery,
+            repositoryPath: request.repositoryPath,
+          });
+          setStashRecoveryByOperation((current) => {
+            const next = { ...current };
+            delete next[request.operationId];
+            return next;
+          });
+
+          return { aborted: "merge" };
         }
 
-        await cancelStashRestore({
-          recovery,
-          repositoryPath: request.repositoryPath,
-        });
-        setStashRecoveryByOperation((current) => {
-          const next = { ...current };
-          delete next[request.operationId];
-          return next;
-        });
-
-        return { aborted: "merge" };
+        const response = await cancelConflictResolution(request);
+        const revertAutoStash = revertAutoStashByOperation[request.operationId];
+        if (revertAutoStash) {
+          await restoreStash({
+            dropOnSuccess: true,
+            operationName: "revertCommit:restoreStash",
+            repositoryPath: request.repositoryPath,
+            selector: revertAutoStash.selector,
+          });
+          setRevertAutoStashByOperation((current) => {
+            const next = { ...current };
+            delete next[request.operationId];
+            return next;
+          });
+        }
+        return response;
       },
-      completeConflictResolution,
+      completeConflictResolution: async (request) => {
+        const response = await completeConflictResolution(request);
+        const revertAutoStash = revertAutoStashByOperation[request.operationId];
+        if (revertAutoStash) {
+          await restoreStash({
+            dropOnSuccess: true,
+            operationName: "revertCommit:restoreStash",
+            repositoryPath: request.repositoryPath,
+            selector: revertAutoStash.selector,
+          });
+          setRevertAutoStashByOperation((current) => {
+            const next = { ...current };
+            delete next[request.operationId];
+            return next;
+          });
+        }
+        return response;
+      },
       conflictDetail,
       listConflicts,
       saveConflictResolution,
       selectConflictSide,
     }),
-    [stashRecoveryByOperation],
+    [revertAutoStashByOperation, stashRecoveryByOperation],
   );
 
   const closeConflictOverlay = React.useCallback(
     (conflictRepositoryPath: string) => {
       if (conflict) {
+        setRevertAutoStashByOperation((current) => {
+          if (!current[conflict.operationId]) {
+            return current;
+          }
+          const next = { ...current };
+          delete next[conflict.operationId];
+          return next;
+        });
         setStashRecoveryByOperation((current) => {
           if (!current[conflict.operationId]) {
             return current;
@@ -1173,8 +1215,21 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
               <div className="min-h-0 flex-1 overflow-auto">
                 <HistoryWorkbench
                   branches={historyBranches}
+                  hasRemote={repository.hasRemote}
                   historyRepositoryPath={repositoryPath}
                   onBeforeRevert={fetchBeforeCurrentBranchWrite}
+                  onRevertAutoStash={(operationId, stash) => {
+                    setRevertAutoStashByOperation((current) => ({
+                      ...current,
+                      [operationId]: stash,
+                    }));
+                  }}
+                  onRevertStashRecovery={(operationId, recovery) => {
+                    setStashRecoveryByOperation((current) => ({
+                      ...current,
+                      [operationId]: recovery,
+                    }));
+                  }}
                 />
               </div>
             </div>

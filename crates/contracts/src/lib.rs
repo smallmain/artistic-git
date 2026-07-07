@@ -888,6 +888,7 @@ pub struct RestoreChangesResponse {
 pub struct RevertCommitRequest {
     pub repository_path: String,
     pub oid: String,
+    pub push_after_revert: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -900,13 +901,15 @@ pub enum RevertCommitResponse {
     Reverted {
         oid: String,
         message: String,
+        pushed: bool,
     },
     Disabled {
         reason: RevertDisabledReason,
     },
     Conflicted {
-        operation_id: OperationId,
-        files: Vec<ConflictFile>,
+        conflict: ConflictEnteredEvent,
+        stash_recovery: Option<StashRecoveryPoint>,
+        auto_stash: Option<StashEntry>,
     },
 }
 
