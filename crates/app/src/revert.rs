@@ -429,7 +429,7 @@ mod tests {
     use crate::git_ops::display_path;
     use artistic_git_git_runner::{GitDistribution, GitRunner};
     use artistic_git_test_support::{require_git_dist, GitDistError, TestTempDir};
-    use std::{ffi::OsString, fs, io::Write, os::unix::fs::PermissionsExt};
+    use std::{ffi::OsString, fs, io::Write};
 
     #[test]
     fn revert_creates_new_commit_for_current_branch_ancestor_with_phase_message() {
@@ -1081,9 +1081,14 @@ fi
                 peer = display_path(&self.peer.path),
             );
             fs::write(&hook, script).expect("write pre-push hook");
-            let mut permissions = fs::metadata(&hook).expect("hook metadata").permissions();
-            permissions.set_mode(0o755);
-            fs::set_permissions(&hook, permissions).expect("chmod pre-push hook");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+
+                let mut permissions = fs::metadata(&hook).expect("hook metadata").permissions();
+                permissions.set_mode(0o755);
+                fs::set_permissions(&hook, permissions).expect("chmod pre-push hook");
+            }
         }
     }
 }
