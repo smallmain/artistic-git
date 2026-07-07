@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
+import { useInfiniteQuery, type InfiniteData } from "@tanstack/react-query";
 
 import { DialogFrame } from "@/components/dialogs/DialogFrame";
 import { Button } from "@/components/ui/button";
@@ -22,16 +23,24 @@ import { Tooltip } from "@/components/ui/tooltip";
 import { TruncatedText } from "@/components/ui/truncated-text";
 import { DiffViewer } from "@/features/diff";
 import { useLocalizedFormatters } from "@/i18n/format";
-import { revertCommit } from "@/lib/ipc/commands";
+import { logPage, revertCommit, searchLog } from "@/lib/ipc/commands";
 import type {
   ConflictEnteredEvent,
+  CommitSummary,
   DiffPayload,
+  LogPageResponse,
   RevertDisabledReason,
 } from "@/lib/ipc/generated";
+import { repoQueryKeys } from "@/lib/realtime/query-keys";
 import { cn } from "@/lib/utils";
 import { useWindowStore } from "@/store/window-store";
 
 import { resolveAvatarPresentation } from "./avatar";
+import {
+  attachGraphRows,
+  mapCommitSummaryToHistoryCommit,
+  mergeHistoryCommits,
+} from "./history-data";
 import {
   createMockHistorySearchSource,
   type HistorySearchSource,
@@ -44,6 +53,7 @@ import type {
   HistoryCommit,
   HistoryGraphSegment,
   HistoryRow,
+  HistorySearchMatch,
 } from "./types";
 import { useVirtualWindow } from "./useVirtualWindow";
 
@@ -51,11 +61,14 @@ const rowHeight = 72;
 const viewportHeight = 504;
 const graphLaneWidth = 18;
 const graphLeftPadding = 14;
+const historyPageSize = 200;
+const loadMoreThresholdPx = rowHeight * 4;
 type RevertUnavailableReason = RevertDisabledReason | "missingRepository";
 
 interface HistoryWorkbenchProps {
   branches?: HistoryBranch[];
   gravatarEnabled?: boolean;
+  historyRepositoryPath?: string | null;
   now?: string;
   onBeforeRevert?: () => Promise<void> | void;
   rows?: HistoryRow[];
@@ -67,9 +80,128 @@ interface SearchResultSnapshot {
   query: string;
 }
 
+interface BackendSearchCursor {
+  author: string | null;
+  authorDone: boolean;
+  content: string | null;
+  contentDone: boolean;
+  message: string | null;
+  messageDone: boolean;
+}
+
+interface BackendSearchPage {
+  commits: HistoryCommit[];
+  nextCursor: BackendSearchCursor | null;
+}
+
+async function loadBackendSearchPage({
+  cursor,
+  limit,
+  query,
+  repositoryPath,
+}: {
+  cursor: BackendSearchCursor;
+  limit: number;
+  query: string;
+  repositoryPath: string;
+}): Promise<BackendSearchPage> {
+  const specs = [
+    {
+      after: cursor.message,
+      done: cursor.messageDone,
+      match: "message",
+      request: { author: null, grep: query, pickaxe: null },
+    },
+    {
+      after: cursor.author,
+      done: cursor.authorDone,
+      match: "author",
+      request: { author: query, grep: null, pickaxe: null },
+    },
+    {
+      after: cursor.content,
+      done: cursor.contentDone,
+      match: "content",
+      request: { author: null, grep: null, pickaxe: query },
+    },
+  ] as const;
+  const pages = await Promise.all(
+    specs.map((spec) => {
+      if (spec.done) {
+        return Promise.resolve({ commits: [], nextAfter: null });
+      }
+
+      return searchLog({
+        ...spec.request,
+        after: spec.after,
+        limit,
+        repositoryPath,
+      });
+    }),
+  );
+  const byOid = new Map<
+    string,
+    { matches: Set<HistorySearchMatch>; summary: CommitSummary }
+  >();
+
+  for (const [index, page] of pages.entries()) {
+    const match = specs[index].match;
+    for (const commit of page.commits) {
+      const entry =
+        byOid.get(commit.oid) ??
+        ({
+          matches: new Set<HistorySearchMatch>(),
+          summary: commit,
+        } satisfies {
+          matches: Set<HistorySearchMatch>;
+          summary: CommitSummary;
+        });
+      entry.matches.add(match);
+      byOid.set(commit.oid, entry);
+    }
+  }
+
+  const commits = Array.from(byOid.values())
+    .sort((left, right) =>
+      compareCommitSummaryTime(right.summary, left.summary),
+    )
+    .map((entry) =>
+      mapCommitSummaryToHistoryCommit(entry.summary, Array.from(entry.matches)),
+    );
+  const nextCursor = {
+    author: pages[1].nextAfter,
+    authorDone: cursor.authorDone || pages[1].nextAfter === null,
+    content: pages[2].nextAfter,
+    contentDone: cursor.contentDone || pages[2].nextAfter === null,
+    message: pages[0].nextAfter,
+    messageDone: cursor.messageDone || pages[0].nextAfter === null,
+  };
+  const hasNextPage = !(
+    nextCursor.authorDone &&
+    nextCursor.contentDone &&
+    nextCursor.messageDone
+  );
+
+  return {
+    commits,
+    nextCursor: hasNextPage ? nextCursor : null,
+  };
+}
+
+function compareCommitSummaryTime(
+  left: CommitSummary,
+  right: CommitSummary,
+): number {
+  return (
+    Number.parseInt(left.authoredAtUnixSeconds, 10) -
+    Number.parseInt(right.authoredAtUnixSeconds, 10)
+  );
+}
+
 export function HistoryWorkbench({
   branches = mockHistoryBranches,
   gravatarEnabled = false,
+  historyRepositoryPath = null,
   now = "2026-07-07T06:30:00Z",
   onBeforeRevert,
   rows = mockHistoryRows,
@@ -82,9 +214,7 @@ export function HistoryWorkbench({
   );
   const [query, setQuery] = React.useState("");
   const trimmedQuery = query.trim();
-  const [searchingQuery, setSearchingQuery] = React.useState<string | null>(
-    null,
-  );
+  const [debouncedQuery, setDebouncedQuery] = React.useState("");
   const [searchResults, setSearchResults] =
     React.useState<SearchResultSnapshot | null>(null);
   const [selectedCommitId, setSelectedCommitId] = React.useState<string | null>(
@@ -100,73 +230,234 @@ export function HistoryWorkbench({
       createMockHistorySearchSource(rows.map((row) => row.commit)),
     [rows, searchSource],
   );
+  const backendHistoryEnabled = Boolean(historyRepositoryPath);
 
   React.useEffect(() => {
     if (!trimmedQuery) {
       return;
     }
 
-    const controller = new AbortController();
     const timeout = window.setTimeout(() => {
-      setSearchingQuery(trimmedQuery);
-      source(trimmedQuery, controller.signal)
-        .then((result) => {
-          setSearchResults({ commits: result.commits, query: trimmedQuery });
-        })
-        .catch((error: unknown) => {
-          if (!(error instanceof DOMException && error.name === "AbortError")) {
-            setSearchResults({ commits: [], query: trimmedQuery });
-          }
-        })
-        .finally(() => {
-          if (!controller.signal.aborted) {
-            setSearchingQuery((current) =>
-              current === trimmedQuery ? null : current,
-            );
-          }
-        });
+      setDebouncedQuery(trimmedQuery);
     }, 220);
 
     return () => {
       window.clearTimeout(timeout);
-      controller.abort();
     };
-  }, [trimmedQuery, source]);
+  }, [trimmedQuery]);
 
-  const activeSearchResults =
-    trimmedQuery && searchResults?.query === trimmedQuery
-      ? searchResults.commits
-      : null;
-  const isSearching = Boolean(trimmedQuery) && searchingQuery === trimmedQuery;
-
-  const visibleRows = React.useMemo(() => {
-    const searchedIds =
-      activeSearchResults === null
-        ? null
-        : new Map(activeSearchResults.map((commit) => [commit.id, commit]));
-    const branchFilteredRows = rows.filter((row) =>
-      matchesBranchFilter(row.commit, branchMode, selectedBranches),
-    );
-
-    if (!searchedIds) {
-      return branchFilteredRows;
+  React.useEffect(() => {
+    if (backendHistoryEnabled || !debouncedQuery) {
+      return;
     }
 
-    return branchFilteredRows
+    const controller = new AbortController();
+    source(debouncedQuery, controller.signal)
+      .then((result) => {
+        setSearchResults({ commits: result.commits, query: debouncedQuery });
+      })
+      .catch((error: unknown) => {
+        if (!(error instanceof DOMException && error.name === "AbortError")) {
+          setSearchResults({ commits: [], query: debouncedQuery });
+        }
+      });
+
+    return () => {
+      controller.abort();
+    };
+  }, [backendHistoryEnabled, debouncedQuery, source]);
+
+  const effectiveSearchTerm =
+    trimmedQuery && debouncedQuery === trimmedQuery ? debouncedQuery : "";
+  const historyQuery = useInfiniteQuery<
+    LogPageResponse,
+    Error,
+    InfiniteData<LogPageResponse>,
+    readonly unknown[],
+    string | null
+  >({
+    enabled: backendHistoryEnabled && !effectiveSearchTerm,
+    getNextPageParam: (lastPage) => lastPage.nextAfter ?? undefined,
+    initialPageParam: null as string | null,
+    queryFn: ({ pageParam }) =>
+      logPage({
+        after: pageParam,
+        limit: historyPageSize,
+        repositoryPath: historyRepositoryPath ?? "",
+      }),
+    queryKey: [
+      ...repoQueryKeys.history(historyRepositoryPath ?? "__none__"),
+      "pages",
+    ] as const,
+    retry: false,
+  });
+  const backendSearchQuery = useInfiniteQuery<
+    BackendSearchPage,
+    Error,
+    InfiniteData<BackendSearchPage>,
+    readonly unknown[],
+    BackendSearchCursor
+  >({
+    enabled: backendHistoryEnabled && Boolean(effectiveSearchTerm),
+    getNextPageParam: (lastPage: BackendSearchPage) =>
+      lastPage.nextCursor ?? undefined,
+    initialPageParam: {
+      author: null,
+      authorDone: false,
+      content: null,
+      contentDone: false,
+      message: null,
+      messageDone: false,
+    } satisfies BackendSearchCursor,
+    queryFn: ({ pageParam }) =>
+      loadBackendSearchPage({
+        cursor: pageParam,
+        limit: historyPageSize,
+        query: effectiveSearchTerm,
+        repositoryPath: historyRepositoryPath ?? "",
+      }),
+    queryKey: [
+      ...repoQueryKeys.history(historyRepositoryPath ?? "__none__"),
+      "search",
+      effectiveSearchTerm,
+    ] as const,
+    retry: false,
+  });
+
+  const activeSearchResults =
+    !backendHistoryEnabled &&
+    trimmedQuery &&
+    searchResults?.query === trimmedQuery
+      ? searchResults.commits
+      : null;
+  const isBackendSearching =
+    backendHistoryEnabled &&
+    Boolean(trimmedQuery) &&
+    (debouncedQuery !== trimmedQuery ||
+      backendSearchQuery.isLoading ||
+      backendSearchQuery.isFetching);
+  const isSearching =
+    (!backendHistoryEnabled &&
+      Boolean(trimmedQuery) &&
+      debouncedQuery !== trimmedQuery) ||
+    isBackendSearching;
+
+  const backendRows = React.useMemo(() => {
+    if (!backendHistoryEnabled || !historyQuery.data) {
+      return null;
+    }
+
+    return attachGraphRows(
+      historyQuery.data.pages
+        .flatMap((page) => page.commits)
+        .map((commit) => mapCommitSummaryToHistoryCommit(commit)),
+    );
+  }, [backendHistoryEnabled, historyQuery.data]);
+
+  const backendSearchRows = React.useMemo(() => {
+    if (!backendHistoryEnabled || !backendSearchQuery.data) {
+      return null;
+    }
+
+    return attachGraphRows(
+      mergeHistoryCommits(
+        backendSearchQuery.data.pages.flatMap((page) => page.commits),
+      ),
+    );
+  }, [backendHistoryEnabled, backendSearchQuery.data]);
+
+  const effectiveRows = backendRows ?? rows;
+  const activeSearchRows = React.useMemo(() => {
+    if (backendHistoryEnabled) {
+      return effectiveSearchTerm ? (backendSearchRows ?? []) : null;
+    }
+
+    if (activeSearchResults === null) {
+      return null;
+    }
+
+    const searchedIds = new Map(
+      activeSearchResults.map((commit) => [commit.id, commit]),
+    );
+    return rows
       .map((row) => {
         const commit = searchedIds.get(row.commit.id);
         return commit ? { ...row, commit } : null;
       })
       .filter((row): row is HistoryRow => Boolean(row));
-  }, [activeSearchResults, branchMode, rows, selectedBranches]);
+  }, [
+    activeSearchResults,
+    backendHistoryEnabled,
+    backendSearchRows,
+    effectiveSearchTerm,
+    rows,
+  ]);
+
+  const visibleRows = React.useMemo(() => {
+    const sourceRows = activeSearchRows ?? effectiveRows;
+    return sourceRows.filter((row) =>
+      matchesBranchFilter(row.commit, branchMode, selectedBranches),
+    );
+  }, [activeSearchRows, branchMode, effectiveRows, selectedBranches]);
 
   const virtual = useVirtualWindow({
     count: visibleRows.length,
     estimateSize: rowHeight,
     viewportHeight,
   });
+  const canLoadMore = backendHistoryEnabled
+    ? effectiveSearchTerm
+      ? backendSearchQuery.hasNextPage
+      : historyQuery.hasNextPage
+    : false;
+  const isFetchingNextPage = backendHistoryEnabled
+    ? effectiveSearchTerm
+      ? backendSearchQuery.isFetchingNextPage
+      : historyQuery.isFetchingNextPage
+    : false;
+  const isInitialHistoryLoading =
+    backendHistoryEnabled &&
+    (effectiveSearchTerm
+      ? backendSearchQuery.isLoading
+      : historyQuery.isLoading);
+  const historyLoadError =
+    backendHistoryEnabled &&
+    (effectiveSearchTerm ? backendSearchQuery.isError : historyQuery.isError);
+  const fetchNextPage = effectiveSearchTerm
+    ? backendSearchQuery.fetchNextPage
+    : historyQuery.fetchNextPage;
+  const scrollContainerRef = React.useRef<HTMLDivElement>(null);
+  const maybeLoadNextPage = React.useCallback(
+    (element: HTMLElement) => {
+      if (!backendHistoryEnabled || !canLoadMore || isFetchingNextPage) {
+        return;
+      }
+
+      const remaining =
+        element.scrollHeight - element.scrollTop - element.clientHeight;
+      if (remaining <= loadMoreThresholdPx) {
+        void fetchNextPage();
+      }
+    },
+    [backendHistoryEnabled, canLoadMore, fetchNextPage, isFetchingNextPage],
+  );
+  const handleScroll = React.useCallback<React.UIEventHandler<HTMLDivElement>>(
+    (event) => {
+      virtual.onScroll(event);
+      maybeLoadNextPage(event.currentTarget);
+    },
+    [maybeLoadNextPage, virtual],
+  );
+  React.useEffect(() => {
+    const element = scrollContainerRef.current;
+    if (element) {
+      maybeLoadNextPage(element);
+    }
+  }, [maybeLoadNextPage, visibleRows.length]);
   const selectedCommit =
-    rows.find((row) => row.commit.id === selectedCommitId)?.commit ?? null;
+    [...(activeSearchRows ?? []), ...effectiveRows].find(
+      (row) => row.commit.id === selectedCommitId,
+    )?.commit ?? null;
 
   return (
     <section
@@ -200,7 +491,12 @@ export function HistoryWorkbench({
               className="h-9 w-full rounded-md border bg-background pl-9 pr-9 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
               data-app-search="current"
               onChange={(event) => {
-                setQuery(event.target.value);
+                const nextQuery = event.target.value;
+                setQuery(nextQuery);
+                if (!nextQuery.trim()) {
+                  setDebouncedQuery("");
+                  setSearchResults(null);
+                }
               }}
               placeholder={t("history.search.placeholder")}
               value={query}
@@ -213,6 +509,8 @@ export function HistoryWorkbench({
                 label={t("history.search.clear")}
                 onClick={() => {
                   setQuery("");
+                  setDebouncedQuery("");
+                  setSearchResults(null);
                 }}
                 tooltip={t("history.search.clear")}
                 variant="ghost"
@@ -233,7 +531,9 @@ export function HistoryWorkbench({
 
       <div
         className="relative flex-1 overflow-auto"
-        onScroll={virtual.onScroll}
+        data-testid="history-scroll-viewport"
+        onScroll={handleScroll}
+        ref={scrollContainerRef}
         style={{ height: viewportHeight }}
       >
         <div className="relative" style={{ height: virtual.totalSize }}>
@@ -259,9 +559,19 @@ export function HistoryWorkbench({
             width={112}
           />
         </div>
+        {isFetchingNextPage ? (
+          <div className="sticky bottom-0 flex h-10 items-center justify-center gap-2 border-t bg-card/95 text-xs text-muted-foreground">
+            <Loader2 className="size-3.5 animate-spin" />
+            {t("history.loadingMore")}
+          </div>
+        ) : null}
         {visibleRows.length === 0 ? (
           <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
-            {t("history.empty")}
+            {historyLoadError
+              ? t("history.loadError")
+              : isInitialHistoryLoading
+                ? t("history.loading")
+                : t("history.empty")}
           </div>
         ) : null}
       </div>

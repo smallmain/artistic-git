@@ -305,6 +305,9 @@ export const resources = {
           current: "current",
           custom: "{{count}} selected",
         },
+        loadError: "Could not load commit history.",
+        loading: "Loading history...",
+        loadingMore: "Loading more commits...",
         revert: {
           busy: "Reverting...",
           confirm: "Revert commit",
@@ -778,6 +781,9 @@ export const resources = {
           current: "当前",
           custom: "已选 {{count}} 项",
         },
+        loadError: "无法加载提交历史。",
+        loading: "正在加载历史...",
+        loadingMore: "正在加载更多提交...",
         revert: {
           busy: "正在撤回...",
           confirm: "撤回此提交",

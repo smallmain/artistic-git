@@ -199,6 +199,14 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       branchesQuery.data?.branches.map(mapBranchSummaryToItem) ?? demoBranches,
     [branchesQuery.data],
   );
+  const historyBranches = React.useMemo(
+    () =>
+      branches.map((branch) => ({
+        current: branch.current,
+        name: branch.name,
+      })),
+    [branches],
+  );
   const stashes = React.useMemo(
     () =>
       stashesQuery.data?.stashes.map((stash) =>
@@ -1013,6 +1021,8 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
               </div>
               <div className="min-h-0 flex-1 overflow-auto">
                 <HistoryWorkbench
+                  branches={historyBranches}
+                  historyRepositoryPath={repositoryPath}
                   onBeforeRevert={fetchBeforeCurrentBranchWrite}
                 />
               </div>

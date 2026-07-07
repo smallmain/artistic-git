@@ -4,6 +4,7 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
   within,
 } from "@testing-library/react";
 import type { ReactElement } from "react";
@@ -11,7 +12,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AppProviders } from "@/AppProviders";
 import { createI18n } from "@/i18n/i18n";
-import { revertCommit } from "@/lib/ipc/commands";
+import { logPage, revertCommit, searchLog } from "@/lib/ipc/commands";
+import type { CommitSummary } from "@/lib/ipc/generated";
 import { createAppQueryClient } from "@/lib/query/client";
 import {
   createWindowStore,
@@ -29,11 +31,15 @@ vi.mock("@/lib/ipc/commands", async (importOriginal) => {
 
   return {
     ...actual,
+    logPage: vi.fn(),
     revertCommit: vi.fn(),
+    searchLog: vi.fn(),
   };
 });
 
+const logPageMock = vi.mocked(logPage);
 const revertCommitMock = vi.mocked(revertCommit);
+const searchLogMock = vi.mocked(searchLog);
 
 function renderWithProviders(
   ui: ReactElement,
@@ -63,7 +69,9 @@ function renderWithProviders(
 
 beforeEach(() => {
   vi.useFakeTimers();
+  logPageMock.mockReset();
   revertCommitMock.mockReset();
+  searchLogMock.mockReset();
   window.localStorage.clear();
 });
 
@@ -108,6 +116,139 @@ describe("history avatars", () => {
 });
 
 describe("HistoryWorkbench", () => {
+  it("loads repository history pages when scrolling near the end", async () => {
+    vi.useRealTimers();
+    const firstPageCommit = createCommitSummary({
+      oid: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      subject: "Initial backend history page",
+      time: 1_783_488_000,
+    });
+    const secondPageCommit = createCommitSummary({
+      oid: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      parent: firstPageCommit.oid,
+      subject: "Loaded from the next backend page",
+      time: 1_783_491_600,
+    });
+    logPageMock
+      .mockResolvedValueOnce({
+        commits: [firstPageCommit],
+        nextAfter: "200",
+      })
+      .mockResolvedValueOnce({
+        commits: [secondPageCommit],
+        nextAfter: null,
+      });
+
+    renderWithProviders(
+      <HistoryWorkbench historyRepositoryPath="/repo/art" rows={[]} />,
+    );
+
+    expect(
+      await screen.findByText("Initial backend history page"),
+    ).toBeInTheDocument();
+    expect(logPageMock).toHaveBeenCalledWith({
+      after: null,
+      limit: 200,
+      repositoryPath: "/repo/art",
+    });
+
+    const viewport = screen.getByTestId("history-scroll-viewport");
+    Object.defineProperty(viewport, "clientHeight", {
+      configurable: true,
+      value: 504,
+    });
+    Object.defineProperty(viewport, "scrollHeight", {
+      configurable: true,
+      value: 900,
+    });
+
+    fireEvent.scroll(viewport, { target: { scrollTop: 360 } });
+
+    await waitFor(() => {
+      expect(logPageMock).toHaveBeenCalledTimes(2);
+    });
+    expect(
+      await screen.findByText("Loaded from the next backend page"),
+    ).toBeInTheDocument();
+  });
+
+  it("merges backend message, author, and content search results", async () => {
+    vi.useRealTimers();
+    logPageMock.mockResolvedValue({ commits: [], nextAfter: null });
+    const messageCommit = createCommitSummary({
+      oid: "cccccccccccccccccccccccccccccccccccccccc",
+      subject: "Viewport search message",
+      time: 1_783_488_000,
+    });
+    const authorCommit = createCommitSummary({
+      author: "Viewport Artist",
+      oid: "dddddddddddddddddddddddddddddddddddddddd",
+      subject: "Author match",
+      time: 1_783_491_600,
+    });
+    const contentCommit = createCommitSummary({
+      oid: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      subject: "Content match",
+      time: 1_783_495_200,
+    });
+    searchLogMock.mockImplementation((request) => {
+      if (request.grep) {
+        return Promise.resolve({ commits: [messageCommit], nextAfter: null });
+      }
+      if (request.author) {
+        return Promise.resolve({ commits: [authorCommit], nextAfter: null });
+      }
+      if (request.pickaxe) {
+        return Promise.resolve({ commits: [contentCommit], nextAfter: null });
+      }
+      return Promise.resolve({ commits: [], nextAfter: null });
+    });
+
+    renderWithProviders(
+      <HistoryWorkbench historyRepositoryPath="/repo/art" rows={[]} />,
+    );
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Search history" }), {
+      target: { value: "viewport" },
+    });
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 230));
+    });
+
+    expect(
+      await screen.findByText("Viewport search message"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Author match")).toBeInTheDocument();
+    expect(screen.getByText("Content match")).toBeInTheDocument();
+    expect(screen.getByText("message")).toBeInTheDocument();
+    expect(screen.getByText("author")).toBeInTheDocument();
+    expect(screen.getByText("content")).toBeInTheDocument();
+    expect(searchLogMock).toHaveBeenCalledWith({
+      after: null,
+      author: null,
+      grep: "viewport",
+      limit: 200,
+      pickaxe: null,
+      repositoryPath: "/repo/art",
+    });
+    expect(searchLogMock).toHaveBeenCalledWith({
+      after: null,
+      author: "viewport",
+      grep: null,
+      limit: 200,
+      pickaxe: null,
+      repositoryPath: "/repo/art",
+    });
+    expect(searchLogMock).toHaveBeenCalledWith({
+      after: null,
+      author: null,
+      grep: null,
+      limit: 200,
+      pickaxe: "viewport",
+      repositoryPath: "/repo/art",
+    });
+  });
+
   it("filters branches and opens the commit detail panel", () => {
     renderWithProviders(<HistoryWorkbench rows={mockHistoryRows} />);
 
@@ -316,3 +457,27 @@ describe("HistoryWorkbench", () => {
     expect(revertCommitMock).not.toHaveBeenCalled();
   });
 });
+
+function createCommitSummary({
+  author = "Mira Chen",
+  oid,
+  parent,
+  subject,
+  time,
+}: {
+  author?: string;
+  oid: string;
+  parent?: string;
+  subject: string;
+  time: number;
+}): CommitSummary {
+  return {
+    authorEmail: "mira@example.test",
+    authorName: author,
+    authoredAtUnixSeconds: String(time),
+    oid,
+    parents: parent ? [parent] : [],
+    refs: [],
+    subject,
+  };
+}
