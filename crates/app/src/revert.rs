@@ -99,7 +99,7 @@ pub fn revert_commit(
     if request.push_after_revert && has_remote {
         match push_revert_with_sync_retry(runner, &root, auto_stash.clone())? {
             RevertPushOutcome::Pushed => pushed = true,
-            RevertPushOutcome::Conflicted(response) => return Ok(response),
+            RevertPushOutcome::Conflicted(response) => return Ok(*response),
         }
     }
     if let Some(response) = restore_revert_auto_stash_after_success(runner, &root, auto_stash)? {
@@ -349,10 +349,8 @@ fn push_revert_with_sync_retry(
                 },
             )?;
             if let Some(conflict) = sync.conflict {
-                return Ok(RevertPushOutcome::Conflicted(conflicted_response(
-                    conflict,
-                    sync.stash_recovery,
-                    auto_stash,
+                return Ok(RevertPushOutcome::Conflicted(Box::new(
+                    conflicted_response(conflict, sync.stash_recovery, auto_stash),
                 )));
             }
             Ok(RevertPushOutcome::Pushed)
@@ -362,7 +360,7 @@ fn push_revert_with_sync_retry(
 
 enum RevertPushOutcome {
     Pushed,
-    Conflicted(RevertCommitResponse),
+    Conflicted(Box<RevertCommitResponse>),
 }
 
 fn push_once(runner: &GitRunner, root: &Path) -> PushAttempt {

@@ -122,7 +122,7 @@ where
     cleanup_sync_worktree_residue(runner, &root);
 
     match sync_branch_fast_path(runner, &root, &branch_name)? {
-        FastPathOutcome::Synced(response) => Ok(response),
+        FastPathOutcome::Synced(response) => Ok(*response),
         FastPathOutcome::NeedsWorktree => {
             sync_branch_via_worktree(runner, &root, &branch_name, &operation_id, &progress)
         }
@@ -480,7 +480,7 @@ where
 }
 
 enum FastPathOutcome {
-    Synced(SyncBranchResponse),
+    Synced(Box<SyncBranchResponse>),
     NeedsWorktree,
 }
 
@@ -505,7 +505,7 @@ fn sync_branch_fast_path(
             previous_remote_head.as_deref(),
             remote_oid.as_deref(),
         )? {
-            return Ok(FastPathOutcome::Synced(SyncBranchResponse {
+            return Ok(FastPathOutcome::Synced(Box::new(SyncBranchResponse {
                 repository_path: display_path(root),
                 branch_name: branch_name.to_owned(),
                 upstream: Some(format!("origin/{branch_name}")),
@@ -515,7 +515,7 @@ fn sync_branch_fast_path(
                 conflict: None,
                 stash_recovery: None,
                 remote_history_change: Some(change),
-            }));
+            })));
         }
         if remote_oid
             .as_deref()
@@ -532,7 +532,7 @@ fn sync_branch_fast_path(
                 ],
             ) {
                 PushOutcome::Success => {
-                    return Ok(FastPathOutcome::Synced(SyncBranchResponse {
+                    return Ok(FastPathOutcome::Synced(Box::new(SyncBranchResponse {
                         repository_path: display_path(root),
                         branch_name: branch_name.to_owned(),
                         upstream: Some(format!("origin/{branch_name}")),
@@ -542,7 +542,7 @@ fn sync_branch_fast_path(
                         conflict: None,
                         stash_recovery: None,
                         remote_history_change: None,
-                    }));
+                    })));
                 }
                 PushOutcome::NonFastForward => {}
                 PushOutcome::Failed(error) => return Err(error),
@@ -582,7 +582,7 @@ fn sync_branch_fast_path(
         (false, false) => SyncCurrentBranchStatus::AlreadyUpToDate,
     };
 
-    Ok(FastPathOutcome::Synced(SyncBranchResponse {
+    Ok(FastPathOutcome::Synced(Box::new(SyncBranchResponse {
         repository_path: display_path(root),
         branch_name: branch_name.to_owned(),
         upstream: Some(format!("origin/{branch_name}")),
@@ -592,7 +592,7 @@ fn sync_branch_fast_path(
         conflict: None,
         stash_recovery: None,
         remote_history_change: None,
-    }))
+    })))
 }
 
 fn fetch_branch_ref_fast_forward(
@@ -1438,7 +1438,6 @@ fn validate_auto_tracking_rules_for_inventory(
 
     rules
         .iter()
-        .cloned()
         .map(|rule| {
             let source = rule.source_branch.trim();
             let target = rule.target_branch.trim();
