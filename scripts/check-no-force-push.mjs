@@ -75,10 +75,12 @@ if (findings.length > 0) {
   process.exit(1);
 }
 
-console.log(`no-force-push: checked ${scannedFiles} files; no force push args found.`);
+console.log(
+  `no-force-push: checked ${scannedFiles} files; no force push args found.`,
+);
 
 async function scanPath(filePath) {
-  const relative = path.relative(repoRoot, filePath);
+  const relative = normalizeRelative(filePath);
   if (skippedDirectories.has(relative)) {
     return;
   }
@@ -93,12 +95,15 @@ async function scanPath(filePath) {
 
   for (const entry of entries) {
     const child = path.join(filePath, entry.name);
-    const childRelative = path.relative(repoRoot, child);
+    const childRelative = normalizeRelative(child);
     if (entry.isDirectory()) {
       if (!isSkippedDirectory(childRelative)) {
         await scanPath(child);
       }
-    } else if (entry.isFile() && scannedExtensions.has(path.extname(entry.name))) {
+    } else if (
+      entry.isFile() &&
+      scannedExtensions.has(path.extname(entry.name))
+    ) {
       await scanFile(child);
     }
   }
@@ -106,12 +111,13 @@ async function scanPath(filePath) {
 
 function isSkippedDirectory(relativePath) {
   return Array.from(skippedDirectories).some(
-    (skipped) => relativePath === skipped || relativePath.startsWith(`${skipped}${path.sep}`),
+    (skipped) =>
+      relativePath === skipped || relativePath.startsWith(`${skipped}/`),
   );
 }
 
 async function scanFile(filePath) {
-  const relative = path.relative(repoRoot, filePath);
+  const relative = normalizeRelative(filePath);
   if (skippedFiles.has(relative)) {
     return;
   }
@@ -149,4 +155,8 @@ async function scanFile(filePath) {
       }
     }
   });
+}
+
+function normalizeRelative(filePath) {
+  return path.relative(repoRoot, filePath).split(path.sep).join("/");
 }
