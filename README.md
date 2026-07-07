@@ -93,7 +93,9 @@ can keep the automatic version calculation or override the SemVer bump level.
 Publishing also requires a completed Git Distribution workflow run id, supplied
 as the `git_dist_run_id` dispatch input or the `GIT_DIST_RUN_ID` repository
 variable, so each platform package stages and verifies the matching
-`artistic-git-dist-*` artifact before bundling.
+`artistic-git-dist-*` artifact before bundling, then scans the target-specific
+build output for `git-dist/manifest.json` after bundling. The repository and
+GitHub Releases must stay public so updater asset URLs remain reachable.
 
 Publishing requires a Tauri updater key pair generated outside the repository.
 Store the public key in GitHub Variables as `TAURI_UPDATER_PUBLIC_KEY` (or the

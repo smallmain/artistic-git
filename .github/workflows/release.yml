@@ -291,13 +291,30 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm tauri build --ci --target "${{ matrix.target }}" --bundles "${{ matrix.bundles }}"
 
+      - name: Verify packaged embedded Git resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/check-tauri-bundle-resources.mjs \
+            --require-manifest \
+            --release \
+            --bundle-output "src-tauri/target/${{ matrix.target }}/release" \
+            --require-bundled-resource
+
       - name: Stage release assets
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p release-assets
-          if [ -d src-tauri/target/release/bundle ]; then
-            find src-tauri/target/release/bundle -type f \
+          bundle_dirs=(
+            "src-tauri/target/release/bundle"
+            "src-tauri/target/${{ matrix.target }}/release/bundle"
+          )
+          for bundle_dir in "${bundle_dirs[@]}"; do
+            if [ ! -d "$bundle_dir" ]; then
+              continue
+            fi
+            find "$bundle_dir" -type f \
               \( -name '*.dmg' \
               -o -name '*.app.tar.gz' \
               -o -name '*.app.tar.gz.sig' \
@@ -310,7 +327,7 @@ jobs:
               -o -name '*.exe.zip.sig' \
               -o -name '*.sig' \) \
               -exec cp {} release-assets/ \;
-          fi
+          done
           test -n "$(find release-assets -type f -print -quit)"
 
       - name: Upload release assets
