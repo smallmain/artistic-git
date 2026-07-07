@@ -1,6 +1,7 @@
 pub mod config;
 pub mod keyring;
 pub mod logging;
+pub mod realtime;
 pub mod retry;
 
 use serde::Serialize;

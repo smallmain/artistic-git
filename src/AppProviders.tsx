@@ -45,6 +45,7 @@ export function AppProviders({
         >
           <ThemeProvider initialPreference={initialThemePreference}>
             <WindowStoreProvider
+              enableRealtimeEvents
               initialState={initialWindowState}
               store={windowStore}
             >

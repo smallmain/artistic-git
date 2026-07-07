@@ -43,11 +43,18 @@ describe("window store", () => {
       operationId: "op-1",
       progress: { kind: "indeterminate" },
     });
+    store.getState().setRepoChanged({
+      changedQueries: ["summary", "localChanges"],
+      repositoryPath: "/repo/art",
+    });
 
     expect(store.getState().fetchStatesByRepository["/repo/art"].state).toBe(
       "offline",
     );
     expect(store.getState().operationsById["op-1"].label).toBe("Fetching");
+    expect(
+      store.getState().repoChangesByRepository["/repo/art"].changedQueries,
+    ).toEqual(["summary", "localChanges"]);
   });
 });
 

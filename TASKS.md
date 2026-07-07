@@ -226,12 +226,12 @@ graph TD
 
 依赖：1C、2A。
 
-- [ ] fsmonitor 平台条件启用：`-c core.fsmonitor=true -c core.untrackedCache=true`（macOS/Windows 必开；Linux 若钉定版本不支持则退化 untrackedCache + 自有 watcher）
-- [ ] 自有 watcher 分层启用：`.git` 关键路径（HEAD/refs/index/packed-refs/MERGE_HEAD 等）必须精监听；工作区 watcher 作为可静默降级的刷新触发器
-- [ ] 防抖 300–500ms 合并工作区事件；同一时刻最多一个 `git status`（写锁或已有在跑则跳过），状态以 git status/fsmonitor 为准而非 watcher 自行判定
-- [ ] 自产事件抑制：持写锁期间忽略 watcher 事件，操作结束统一刷新一次
-- [ ] 超限静默降级：触达 OS watch 上限时退化为 fsmonitor + 粗粒度轮询，不打扰用户
-- [ ] `repo-changed` 事件 → 前端按「仓库+查询类型」定向 `invalidateQueries`
+- [x] fsmonitor 平台条件启用：`-c core.fsmonitor=true -c core.untrackedCache=true`（macOS/Windows 必开；Linux 若钉定版本不支持则退化 untrackedCache + 自有 watcher）
+- [x] 自有 watcher 分层启用：`.git` 关键路径（HEAD/refs/index/packed-refs/MERGE_HEAD 等）必须精监听；工作区 watcher 作为可静默降级的刷新触发器
+- [x] 防抖 300–500ms 合并工作区事件；同一时刻最多一个 `git status`（写锁或已有在跑则跳过），状态以 git status/fsmonitor 为准而非 watcher 自行判定
+- [x] 自产事件抑制：持写锁期间忽略 watcher 事件，操作结束统一刷新一次
+- [x] 超限静默降级：触达 OS watch 上限时退化为 fsmonitor + 粗粒度轮询，不打扰用户
+- [x] `repo-changed` 事件 → 前端按「仓库+查询类型」定向 `invalidateQueries`
 
 **验收**：集成测试：外部改文件/外部 git 命令后状态自动刷新；写锁期间抑制 + 结束刷新；防抖合并行为；（Linux）降级路径。
 

@@ -5,11 +5,14 @@ import { createStore, type StoreApi } from "zustand/vanilla";
 import type {
   FetchStateEvent,
   OperationProgressEvent,
+  RepoChangedEvent,
 } from "@/lib/ipc/generated";
+import { RealtimeEventBridge } from "@/lib/realtime";
 
 export interface WindowStoreState {
   activeRepositoryPath: string | null;
   fetchStatesByRepository: Record<string, FetchStateEvent>;
+  repoChangesByRepository: Record<string, RepoChangedEvent>;
   operationsById: Record<string, OperationProgressEvent>;
   windowLabel: string | null;
 }
@@ -18,6 +21,7 @@ export interface WindowStoreActions {
   setActiveRepositoryPath: (repositoryPath: string | null) => void;
   setFetchState: (event: FetchStateEvent) => void;
   setOperationProgress: (event: OperationProgressEvent) => void;
+  setRepoChanged: (event: RepoChangedEvent) => void;
   setWindowLabel: (windowLabel: string | null) => void;
 }
 
@@ -27,6 +31,7 @@ export type WindowStoreApi = StoreApi<WindowStore>;
 const initialWindowStoreState: WindowStoreState = {
   activeRepositoryPath: null,
   fetchStatesByRepository: {},
+  repoChangesByRepository: {},
   operationsById: {},
   windowLabel: null,
 };
@@ -36,6 +41,7 @@ const identityWindowStoreSelector = (state: WindowStore) => state;
 
 interface WindowStoreProviderProps {
   children: React.ReactNode;
+  enableRealtimeEvents?: boolean;
   initialState?: Partial<WindowStoreState>;
   store?: WindowStoreApi;
 }
@@ -67,6 +73,14 @@ export function createWindowStore(
         },
       }));
     },
+    setRepoChanged: (event) => {
+      set((state) => ({
+        repoChangesByRepository: {
+          ...state.repoChangesByRepository,
+          [event.repositoryPath]: event,
+        },
+      }));
+    },
     setWindowLabel: (windowLabel) => {
       set({ windowLabel });
     },
@@ -75,15 +89,25 @@ export function createWindowStore(
 
 export function WindowStoreProvider({
   children,
+  enableRealtimeEvents = false,
   initialState,
   store,
 }: WindowStoreProviderProps) {
   const [storeApi] = React.useState(
     () => store ?? createWindowStore(initialState),
   );
+  const setRepoChanged = React.useCallback(
+    (event: RepoChangedEvent) => {
+      storeApi.getState().setRepoChanged(event);
+    },
+    [storeApi],
+  );
 
   return (
     <WindowStoreContext.Provider value={storeApi}>
+      {enableRealtimeEvents ? (
+        <RealtimeEventBridge onRepoChanged={setRepoChanged} />
+      ) : null}
       {children}
     </WindowStoreContext.Provider>
   );
@@ -122,6 +146,10 @@ function createInitialWindowStoreState(
     fetchStatesByRepository: {
       ...initialWindowStoreState.fetchStatesByRepository,
       ...initialState?.fetchStatesByRepository,
+    },
+    repoChangesByRepository: {
+      ...initialWindowStoreState.repoChangesByRepository,
+      ...initialState?.repoChangesByRepository,
     },
     operationsById: {
       ...initialWindowStoreState.operationsById,
