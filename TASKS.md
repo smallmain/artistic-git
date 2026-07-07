@@ -515,7 +515,7 @@ graph TD
 
 - [ ] 关窗保护：点 X / `Cmd/Ctrl+W` 时若有写操作进行中或未完成冲突/审查模式 → 确认框「有操作正在进行，关闭将取消该操作并恢复到操作前状态」；确认执行标准取消/恢复后关闭；`Cmd/Ctrl+Q` 逐窗口执行同样检查
 - [ ] 崩溃隔离三层验证：WebView 崩溃 → 主进程检测自动重载该窗口 + 崩溃弹窗；React 错误边界仅影响自身窗口；Rust 命令 Result 化全量复查 + panic hook → 崩溃弹窗端到端接通
-  - 进展备注：已补 renderer crash 注入重载 + pending crash 弹窗通路、Rust panic `crash-reported` → 前端崩溃弹窗桥接与测试；`Cmd/Ctrl+W` 菜单关闭与窗口 CloseRequested 共用 close guard 判定，active backend operation 也会注册 guard，冲突/审查模式关窗恢复与退出取消已有覆盖；当前 Tauri 2.11 公共事件尚未暴露 native WebView renderer crash 检测，完整验收仍未关闭。通用写操作进行中的标准取消/恢复仍等待 operation-level cancellation API。
+  - 进展备注：已补 renderer crash 注入重载 + pending crash 弹窗通路、Rust panic `crash-reported` → 前端崩溃弹窗桥接与测试；`Cmd/Ctrl+W` 菜单关闭与窗口 CloseRequested 共用 close guard 判定，active backend operation 也会注册 guard，冲突/审查模式关窗恢复与退出取消已有覆盖；已补 `operation-progress` 的 repository/window 归属字段与前端过滤，避免多窗口操作误触发其它窗口 close guard；当前 Tauri 2.11 公共事件尚未暴露 native WebView renderer crash 检测，完整验收仍未关闭。通用写操作进行中的标准取消/恢复仍等待 operation-level cancellation API。
 - [x] 会话状态恢复矩阵：恢复（侧栏比例/折叠状态/本地更改视图模式/窗口几何）；重置（激活选项卡→历史/分支筛选器→自动/搜索框/文件勾选/选中项与滚动/打开的面板 Modal）
 
 **验收**：E2E/手动：操作中关窗 → 取消恢复后关闭；三层崩溃注入各自隔离；会话矩阵逐项断言。

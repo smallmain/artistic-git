@@ -1091,6 +1091,7 @@ where
     F: Fn(OperationProgressEvent),
 {
     const OPERATION: &str = "cloneRepository";
+    let repository_path = display_path(&target.path);
 
     if cancel_token.is_cancelled() {
         cleanup_clone_target(target);
@@ -1099,6 +1100,7 @@ where
 
     emit_clone_progress(
         operation_id,
+        Some(repository_path.as_str()),
         &progress,
         "Cloning repository",
         ProgressState::Indeterminate,
@@ -1130,7 +1132,12 @@ where
 
     let status;
     loop {
-        drain_clone_progress(operation_id, &progress, &progress_rx);
+        drain_clone_progress(
+            operation_id,
+            Some(repository_path.as_str()),
+            &progress,
+            &progress_rx,
+        );
         if cancel_token.is_cancelled() {
             let _ = child.kill();
             let _ = child.wait();
@@ -1153,7 +1160,12 @@ where
             }
         }
     }
-    drain_clone_progress(operation_id, &progress, &progress_rx);
+    drain_clone_progress(
+        operation_id,
+        Some(repository_path.as_str()),
+        &progress,
+        &progress_rx,
+    );
 
     let stdout = stdout_reader
         .and_then(|reader| reader.join().ok())
@@ -1161,7 +1173,12 @@ where
     let stderr = stderr_reader
         .and_then(|reader| reader.join().ok())
         .unwrap_or_default();
-    drain_clone_progress(operation_id, &progress, &progress_rx);
+    drain_clone_progress(
+        operation_id,
+        Some(repository_path.as_str()),
+        &progress,
+        &progress_rx,
+    );
 
     let output = Output {
         status,
@@ -1171,6 +1188,7 @@ where
     if output.status.success() {
         emit_clone_progress(
             operation_id,
+            Some(repository_path.as_str()),
             &progress,
             "Clone complete",
             ProgressState::Percent { value: 100.0 },
@@ -1248,6 +1266,7 @@ where
 
 fn drain_clone_progress<F>(
     operation_id: Option<&OperationId>,
+    repository_path: Option<&str>,
     progress: &F,
     progress_rx: &mpsc::Receiver<String>,
 ) where
@@ -1256,6 +1275,7 @@ fn drain_clone_progress<F>(
     while let Ok(line) = progress_rx.try_recv() {
         emit_clone_progress(
             operation_id,
+            repository_path,
             progress,
             clone_progress_label(&line),
             parse_git_progress_line(&line),
@@ -1265,6 +1285,7 @@ fn drain_clone_progress<F>(
 
 fn emit_clone_progress<F>(
     operation_id: Option<&OperationId>,
+    repository_path: Option<&str>,
     progress: &F,
     label: impl Into<String>,
     progress_state: ProgressState,
@@ -1280,6 +1301,8 @@ fn emit_clone_progress<F>(
         label: label.into(),
         progress: progress_state,
         cancellable: true,
+        repository_path: repository_path.map(ToOwned::to_owned),
+        window_label: None,
     });
 }
 
@@ -1309,9 +1332,11 @@ where
     if !repository_has_submodules(root) {
         return Ok(());
     }
+    let repository_path = display_path(root);
 
     emit_operation_progress(
         operation_id,
+        Some(repository_path.as_str()),
         progress,
         "Updating submodules",
         ProgressState::Indeterminate,
@@ -1336,14 +1361,23 @@ where
         plan,
         operation_name,
         operation_id,
+        Some(repository_path.as_str()),
         progress,
         submodule_progress_label,
     )?;
 
-    pull_submodule_lfs_objects(runner, root, operation_name, operation_id, progress)?;
+    pull_submodule_lfs_objects(
+        runner,
+        root,
+        operation_name,
+        operation_id,
+        Some(repository_path.as_str()),
+        progress,
+    )?;
 
     emit_operation_progress(
         operation_id,
+        Some(repository_path.as_str()),
         progress,
         "Submodules ready",
         ProgressState::Percent { value: 100.0 },
@@ -1371,6 +1405,7 @@ fn pull_submodule_lfs_objects<F>(
     root: &Path,
     operation_name: &str,
     operation_id: Option<&OperationId>,
+    repository_path: Option<&str>,
     progress: &F,
 ) -> AppResult<()>
 where
@@ -1383,6 +1418,7 @@ where
 
         emit_operation_progress(
             operation_id,
+            repository_path,
             progress,
             "Downloading submodule LFS objects",
             ProgressState::Indeterminate,
@@ -1395,6 +1431,7 @@ where
             ["pull"],
             operation_name,
             operation_id,
+            repository_path,
             progress,
         )?;
         run_git_lfs_for_submodule(runner, &submodule, ["checkout"], operation_name)?;
@@ -1474,6 +1511,7 @@ fn run_git_lfs_for_submodule_with_progress<F, I, S>(
     args: I,
     operation_name: &str,
     operation_id: Option<&OperationId>,
+    repository_path: Option<&str>,
     progress: &F,
 ) -> AppResult<()>
 where
@@ -1488,6 +1526,7 @@ where
         plan,
         operation_name,
         operation_id,
+        repository_path,
         progress,
         submodule_progress_label,
     )
@@ -1497,6 +1536,7 @@ fn run_command_with_progress<F>(
     plan: GitCommandPlan,
     operation_name: &str,
     operation_id: Option<&OperationId>,
+    repository_path: Option<&str>,
     progress: &F,
     label_for_line: fn(&str) -> &'static str,
 ) -> AppResult<()>
@@ -1516,7 +1556,13 @@ where
 
     let status;
     loop {
-        drain_operation_progress(operation_id, progress, &progress_rx, label_for_line);
+        drain_operation_progress(
+            operation_id,
+            repository_path,
+            progress,
+            &progress_rx,
+            label_for_line,
+        );
         match child.try_wait() {
             Ok(Some(exit_status)) => {
                 status = exit_status;
@@ -1530,7 +1576,13 @@ where
             }
         }
     }
-    drain_operation_progress(operation_id, progress, &progress_rx, label_for_line);
+    drain_operation_progress(
+        operation_id,
+        repository_path,
+        progress,
+        &progress_rx,
+        label_for_line,
+    );
 
     let stdout = stdout_reader
         .and_then(|reader| reader.join().ok())
@@ -1538,7 +1590,13 @@ where
     let stderr = stderr_reader
         .and_then(|reader| reader.join().ok())
         .unwrap_or_default();
-    drain_operation_progress(operation_id, progress, &progress_rx, label_for_line);
+    drain_operation_progress(
+        operation_id,
+        repository_path,
+        progress,
+        &progress_rx,
+        label_for_line,
+    );
 
     let output = Output {
         status,
@@ -1554,6 +1612,7 @@ where
 
 fn drain_operation_progress<F>(
     operation_id: Option<&OperationId>,
+    repository_path: Option<&str>,
     progress: &F,
     progress_rx: &mpsc::Receiver<String>,
     label_for_line: fn(&str) -> &'static str,
@@ -1563,6 +1622,7 @@ fn drain_operation_progress<F>(
     while let Ok(line) = progress_rx.try_recv() {
         emit_operation_progress(
             operation_id,
+            repository_path,
             progress,
             label_for_line(&line),
             parse_git_progress_line(&line),
@@ -1573,6 +1633,7 @@ fn drain_operation_progress<F>(
 
 fn emit_operation_progress<F>(
     operation_id: Option<&OperationId>,
+    repository_path: Option<&str>,
     progress: &F,
     label: impl Into<String>,
     progress_state: ProgressState,
@@ -1589,6 +1650,8 @@ fn emit_operation_progress<F>(
         label: label.into(),
         progress: progress_state,
         cancellable,
+        repository_path: repository_path.map(ToOwned::to_owned),
+        window_label: None,
     });
 }
 

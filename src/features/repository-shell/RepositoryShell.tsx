@@ -324,6 +324,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     [branches, currentBranch, focusedBranch],
   );
   const operations = useWindowStore((state) => state.operationsById);
+  const windowLabel = useWindowStore((state) => state.windowLabel);
   const appSettings = useWindowStore((state) => state.appSettings);
   const projectSettings = useWindowStore(
     (state) => state.projectSettingsByRepository[repositoryPath] ?? null,
@@ -344,8 +345,13 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     (state) => state.setConflictEntered,
   );
   const activeOperation = React.useMemo(
-    () => Object.values(operations).at(-1) ?? null,
-    [operations],
+    () =>
+      Object.values(operations)
+        .filter((operation) =>
+          isRepositoryShellOperation(operation, repositoryPath, windowLabel),
+        )
+        .at(-1) ?? null,
+    [operations, repositoryPath, windowLabel],
   );
   const fetchState = liveFetchState ?? storedFetchState;
   const effectiveProjectSettings = React.useMemo(
@@ -2168,6 +2174,25 @@ function closeBlockedReasonFromPayload(
   }
 
   return "closeWindow";
+}
+
+function isRepositoryShellOperation(
+  operation: {
+    repositoryPath: string | null;
+    windowLabel: string | null;
+  },
+  repositoryPath: string,
+  windowLabel: string | null,
+): boolean {
+  if (operation.repositoryPath !== repositoryPath) {
+    return false;
+  }
+
+  return (
+    windowLabel === null ||
+    operation.windowLabel === null ||
+    operation.windowLabel === windowLabel
+  );
 }
 
 function operationLabel(label: string, t: (key: string) => string): string {

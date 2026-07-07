@@ -692,6 +692,8 @@ export type OperationProgressEvent = {
   label: string;
   progress: ProgressState;
   cancellable: boolean;
+  repositoryPath: string | null;
+  windowLabel: string | null;
 };
 
 export type PathSettings = {

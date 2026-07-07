@@ -182,6 +182,10 @@ export function createWindowStore(
     },
     setOperationProgress: (event) => {
       set((state) => {
+        if (!isOperationProgressOwnedByWindow(event, state)) {
+          return {};
+        }
+
         const operationsById = { ...state.operationsById };
         if (
           event.progress.kind === "percent" &&
@@ -282,6 +286,11 @@ export function WindowStoreProvider({
     },
     [storeApi],
   );
+  const operationProgressFilter = React.useCallback(
+    (event: OperationProgressEvent) =>
+      isOperationProgressOwnedByWindow(event, storeApi.getState()),
+    [storeApi],
+  );
 
   return (
     <WindowStoreContext.Provider value={storeApi}>
@@ -290,6 +299,7 @@ export function WindowStoreProvider({
           onConflictEntered={setConflictEntered}
           onFetchState={setFetchState}
           onOperationProgress={setOperationProgress}
+          operationProgressFilter={operationProgressFilter}
           onRepoChanged={setRepoChanged}
         />
       ) : null}
@@ -320,6 +330,28 @@ function useWindowStoreApi(): WindowStoreApi {
   }
 
   return store;
+}
+
+function isOperationProgressOwnedByWindow(
+  event: OperationProgressEvent,
+  state: Pick<WindowStoreState, "activeRepositoryPath" | "windowLabel">,
+): boolean {
+  if (
+    state.activeRepositoryPath !== null &&
+    event.repositoryPath !== state.activeRepositoryPath
+  ) {
+    return false;
+  }
+
+  if (
+    state.windowLabel !== null &&
+    event.windowLabel !== null &&
+    event.windowLabel !== state.windowLabel
+  ) {
+    return false;
+  }
+
+  return true;
 }
 
 function createInitialWindowStoreState(

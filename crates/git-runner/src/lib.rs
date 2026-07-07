@@ -1569,6 +1569,8 @@ mod tests {
             label: "Fetching".to_owned(),
             progress: ProgressState::Percent { value: 50.0 },
             cancellable: true,
+            repository_path: Some("/repo/art".to_owned()),
+            window_label: Some("repo-window".to_owned()),
         });
 
         router

@@ -224,6 +224,8 @@ pub struct OperationProgressEvent {
     pub label: String,
     pub progress: ProgressState,
     pub cancellable: bool,
+    pub repository_path: Option<String>,
+    pub window_label: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]

@@ -17,6 +17,7 @@ export interface RealtimeEventBridgeOptions {
   onConflictEntered?: (event: ConflictEnteredEvent) => void;
   onFetchState?: (event: FetchStateEvent) => void;
   onOperationProgress?: (event: OperationProgressEvent) => void;
+  operationProgressFilter?: (event: OperationProgressEvent) => boolean;
   onRepoChanged?: (event: RepoChangedEvent) => void;
   queryClient: QueryClient;
 }
@@ -54,6 +55,7 @@ export async function installRealtimeEventBridge({
   onConflictEntered,
   onFetchState,
   onOperationProgress,
+  operationProgressFilter,
   onRepoChanged,
   queryClient,
 }: RealtimeEventBridgeOptions): Promise<RealtimeUnsubscribe> {
@@ -82,6 +84,9 @@ export async function installRealtimeEventBridge({
     (event) => {
       const payload = event.payload as AppEventPayloads["operation-progress"];
 
+      if (operationProgressFilter && !operationProgressFilter(payload)) {
+        return;
+      }
       onOperationProgress?.(payload);
     },
   );

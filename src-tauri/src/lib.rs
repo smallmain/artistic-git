@@ -335,22 +335,38 @@ fn open_update_release_page() -> artistic_git_contracts::AppResult<()> {
 #[tauri::command]
 fn open_repository(
     app_handle: tauri::AppHandle,
+    window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::OpenRepositoryRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::OpenRepositoryResponse> {
+    let repository_path = request.path.clone();
+    let window_label = window.label().to_owned();
     backend.open_repository_with_progress(request, |event| {
-        let _ = app_handle.emit("operation-progress", &event);
+        emit_operation_progress(
+            &app_handle,
+            event,
+            Some(repository_path.as_str()),
+            window_label.as_str(),
+        );
     })
 }
 
 #[tauri::command]
 fn clone_repository(
     app_handle: tauri::AppHandle,
+    window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::CloneRepositoryRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::CloneRepositoryResponse> {
+    let repository_path = clone_repository_target_path(&request);
+    let window_label = window.label().to_owned();
     backend.clone_repository_with_progress(request, |event| {
-        let _ = app_handle.emit("operation-progress", &event);
+        emit_operation_progress(
+            &app_handle,
+            event,
+            Some(repository_path.as_str()),
+            window_label.as_str(),
+        );
     })
 }
 
@@ -404,11 +420,19 @@ fn fetch_repository(
 #[tauri::command]
 fn sync_current_branch(
     app_handle: tauri::AppHandle,
+    window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::SyncCurrentBranchRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::SyncCurrentBranchResponse> {
+    let repository_path = request.repository_path.clone();
+    let window_label = window.label().to_owned();
     let response = backend.sync_current_branch_with_progress(request, |event| {
-        let _ = app_handle.emit("operation-progress", &event);
+        emit_operation_progress(
+            &app_handle,
+            event,
+            Some(repository_path.as_str()),
+            window_label.as_str(),
+        );
     })?;
     if let Some(conflict) = response.conflict.as_ref() {
         let _ = app_handle.emit("conflict-entered", conflict);
@@ -429,11 +453,19 @@ fn sync_current_branch(
 #[tauri::command]
 fn sync_branch(
     app_handle: tauri::AppHandle,
+    window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::SyncBranchRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::SyncBranchResponse> {
+    let repository_path = request.repository_path.clone();
+    let window_label = window.label().to_owned();
     let response = backend.sync_branch_with_progress(request, |event| {
-        let _ = app_handle.emit("operation-progress", &event);
+        emit_operation_progress(
+            &app_handle,
+            event,
+            Some(repository_path.as_str()),
+            window_label.as_str(),
+        );
     })?;
     if let Some(conflict) = response.conflict.as_ref() {
         let _ = app_handle.emit("conflict-entered", conflict);
@@ -453,11 +485,19 @@ fn sync_branch(
 #[tauri::command]
 fn sync_all_branches(
     app_handle: tauri::AppHandle,
+    window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::SyncAllBranchesRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::SyncAllBranchesResponse> {
+    let repository_path = request.repository_path.clone();
+    let window_label = window.label().to_owned();
     let response = backend.sync_all_branches_with_progress(request, |event| {
-        let _ = app_handle.emit("operation-progress", &event);
+        emit_operation_progress(
+            &app_handle,
+            event,
+            Some(repository_path.as_str()),
+            window_label.as_str(),
+        );
     })?;
     if let Some(conflict) = response.conflict.as_ref() {
         let _ = app_handle.emit("conflict-entered", conflict);
@@ -2026,6 +2066,29 @@ fn emit_repo_changed(
             changed_queries,
         },
     );
+}
+
+fn emit_operation_progress(
+    app_handle: &tauri::AppHandle,
+    mut event: artistic_git_contracts::OperationProgressEvent,
+    repository_path: Option<&str>,
+    window_label: &str,
+) {
+    if let Some(repository_path) = repository_path {
+        event.repository_path = Some(repository_path.to_owned());
+    }
+    event.window_label = Some(window_label.to_owned());
+
+    let _ = app_handle.emit("operation-progress", &event);
+}
+
+fn clone_repository_target_path(
+    request: &artistic_git_contracts::CloneRepositoryRequest,
+) -> String {
+    PathBuf::from(request.target_parent_directory.trim())
+        .join(request.directory_name.trim())
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn emit_fetch_state(
