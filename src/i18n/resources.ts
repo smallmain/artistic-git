@@ -372,6 +372,8 @@ export const resources = {
       diff: {
         card: {
           binary: "Binary file preview is not available",
+          lfsError: "Git LFS content could not be loaded",
+          lfsLoading: "Loading Git LFS content",
           lfsPointer: "Git LFS content is not available locally yet",
           moved: "File moved with no content changes",
           oversizedText: "File is too large to render",
@@ -394,8 +396,14 @@ export const resources = {
         fileType: "Type",
         imageMissing: "No image for this side",
         inlineMode: "Inline diff",
+        lfsContent: "LFS content",
         lfsLock: "LFS lock",
         lfsLocked: "LFS locked",
+        lfsStatus: {
+          error: "Fetch failed",
+          loading: "Loading",
+          missing: "Missing",
+        },
         locked: "Locked",
         newImage: "New",
         oldImage: "Old",
@@ -869,6 +877,8 @@ export const resources = {
       diff: {
         card: {
           binary: "暂不支持预览二进制文件",
+          lfsError: "Git LFS 内容加载失败",
+          lfsLoading: "正在加载 Git LFS 内容",
           lfsPointer: "Git LFS 内容尚未在本地可用",
           moved: "文件已移动，内容无变化",
           oversizedText: "文件过大，无法渲染",
@@ -891,8 +901,14 @@ export const resources = {
         fileType: "类型",
         imageMissing: "这一侧没有图片",
         inlineMode: "行内 Diff",
+        lfsContent: "LFS 内容",
         lfsLock: "LFS 锁",
         lfsLocked: "LFS 已锁定",
+        lfsStatus: {
+          error: "拉取失败",
+          loading: "正在加载",
+          missing: "缺失",
+        },
         locked: "已锁定",
         newImage: "新版本",
         oldImage: "旧版本",

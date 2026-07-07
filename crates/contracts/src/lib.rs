@@ -912,6 +912,58 @@ pub struct LocalChange {
     pub change_kind: DiffChangeKind,
     pub index_status: String,
     pub worktree_status: String,
+    pub payload: DiffPayload,
+    pub diff: DiffContent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum DiffContent {
+    Text {
+        old_text: Option<String>,
+        new_text: Option<String>,
+        language: Option<String>,
+    },
+    Image {
+        old_image: Option<DiffAsset>,
+        new_image: Option<DiffAsset>,
+    },
+    Binary {
+        message: Option<String>,
+    },
+    OversizedText {
+        message: Option<String>,
+    },
+    LfsPointer {
+        status: LfsContentStatus,
+        message: Option<String>,
+    },
+    Moved {
+        message: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffAsset {
+    pub alt: Option<String>,
+    pub height: Option<u32>,
+    pub mime_type: Option<String>,
+    pub size_bytes: Option<u32>,
+    pub src: String,
+    pub width: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum LfsContentStatus {
+    Loading,
+    Missing,
+    Error,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]

@@ -17,13 +17,14 @@ use artistic_git_contracts::{
     ConflictPathRequest, ConflictSaveResolutionRequest, ConflictSaveResolutionResponse,
     ConflictSelectSideRequest, ConflictSelectSideResponse, CreateAutoStashRequest,
     CreateBranchRequest, CreateStashRequest, CreateStashResponse, DeleteBranchRequest,
-    DeleteStashRequest, DeleteStashResponse, DiffPayload, FetchRepositoryRequest,
-    FetchRepositoryResponse, GitDistManifest, LargeFileWarning, LocalChangesResponse,
-    LogPageRequest, LogPageResponse, LogSearchRequest, OpenRepositoryRequest,
-    OpenRepositoryResponse, RemoteSettingsResponse, RepositoryPathRequest, RepositorySummary,
-    RestoreChangesRequest, RestoreChangesResponse, RestoreStashRequest, RestoreStashResponse,
-    RevertCommitRequest, RevertCommitResponse, SaveRemoteSettingsRequest, StashDetailsRequest,
-    StashDetailsResponse, StashListResponse, SyncCurrentBranchRequest, SyncCurrentBranchResponse,
+    DeleteStashRequest, DeleteStashResponse, DiffAsset, DiffContent, DiffPayload,
+    FetchRepositoryRequest, FetchRepositoryResponse, GitDistManifest, LargeFileWarning,
+    LfsContentStatus, LocalChangesResponse, LogPageRequest, LogPageResponse, LogSearchRequest,
+    OpenRepositoryRequest, OpenRepositoryResponse, RemoteSettingsResponse, RepositoryPathRequest,
+    RepositorySummary, RestoreChangesRequest, RestoreChangesResponse, RestoreStashRequest,
+    RestoreStashResponse, RevertCommitRequest, RevertCommitResponse, SaveRemoteSettingsRequest,
+    StashDetailsRequest, StashDetailsResponse, StashListResponse, SyncCurrentBranchRequest,
+    SyncCurrentBranchResponse,
 };
 use artistic_git_core::config::{
     AppSettings, ConfigChangeEvent, ProjectSettings, ProjectsDocument,
@@ -117,7 +118,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register::<ProjectsDocument>()
         .register::<ProjectSettings>()
         .register::<ConfigChangeEvent>()
+        .register::<DiffAsset>()
+        .register::<DiffContent>()
         .register::<DiffPayload>()
+        .register::<LfsContentStatus>()
         .register::<ConflictFile>()
         .register::<GitDistManifest>();
 

@@ -43,6 +43,11 @@ export const demoLocalChanges: LocalChangeItem[] = [
     searchableText: "city albedo image rename",
   },
   {
+    diff: {
+      kind: "lfsPointer",
+      message: null,
+      status: "missing",
+    },
     id: "change-lfs-pointer",
     payload: createPayload({
       changeKind: "modified",

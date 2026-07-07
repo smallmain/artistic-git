@@ -360,8 +360,30 @@ export type DeleteStashResponse = {
   stdout: string;
 };
 
+export type DiffAsset = {
+  alt: string | null;
+  height: number | null;
+  mimeType: string | null;
+  sizeBytes: number | null;
+  src: string;
+  width: number | null;
+};
+
 export type DiffChangeKind =
   "added" | "modified" | "deleted" | "renamed" | "copied";
+
+export type DiffContent =
+  | {
+      kind: "text";
+      oldText: string | null;
+      newText: string | null;
+      language: string | null;
+    }
+  | { kind: "image"; oldImage: DiffAsset | null; newImage: DiffAsset | null }
+  | { kind: "binary"; message: string | null }
+  | { kind: "oversizedText"; message: string | null }
+  | { kind: "lfsPointer"; status: LfsContentStatus; message: string | null }
+  | { kind: "moved"; message: string | null };
 
 export type DiffFileKind =
   "text" | "binary" | "image" | "lfsPointer" | "oversizedText";
@@ -523,6 +545,8 @@ export type LargeFileWarning = {
   sizeBytes: string;
 };
 
+export type LfsContentStatus = "loading" | "missing" | "error";
+
 export type LfsLockStatus = {
   locked: boolean;
   owner: string | null;
@@ -534,6 +558,8 @@ export type LocalChange = {
   changeKind: DiffChangeKind;
   indexStatus: string;
   worktreeStatus: string;
+  payload: DiffPayload;
+  diff: DiffContent;
 };
 
 export type LocalChangesResponse = {

@@ -153,7 +153,7 @@ function TextDiff({
     parent.replaceChildren();
     const oldText = content.oldText ?? "";
     const newText = content.newText ?? "";
-    const extensions = createCodeMirrorExtensions(content.language);
+    const extensions = createCodeMirrorExtensions(content.language ?? undefined);
 
     if (effectiveMode === "split") {
       const mergeView = new MergeView({
@@ -310,7 +310,7 @@ function ImagePane({
   label,
   zoom,
 }: {
-  asset?: DiffAsset;
+  asset?: DiffAsset | null;
   label: string;
   zoom: number;
 }) {
@@ -359,20 +359,40 @@ function FileDiffCard({
   const formatters = useLocalizedFormatters();
   const oldBytes = parseOptionalNumber(payload.metadata.oldBytes);
   const newBytes = parseOptionalNumber(payload.metadata.newBytes);
+  const lfsStatus = content.kind === "lfsPointer" ? content.status : undefined;
+  const title =
+    content.kind === "lfsPointer" && content.status === "loading"
+      ? t("diff.card.lfsLoading")
+      : content.kind === "lfsPointer" && content.status === "error"
+        ? (content.message ?? t("diff.card.lfsError"))
+        : (content.message ?? t(`diff.card.${content.kind}`));
+  const role =
+    lfsStatus === "loading"
+      ? "status"
+      : lfsStatus === "error"
+        ? "alert"
+        : undefined;
 
   return (
     <div className="flex min-h-full items-center justify-center p-6">
-      <div className="w-full max-w-lg rounded-lg border bg-card p-5 text-card-foreground shadow-sm">
+      <div
+        className="w-full max-w-lg rounded-lg border bg-card p-5 text-card-foreground shadow-sm"
+        role={role}
+      >
         <div className="flex items-start gap-3">
           <FileIcon kind={content.kind} />
           <div className="min-w-0 flex-1">
-            <h2 className="text-base font-medium">
-              {content.message ?? t(`diff.card.${content.kind}`)}
-            </h2>
+            <h2 className="text-base font-medium">{title}</h2>
             <p className="mt-1 break-all text-sm text-muted-foreground">
               {formatDiffPath(payload)}
             </p>
             <dl className="mt-4 grid gap-2 text-sm">
+              {lfsStatus ? (
+                <MetadataRow
+                  label={t("diff.lfsContent")}
+                  value={t(`diff.lfsStatus.${lfsStatus}`)}
+                />
+              ) : null}
               <MetadataRow
                 label={t("diff.changeType")}
                 value={t(`diff.changeKind.${payload.changeKind}`)}
@@ -456,7 +476,9 @@ function formatImageMeta(
       ? `${asset.width} x ${asset.height}`
       : undefined;
   const size =
-    asset.sizeBytes === undefined ? undefined : formatFileSize(asset.sizeBytes);
+    asset.sizeBytes === undefined || asset.sizeBytes === null
+      ? undefined
+      : formatFileSize(asset.sizeBytes);
 
   return [dimensions, size].filter(Boolean).join(" · ");
 }

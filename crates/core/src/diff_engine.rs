@@ -45,6 +45,8 @@ pub struct DiffFileProbe<'a> {
     pub change_kind: DiffChangeKind,
     pub old_content: Option<&'a [u8]>,
     pub new_content: Option<&'a [u8]>,
+    pub old_display_content: Option<&'a [u8]>,
+    pub new_display_content: Option<&'a [u8]>,
     pub git_binary_patch: bool,
     pub changed_lines: usize,
 }
@@ -57,6 +59,8 @@ impl<'a> DiffFileProbe<'a> {
             change_kind,
             old_content: None,
             new_content: None,
+            old_display_content: None,
+            new_display_content: None,
             git_binary_patch: false,
             changed_lines: 0,
         }
@@ -64,15 +68,26 @@ impl<'a> DiffFileProbe<'a> {
 }
 
 pub fn classify_diff_file(probe: DiffFileProbe<'_>) -> DiffClassification {
-    let representative_content = probe.new_content.or(probe.old_content).unwrap_or_default();
+    let representative_content = probe
+        .new_display_content
+        .or(probe.old_display_content)
+        .or(probe.new_content)
+        .or(probe.old_content)
+        .unwrap_or_default();
+    let representative_pointer = probe
+        .new_content
+        .and_then(parse_lfs_pointer)
+        .or_else(|| probe.old_content.and_then(parse_lfs_pointer));
     let mut metadata = BTreeMap::new();
 
     if let Some(old_content) = probe.old_content {
-        metadata.insert("oldBytes".to_owned(), old_content.len().to_string());
+        let old_bytes = probe.old_display_content.unwrap_or(old_content).len();
+        metadata.insert("oldBytes".to_owned(), old_bytes.to_string());
     }
 
     if let Some(new_content) = probe.new_content {
-        metadata.insert("newBytes".to_owned(), new_content.len().to_string());
+        let new_bytes = probe.new_display_content.unwrap_or(new_content).len();
+        metadata.insert("newBytes".to_owned(), new_bytes.to_string());
     }
 
     metadata.insert("changedLines".to_owned(), probe.changed_lines.to_string());
@@ -84,23 +99,30 @@ pub fn classify_diff_file(probe: DiffFileProbe<'_>) -> DiffClassification {
 
     metadata.insert("contentChanged".to_owned(), (!pure_rename).to_string());
 
-    let file_kind = if let Some(pointer) = parse_lfs_pointer(representative_content) {
+    let file_kind = if let Some(pointer) = representative_pointer {
         metadata.insert("lfsOid".to_owned(), pointer.oid);
         metadata.insert("lfsSize".to_owned(), pointer.size.to_string());
-        DiffFileKind::LfsPointer
-    } else if let Some(image) = detect_image(representative_content) {
-        metadata.insert("mimeType".to_owned(), image.mime_type.to_owned());
-        if let Some((width, height)) = image.dimensions {
-            metadata.insert("imageWidth".to_owned(), width.to_string());
-            metadata.insert("imageHeight".to_owned(), height.to_string());
+        let resolved = probe.new_display_content.or(probe.old_display_content);
+        metadata.insert("lfsResolved".to_owned(), resolved.is_some().to_string());
+        if let Some(resolved_content) = resolved {
+            add_image_metadata(resolved_content, &mut metadata);
+            classify_resolved_content(
+                resolved_content,
+                probe.git_binary_patch,
+                probe.changed_lines,
+            )
+        } else {
+            DiffFileKind::LfsPointer
         }
+    } else if let Some(image) = detect_image(representative_content) {
+        insert_image_metadata(image, &mut metadata);
         DiffFileKind::Image
-    } else if is_binary(representative_content, probe.git_binary_patch) {
-        DiffFileKind::Binary
-    } else if is_oversized_text(representative_content, probe.changed_lines) {
-        DiffFileKind::OversizedText
     } else {
-        DiffFileKind::Text
+        classify_resolved_content(
+            representative_content,
+            probe.git_binary_patch,
+            probe.changed_lines,
+        )
     };
 
     DiffClassification {
@@ -110,6 +132,38 @@ pub fn classify_diff_file(probe: DiffFileProbe<'_>) -> DiffClassification {
         file_kind,
         pure_rename,
         metadata,
+    }
+}
+
+fn add_image_metadata(content: &[u8], metadata: &mut BTreeMap<String, String>) {
+    if let Some(image) = detect_image(content) {
+        insert_image_metadata(image, metadata);
+    }
+}
+
+fn insert_image_metadata(image: ImageInfo, metadata: &mut BTreeMap<String, String>) {
+    metadata.insert("mimeType".to_owned(), image.mime_type.to_owned());
+    if let Some((width, height)) = image.dimensions {
+        metadata.insert("imageWidth".to_owned(), width.to_string());
+        metadata.insert("imageHeight".to_owned(), height.to_string());
+    }
+}
+
+fn classify_resolved_content(
+    content: &[u8],
+    git_binary_patch: bool,
+    changed_lines: usize,
+) -> DiffFileKind {
+    if parse_lfs_pointer(content).is_some() {
+        DiffFileKind::LfsPointer
+    } else if detect_image(content).is_some() {
+        DiffFileKind::Image
+    } else if is_binary(content, git_binary_patch) {
+        DiffFileKind::Binary
+    } else if is_oversized_text(content, changed_lines) {
+        DiffFileKind::OversizedText
+    } else {
+        DiffFileKind::Text
     }
 }
 
@@ -380,6 +434,69 @@ size 10485760\n";
             classification.metadata["lfsOid"],
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
         );
+    }
+
+    #[test]
+    fn classifies_resolved_lfs_content_instead_of_pointer() {
+        let pointer = b"version https://git-lfs.github.com/spec/v1\n\
+oid sha256:abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd\n\
+size 12\n";
+        let mut probe = DiffFileProbe::new("asset.txt", DiffChangeKind::Modified);
+        probe.new_content = Some(pointer);
+        probe.new_display_content = Some(b"actual text\n");
+
+        let classification = classify_diff_file(probe);
+
+        assert_eq!(classification.file_kind, DiffFileKind::Text);
+        assert_eq!(classification.metadata["lfsResolved"], "true");
+        assert_eq!(classification.metadata["newBytes"], "12");
+        assert_eq!(
+            classification.metadata["lfsOid"],
+            "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"
+        );
+    }
+
+    #[test]
+    fn records_lfs_metadata_when_old_side_is_pointer_and_new_side_is_content() {
+        let pointer = b"version https://git-lfs.github.com/spec/v1\n\
+oid sha256:abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd\n\
+size 9\n";
+        let mut probe = DiffFileProbe::new("asset.txt", DiffChangeKind::Modified);
+        probe.old_content = Some(pointer);
+        probe.old_display_content = Some(b"old text\n");
+        probe.new_content = Some(b"new text\n");
+        probe.new_display_content = Some(b"new text\n");
+
+        let classification = classify_diff_file(probe);
+
+        assert_eq!(classification.file_kind, DiffFileKind::Text);
+        assert_eq!(classification.metadata["lfsResolved"], "true");
+        assert_eq!(
+            classification.metadata["lfsOid"],
+            "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"
+        );
+    }
+
+    #[test]
+    fn classifies_resolved_lfs_image_and_keeps_image_metadata() {
+        let pointer = b"version https://git-lfs.github.com/spec/v1\n\
+oid sha256:abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd\n\
+size 24\n";
+        let png = [
+            0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0, 0, 0, 13, b'I', b'H', b'D', b'R',
+            0, 0, 0, 3, 0, 0, 0, 4,
+        ];
+        let mut probe = DiffFileProbe::new("asset.png", DiffChangeKind::Modified);
+        probe.new_content = Some(pointer);
+        probe.new_display_content = Some(&png);
+
+        let classification = classify_diff_file(probe);
+
+        assert_eq!(classification.file_kind, DiffFileKind::Image);
+        assert_eq!(classification.metadata["lfsResolved"], "true");
+        assert_eq!(classification.metadata["mimeType"], "image/png");
+        assert_eq!(classification.metadata["imageWidth"], "3");
+        assert_eq!(classification.metadata["imageHeight"], "4");
     }
 
     #[test]

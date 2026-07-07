@@ -5,18 +5,22 @@ use artistic_git_contracts::{
     CancelStashRestoreRequest, CancelStashRestoreResponse, CheckoutBranchRequest,
     CloneRepositoryRequest, CloneRepositoryResponse, CommitSummary, CreateAutoStashRequest,
     CreateBranchRequest, CreateStashRequest, CreateStashResponse, DeleteBranchRequest,
-    DeleteStashRequest, DeleteStashResponse, DiffChangeKind, FetchRepositoryRequest,
-    FetchRepositoryResponse, FetchStateEvent, GitCommandError, IndexLockInfo, LocalChange,
-    LocalChangesResponse, LogPageRequest, LogPageResponse, LogSearchRequest, OpenRepositoryRequest,
-    OpenRepositoryResponse, OperationId, OperationProgressEvent, ProgressState,
-    RemoteSettingsResponse, RepositoryHeadState, RepositoryHealth, RepositoryMiddleState,
-    RepositoryMiddleStateKind, RepositoryOpenWarning, RepositoryOpenWarningKind,
-    RepositoryPathRequest, RepositoryRemote, RepositoryRemoteMode, RepositorySummary,
-    RestoreStashRequest, RestoreStashResponse, SaveRemoteSettingsRequest, StashDetailsRequest,
-    StashDetailsResponse, StashEntry, StashListResponse,
+    DeleteStashRequest, DeleteStashResponse, DiffAsset, DiffChangeKind, DiffContent, DiffFileKind,
+    DiffPayload, FetchRepositoryRequest, FetchRepositoryResponse, FetchStateEvent, GitCommandError,
+    IndexLockInfo, LfsContentStatus, LocalChange, LocalChangesResponse, LogPageRequest,
+    LogPageResponse, LogSearchRequest, OpenRepositoryRequest, OpenRepositoryResponse, OperationId,
+    OperationProgressEvent, ProgressState, RemoteSettingsResponse, RepositoryHeadState,
+    RepositoryHealth, RepositoryMiddleState, RepositoryMiddleStateKind, RepositoryOpenWarning,
+    RepositoryOpenWarningKind, RepositoryPathRequest, RepositoryRemote, RepositoryRemoteMode,
+    RepositorySummary, RestoreStashRequest, RestoreStashResponse, SaveRemoteSettingsRequest,
+    StashDetailsRequest, StashDetailsResponse, StashEntry, StashListResponse,
 };
 use artistic_git_core::config::{
     AppSettings, ConfigActor, GitUserSettings, ProjectSettings, WindowGeometry,
+};
+use artistic_git_core::diff_engine::{
+    classify_diff_file, detect_image, parse_lfs_pointer, DiffChangeKind as CoreDiffChangeKind,
+    DiffFileKind as CoreDiffFileKind, DiffFileProbe,
 };
 use artistic_git_core::keyring::{InMemoryCredentialStore, KeyringVault};
 use artistic_git_git_runner::{
@@ -649,10 +653,23 @@ pub fn list_local_changes(
             old_path = fields.get(index).cloned();
         }
 
+        let change_kind = local_change_kind(&index_status, &worktree_status);
+        let (payload, diff) = local_change_diff(
+            runner,
+            &root,
+            &path,
+            old_path.as_deref(),
+            change_kind,
+            &index_status,
+            &worktree_status,
+        )?;
+
         changes.push(LocalChange {
-            change_kind: local_change_kind(&index_status, &worktree_status),
+            change_kind,
+            diff,
             path,
             old_path,
+            payload,
             index_status,
             worktree_status,
         });
@@ -1645,6 +1662,553 @@ fn local_change_kind(index_status: &str, worktree_status: &str) -> DiffChangeKin
     }
 }
 
+fn local_change_diff(
+    runner: &GitRunner,
+    root: &Path,
+    path: &str,
+    old_path: Option<&str>,
+    change_kind: DiffChangeKind,
+    index_status: &str,
+    worktree_status: &str,
+) -> AppResult<(DiffPayload, DiffContent)> {
+    let mut contents = local_change_contents(
+        runner,
+        root,
+        path,
+        old_path,
+        change_kind,
+        index_status,
+        worktree_status,
+    )?;
+    let changed_lines = changed_lines_for_local_change(
+        runner,
+        root,
+        path,
+        change_kind,
+        contents.old_display_content.as_deref(),
+        contents.new_display_content.as_deref(),
+    );
+    let mut probe = DiffFileProbe::new(path.to_owned(), core_change_kind(change_kind));
+    probe.old_path = old_path.map(|value| value.to_owned().into());
+    probe.old_content = contents.old_content.as_deref();
+    probe.new_content = contents.new_content.as_deref();
+    probe.old_display_content = contents.old_display_content.as_deref();
+    probe.new_display_content = contents.new_display_content.as_deref();
+    probe.changed_lines = changed_lines;
+
+    let classification = classify_diff_file(probe);
+    let mut metadata = classification.metadata;
+    metadata.insert("indexStatus".to_owned(), index_status.to_owned());
+    metadata.insert("worktreeStatus".to_owned(), worktree_status.to_owned());
+    if contents.lfs_fetch_attempted {
+        metadata.insert("lfsFetchStatus".to_owned(), "fetched".to_owned());
+    } else if contents.lfs_pointer_seen {
+        metadata.insert("lfsFetchStatus".to_owned(), "local".to_owned());
+    }
+
+    if let Some(error) = contents.lfs_error.take() {
+        metadata.insert("lfsFetchStatus".to_owned(), "error".to_owned());
+        metadata.insert("lfsError".to_owned(), error.clone());
+        let payload = DiffPayload {
+            old_path: old_path.map(ToOwned::to_owned),
+            new_path: path.to_owned(),
+            change_kind,
+            file_kind: DiffFileKind::LfsPointer,
+            lfs_lock: None,
+            metadata,
+        };
+        return Ok((
+            payload,
+            DiffContent::LfsPointer {
+                status: LfsContentStatus::Error,
+                message: Some(error),
+            },
+        ));
+    }
+
+    let file_kind = contract_file_kind(classification.file_kind);
+    let payload = DiffPayload {
+        old_path: classification.old_path,
+        new_path: classification.new_path,
+        change_kind,
+        file_kind,
+        lfs_lock: None,
+        metadata,
+    };
+    let diff = diff_content_for_kind(file_kind, &payload, &contents);
+
+    Ok((payload, diff))
+}
+
+#[derive(Debug, Default)]
+struct LocalChangeContents {
+    old_content: Option<Vec<u8>>,
+    new_content: Option<Vec<u8>>,
+    old_display_content: Option<Vec<u8>>,
+    new_display_content: Option<Vec<u8>>,
+    lfs_pointer_seen: bool,
+    lfs_fetch_attempted: bool,
+    lfs_error: Option<String>,
+}
+
+fn local_change_contents(
+    runner: &GitRunner,
+    root: &Path,
+    path: &str,
+    old_path: Option<&str>,
+    change_kind: DiffChangeKind,
+    index_status: &str,
+    worktree_status: &str,
+) -> AppResult<LocalChangeContents> {
+    let old_content = if matches!(change_kind, DiffChangeKind::Added) {
+        None
+    } else {
+        git_blob_at_rev_path(runner, root, "HEAD", old_path.unwrap_or(path)).ok()
+    };
+    let new_content = if matches!(change_kind, DiffChangeKind::Deleted) {
+        None
+    } else {
+        local_change_new_content(runner, root, path, index_status, worktree_status)?
+    };
+
+    let mut contents = LocalChangeContents {
+        old_content,
+        new_content,
+        ..LocalChangeContents::default()
+    };
+
+    if let Some(content) = contents.old_content.as_deref() {
+        match display_content_for_side(runner, root, path, DiffSide::Old, content) {
+            Ok(resolved) => {
+                contents.old_display_content = Some(resolved.content);
+                contents.lfs_pointer_seen |= resolved.lfs_pointer;
+                contents.lfs_fetch_attempted |= resolved.fetch_attempted;
+            }
+            Err(error) => {
+                contents.lfs_pointer_seen = true;
+                contents.lfs_fetch_attempted |= error.fetch_attempted;
+                contents.lfs_error = Some(error.message);
+            }
+        }
+    }
+
+    if let Some(content) = contents.new_content.as_deref() {
+        match display_content_for_side(runner, root, path, DiffSide::New, content) {
+            Ok(resolved) => {
+                contents.new_display_content = Some(resolved.content);
+                contents.lfs_pointer_seen |= resolved.lfs_pointer;
+                contents.lfs_fetch_attempted |= resolved.fetch_attempted;
+            }
+            Err(error) => {
+                contents.lfs_pointer_seen = true;
+                contents.lfs_fetch_attempted |= error.fetch_attempted;
+                contents.lfs_error = Some(error.message);
+            }
+        }
+    }
+
+    Ok(contents)
+}
+
+fn local_change_new_content(
+    runner: &GitRunner,
+    root: &Path,
+    path: &str,
+    index_status: &str,
+    worktree_status: &str,
+) -> AppResult<Option<Vec<u8>>> {
+    if index_status == "D" || worktree_status == "D" {
+        return Ok(None);
+    }
+
+    let worktree_path = repository_relative_path(root, path, "listLocalChanges")?;
+    if let Ok(bytes) = fs::read(&worktree_path) {
+        return Ok(Some(bytes));
+    }
+
+    if index_status != " " && index_status != "?" {
+        return Ok(git_blob_at_rev_path(runner, root, "", path).ok());
+    }
+
+    Ok(None)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum DiffSide {
+    Old,
+    New,
+}
+
+impl DiffSide {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Old => "old",
+            Self::New => "new",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct DisplayContent {
+    content: Vec<u8>,
+    lfs_pointer: bool,
+    fetch_attempted: bool,
+}
+
+#[derive(Debug)]
+struct LfsDisplayError {
+    message: String,
+    fetch_attempted: bool,
+}
+
+fn display_content_for_side(
+    runner: &GitRunner,
+    root: &Path,
+    path: &str,
+    side: DiffSide,
+    content: &[u8],
+) -> Result<DisplayContent, LfsDisplayError> {
+    let Some(pointer) = parse_lfs_pointer(content) else {
+        return Ok(DisplayContent {
+            content: content.to_vec(),
+            lfs_pointer: false,
+            fetch_attempted: false,
+        });
+    };
+
+    match read_local_lfs_object(runner, root, &pointer.oid, Some(pointer.size)) {
+        Ok(content) => {
+            return Ok(DisplayContent {
+                content,
+                lfs_pointer: true,
+                fetch_attempted: false,
+            });
+        }
+        Err(_) => {}
+    }
+
+    if let Err(error) = fetch_lfs_object(runner, root, &pointer.oid, "listLocalChanges") {
+        return Err(LfsDisplayError {
+            message: format!(
+                "Git LFS {} content for {} is not available locally and fetch failed: {}",
+                side.label(),
+                path,
+                error.summary
+            ),
+            fetch_attempted: true,
+        });
+    }
+
+    read_local_lfs_object(runner, root, &pointer.oid, Some(pointer.size))
+        .map(|content| DisplayContent {
+            content,
+            lfs_pointer: true,
+            fetch_attempted: true,
+        })
+        .map_err(|error| LfsDisplayError {
+            message: format!(
+                "Git LFS {} content for {} is still unavailable after fetch: {}",
+                side.label(),
+                path,
+                error.summary
+            ),
+            fetch_attempted: true,
+        })
+}
+
+fn diff_content_for_kind(
+    file_kind: DiffFileKind,
+    payload: &DiffPayload,
+    contents: &LocalChangeContents,
+) -> DiffContent {
+    if payload.change_kind == DiffChangeKind::Renamed
+        && payload.metadata.get("contentChanged").map(String::as_str) == Some("false")
+    {
+        return DiffContent::Moved { message: None };
+    }
+
+    match file_kind {
+        DiffFileKind::Text => DiffContent::Text {
+            old_text: contents
+                .old_display_content
+                .as_deref()
+                .map(bytes_to_lossy_string),
+            new_text: contents
+                .new_display_content
+                .as_deref()
+                .map(bytes_to_lossy_string),
+            language: None,
+        },
+        DiffFileKind::Image => DiffContent::Image {
+            old_image: contents
+                .old_display_content
+                .as_deref()
+                .and_then(|content| diff_asset(payload.old_path.as_deref(), content)),
+            new_image: contents
+                .new_display_content
+                .as_deref()
+                .and_then(|content| diff_asset(Some(payload.new_path.as_str()), content)),
+        },
+        DiffFileKind::OversizedText => DiffContent::OversizedText { message: None },
+        DiffFileKind::LfsPointer => DiffContent::LfsPointer {
+            status: LfsContentStatus::Missing,
+            message: Some("Git LFS content is not available locally yet".to_owned()),
+        },
+        DiffFileKind::Binary => DiffContent::Binary { message: None },
+    }
+}
+
+fn git_blob_at_rev_path(
+    runner: &GitRunner,
+    root: &Path,
+    rev: &str,
+    path: &str,
+) -> AppResult<Vec<u8>> {
+    let spec = if rev.is_empty() {
+        format!(":{path}")
+    } else {
+        format!("{rev}:{path}")
+    };
+    git_output_bytes(
+        runner,
+        Some(root),
+        ["show".to_owned(), spec],
+        "listLocalChanges",
+    )
+}
+
+fn read_local_lfs_object(
+    runner: &GitRunner,
+    root: &Path,
+    oid: &str,
+    expected_size: Option<u64>,
+) -> AppResult<Vec<u8>> {
+    let path = local_lfs_object_path(runner, root, oid, "listLocalChanges")?;
+    let bytes = fs::read(&path).map_err(|source| {
+        logged(AppError::expected(
+            format!("Git LFS object is not available locally: {source}"),
+            "listLocalChanges",
+        ))
+    })?;
+    if let Some(expected_size) = expected_size {
+        if bytes.len() as u64 != expected_size {
+            return Err(logged(AppError::expected(
+                "local Git LFS object size does not match pointer metadata",
+                "listLocalChanges",
+            )));
+        }
+    }
+    Ok(bytes)
+}
+
+fn fetch_lfs_object(
+    runner: &GitRunner,
+    root: &Path,
+    oid: &str,
+    operation_name: &str,
+) -> AppResult<()> {
+    if !is_sha256_oid(oid) {
+        return Err(logged(AppError::expected(
+            "invalid Git LFS object id",
+            operation_name,
+        )));
+    }
+
+    let mut planned_args = Vec::new();
+    planned_args.push(OsString::from("-C"));
+    planned_args.push(root.as_os_str().to_owned());
+    planned_args.extend([
+        OsString::from("fetch"),
+        OsString::from("--object-id"),
+        OsString::from("origin"),
+        OsString::from(oid),
+    ]);
+    let plan = runner.git_lfs_command_plan(planned_args);
+    command_to_output(plan.to_command(), &plan, operation_name).map(|_| ())
+}
+
+fn local_lfs_object_path(
+    runner: &GitRunner,
+    root: &Path,
+    oid: &str,
+    operation_name: &str,
+) -> AppResult<PathBuf> {
+    if !is_sha256_oid(oid) {
+        return Err(logged(AppError::expected(
+            "invalid Git LFS object id",
+            operation_name,
+        )));
+    }
+
+    let common_dir = git_stdout(
+        runner,
+        Some(root),
+        ["rev-parse", "--git-common-dir"],
+        operation_name,
+    )?;
+    let common_dir = common_dir.trim();
+    let common_dir = Path::new(common_dir);
+    let common_dir = if common_dir.is_absolute() {
+        common_dir.to_path_buf()
+    } else {
+        root.join(common_dir)
+    };
+
+    Ok(common_dir
+        .join("lfs")
+        .join("objects")
+        .join(&oid[0..2])
+        .join(&oid[2..4])
+        .join(oid))
+}
+
+fn is_sha256_oid(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn repository_relative_path(root: &Path, path: &str, operation_name: &str) -> AppResult<PathBuf> {
+    let candidate = Path::new(path);
+    if candidate.is_absolute() {
+        return Err(logged(AppError::expected(
+            "repository path must be relative",
+            operation_name,
+        )));
+    }
+
+    let mut normalized = PathBuf::new();
+    for component in candidate.components() {
+        match component {
+            Component::Normal(part) => normalized.push(part),
+            Component::CurDir => {}
+            Component::ParentDir | Component::Prefix(_) | Component::RootDir => {
+                return Err(logged(AppError::expected(
+                    "repository path must stay inside the repository",
+                    operation_name,
+                )));
+            }
+        }
+    }
+
+    Ok(root.join(normalized))
+}
+
+fn diff_asset(path: Option<&str>, content: &[u8]) -> Option<DiffAsset> {
+    let image = detect_image(content)?;
+    let (width, height) = image.dimensions.unwrap_or((0, 0));
+    Some(DiffAsset {
+        alt: path.map(ToOwned::to_owned),
+        height: (height > 0).then_some(height),
+        mime_type: Some(image.mime_type.to_owned()),
+        size_bytes: Some(content.len().min(u32::MAX as usize) as u32),
+        src: format!("data:{};base64,{}", image.mime_type, base64_encode(content)),
+        width: (width > 0).then_some(width),
+    })
+}
+
+fn bytes_to_lossy_string(content: &[u8]) -> String {
+    String::from_utf8_lossy(content).into_owned()
+}
+
+fn changed_lines_for_local_change(
+    runner: &GitRunner,
+    root: &Path,
+    path: &str,
+    change_kind: DiffChangeKind,
+    old_content: Option<&[u8]>,
+    new_content: Option<&[u8]>,
+) -> usize {
+    git_changed_lines(runner, root, path)
+        .unwrap_or_else(|| changed_lines_for_content(change_kind, old_content, new_content))
+}
+
+fn git_changed_lines(runner: &GitRunner, root: &Path, path: &str) -> Option<usize> {
+    let output = git_stdout(
+        runner,
+        Some(root),
+        ["diff", "--numstat", "HEAD", "--", path],
+        "listLocalChanges",
+    )
+    .ok()?;
+    let line = output.lines().find(|line| !line.trim().is_empty())?;
+    let mut fields = line.split_whitespace();
+    let additions = fields.next()?.parse::<usize>().ok()?;
+    let deletions = fields.next()?.parse::<usize>().ok()?;
+    Some(additions + deletions)
+}
+
+fn changed_lines_for_content(
+    change_kind: DiffChangeKind,
+    old_content: Option<&[u8]>,
+    new_content: Option<&[u8]>,
+) -> usize {
+    if old_content == new_content {
+        return 0;
+    }
+
+    match change_kind {
+        DiffChangeKind::Added => line_count(new_content.unwrap_or_default()),
+        DiffChangeKind::Deleted => line_count(old_content.unwrap_or_default()),
+        DiffChangeKind::Modified | DiffChangeKind::Renamed | DiffChangeKind::Copied => {
+            line_count(old_content.unwrap_or_default())
+                + line_count(new_content.unwrap_or_default())
+        }
+    }
+}
+
+fn line_count(content: &[u8]) -> usize {
+    if content.is_empty() {
+        0
+    } else {
+        content.iter().filter(|byte| **byte == b'\n').count() + 1
+    }
+}
+
+fn base64_encode(content: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut encoded = String::with_capacity(content.len().div_ceil(3) * 4);
+
+    for chunk in content.chunks(3) {
+        let first = chunk[0];
+        let second = *chunk.get(1).unwrap_or(&0);
+        let third = *chunk.get(2).unwrap_or(&0);
+
+        encoded.push(TABLE[(first >> 2) as usize] as char);
+        encoded.push(TABLE[(((first & 0b0000_0011) << 4) | (second >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            encoded.push(TABLE[(((second & 0b0000_1111) << 2) | (third >> 6)) as usize] as char);
+        } else {
+            encoded.push('=');
+        }
+        if chunk.len() > 2 {
+            encoded.push(TABLE[(third & 0b0011_1111) as usize] as char);
+        } else {
+            encoded.push('=');
+        }
+    }
+
+    encoded
+}
+
+fn core_change_kind(kind: DiffChangeKind) -> CoreDiffChangeKind {
+    match kind {
+        DiffChangeKind::Added => CoreDiffChangeKind::Added,
+        DiffChangeKind::Modified => CoreDiffChangeKind::Modified,
+        DiffChangeKind::Deleted => CoreDiffChangeKind::Deleted,
+        DiffChangeKind::Renamed => CoreDiffChangeKind::Renamed,
+        DiffChangeKind::Copied => CoreDiffChangeKind::Copied,
+    }
+}
+
+fn contract_file_kind(kind: CoreDiffFileKind) -> DiffFileKind {
+    match kind {
+        CoreDiffFileKind::Text => DiffFileKind::Text,
+        CoreDiffFileKind::Binary => DiffFileKind::Binary,
+        CoreDiffFileKind::Image => DiffFileKind::Image,
+        CoreDiffFileKind::LfsPointer => DiffFileKind::LfsPointer,
+        CoreDiffFileKind::OversizedText => DiffFileKind::OversizedText,
+    }
+}
+
 fn log_limit_and_skip(limit: Option<u16>, after: Option<&str>) -> (usize, usize) {
     let limit = limit
         .map(usize::from)
@@ -1984,7 +2548,10 @@ struct CloneTarget {
 mod tests {
     use super::*;
     use artistic_git_git_runner::GitDistribution;
-    use artistic_git_test_support::{require_git_dist, GitDistError, TestTempDir};
+    use artistic_git_test_support::{
+        git_dist_manifest_fixture, require_git_dist, write_executable_script,
+        write_git_dist_manifest, GitDistError, TestTempDir,
+    };
     use std::io::Write;
 
     #[test]
@@ -2356,6 +2923,110 @@ mod tests {
     }
 
     #[test]
+    fn local_changes_render_available_lfs_content_instead_of_pointer() {
+        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
+            return;
+        };
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        repo.write("asset.bin", "base\n");
+        repo.git(["add", "asset.bin"]);
+        repo.git(["commit", "-m", "add asset"]);
+
+        let oid = "f3c54363167755d57ec287a7681a6962346c299015b57786a3e8b5b6466152df";
+        let pointer = format!(
+            "version https://git-lfs.github.com/spec/v1\n\
+oid sha256:{oid}\n\
+size 16\n"
+        );
+        repo.write("asset.bin", &pointer);
+        repo.write_lfs_object(oid, b"actual lfs text\n");
+
+        let changes = list_local_changes(
+            &runner,
+            RepositoryPathRequest {
+                repository_path: display_path(&repo.path),
+            },
+        )
+        .expect("local changes");
+        let change = changes
+            .changes
+            .iter()
+            .find(|change| change.path == "asset.bin")
+            .expect("asset change");
+
+        assert_eq!(change.payload.file_kind, DiffFileKind::Text);
+        assert_eq!(change.payload.metadata["lfsResolved"], "true");
+        assert_eq!(change.payload.metadata["lfsFetchStatus"], "local");
+        match &change.diff {
+            DiffContent::Text {
+                old_text, new_text, ..
+            } => {
+                assert_eq!(old_text.as_deref(), Some("base\n"));
+                assert_eq!(new_text.as_deref(), Some("actual lfs text\n"));
+            }
+            other => panic!("expected text diff, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fetch_lfs_object_uses_embedded_lfs_runner_with_object_id() {
+        let temp = TestTempDir::new("ag-local-change-lfs-fetch").expect("temp repo");
+        let dist_root = temp.path().join("dist");
+        let manifest = git_dist_manifest_fixture();
+        write_git_dist_manifest(&dist_root, &manifest).expect("write manifest");
+        write_executable_script(
+            &dist_root.join(&manifest.paths.git_executable),
+            "#!/bin/sh\nexit 0\n",
+            "@echo off\r\nexit /b 0\r\n",
+        )
+        .expect("write git");
+        let marker = temp.path().join("lfs-args.txt");
+        let unix_script = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nexit 0\n",
+            marker.display()
+        );
+        let windows_script = format!(
+            "@echo off\r\necho %* > \"{}\"\r\nexit /b 0\r\n",
+            marker.display()
+        );
+        write_executable_script(
+            &dist_root.join(&manifest.paths.git_lfs_executable),
+            &unix_script,
+            &windows_script,
+        )
+        .expect("write git-lfs");
+        write_executable_script(
+            &dist_root.join(&manifest.paths.credential_helper),
+            "#!/bin/sh\nexit 0\n",
+            "@echo off\r\nexit /b 0\r\n",
+        )
+        .expect("write helper");
+        write_executable_script(
+            &dist_root.join(&manifest.paths.ssh_askpass),
+            "#!/bin/sh\nexit 0\n",
+            "@echo off\r\nexit /b 0\r\n",
+        )
+        .expect("write askpass");
+        let distribution =
+            GitDistribution::from_manifest(dist_root, manifest).expect("load fake distribution");
+        let runner = GitRunner::from_distribution(distribution, temp.path().join("home"));
+        let repo = temp.path().join("repo");
+        fs::create_dir_all(&repo).expect("create repo");
+        let oid = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+        fetch_lfs_object(&runner, &repo, oid, "testFetchLfs").expect("fetch lfs object");
+
+        let args = fs::read_to_string(marker).expect("read lfs args");
+        assert!(args.contains("-C"));
+        assert!(args.contains(&display_path(&repo)));
+        assert!(args.contains("fetch"));
+        assert!(args.contains("--object-id"));
+        assert!(args.contains("origin"));
+        assert!(args.contains(oid));
+    }
+
+    #[test]
     fn rejects_linked_worktree() {
         let Some((runner, _dist_temp)) = real_runner_or_skip() else {
             return;
@@ -2535,7 +3206,12 @@ mod tests {
     fn real_runner_or_skip() -> Option<(GitRunner, TestTempDir)> {
         let dist = match require_git_dist() {
             Ok(dist) => dist,
-            Err(GitDistError::MissingEnvironment) => return None,
+            Err(GitDistError::MissingEnvironment) => {
+                eprintln!(
+                    "skipping real Git/LFS repository test: ARTISTIC_GIT_DIST_DIR is not set"
+                );
+                return None;
+            }
             Err(error) => panic!("invalid embedded git distribution: {error}"),
         };
         let distribution = GitDistribution::from_manifest(dist.root, dist.manifest)
@@ -2593,6 +3269,21 @@ mod tests {
             }
             let mut file = fs::File::create(path).expect("create file");
             file.write_all(content.as_bytes()).expect("write file");
+        }
+
+        fn write_lfs_object(&self, oid: &str, contents: &[u8]) {
+            let path = self
+                .path
+                .join(".git")
+                .join("lfs")
+                .join("objects")
+                .join(&oid[0..2])
+                .join(&oid[2..4])
+                .join(oid);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).expect("create lfs object dir");
+            }
+            fs::write(path, contents).expect("write lfs object");
         }
     }
 }

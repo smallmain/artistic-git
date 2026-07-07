@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppProviders } from "@/AppProviders";
 import { createI18n } from "@/i18n/i18n";
 import { createAppQueryClient } from "@/lib/query/client";
+import type { DiffPayload, LocalChange } from "@/lib/ipc/generated";
 
 import { RepositoryShell } from "./RepositoryShell";
 
@@ -59,6 +60,60 @@ function renderWithProviders(ui: ReactElement) {
       {ui}
     </AppProviders>,
   );
+}
+
+function createLocalChange({
+  changeKind,
+  fileKind,
+  indexStatus,
+  newPath,
+  newText,
+  oldPath = null,
+  oldText,
+  worktreeStatus,
+}: {
+  changeKind: DiffPayload["changeKind"];
+  fileKind: DiffPayload["fileKind"];
+  indexStatus: string;
+  newPath: string;
+  newText?: string;
+  oldPath?: string | null;
+  oldText?: string;
+  worktreeStatus: string;
+}): LocalChange {
+  const payload: DiffPayload = {
+    changeKind,
+    fileKind,
+    lfsLock: null,
+    metadata: {
+      indexStatus,
+      worktreeStatus,
+    },
+    newPath,
+    oldPath,
+  };
+
+  return {
+    changeKind,
+    diff:
+      fileKind === "text"
+        ? {
+            kind: "text",
+            language: null,
+            newText: newText ?? "",
+            oldText: oldText ?? "",
+          }
+        : fileKind === "image"
+          ? { kind: "image", newImage: null, oldImage: null }
+          : fileKind === "lfsPointer"
+            ? { kind: "lfsPointer", message: null, status: "missing" }
+            : { kind: fileKind, message: null },
+    indexStatus,
+    oldPath,
+    path: newPath,
+    payload,
+    worktreeStatus,
+  };
 }
 
 beforeEach(() => {
@@ -116,20 +171,22 @@ beforeEach(() => {
   });
   commandMocks.listLocalChanges.mockResolvedValue({
     changes: [
-      {
+      createLocalChange({
         changeKind: "modified",
+        fileKind: "text",
         indexStatus: "M",
-        oldPath: null,
-        path: "src/app.ts",
+        newPath: "src/app.ts",
+        newText: "console.log('new')\n",
+        oldText: "console.log('old')\n",
         worktreeStatus: "M",
-      },
-      {
+      }),
+      createLocalChange({
         changeKind: "added",
+        fileKind: "image",
         indexStatus: "?",
-        oldPath: null,
-        path: "assets/texture.png",
+        newPath: "assets/texture.png",
         worktreeStatus: "?",
-      },
+      }),
     ],
   });
   commandMocks.listStashes.mockResolvedValue({ stashes: [] });

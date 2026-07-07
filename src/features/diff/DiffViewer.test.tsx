@@ -165,6 +165,45 @@ describe("DiffViewer", () => {
     expect(screen.getByText("Zoom")).toBeInTheDocument();
     expect(screen.getByText(/10 x 20/)).toBeInTheDocument();
   });
+
+  it("renders explicit LFS loading and error states", () => {
+    const { rerender } = renderWithProviders(
+      <DiffViewer
+        content={{ kind: "lfsPointer", message: null, status: "loading" }}
+        payload={createPayload({ fileKind: "lfsPointer" })}
+        source="localChanges"
+      />,
+    );
+
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Loading Git LFS content",
+    );
+    expect(screen.getByText("Loading")).toBeInTheDocument();
+
+    rerender(
+      <AppProviders
+        i18n={createI18n("en")}
+        initialLanguagePreference="en"
+        initialThemePreference="light"
+        queryClient={createAppQueryClient()}
+      >
+        <DiffViewer
+          content={{
+            kind: "lfsPointer",
+            message: "Git LFS old content fetch failed",
+            status: "error",
+          }}
+          payload={createPayload({ fileKind: "lfsPointer" })}
+          source="localChanges"
+        />
+      </AppProviders>,
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Git LFS old content fetch failed",
+    );
+    expect(screen.getByText("Fetch failed")).toBeInTheDocument();
+  });
 });
 
 function createPayload(overrides: Partial<DiffPayload> = {}): DiffPayload {

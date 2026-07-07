@@ -4,6 +4,7 @@ import type {
   DiffChangeKind,
   DiffFileKind,
   DiffPayload,
+  LfsContentStatus,
   LfsLockStatus,
 } from "@/lib/ipc/generated";
 
@@ -13,30 +14,31 @@ export type DiffViewerSource =
 export type TextDiffMode = "split" | "inline";
 
 export interface DiffAsset {
-  alt?: string;
-  height?: number;
-  mimeType?: string;
-  sizeBytes?: number;
+  alt?: string | null;
+  height?: number | null;
+  mimeType?: string | null;
+  sizeBytes?: number | null;
   src: string;
-  width?: number;
+  width?: number | null;
 }
 
 export interface TextDiffContent {
   kind: "text";
-  language?: string;
-  newText?: string;
-  oldText?: string;
+  language?: string | null;
+  newText?: string | null;
+  oldText?: string | null;
 }
 
 export interface ImageDiffContent {
   kind: "image";
-  newImage?: DiffAsset;
-  oldImage?: DiffAsset;
+  newImage?: DiffAsset | null;
+  oldImage?: DiffAsset | null;
 }
 
 export interface FileCardDiffContent {
   kind: "binary" | "oversizedText" | "lfsPointer" | "moved";
-  message?: string;
+  message?: string | null;
+  status?: LfsContentStatus;
 }
 
 export type DiffViewerContent =

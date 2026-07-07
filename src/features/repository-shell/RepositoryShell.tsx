@@ -1351,19 +1351,16 @@ function mapLocalChangeToItem(change: LocalChange): LocalChangeItem {
   const oldPath = change.oldPath;
 
   return {
+    diff: change.diff,
     id: `${path}:${oldPath ?? ""}:${change.indexStatus}:${change.worktreeStatus}`,
-    payload: {
-      changeKind: change.changeKind,
-      fileKind: "text",
-      lfsLock: null,
-      metadata: {
-        indexStatus: change.indexStatus,
-        worktreeStatus: change.worktreeStatus,
-      },
-      newPath: path,
+    payload: change.payload,
+    searchableText: [
+      path,
       oldPath,
-    },
-    searchableText: [path, oldPath, change.indexStatus, change.worktreeStatus]
+      change.indexStatus,
+      change.worktreeStatus,
+      change.payload.fileKind,
+    ]
       .filter(Boolean)
       .join(" "),
   };
