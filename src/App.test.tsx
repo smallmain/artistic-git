@@ -82,9 +82,7 @@ describe("App", () => {
     expect(
       screen.getByRole("button", { name: "Open Project" }),
     ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Clone Project" }),
-    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Clone Project" })).toBeEnabled();
 
     fireEvent.click(screen.getByText("Moved Project").closest("button")!);
 

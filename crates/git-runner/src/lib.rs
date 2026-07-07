@@ -295,6 +295,10 @@ impl<'a> GitCommandBuilder<'a> {
         self.config("credential.helper", helper)
     }
 
+    pub fn enable_credential_path_matching(self) -> Self {
+        self.config("credential.useHttpPath", "true")
+    }
+
     pub fn default_credential_helper(self) -> Self {
         let helper = self
             .runner
@@ -303,6 +307,7 @@ impl<'a> GitCommandBuilder<'a> {
             .clone()
             .into_os_string();
         self.credential_helper(helper)
+            .enable_credential_path_matching()
     }
 
     pub fn ssh_command(self, command: impl Into<OsString>) -> Self {
@@ -554,6 +559,7 @@ impl CommandEnvironmentPlan {
             "SSH_ASKPASS".to_owned(),
             distribution.ssh_askpass.clone().into_os_string(),
         );
+        variables.insert("SSH_ASKPASS_REQUIRE".to_owned(), OsString::from("force"));
 
         #[cfg(windows)]
         {
@@ -1128,6 +1134,10 @@ mod tests {
         assert!(environment.removes_variable("GIT_EXEC_PATH"));
         assert!(environment.variable("GIT_ASKPASS").is_some());
         assert!(environment.variable("SSH_ASKPASS").is_some());
+        assert_eq!(
+            environment.variable("SSH_ASKPASS_REQUIRE"),
+            Some(OsStr::new("force"))
+        );
 
         let command_plan = runner.git_command_plan(["status"]);
         assert_eq!(
@@ -1162,6 +1172,8 @@ mod tests {
                     "credential.helper",
                     runner.distribution().credential_helper.as_os_str()
                 ),
+                OsString::from("-c"),
+                OsString::from("credential.useHttpPath=true"),
                 OsString::from("-c"),
                 OsString::from("core.sshCommand=/usr/bin/ssh -o StrictHostKeyChecking=accept-new"),
                 OsString::from("-c"),

@@ -16,8 +16,8 @@ pub struct HttpsCredentialKey {
 impl HttpsCredentialKey {
     pub fn shared_host(protocol: impl Into<String>, host: impl Into<String>) -> Self {
         Self {
-            protocol: protocol.into(),
-            host: host.into(),
+            protocol: normalize_protocol(protocol.into()),
+            host: normalize_host(host.into()),
             path: None,
         }
     }
@@ -28,9 +28,9 @@ impl HttpsCredentialKey {
         path: impl Into<String>,
     ) -> Self {
         Self {
-            protocol: protocol.into(),
-            host: host.into(),
-            path: Some(path.into()),
+            protocol: normalize_protocol(protocol.into()),
+            host: normalize_host(host.into()),
+            path: normalize_path(Some(path.into())),
         }
     }
 
@@ -39,6 +39,22 @@ impl HttpsCredentialKey {
             Some(path) => format!("https:{}:{}:{}", self.protocol, self.host, path),
             None => format!("https:{}:{}", self.protocol, self.host),
         }
+    }
+
+    pub fn source(&self) -> HttpsCredentialSource {
+        match self.path {
+            Some(_) => HttpsCredentialSource::PathOverride,
+            None => HttpsCredentialSource::HostShared,
+        }
+    }
+
+    pub fn candidates(protocol: &str, host: &str, path: Option<&str>) -> Vec<Self> {
+        let mut candidates = Vec::with_capacity(2);
+        if let Some(path) = normalize_path(path.map(str::to_owned)) {
+            candidates.push(Self::path_override(protocol, host, path));
+        }
+        candidates.push(Self::shared_host(protocol, host));
+        candidates
     }
 }
 
@@ -55,6 +71,25 @@ impl HttpsCredential {
             token: token.into(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HttpsCredentialSource {
+    HostShared,
+    PathOverride,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpsCredentialLookup {
+    pub key: HttpsCredentialKey,
+    pub credential: HttpsCredential,
+    pub source: HttpsCredentialSource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpsCredentialRecord {
+    pub key: HttpsCredentialKey,
+    pub username: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -81,6 +116,7 @@ pub trait CredentialStore: Send + Sync {
         credential: HttpsCredential,
     ) -> KeyringResult<()>;
     fn delete_https_credential(&self, key: &HttpsCredentialKey) -> KeyringResult<()>;
+    fn list_https_credentials(&self) -> KeyringResult<Vec<HttpsCredentialRecord>>;
     fn get_ssh_passphrase(&self, key: &SshPassphraseKey) -> KeyringResult<Option<String>>;
     fn set_ssh_passphrase(&self, key: &SshPassphraseKey, passphrase: String) -> KeyringResult<()>;
     fn delete_ssh_passphrase(&self, key: &SshPassphraseKey) -> KeyringResult<()>;
@@ -103,6 +139,25 @@ impl KeyringVault {
         self.store.get_https_credential(key)
     }
 
+    pub fn find_https_credential(
+        &self,
+        protocol: &str,
+        host: &str,
+        path: Option<&str>,
+    ) -> KeyringResult<Option<HttpsCredentialLookup>> {
+        for key in HttpsCredentialKey::candidates(protocol, host, path) {
+            if let Some(credential) = self.store.get_https_credential(&key)? {
+                return Ok(Some(HttpsCredentialLookup {
+                    source: key.source(),
+                    key,
+                    credential,
+                }));
+            }
+        }
+
+        Ok(None)
+    }
+
     pub fn set_https_credential(
         &self,
         key: &HttpsCredentialKey,
@@ -113,6 +168,10 @@ impl KeyringVault {
 
     pub fn delete_https_credential(&self, key: &HttpsCredentialKey) -> KeyringResult<()> {
         self.store.delete_https_credential(key)
+    }
+
+    pub fn list_https_credentials(&self) -> KeyringResult<Vec<HttpsCredentialRecord>> {
+        self.store.list_https_credentials()
     }
 
     pub fn get_ssh_passphrase(&self, key: &SshPassphraseKey) -> KeyringResult<Option<String>> {
@@ -171,6 +230,19 @@ impl CredentialStore for InMemoryCredentialStore {
         Ok(())
     }
 
+    fn list_https_credentials(&self) -> KeyringResult<Vec<HttpsCredentialRecord>> {
+        Ok(self
+            .https
+            .lock()
+            .map_err(|_| KeyringError::LockPoisoned)?
+            .iter()
+            .map(|(key, credential)| HttpsCredentialRecord {
+                key: key.clone(),
+                username: credential.username.clone(),
+            })
+            .collect())
+    }
+
     fn get_ssh_passphrase(&self, key: &SshPassphraseKey) -> KeyringResult<Option<String>> {
         Ok(self
             .ssh
@@ -203,6 +275,29 @@ pub enum KeyringError {
     LockPoisoned,
     #[error("system keyring support is not wired yet")]
     Unavailable,
+}
+
+fn normalize_protocol(value: String) -> String {
+    value.trim().to_ascii_lowercase()
+}
+
+fn normalize_host(value: String) -> String {
+    value.trim().trim_end_matches('/').to_ascii_lowercase()
+}
+
+fn normalize_path(value: Option<String>) -> Option<String> {
+    value.and_then(|path| {
+        let path = path
+            .trim()
+            .trim_start_matches('/')
+            .trim_end_matches('/')
+            .to_owned();
+        if path.is_empty() {
+            None
+        } else {
+            Some(path)
+        }
+    })
 }
 
 #[cfg(test)]
@@ -240,6 +335,54 @@ mod tests {
             "path-token"
         );
         assert_ne!(host_key.service_name(), path_key.service_name());
+    }
+
+    #[test]
+    fn https_lookup_prefers_path_override_then_host_shared() {
+        let vault = KeyringVault::new(Arc::new(InMemoryCredentialStore::default()));
+        let host_key = HttpsCredentialKey::shared_host("HTTPS", "GitHub.com/");
+        let path_key =
+            HttpsCredentialKey::path_override("https", "github.com", "/smallmain/artistic-git/");
+
+        vault
+            .set_https_credential(&host_key, HttpsCredential::new("host-user", "host-token"))
+            .expect("set host credential");
+
+        let host_lookup = vault
+            .find_https_credential("https", "github.com", Some("smallmain/artistic-git"))
+            .expect("lookup host")
+            .expect("host credential");
+        assert_eq!(host_lookup.source, HttpsCredentialSource::HostShared);
+        assert_eq!(host_lookup.credential.token, "host-token");
+
+        vault
+            .set_https_credential(&path_key, HttpsCredential::new("path-user", "path-token"))
+            .expect("set path credential");
+
+        let path_lookup = vault
+            .find_https_credential("https", "github.com", Some("smallmain/artistic-git"))
+            .expect("lookup path")
+            .expect("path credential");
+        assert_eq!(path_lookup.source, HttpsCredentialSource::PathOverride);
+        assert_eq!(path_lookup.credential.token, "path-token");
+    }
+
+    #[test]
+    fn https_credential_listing_omits_tokens() {
+        let vault = KeyringVault::new(Arc::new(InMemoryCredentialStore::default()));
+        let host_key = HttpsCredentialKey::shared_host("https", "example.com");
+
+        vault
+            .set_https_credential(&host_key, HttpsCredential::new("alice", "secret-token"))
+            .expect("set host credential");
+
+        assert_eq!(
+            vault.list_https_credentials().expect("list credentials"),
+            vec![HttpsCredentialRecord {
+                key: host_key,
+                username: "alice".to_owned(),
+            }]
+        );
     }
 
     #[test]

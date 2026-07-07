@@ -12,6 +12,8 @@ import type {
   CancelStashRestoreRequest,
   CancelStashRestoreResponse,
   CheckoutBranchRequest,
+  CloneRepositoryRequest,
+  CloneRepositoryResponse,
   CommitRequest,
   CommitResponse,
   ConflictCancelRequest,
@@ -74,6 +76,7 @@ export interface AppCommandArgs {
   health: undefined;
   open_log_dir: undefined;
   open_repository: { request: OpenRepositoryRequest };
+  clone_repository: { request: CloneRepositoryRequest };
   repository_summary: { request: RepositoryPathRequest };
   fetch_repository: { request: FetchRepositoryRequest };
   load_remote_settings: { request: RepositoryPathRequest };
@@ -119,6 +122,7 @@ export interface AppCommandResponses {
   health: HealthResponse;
   open_log_dir: OpenLogDirResponse;
   open_repository: OpenRepositoryResponse;
+  clone_repository: CloneRepositoryResponse;
   repository_summary: RepositorySummary;
   fetch_repository: FetchRepositoryResponse;
   load_remote_settings: RemoteSettingsResponse;
@@ -197,6 +201,12 @@ export function openRepository(
   request: OpenRepositoryRequest,
 ): Promise<OpenRepositoryResponse> {
   return invokeAppCommand("open_repository", { request });
+}
+
+export function cloneRepository(
+  request: CloneRepositoryRequest,
+): Promise<CloneRepositoryResponse> {
+  return invokeAppCommand("clone_repository", { request });
 }
 
 export function repositorySummary(

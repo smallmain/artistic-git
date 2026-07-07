@@ -2,25 +2,25 @@ use artistic_git_contracts::{
     AppError, AppErrorCategory, AppResult, BranchExistence, BranchListResponse,
     BranchNameValidationRequest, BranchNameValidationResponse, BranchOperationResponse,
     BranchSummary, CancelStashRestoreRequest, CancelStashRestoreResponse, CheckoutBranchRequest,
-    CommitSummary, CreateAutoStashRequest, CreateBranchRequest, CreateStashRequest,
-    CreateStashResponse, DeleteBranchRequest, DeleteStashRequest, DeleteStashResponse,
-    DiffChangeKind, FetchRepositoryRequest, FetchRepositoryResponse, FetchStateEvent,
-    GitCommandError, IndexLockInfo, LocalChange, LocalChangesResponse, LogPageRequest,
-    LogPageResponse, LogSearchRequest, OpenRepositoryRequest, OpenRepositoryResponse,
-    RemoteSettingsResponse, RepositoryHeadState, RepositoryHealth, RepositoryMiddleState,
-    RepositoryMiddleStateKind, RepositoryOpenWarning, RepositoryOpenWarningKind,
-    RepositoryPathRequest, RepositoryRemote, RepositoryRemoteMode, RepositorySummary,
-    RestoreStashRequest, RestoreStashResponse, SaveRemoteSettingsRequest, StashDetailsRequest,
-    StashDetailsResponse, StashEntry, StashListResponse,
+    CloneRepositoryRequest, CloneRepositoryResponse, CommitSummary, CreateAutoStashRequest,
+    CreateBranchRequest, CreateStashRequest, CreateStashResponse, DeleteBranchRequest,
+    DeleteStashRequest, DeleteStashResponse, DiffChangeKind, FetchRepositoryRequest,
+    FetchRepositoryResponse, FetchStateEvent, GitCommandError, IndexLockInfo, LocalChange,
+    LocalChangesResponse, LogPageRequest, LogPageResponse, LogSearchRequest, OpenRepositoryRequest,
+    OpenRepositoryResponse, RemoteSettingsResponse, RepositoryHeadState, RepositoryHealth,
+    RepositoryMiddleState, RepositoryMiddleStateKind, RepositoryOpenWarning,
+    RepositoryOpenWarningKind, RepositoryPathRequest, RepositoryRemote, RepositoryRemoteMode,
+    RepositorySummary, RestoreStashRequest, RestoreStashResponse, SaveRemoteSettingsRequest,
+    StashDetailsRequest, StashDetailsResponse, StashEntry, StashListResponse,
 };
 use artistic_git_core::config::{AppSettings, ConfigActor, GitUserSettings, ProjectSettings};
-use artistic_git_git_runner::{CancelToken, GitCommandPlan, GitRunner};
+use artistic_git_git_runner::{CancelToken, GitCommandPlan, GitRunner, OperationBusy};
 use std::{
     collections::BTreeMap,
     ffi::{OsStr, OsString},
     fs, io,
-    path::{Path, PathBuf},
-    process::{Command, Stdio},
+    path::{Component, Path, PathBuf},
+    process::{Command, Output, Stdio},
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -54,6 +54,13 @@ impl RepositoryBackend {
         request: OpenRepositoryRequest,
     ) -> AppResult<OpenRepositoryResponse> {
         open_repository(&self.runner, self.config.as_ref(), request)
+    }
+
+    pub fn clone_repository(
+        &self,
+        request: CloneRepositoryRequest,
+    ) -> AppResult<CloneRepositoryResponse> {
+        clone_repository(&self.runner, self.config.as_ref(), request)
     }
 
     pub fn repository_summary(
@@ -308,6 +315,48 @@ pub fn open_repository(
     })
 }
 
+pub fn clone_repository(
+    runner: &GitRunner,
+    config: Option<&ConfigActor>,
+    request: CloneRepositoryRequest,
+) -> AppResult<CloneRepositoryResponse> {
+    clone_repository_with_cancel(runner, config, request, &CancelToken::new())
+}
+
+pub fn clone_repository_with_cancel(
+    runner: &GitRunner,
+    config: Option<&ConfigActor>,
+    request: CloneRepositoryRequest,
+    cancel_token: &CancelToken,
+) -> AppResult<CloneRepositoryResponse> {
+    let target = validate_clone_target(&request)?;
+    let url = request.url.trim();
+    if url.is_empty() {
+        return Err(logged(AppError::expected(
+            "repository URL is required",
+            "cloneRepository",
+        )));
+    }
+
+    let _permit = runner
+        .operation_concurrency()
+        .try_begin_write()
+        .map_err(clone_busy_error)?;
+
+    run_clone_command(runner, url, &target, cancel_token)?;
+
+    let repository = open_repository(
+        runner,
+        config,
+        OpenRepositoryRequest {
+            path: display_path(&target.path),
+            tool_identity: request.tool_identity,
+        },
+    )?;
+
+    Ok(CloneRepositoryResponse { repository })
+}
+
 pub fn repository_summary(
     runner: &GitRunner,
     request: RepositoryPathRequest,
@@ -538,6 +587,141 @@ pub fn search_log_with_cancel(
         "searchLog",
         cancel_token,
     )
+}
+
+fn validate_clone_target(request: &CloneRepositoryRequest) -> AppResult<CloneTarget> {
+    let parent_directory = request.target_parent_directory.trim();
+    if parent_directory.is_empty() {
+        return Err(logged(AppError::expected(
+            "target parent directory is required",
+            "cloneRepository",
+        )));
+    }
+
+    let parent = canonicalize_path(Path::new(parent_directory), "cloneRepository")?;
+    if !parent.is_dir() {
+        return Err(logged(AppError::expected(
+            "target parent directory is not a directory",
+            "cloneRepository",
+        )));
+    }
+
+    let directory_name = validate_clone_directory_name(&request.directory_name)?;
+    let path = parent.join(&directory_name);
+    if fs::symlink_metadata(&path).is_ok() {
+        return Err(logged(AppError::expected(
+            "target directory already exists",
+            "cloneRepository",
+        )));
+    }
+
+    Ok(CloneTarget {
+        parent,
+        directory_name,
+        path,
+    })
+}
+
+fn validate_clone_directory_name(name: &str) -> AppResult<OsString> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(logged(AppError::expected(
+            "target directory name is required",
+            "cloneRepository",
+        )));
+    }
+
+    let mut components = Path::new(trimmed).components();
+    match (components.next(), components.next()) {
+        (Some(Component::Normal(component)), None) => Ok(component.to_owned()),
+        _ => Err(logged(AppError::expected(
+            "target directory name must be a single folder name",
+            "cloneRepository",
+        ))),
+    }
+}
+
+fn run_clone_command(
+    runner: &GitRunner,
+    url: &str,
+    target: &CloneTarget,
+    cancel_token: &CancelToken,
+) -> AppResult<()> {
+    const OPERATION: &str = "cloneRepository";
+
+    if cancel_token.is_cancelled() {
+        cleanup_clone_target(target);
+        return Err(cancelled_error(OPERATION));
+    }
+
+    let plan = runner
+        .git_command_builder()
+        .default_credential_helper()
+        .enable_windows_longpaths()
+        .args([
+            OsString::from("clone"),
+            OsString::from("--recurse-submodules"),
+            OsString::from("--progress"),
+            OsString::from(url),
+            target.directory_name.clone(),
+        ])
+        .build();
+    let mut command = plan.to_command();
+    command.current_dir(&target.parent);
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|source| spawn_error(&plan, source, OPERATION))?;
+
+    loop {
+        if cancel_token.is_cancelled() {
+            let _ = child.kill();
+            let _ = child.wait();
+            cleanup_clone_target(target);
+            return Err(cancelled_error(OPERATION));
+        }
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => thread::sleep(Duration::from_millis(20)),
+            Err(source) => {
+                cleanup_clone_target(target);
+                return Err(spawn_error(&plan, source, OPERATION));
+            }
+        }
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|source| spawn_error(&plan, source, OPERATION))?;
+    handle_clone_output(&plan, output, target)
+}
+
+fn handle_clone_output(
+    plan: &GitCommandPlan,
+    output: Output,
+    target: &CloneTarget,
+) -> AppResult<()> {
+    if output.status.success() {
+        Ok(())
+    } else {
+        let error = command_failure(plan, output, "cloneRepository");
+        cleanup_clone_target(target);
+        Err(error)
+    }
+}
+
+fn cleanup_clone_target(target: &CloneTarget) {
+    if target.path.is_dir() {
+        let _ = fs::remove_dir_all(&target.path);
+    }
+}
+
+fn clone_busy_error(error: OperationBusy) -> AppError {
+    let summary = match error {
+        OperationBusy::WriteBusy => "another write operation is already in progress",
+        OperationBusy::BackgroundBusy => "a background operation is already in progress",
+    };
+    logged(AppError::expected(summary, "cloneRepository"))
 }
 
 fn resolve_repository_root(runner: &GitRunner, path: &Path) -> AppResult<PathBuf> {
@@ -1468,6 +1652,13 @@ struct BranchAccumulator {
     upstream: Option<String>,
 }
 
+#[derive(Debug)]
+struct CloneTarget {
+    parent: PathBuf,
+    directory_name: OsString,
+    path: PathBuf,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1542,6 +1733,133 @@ mod tests {
             .warnings
             .iter()
             .any(|warning| warning.kind == RepositoryOpenWarningKind::NoRemote));
+    }
+
+    #[test]
+    fn clones_local_bare_repository_and_reuses_open_flow() {
+        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
+            return;
+        };
+        let source = TestRepo::new(&runner);
+        source.init_with_commit();
+        let branch = source
+            .git_output(["symbolic-ref", "--short", "HEAD"])
+            .trim()
+            .to_owned();
+        let bare = TestTempDir::new("ag-bare-remote").expect("bare remote");
+        git_stdout(&runner, Some(bare.path()), ["init", "--bare"], "test")
+            .expect("init bare remote");
+        let bare_path = display_path(bare.path());
+        source.git(["remote", "add", "origin", bare_path.as_str()]);
+        source.git(vec![
+            OsString::from("push"),
+            OsString::from("-u"),
+            OsString::from("origin"),
+            OsString::from(format!("HEAD:{branch}")),
+        ]);
+        git_stdout(
+            &runner,
+            Some(bare.path()),
+            vec![
+                OsString::from("symbolic-ref"),
+                OsString::from("HEAD"),
+                OsString::from(format!("refs/heads/{branch}")),
+            ],
+            "test",
+        )
+        .expect("point bare HEAD at pushed branch");
+
+        let parent = TestTempDir::new("ag-clone-parent").expect("clone parent");
+        let response = clone_repository(
+            &runner,
+            None,
+            CloneRepositoryRequest {
+                url: bare_path.clone(),
+                target_parent_directory: display_path(parent.path()),
+                directory_name: "cloned-art".to_owned(),
+                tool_identity: Some(artistic_git_contracts::ToolGitIdentity {
+                    name: Some("Artistic Git".to_owned()),
+                    email: Some("tool@example.test".to_owned()),
+                }),
+            },
+        )
+        .expect("clone repository");
+        let target = parent.path().join("cloned-art");
+
+        assert_eq!(
+            response.repository.repository_path,
+            display_path(&canonical_or_self(&target))
+        );
+        assert_eq!(
+            response.repository.remote_mode,
+            RepositoryRemoteMode::Origin
+        );
+        assert!(target.join("tracked.txt").exists());
+        assert!(response
+            .repository
+            .remotes
+            .iter()
+            .any(|remote| remote.name == "origin" && remote.url == bare_path));
+        assert_eq!(
+            git_stdout(
+                &runner,
+                Some(&target),
+                ["config", "--local", "--get", "user.name"],
+                "test",
+            )
+            .expect("local user name")
+            .trim(),
+            "Artistic Git"
+        );
+    }
+
+    #[test]
+    fn clone_rejects_existing_target_directory() {
+        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
+            return;
+        };
+        let parent = TestTempDir::new("ag-clone-parent").expect("clone parent");
+        fs::create_dir(parent.path().join("existing")).expect("existing target");
+
+        let error = clone_repository(
+            &runner,
+            None,
+            CloneRepositoryRequest {
+                url: "https://example.test/art.git".to_owned(),
+                target_parent_directory: display_path(parent.path()),
+                directory_name: "existing".to_owned(),
+                tool_identity: None,
+            },
+        )
+        .expect_err("existing target should be rejected");
+
+        assert_eq!(error.summary, "target directory already exists");
+    }
+
+    #[test]
+    fn clone_with_pre_cancelled_token_does_not_create_target() {
+        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
+            return;
+        };
+        let parent = TestTempDir::new("ag-clone-parent").expect("clone parent");
+        let token = CancelToken::new();
+        token.cancel();
+
+        let error = clone_repository_with_cancel(
+            &runner,
+            None,
+            CloneRepositoryRequest {
+                url: "https://example.test/art.git".to_owned(),
+                target_parent_directory: display_path(parent.path()),
+                directory_name: "cancelled".to_owned(),
+                tool_identity: None,
+            },
+            &token,
+        )
+        .expect_err("cancelled clone should fail");
+
+        assert_eq!(error.summary, "operation cancelled");
+        assert!(!parent.path().join("cancelled").exists());
     }
 
     #[test]

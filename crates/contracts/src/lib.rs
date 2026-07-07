@@ -506,6 +506,21 @@ pub struct OpenRepositoryRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
+pub struct CloneRepositoryRequest {
+    pub url: String,
+    pub target_parent_directory: String,
+    pub directory_name: String,
+    pub tool_identity: Option<ToolGitIdentity>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CloneRepositoryResponse {
+    pub repository: OpenRepositoryResponse,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
 pub struct OpenRepositoryResponse {
     pub repository_path: String,
     pub git_dir: String,

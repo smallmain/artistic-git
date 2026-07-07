@@ -430,6 +430,7 @@ impl AuthGitCommandInjectionPlan {
             "SSH_ASKPASS".to_owned(),
             helpers.ssh_askpass.clone().into_os_string(),
         );
+        environment.insert("SSH_ASKPASS_REQUIRE".to_owned(), OsString::from("force"));
 
         Self {
             socket_path,
@@ -441,6 +442,10 @@ impl AuthGitCommandInjectionPlan {
                 AuthGitConfigInjection {
                     key: "credential.helper",
                     value: helpers.credential_helper.clone().into_os_string(),
+                },
+                AuthGitConfigInjection {
+                    key: "credential.useHttpPath",
+                    value: OsString::from("true"),
                 },
                 AuthGitConfigInjection {
                     key: "core.sshCommand",
@@ -544,11 +549,14 @@ mod tests {
         );
         assert_eq!(plan.env(AUTH_TOKEN_ENV), Some(OsStr::new("token-1")));
         assert_eq!(plan.env(AUTH_INVOCATION_ID_ENV), Some(OsStr::new("inv-1")));
+        assert_eq!(plan.env("SSH_ASKPASS_REQUIRE"), Some(OsStr::new("force")));
         assert_eq!(
             plan.git_config_args(),
             vec![
                 OsString::from("-c"),
                 OsString::from("credential.helper=/opt/ag/helpers/artistic-git-credential-helper"),
+                OsString::from("-c"),
+                OsString::from("credential.useHttpPath=true"),
                 OsString::from("-c"),
                 OsString::from("core.sshCommand=/opt/ag/openssh/ssh -o BatchMode=no"),
             ]

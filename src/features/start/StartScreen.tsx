@@ -9,15 +9,25 @@ import {
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { DialogFrame } from "@/components/dialogs/DialogFrame";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
 import { TruncatedText } from "@/components/ui/truncated-text";
-import { openRepository } from "@/lib/ipc/commands";
+import {
+  cloneRepository,
+  openRepository,
+  saveAppSettings,
+} from "@/lib/ipc/commands";
+import type { AppSettings } from "@/lib/ipc/generated";
 import { cn } from "@/lib/utils";
-import { toolIdentityFromSettings } from "@/features/settings/settings-model";
+import {
+  normalizeAppSettings,
+  toolIdentityFromSettings,
+} from "@/features/settings/settings-model";
 import { useWindowStore } from "@/store/window-store";
 
 const pickerFallbackPath = "/Users/artist/Projects/Environment Art";
+const cloneParentStorageKey = "artistic-git:last-clone-parent-dir";
 
 export function StartScreen() {
   const { t } = useTranslation();
@@ -25,6 +35,7 @@ export function StartScreen() {
   const recentProjects = useWindowStore((state) => state.recentProjects);
   const appSettings = useWindowStore((state) => state.appSettings);
   const openSettings = useWindowStore((state) => state.openSettings);
+  const setAppSettings = useWindowStore((state) => state.setAppSettings);
   const setActiveRepositoryPath = useWindowStore(
     (state) => state.setActiveRepositoryPath,
   );
@@ -40,6 +51,54 @@ export function StartScreen() {
     null,
   );
   const [openingPath, setOpeningPath] = React.useState<string | null>(null);
+  const [cloneDialogOpen, setCloneDialogOpen] = React.useState(false);
+  const [cloneUrl, setCloneUrl] = React.useState("");
+  const [cloneParentDirectory, setCloneParentDirectory] = React.useState(() =>
+    initialCloneParentDirectory(appSettings),
+  );
+  const [cloneDirectoryName, setCloneDirectoryName] = React.useState("");
+  const [cloneDirectoryNameTouched, setCloneDirectoryNameTouched] =
+    React.useState(false);
+  const [cloneError, setCloneError] = React.useState<string | null>(null);
+  const [isCloning, setIsCloning] = React.useState(false);
+  const activateRepository = React.useCallback(
+    (repositoryPath: string) => {
+      setActiveRepositoryPath(repositoryPath);
+      setRecentProjects([
+        recentProjectFromPath(repositoryPath),
+        ...recentProjects.filter((project) => project.path !== repositoryPath),
+      ]);
+    },
+    [recentProjects, setActiveRepositoryPath, setRecentProjects],
+  );
+  const rememberCloneParentDirectory = React.useCallback(
+    (parentDirectory: string) => {
+      const trimmed = parentDirectory.trim();
+      writeStoredCloneParentDirectory(trimmed);
+
+      if (!appSettings) {
+        return;
+      }
+
+      const current = normalizeAppSettings(appSettings);
+      const nextSettings: AppSettings = {
+        ...current,
+        paths: {
+          ...(current.paths ?? {}),
+          lastCloneParentDir: trimmed,
+        },
+      };
+      setAppSettings(nextSettings);
+      void saveAppSettings({
+        openRepositoryPaths: [],
+        settings: nextSettings,
+        validateIdentity: false,
+      })
+        .then(setAppSettings)
+        .catch(() => undefined);
+    },
+    [appSettings, setAppSettings],
+  );
   const handleOpenRepository = React.useCallback(
     async (path: string) => {
       setOpeningPath(path);
@@ -48,18 +107,7 @@ export function StartScreen() {
           path,
           toolIdentity: toolIdentityFromSettings(appSettings),
         });
-        const repositoryPath = response.repositoryPath;
-        setActiveRepositoryPath(repositoryPath);
-        setRecentProjects([
-          {
-            displayName: displayNameFromPath(repositoryPath),
-            lastOpenedAt: new Date().toISOString(),
-            path: repositoryPath,
-          },
-          ...recentProjects.filter(
-            (project) => project.path !== repositoryPath,
-          ),
-        ]);
+        activateRepository(response.repositoryPath);
       } catch (error) {
         window.dispatchEvent(
           new CustomEvent("artistic-git:error", { detail: error }),
@@ -68,7 +116,48 @@ export function StartScreen() {
         setOpeningPath(null);
       }
     },
-    [appSettings, recentProjects, setActiveRepositoryPath, setRecentProjects],
+    [activateRepository, appSettings],
+  );
+  const handleCloneRepository = React.useCallback(async () => {
+    const parentDirectory = cloneParentDirectory.trim();
+    setIsCloning(true);
+    setCloneError(null);
+    try {
+      const response = await cloneRepository({
+        directoryName: cloneDirectoryName.trim(),
+        targetParentDirectory: parentDirectory,
+        toolIdentity: toolIdentityFromSettings(appSettings),
+        url: cloneUrl.trim(),
+      });
+      rememberCloneParentDirectory(parentDirectory);
+      activateRepository(response.repository.repositoryPath);
+      setCloneDialogOpen(false);
+      setCloneUrl("");
+      setCloneDirectoryName("");
+      setCloneDirectoryNameTouched(false);
+    } catch (error) {
+      setCloneError(errorSummary(error, t("start.cloneFailed")));
+    } finally {
+      setIsCloning(false);
+    }
+  }, [
+    activateRepository,
+    appSettings,
+    cloneDirectoryName,
+    cloneParentDirectory,
+    cloneUrl,
+    rememberCloneParentDirectory,
+    t,
+  ]);
+  const handleCloneUrlChange = React.useCallback(
+    (url: string) => {
+      setCloneUrl(url);
+      setCloneError(null);
+      if (!cloneDirectoryNameTouched) {
+        setCloneDirectoryName(inferDirectoryNameFromUrl(url));
+      }
+    },
+    [cloneDirectoryNameTouched],
   );
 
   return (
@@ -114,7 +203,7 @@ export function StartScreen() {
             <div className="flex flex-col gap-3">
               <Button
                 className="h-12 justify-start gap-3 px-4"
-                disabled={openingPath !== null}
+                disabled={openingPath !== null || isCloning}
                 onClick={() => {
                   fileInputRef.current?.click();
                 }}
@@ -126,9 +215,17 @@ export function StartScreen() {
               </Button>
               <Button
                 className="h-12 justify-start gap-3 px-4"
-                disabled
+                disabled={openingPath !== null || isCloning}
+                onClick={() => {
+                  setCloneParentDirectory((current) =>
+                    current.trim()
+                      ? current
+                      : initialCloneParentDirectory(appSettings),
+                  );
+                  setCloneDialogOpen(true);
+                  setCloneError(null);
+                }}
                 size="lg"
-                title={t("start.clonePlaceholder")}
                 type="button"
                 variant="secondary"
               >
@@ -203,7 +300,7 @@ export function StartScreen() {
 
                           void handleOpenRepository(project.path);
                         }}
-                        disabled={openingPath !== null}
+                        disabled={openingPath !== null || isCloning}
                         type="button"
                       >
                         <FolderGit2
@@ -264,10 +361,224 @@ export function StartScreen() {
           ) : null}
         </section>
       </div>
+      {cloneDialogOpen ? (
+        <CloneRepositoryDialog
+          busy={isCloning}
+          directoryName={cloneDirectoryName}
+          error={cloneError}
+          onDirectoryNameChange={(value) => {
+            setCloneDirectoryName(value);
+            setCloneDirectoryNameTouched(true);
+            setCloneError(null);
+          }}
+          onOpenChange={(open) => {
+            if (!isCloning) {
+              setCloneDialogOpen(open);
+            }
+          }}
+          onParentDirectoryChange={(value) => {
+            setCloneParentDirectory(value);
+            setCloneError(null);
+          }}
+          onSubmit={() => void handleCloneRepository()}
+          onUrlChange={handleCloneUrlChange}
+          parentDirectory={cloneParentDirectory}
+          url={cloneUrl}
+        />
+      ) : null}
     </main>
+  );
+}
+
+interface CloneRepositoryDialogProps {
+  busy: boolean;
+  directoryName: string;
+  error: string | null;
+  onDirectoryNameChange: (value: string) => void;
+  onOpenChange: (open: boolean) => void;
+  onParentDirectoryChange: (value: string) => void;
+  onSubmit: () => void;
+  onUrlChange: (value: string) => void;
+  parentDirectory: string;
+  url: string;
+}
+
+function CloneRepositoryDialog({
+  busy,
+  directoryName,
+  error,
+  onDirectoryNameChange,
+  onOpenChange,
+  onParentDirectoryChange,
+  onSubmit,
+  onUrlChange,
+  parentDirectory,
+  url,
+}: CloneRepositoryDialogProps) {
+  const { t } = useTranslation();
+  const urlId = React.useId();
+  const parentId = React.useId();
+  const directoryNameId = React.useId();
+  const canSubmit =
+    url.trim().length > 0 &&
+    parentDirectory.trim().length > 0 &&
+    directoryName.trim().length > 0 &&
+    !busy;
+
+  return (
+    <DialogFrame
+      closeOnEscape={!busy}
+      description={t("start.cloneDescription")}
+      hideCloseButton={busy}
+      onOpenChange={onOpenChange}
+      title={t("actions.cloneProject")}
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button
+            disabled={busy}
+            onClick={() => onOpenChange(false)}
+            type="button"
+            variant="ghost"
+          >
+            {t("actions.cancel")}
+          </Button>
+          <Button disabled={!canSubmit} type="submit" form="clone-repository">
+            {busy ? t("start.cloneBusy") : t("actions.cloneProject")}
+          </Button>
+        </div>
+      }
+    >
+      <form
+        className="flex flex-col gap-4"
+        id="clone-repository"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (canSubmit) {
+            onSubmit();
+          }
+        }}
+      >
+        <label
+          className="flex flex-col gap-2 text-sm font-medium"
+          htmlFor={urlId}
+        >
+          {t("start.cloneUrl")}
+          <input
+            autoFocus
+            className="h-9 rounded-md border bg-background px-3 text-sm font-normal outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            disabled={busy}
+            id={urlId}
+            onChange={(event) => onUrlChange(event.currentTarget.value)}
+            placeholder="https://github.com/studio/art.git"
+            type="text"
+            value={url}
+          />
+        </label>
+        <label
+          className="flex flex-col gap-2 text-sm font-medium"
+          htmlFor={parentId}
+        >
+          {t("start.cloneParentDirectory")}
+          <input
+            className="h-9 rounded-md border bg-background px-3 text-sm font-normal outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            disabled={busy}
+            id={parentId}
+            onChange={(event) =>
+              onParentDirectoryChange(event.currentTarget.value)
+            }
+            placeholder="/Users/artist/Projects"
+            type="text"
+            value={parentDirectory}
+          />
+        </label>
+        <label
+          className="flex flex-col gap-2 text-sm font-medium"
+          htmlFor={directoryNameId}
+        >
+          {t("start.cloneDirectoryName")}
+          <input
+            className="h-9 rounded-md border bg-background px-3 text-sm font-normal outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            disabled={busy}
+            id={directoryNameId}
+            onChange={(event) =>
+              onDirectoryNameChange(event.currentTarget.value)
+            }
+            placeholder="art"
+            type="text"
+            value={directoryName}
+          />
+        </label>
+        {error ? (
+          <div
+            className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+            role="alert"
+          >
+            {error}
+          </div>
+        ) : null}
+      </form>
+    </DialogFrame>
   );
 }
 
 function displayNameFromPath(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
+}
+
+function recentProjectFromPath(path: string) {
+  return {
+    displayName: displayNameFromPath(path),
+    lastOpenedAt: new Date().toISOString(),
+    path,
+  };
+}
+
+function inferDirectoryNameFromUrl(url: string): string {
+  const withoutQuery = url
+    .trim()
+    .replace(/[?#].*$/, "")
+    .replace(/[\\/]+$/, "");
+  const candidate =
+    withoutQuery
+      .split(/[/:\\]/)
+      .filter(Boolean)
+      .at(-1) ?? "";
+  return candidate.replace(/\.git$/i, "").trim();
+}
+
+function initialCloneParentDirectory(
+  settings: AppSettings | null | undefined,
+): string {
+  return (
+    settings?.paths?.lastCloneParentDir ?? readStoredCloneParentDirectory()
+  );
+}
+
+function readStoredCloneParentDirectory(): string {
+  try {
+    return window.localStorage.getItem(cloneParentStorageKey) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function writeStoredCloneParentDirectory(path: string): void {
+  try {
+    window.localStorage.setItem(cloneParentStorageKey, path);
+  } catch {
+    // Settings persistence is best-effort in browser-only test environments.
+  }
+}
+
+function errorSummary(error: unknown, fallback: string): string {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "summary" in error &&
+    typeof error.summary === "string"
+  ) {
+    return error.summary;
+  }
+
+  return error instanceof Error ? error.message : fallback;
 }

@@ -137,7 +137,13 @@ export const resources = {
       },
       start: {
         clearRecent: "Clear history",
+        cloneBusy: "Cloning...",
+        cloneDescription: "Clone a Git repository into a local folder.",
+        cloneDirectoryName: "Directory name",
+        cloneFailed: "Clone failed.",
+        cloneParentDirectory: "Target parent directory",
         clonePlaceholder: "Clone is implemented in Phase 4D",
+        cloneUrl: "Repository URL",
         missingProject:
           "{{path}} was deleted or moved. Remove it from the recent projects list?",
         openOnboarding: "Open setup wizard",
@@ -598,7 +604,13 @@ export const resources = {
       },
       start: {
         clearRecent: "清空历史记录",
+        cloneBusy: "正在克隆...",
+        cloneDescription: "将 Git 仓库克隆到本地文件夹。",
+        cloneDirectoryName: "目录名",
+        cloneFailed: "克隆失败。",
+        cloneParentDirectory: "目标父目录",
         clonePlaceholder: "克隆功能在 4D 阶段实现",
+        cloneUrl: "仓库地址",
         missingProject: "{{path}} 已删除或移动。是否从最近项目列表移除？",
         openOnboarding: "打开设置向导",
         openOnboardingPlaceholder: "设置向导在 3E 阶段实现",

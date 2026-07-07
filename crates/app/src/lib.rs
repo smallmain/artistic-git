@@ -15,11 +15,13 @@ pub mod commit;
 pub mod conflicts;
 pub mod fetch;
 pub(crate) mod git_ops;
+pub mod https_auth;
 pub mod remote;
 pub mod repository;
 pub mod restore;
 pub mod revert;
 pub mod settings;
+pub mod ssh_auth;
 #[path = "stash.rs"]
 mod stash_impl;
 pub mod stash {
@@ -77,10 +79,15 @@ pub use fetch::{
     fetch_changed_queries, fetch_repository, plan_scheduled_fetch, FetchScheduleDecision,
     FetchStateStore,
 };
+pub use https_auth::{
+    DeleteHttpsCredentialRequest, HttpsCredentialEntry, HttpsCredentialListResponse,
+    HttpsCredentialPromptReason, HttpsCredentialPromptRequest, HttpsCredentialScope,
+};
 pub use remote::{load_remote_settings, save_remote_settings};
 pub use repository::{
-    list_branches, list_local_changes, list_stashes, log_page_with_cancel, open_repository,
-    repository_summary, search_log_with_cancel, RepositoryBackend,
+    clone_repository, clone_repository_with_cancel, list_branches, list_local_changes,
+    list_stashes, log_page_with_cancel, open_repository, repository_summary,
+    search_log_with_cancel, RepositoryBackend,
 };
 pub use restore::restore_changes;
 pub use revert::{abort_revert, revert_commit};

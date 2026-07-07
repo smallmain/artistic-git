@@ -120,6 +120,17 @@ export type CheckoutBranchRequest = {
 
 export type CheckoutLocalChangesMode = "requireClean" | "autoStash" | "discard";
 
+export type CloneRepositoryRequest = {
+  url: string;
+  targetParentDirectory: string;
+  directoryName: string;
+  toolIdentity: ToolGitIdentity | null;
+};
+
+export type CloneRepositoryResponse = {
+  repository: OpenRepositoryResponse;
+};
+
 export type CommitRequest = {
   repositoryPath: string;
   paths: string[];
@@ -322,6 +333,13 @@ export type DeleteBranchRequest = {
   forceRemoteOnly: boolean;
 };
 
+export type DeleteHttpsCredentialRequest = {
+  protocol: string;
+  host: string;
+  path: string | null;
+  scope: HttpsCredentialScope;
+};
+
 export type DeleteStashRequest = {
   repositoryPath: string;
   selector: string;
@@ -427,6 +445,31 @@ export type HealthResponse = {
   app: AppInfo;
   status: string;
 };
+
+export type HttpsCredentialEntry = {
+  protocol: string;
+  host: string;
+  path: string | null;
+  username: string;
+  scope: HttpsCredentialScope;
+};
+
+export type HttpsCredentialListResponse = {
+  credentials: HttpsCredentialEntry[];
+};
+
+export type HttpsCredentialPromptReason = "missing" | "invalidOrExpired";
+
+export type HttpsCredentialPromptRequest = {
+  protocol: string;
+  host: string;
+  path: string | null;
+  reason: HttpsCredentialPromptReason;
+  suggestedUsername: string | null;
+  defaultScope: HttpsCredentialScope;
+};
+
+export type HttpsCredentialScope = "host" | "path";
 
 export type IdentityField = "name" | "email";
 

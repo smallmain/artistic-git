@@ -1,14 +1,17 @@
 use artistic_git_app::{
-    GenerateSshKeyRequest, GitignoreFileResponse, GitignoreRequest, HealthResponse,
-    IdentitySourcesResponse, IdentityValidationRequest, IdentityValidationResponse,
-    OpenLogDirResponse, ProjectSettingsRequest, SaveAppSettingsRequest, SaveGitignoreRequest,
+    DeleteHttpsCredentialRequest, GenerateSshKeyRequest, GitignoreFileResponse, GitignoreRequest,
+    HealthResponse, HttpsCredentialEntry, HttpsCredentialListResponse, HttpsCredentialPromptReason,
+    HttpsCredentialPromptRequest, HttpsCredentialScope, IdentitySourcesResponse,
+    IdentityValidationRequest, IdentityValidationResponse, OpenLogDirResponse,
+    ProjectSettingsRequest, SaveAppSettingsRequest, SaveGitignoreRequest,
     SaveProjectSettingsRequest, SettingsSnapshot, SshKeyStatus,
 };
 use artistic_git_contracts::{
     AbortRevertRequest, AbortRevertResponse, AppError, AppEvent, BranchListResponse,
     BranchNameValidationRequest, BranchNameValidationResponse, BranchOperationResponse,
-    CancelStashRestoreRequest, CancelStashRestoreResponse, CheckoutBranchRequest, CommitRequest,
-    CommitResponse, ConflictCancelRequest, ConflictCancelResponse, ConflictCompleteRequest,
+    CancelStashRestoreRequest, CancelStashRestoreResponse, CheckoutBranchRequest,
+    CloneRepositoryRequest, CloneRepositoryResponse, CommitRequest, CommitResponse,
+    ConflictCancelRequest, ConflictCancelResponse, ConflictCompleteRequest,
     ConflictCompleteResponse, ConflictDetailResponse, ConflictFile, ConflictListRequest,
     ConflictListResponse, ConflictPathRequest, ConflictSaveResolutionRequest,
     ConflictSaveResolutionResponse, ConflictSelectSideRequest, ConflictSelectSideResponse,
@@ -33,6 +36,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register::<OpenLogDirResponse>()
         .register::<OpenRepositoryRequest>()
         .register::<OpenRepositoryResponse>()
+        .register::<CloneRepositoryRequest>()
+        .register::<CloneRepositoryResponse>()
         .register::<RepositoryPathRequest>()
         .register::<RepositorySummary>()
         .register::<FetchRepositoryRequest>()
@@ -95,6 +100,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register::<IdentityValidationResponse>()
         .register::<SshKeyStatus>()
         .register::<GenerateSshKeyRequest>()
+        .register::<HttpsCredentialListResponse>()
+        .register::<HttpsCredentialEntry>()
+        .register::<DeleteHttpsCredentialRequest>()
+        .register::<HttpsCredentialPromptRequest>()
+        .register::<HttpsCredentialPromptReason>()
+        .register::<HttpsCredentialScope>()
         .register::<AppError>()
         .register::<AppEvent>()
         .register::<AppSettings>()

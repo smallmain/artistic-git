@@ -33,6 +33,14 @@ fn open_repository(
 }
 
 #[tauri::command]
+fn clone_repository(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::CloneRepositoryRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::CloneRepositoryResponse> {
+    backend.clone_repository(request)
+}
+
+#[tauri::command]
 fn repository_summary(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::RepositoryPathRequest,
@@ -540,6 +548,7 @@ pub fn run() {
             health,
             open_log_dir,
             open_repository,
+            clone_repository,
             repository_summary,
             fetch_repository,
             load_remote_settings,
