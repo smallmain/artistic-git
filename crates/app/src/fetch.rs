@@ -10,7 +10,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::git_ops::{canonical_repository_path, command_failure, display_path, run_git_raw};
+use crate::git_ops::{
+    canonical_repository_path, command_failure, display_path, run_git_raw_authenticated,
+};
 
 const FETCH_OPERATION: &str = "fetchRepository";
 const MIN_FETCH_INTERVAL_SECONDS: u32 = 10;
@@ -127,6 +129,15 @@ pub fn fetch_repository(
     state_store: &FetchStateStore,
     request: FetchRepositoryRequest,
 ) -> AppResult<FetchRepositoryResponse> {
+    fetch_repository_with_auth(runner, None, state_store, request)
+}
+
+pub(crate) fn fetch_repository_with_auth(
+    runner: &GitRunner,
+    auth_runtime: Option<&crate::auth_ipc::AuthRuntime>,
+    state_store: &FetchStateStore,
+    request: FetchRepositoryRequest,
+) -> AppResult<FetchRepositoryResponse> {
     let root = canonical_repository_path(&request.repository_path, FETCH_OPERATION)?;
     let repository_path = display_path(&root);
     let permit = match runner.operation_concurrency().try_begin_background() {
@@ -162,8 +173,10 @@ pub fn fetch_repository(
         });
     }
 
-    let (plan, output) = run_git_raw(
+    let (plan, output) = run_git_raw_authenticated(
         runner,
+        auth_runtime,
+        crate::auth_ipc::InteractionPolicy::background_non_interactive(),
         Some(&root),
         [
             "fetch",

@@ -90,6 +90,7 @@ pub use fetch::{
 pub use https_auth::{
     DeleteHttpsCredentialRequest, HttpsCredentialEntry, HttpsCredentialListResponse,
     HttpsCredentialPromptReason, HttpsCredentialPromptRequest, HttpsCredentialScope,
+    SaveHttpsCredentialRequest,
 };
 pub use remote::{load_remote_settings, save_remote_settings};
 pub use repository::{

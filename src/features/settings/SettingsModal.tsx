@@ -9,6 +9,8 @@ import {
   Info,
   KeyRound,
   Palette,
+  Pencil,
+  Plus,
   RefreshCw,
   Save,
   Settings2,
@@ -49,6 +51,7 @@ import {
   openUpdateReleasePage,
   saveAppSettings,
   saveGitignore,
+  saveHttpsCredential,
   saveProjectSettings,
   saveRemoteSettings,
   settingsSnapshot,
@@ -82,6 +85,16 @@ import {
 interface SettingsModalProps {
   onOpenChange: (open: boolean) => void;
   open: boolean;
+}
+
+interface HttpsCredentialDraft {
+  editingKey: string | null;
+  protocol: string;
+  host: string;
+  path: string;
+  scope: HttpsCredentialEntry["scope"];
+  username: string;
+  token: string;
 }
 
 const sections: Array<{
@@ -146,6 +159,9 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
   const [savingProject, setSavingProject] = React.useState(false);
   const [savingGitignore, setSavingGitignore] = React.useState(false);
   const [savingRemote, setSavingRemote] = React.useState(false);
+  const [savingCredential, setSavingCredential] = React.useState(false);
+  const [credentialDraft, setCredentialDraft] =
+    React.useState<HttpsCredentialDraft | null>(null);
   const [deletingCredentialKey, setDeletingCredentialKey] = React.useState<
     string | null
   >(null);
@@ -207,6 +223,7 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
         if (active) {
           setHttpsCredentials(response);
           setCredentialRemoveArmed(null);
+          setCredentialDraft(null);
         }
       })
       .catch((error) => {
@@ -533,6 +550,76 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
     void persistSettings(next);
   };
 
+  const startNewHttpsCredential = () => {
+    setCredentialRemoveArmed(null);
+    setCredentialDraft({
+      editingKey: null,
+      protocol: "https",
+      host: "",
+      path: "",
+      scope: "host",
+      username: "",
+      token: "",
+    });
+  };
+
+  const editHttpsCredential = (credential: HttpsCredentialEntry) => {
+    setCredentialRemoveArmed(null);
+    setCredentialDraft({
+      editingKey: httpsCredentialKey(credential),
+      protocol: credential.protocol,
+      host: credential.host,
+      path: credential.path ?? "",
+      scope: credential.scope,
+      username: credential.username,
+      token: "",
+    });
+  };
+
+  const persistHttpsCredential = async () => {
+    if (!credentialDraft) {
+      return;
+    }
+    const host = credentialDraft.host.trim();
+    const username = credentialDraft.username.trim();
+    const path = credentialDraft.path.trim().replace(/^\/+|\/+$/g, "");
+    if (!host || !username) {
+      setStatus(t("settings.status.credentialFieldsRequired"));
+      return;
+    }
+    if (!credentialDraft.editingKey && !credentialDraft.token) {
+      setStatus(t("settings.status.credentialTokenRequired"));
+      return;
+    }
+    if (credentialDraft.scope === "path" && !path) {
+      setStatus(t("settings.status.credentialPathRequired"));
+      return;
+    }
+
+    setSavingCredential(true);
+    setStatus(null);
+    try {
+      await saveHttpsCredential({
+        protocol: credentialDraft.protocol,
+        host,
+        path: credentialDraft.scope === "path" ? path : null,
+        scope: credentialDraft.scope,
+        username,
+        token: credentialDraft.token || null,
+      });
+      const next = await listHttpsCredentials();
+      setHttpsCredentials(next);
+      setCredentialDraft(null);
+      setStatus(t("settings.status.credentialSaved"));
+    } catch (error) {
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:error", { detail: error }),
+      );
+    } finally {
+      setSavingCredential(false);
+    }
+  };
+
   const forgetHttpsCredential = async (credential: HttpsCredentialEntry) => {
     const key = httpsCredentialKey(credential);
     if (credentialRemoveArmed !== key) {
@@ -628,11 +715,18 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
               onRememberSshPassphraseChange={persistRememberSshPassphrase}
               onAutoUpdateCheckChange={persistAutoUpdateCheck}
               credentials={httpsCredentials?.credentials ?? []}
+              credentialDraft={credentialDraft}
               credentialRemoveArmed={credentialRemoveArmed}
               deletingCredentialKey={deletingCredentialKey}
+              onCancelCredentialEdit={() => setCredentialDraft(null)}
+              onEditCredential={editHttpsCredential}
               onForgetCredential={(credential) =>
                 void forgetHttpsCredential(credential)
               }
+              onNewCredential={startNewHttpsCredential}
+              onSaveCredential={() => void persistHttpsCredential()}
+              onUpdateCredentialDraft={setCredentialDraft}
+              savingCredential={savingCredential}
               saving={savingSettings}
               showIdentityValidation={showIdentityValidation}
               sshKey={sshKey}
@@ -712,6 +806,7 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
 }
 
 function GeneralSettings({
+  credentialDraft,
   credentialRemoveArmed,
   credentials,
   deletingCredentialKey,
@@ -721,20 +816,27 @@ function GeneralSettings({
   identitySources,
   identityValidation,
   onCopyPublicKey,
+  onCancelCredentialEdit,
+  onEditCredential,
   onForgetCredential,
   onGenerateSshKey,
   onAutoUpdateCheckChange,
   onLanguageChange,
   onRememberSshPassphraseChange,
   onSave,
+  onSaveCredential,
   onSaveFetch,
   onThemeChange,
+  onNewCredential,
   onUpdateDraft,
+  onUpdateCredentialDraft,
   onUpdateUser,
+  savingCredential,
   saving,
   showIdentityValidation,
   sshKey,
 }: {
+  credentialDraft: HttpsCredentialDraft | null;
   credentialRemoveArmed: string | null;
   credentials: HttpsCredentialEntry[];
   deletingCredentialKey: string | null;
@@ -744,16 +846,24 @@ function GeneralSettings({
   identitySources: IdentitySourcesResponse | null;
   identityValidation: GitUserValidation;
   onCopyPublicKey: () => void;
+  onCancelCredentialEdit: () => void;
+  onEditCredential: (credential: HttpsCredentialEntry) => void;
   onForgetCredential: (credential: HttpsCredentialEntry) => void;
   onGenerateSshKey: () => void;
   onAutoUpdateCheckChange: (checked: boolean) => void;
   onLanguageChange: (value: "system" | "en" | "zh-CN") => void;
   onRememberSshPassphraseChange: (checked: boolean) => void;
+  onNewCredential: () => void;
   onSave: () => void;
+  onSaveCredential: () => void;
   onSaveFetch: () => void;
   onThemeChange: (value: "system" | "light" | "dark") => void;
   onUpdateDraft: React.Dispatch<React.SetStateAction<AppSettings>>;
+  onUpdateCredentialDraft: React.Dispatch<
+    React.SetStateAction<HttpsCredentialDraft | null>
+  >;
   onUpdateUser: (user: GitUserSettings) => void;
+  savingCredential: boolean;
   saving: boolean;
   showIdentityValidation: boolean;
   sshKey: SshKeyStatus | null;
@@ -860,6 +970,17 @@ function GeneralSettings({
         icon={<KeyRound className="size-4" aria-hidden="true" />}
         title={t("settings.general.httpsCredentials")}
       >
+        <div>
+          <Button
+            className="gap-2"
+            onClick={onNewCredential}
+            type="button"
+            variant="secondary"
+          >
+            <Plus className="size-4" aria-hidden="true" />
+            {t("settings.general.addCredential")}
+          </Button>
+        </div>
         {credentials.length > 0 ? (
           <div className="space-y-2">
             {credentials.map((credential) => {
@@ -882,18 +1003,30 @@ function GeneralSettings({
                         : t("settings.general.hostCredential")}
                     </div>
                   </div>
-                  <Button
-                    className="shrink-0 gap-2"
-                    disabled={deletingCredentialKey === key}
-                    onClick={() => onForgetCredential(credential)}
-                    type="button"
-                    variant={armed ? "destructive" : "secondary"}
-                  >
-                    <Trash2 className="size-4" aria-hidden="true" />
-                    {armed
-                      ? t("settings.general.confirmForgetCredential")
-                      : t("settings.general.forgetCredential")}
-                  </Button>
+                  <div className="flex shrink-0 gap-2">
+                    <Button
+                      className="gap-2"
+                      disabled={deletingCredentialKey === key}
+                      onClick={() => onEditCredential(credential)}
+                      type="button"
+                      variant="secondary"
+                    >
+                      <Pencil className="size-4" aria-hidden="true" />
+                      {t("settings.general.editCredential")}
+                    </Button>
+                    <Button
+                      className="gap-2"
+                      disabled={deletingCredentialKey === key}
+                      onClick={() => onForgetCredential(credential)}
+                      type="button"
+                      variant={armed ? "destructive" : "secondary"}
+                    >
+                      <Trash2 className="size-4" aria-hidden="true" />
+                      {armed
+                        ? t("settings.general.confirmForgetCredential")
+                        : t("settings.general.forgetCredential")}
+                    </Button>
+                  </div>
                 </div>
               );
             })}
@@ -903,6 +1036,15 @@ function GeneralSettings({
             {t("settings.general.noHttpsCredentials")}
           </p>
         )}
+        {credentialDraft ? (
+          <HttpsCredentialEditor
+            draft={credentialDraft}
+            onCancel={onCancelCredentialEdit}
+            onChange={onUpdateCredentialDraft}
+            onSave={onSaveCredential}
+            saving={savingCredential}
+          />
+        ) : null}
       </SettingsGroup>
 
       <SettingsGroup
@@ -1017,6 +1159,95 @@ function GeneralSettings({
         />
       </SettingsGroup>
     </section>
+  );
+}
+
+function HttpsCredentialEditor({
+  draft,
+  onCancel,
+  onChange,
+  onSave,
+  saving,
+}: {
+  draft: HttpsCredentialDraft;
+  onCancel: () => void;
+  onChange: React.Dispatch<React.SetStateAction<HttpsCredentialDraft | null>>;
+  onSave: () => void;
+  saving: boolean;
+}) {
+  const { t } = useTranslation();
+  const update = (patch: Partial<HttpsCredentialDraft>) => {
+    onChange((current) => (current ? { ...current, ...patch } : current));
+  };
+
+  return (
+    <div className="grid gap-3 rounded-md border bg-background p-3">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <TextField
+          label={t("settings.general.credentialHost")}
+          onChange={(host) => update({ host })}
+          value={draft.host}
+        />
+        <SelectField
+          label={t("settings.general.credentialScope")}
+          onChange={(scope) =>
+            update({ scope: scope as HttpsCredentialEntry["scope"] })
+          }
+          options={[
+            ["host", t("settings.general.hostCredential")],
+            ["path", t("settings.general.pathCredential")],
+          ]}
+          value={draft.scope}
+        />
+      </div>
+      <TextField
+        label={t("settings.general.credentialPath")}
+        onChange={(path) => update({ path })}
+        value={draft.scope === "path" ? draft.path : ""}
+      />
+      <div className="grid gap-3 sm:grid-cols-2">
+        <TextField
+          label={t("settings.general.credentialUsername")}
+          onChange={(username) => update({ username })}
+          value={draft.username}
+        />
+        <label className="grid gap-1 text-sm">
+          <span className="font-medium">
+            {t("settings.general.credentialToken")}
+          </span>
+          <input
+            className="h-9 rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            onChange={(event) => update({ token: event.target.value })}
+            type="password"
+            value={draft.token}
+          />
+        </label>
+      </div>
+      {draft.editingKey ? (
+        <p className="text-xs text-muted-foreground">
+          {t("settings.general.credentialTokenUnchanged")}
+        </p>
+      ) : null}
+      <div className="flex flex-wrap gap-2">
+        <Button
+          className="gap-2"
+          disabled={saving}
+          onClick={onSave}
+          type="button"
+        >
+          <Save className="size-4" aria-hidden="true" />
+          {t("settings.general.saveCredential")}
+        </Button>
+        <Button
+          disabled={saving}
+          onClick={onCancel}
+          type="button"
+          variant="secondary"
+        >
+          {t("settings.general.cancelCredentialEdit")}
+        </Button>
+      </div>
+    </div>
   );
 }
 

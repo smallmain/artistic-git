@@ -337,12 +337,14 @@ graph TD
 
 依赖：4A、1B（keyring）。
 
-- [ ] 凭据默认按 host 维度存系统钥匙串（macOS Keychain / Windows Credential Manager / Linux Secret Service），支持 `protocol + host + path` 覆盖；绝不明文落盘；同平台同上下文仓库共享
-- [ ] 每条 git 命令注入 `-c credential.helper=<本工具>`；401 重试与凭据填充由 git 原生流程驱动
-- [ ] 首次无凭据：弹凭据输入框（host 只读/用户名/Token 密码框 + 「可在 Git 平台 Access Tokens 页面生成」小字），输入后自动继续原操作；401 → 同一框提示「Token 无效或已过期」；取消 = 操作失败走常规恢复
-- [ ] 设置-基本设置接入：已保存凭据列表（host + 用户名），支持修改和删除；高级项展示/管理 path 级覆盖
+- [x] 凭据默认按 host 维度存系统钥匙串（macOS Keychain / Windows Credential Manager / Linux Secret Service），支持 `protocol + host + path` 覆盖；绝不明文落盘；同平台同上下文仓库共享
+- [x] 每条 git 命令注入 `-c credential.helper=<本工具>`；401 重试与凭据填充由 git 原生流程驱动
+- [x] 首次无凭据：弹凭据输入框（host 只读/用户名/Token 密码框 + 「可在 Git 平台 Access Tokens 页面生成」小字），输入后自动继续原操作；401 → 同一框提示「Token 无效或已过期」；取消 = 操作失败走常规恢复
+- [x] 设置-基本设置接入：已保存凭据列表（host + 用户名），支持修改和删除；高级项展示/管理 path 级覆盖
 
 **验收**：CI 起本地 `git http-backend` + Basic Auth：无凭据→弹框→成功→入钥匙串；第二次静默；同 host 不同 path 覆盖生效；改错密码→401→重弹；取消→失败恢复。
+
+进展备注：HTTPS 凭据 keyring/host+path 覆盖、helper 注入、凭据弹窗续跑/401 重试、设置页凭据列表与修改删除已接入并覆盖后端/组件测试；真实 `git http-backend` + Basic Auth 端到端验收仍待补齐。
 
 ### 4C SSH 认证流 **\[P\]**
 

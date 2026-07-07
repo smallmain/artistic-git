@@ -1,11 +1,11 @@
 use artistic_git_contracts::{InvocationId, IpcToken, OperationId};
-use artistic_git_git_runner::GitCommandPlan;
+use artistic_git_git_runner::{GitCommandPlan, GitRunner};
 use artistic_git_helpers::{
     HelperIpcEnvelope, HelperIpcPayload, HelperIpcResponse, AUTH_INVOCATION_ID_ENV,
     AUTH_OPERATION_ID_ENV, AUTH_SOCKET_ENV, AUTH_TOKEN_ENV,
 };
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     ffi::{OsStr, OsString},
     fmt,
     io::{Read, Write},
@@ -182,6 +182,7 @@ struct OperationState {
 struct InvocationState {
     operation_id: OperationId,
     token: Option<IpcToken>,
+    accepted_token: Option<IpcToken>,
     interaction_policy: InteractionPolicy,
     context: AuthInvocationContext,
 }
@@ -263,6 +264,7 @@ impl AuthIpcSessionManager {
             InvocationState {
                 operation_id: operation_id.clone(),
                 token: Some(token.clone()),
+                accepted_token: None,
                 interaction_policy: operation.interaction_policy,
                 context: context.clone(),
             },
@@ -306,11 +308,49 @@ impl AuthIpcSessionManager {
         }
     }
 
+    pub fn validate_helper_request(
+        &mut self,
+        invocation_id: &InvocationId,
+        token: &IpcToken,
+    ) -> Result<ValidatedAuthInvocation, AuthIpcError> {
+        let state = self
+            .invocations
+            .get_mut(invocation_id.as_str())
+            .ok_or_else(|| AuthIpcError::UnknownInvocation(invocation_id.clone()))?;
+
+        match (&state.token, &state.accepted_token) {
+            (Some(expected), _) if expected == token => {
+                state.token = None;
+                state.accepted_token = Some(token.clone());
+                Ok(validated_invocation(invocation_id, state))
+            }
+            (Some(_), _) => Err(AuthIpcError::InvalidToken(invocation_id.clone())),
+            (None, Some(expected)) if expected == token => {
+                Ok(validated_invocation(invocation_id, state))
+            }
+            (None, _) => Err(AuthIpcError::TokenAlreadyUsed(invocation_id.clone())),
+        }
+    }
+
     pub fn invocation_ids_for_operation(&self, operation_id: &OperationId) -> Vec<InvocationId> {
         self.operations
             .get(operation_id.as_str())
             .map(|operation| operation.invocation_ids.clone())
             .unwrap_or_default()
+    }
+}
+
+fn validated_invocation(
+    invocation_id: &InvocationId,
+    state: &InvocationState,
+) -> ValidatedAuthInvocation {
+    ValidatedAuthInvocation {
+        operation_id: state.operation_id.clone(),
+        invocation_id: invocation_id.clone(),
+        interaction_policy: state.interaction_policy,
+        repository_path: state.context.repository_path.clone(),
+        host: state.context.host.clone(),
+        path: state.context.path.clone(),
     }
 }
 
@@ -665,7 +705,7 @@ fn handle_helper_stream_request(
                 };
             }
         };
-        match sessions.validate_token(&envelope.invocation_id, &envelope.token) {
+        match sessions.validate_helper_request(&envelope.invocation_id, &envelope.token) {
             Ok(validated) => validated,
             Err(error) => {
                 return HelperIpcResponse::Error {
@@ -846,12 +886,141 @@ impl AuthGitCommandInjectionPlan {
     }
 
     pub fn apply_to_command_plan(&self, mut plan: GitCommandPlan) -> GitCommandPlan {
-        let mut args = self.git_config_args();
+        let existing_keys = existing_git_config_keys(&plan.args);
+        let mut args = Vec::new();
+        for config in &self.git_config {
+            if existing_keys.contains(config.key) {
+                continue;
+            }
+            args.push(OsString::from("-c"));
+            args.push(config.as_git_arg());
+        }
         args.extend(plan.args);
         plan.args = args;
         plan.environment = plan.environment.with_overrides(self.environment.clone());
         plan
     }
+}
+
+fn existing_git_config_keys(args: &[OsString]) -> BTreeSet<String> {
+    let mut keys = BTreeSet::new();
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        if arg.as_os_str() != OsStr::new("-c") {
+            continue;
+        }
+        let Some(config) = args.next() else {
+            break;
+        };
+        let config = config.to_string_lossy();
+        if let Some((key, _value)) = config.split_once('=') {
+            keys.insert(key.to_owned());
+        }
+    }
+    keys
+}
+
+#[derive(Clone)]
+pub struct AuthRuntime {
+    endpoint: LocalIpcEndpoint,
+    sessions: Arc<Mutex<AuthIpcSessionManager>>,
+    helpers: AuthHelperBinaries,
+}
+
+impl AuthRuntime {
+    pub fn start(runner: &GitRunner, handler: Arc<dyn AuthIpcHandler>) -> std::io::Result<Self> {
+        let socket_path = auth_socket_path();
+        Self::start_at(runner, socket_path, handler)
+    }
+
+    pub fn start_at(
+        runner: &GitRunner,
+        socket_path: impl Into<PathBuf>,
+        handler: Arc<dyn AuthIpcHandler>,
+    ) -> std::io::Result<Self> {
+        let listener = LocalIpcListener::bind_platform(socket_path)?;
+        let endpoint = listener.endpoint().clone();
+        let sessions = Arc::new(Mutex::new(AuthIpcSessionManager::new()));
+        let helpers = AuthHelperBinaries::new(
+            runner.distribution().credential_helper.clone(),
+            runner.distribution().ssh_askpass.clone(),
+            default_core_ssh_command(runner),
+        );
+        let service = AuthIpcService::new(listener, Arc::clone(&sessions), handler);
+        service.run_in_background().forget();
+
+        Ok(Self {
+            endpoint,
+            sessions,
+            helpers,
+        })
+    }
+
+    pub fn start_operation(
+        &self,
+        interaction_policy: InteractionPolicy,
+        repository_path: Option<PathBuf>,
+    ) -> Result<AuthOperationSession, AuthIpcError> {
+        let mut sessions = self.sessions.lock().map_err(|_| {
+            AuthIpcError::RandomUnavailable("auth session table lock poisoned".into())
+        })?;
+        Ok(sessions.start_operation_with_context(
+            OperationId::new(random_identifier("op", &OPERATION_COUNTER, 16)?),
+            interaction_policy,
+            repository_path,
+        ))
+    }
+
+    pub fn inject_for_operation(
+        &self,
+        operation_id: &OperationId,
+        plan: GitCommandPlan,
+        context: AuthInvocationContext,
+    ) -> Result<GitCommandPlan, AuthIpcError> {
+        let invocation = self
+            .sessions
+            .lock()
+            .map_err(|_| {
+                AuthIpcError::RandomUnavailable("auth session table lock poisoned".into())
+            })?
+            .issue_invocation_with_context(operation_id, context)?;
+        Ok(
+            AuthGitCommandInjectionPlan::new(&self.endpoint, &invocation, &self.helpers)
+                .apply_to_command_plan(plan),
+        )
+    }
+
+    pub fn inject_once(
+        &self,
+        interaction_policy: InteractionPolicy,
+        repository_path: Option<PathBuf>,
+        plan: GitCommandPlan,
+        context: AuthInvocationContext,
+    ) -> Result<GitCommandPlan, AuthIpcError> {
+        let operation = self.start_operation(interaction_policy, repository_path)?;
+        self.inject_for_operation(&operation.operation_id, plan, context)
+    }
+
+    pub fn endpoint(&self) -> &LocalIpcEndpoint {
+        &self.endpoint
+    }
+}
+
+fn auth_socket_path() -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "artistic-git-auth-{}-{}.sock",
+        std::process::id(),
+        INVOCATION_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
+fn default_core_ssh_command(runner: &GitRunner) -> OsString {
+    crate::ssh_auth::SshCommandPlan::for_distribution(
+        runner.distribution(),
+        crate::ssh_auth::SshPlatform::Current,
+    )
+    .map(|plan| plan.core_ssh_command)
+    .unwrap_or_else(|_| OsString::from("ssh -o StrictHostKeyChecking=accept-new"))
 }
 
 #[cfg(test)]
@@ -875,6 +1044,30 @@ mod tests {
         let error = sessions
             .validate_token(&invocation.invocation_id, &invocation.token)
             .expect_err("token is one-time");
+        assert!(matches!(error, AuthIpcError::TokenAlreadyUsed(_)));
+    }
+
+    #[test]
+    fn helper_request_can_reuse_consumed_token_for_same_invocation() {
+        let mut sessions = AuthIpcSessionManager::new();
+        let operation = sessions
+            .start_operation_with_id(OperationId::new("op-1"), InteractionPolicy::interactive());
+        let invocation = sessions
+            .issue_invocation(&operation.operation_id)
+            .expect("issue invocation");
+
+        let first = sessions
+            .validate_helper_request(&invocation.invocation_id, &invocation.token)
+            .expect("first helper callback");
+        let second = sessions
+            .validate_helper_request(&invocation.invocation_id, &invocation.token)
+            .expect("second helper callback");
+
+        assert_eq!(first.invocation_id, invocation.invocation_id);
+        assert_eq!(second.invocation_id, invocation.invocation_id);
+        let error = sessions
+            .validate_token(&invocation.invocation_id, &invocation.token)
+            .expect_err("direct one-time validation still sees token consumed");
         assert!(matches!(error, AuthIpcError::TokenAlreadyUsed(_)));
     }
 
@@ -1035,6 +1228,72 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(&args[6..], expected_tail_args.as_slice());
         assert!(!endpoint.uses_network_transport());
+
+        fn write_manifest_executables(
+            root: &Path,
+            manifest: &artistic_git_contracts::GitDistManifest,
+        ) {
+            write_executable_file(&root.join(&manifest.paths.git_executable)).expect("git");
+            write_executable_file(&root.join(&manifest.paths.git_lfs_executable)).expect("git-lfs");
+            write_executable_file(&root.join(&manifest.paths.credential_helper))
+                .expect("credential helper");
+            write_executable_file(&root.join(&manifest.paths.ssh_askpass)).expect("ssh askpass");
+        }
+    }
+
+    #[test]
+    fn git_auth_injection_plan_does_not_duplicate_existing_auth_config() {
+        use artistic_git_git_runner::{GitDistribution, GitRunner};
+        use artistic_git_test_support::{git_dist_manifest_fixture, write_executable_file};
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manifest = git_dist_manifest_fixture();
+        write_manifest_executables(temp.path(), &manifest);
+        let distribution =
+            GitDistribution::from_manifest(temp.path(), manifest).expect("distribution");
+        let runner = GitRunner::from_distribution(distribution, temp.path().join("home"));
+        let invocation = AuthInvocation {
+            operation_id: OperationId::new("op-1"),
+            invocation_id: InvocationId::new("inv-1"),
+            token: IpcToken::new("token-1"),
+            interaction_policy: InteractionPolicy::interactive(),
+            repository_path: None,
+            host: None,
+            path: None,
+        };
+        let endpoint = LocalIpcEndpoint::UnixSocket(PathBuf::from("/tmp/artistic-git.sock"));
+        let helpers = AuthHelperBinaries::new(
+            "/opt/ag/helpers/artistic-git-credential-helper",
+            "/opt/ag/helpers/artistic-git-ssh-askpass",
+            "ssh -o StrictHostKeyChecking=accept-new",
+        );
+        let base_plan = runner
+            .git_command_builder()
+            .default_credential_helper()
+            .args(["fetch", "origin"])
+            .build();
+
+        let plan = AuthGitCommandInjectionPlan::new(&endpoint, &invocation, &helpers)
+            .apply_to_command_plan(base_plan);
+        let args = plan
+            .args
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            args.iter()
+                .filter(|arg| arg.starts_with("credential.helper="))
+                .count(),
+            1
+        );
+        assert_eq!(
+            args.iter()
+                .filter(|arg| arg.as_str() == "credential.useHttpPath=true")
+                .count(),
+            1
+        );
+        assert!(args.iter().any(|arg| arg.starts_with("core.sshCommand=")));
 
         fn write_manifest_executables(
             root: &Path,

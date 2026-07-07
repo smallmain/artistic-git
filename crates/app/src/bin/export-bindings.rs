@@ -4,7 +4,7 @@ use artistic_git_app::{
     HttpsCredentialPromptRequest, HttpsCredentialScope, IdentitySourcesResponse,
     IdentityValidationRequest, IdentityValidationResponse, OpenLogDirResponse,
     ProjectSettingsRequest, SaveAppSettingsRequest, SaveGitignoreRequest,
-    SaveProjectSettingsRequest, SettingsSnapshot, SshKeyStatus,
+    SaveHttpsCredentialRequest, SaveProjectSettingsRequest, SettingsSnapshot, SshKeyStatus,
 };
 use artistic_git_contracts::{
     AbortRevertRequest, AbortRevertResponse, AcceptRemoteHistoryRequest,
@@ -132,6 +132,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register::<HttpsCredentialListResponse>()
         .register::<HttpsCredentialEntry>()
         .register::<DeleteHttpsCredentialRequest>()
+        .register::<SaveHttpsCredentialRequest>()
         .register::<HttpsCredentialPromptRequest>()
         .register::<HttpsCredentialPromptReason>()
         .register::<HttpsCredentialScope>()

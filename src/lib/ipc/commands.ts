@@ -49,7 +49,10 @@ import type {
   GitignoreFileResponse,
   GitignoreRequest,
   HealthResponse,
+  HttpsCredentialEntry,
   HttpsCredentialListResponse,
+  HttpsCredentialPromptRequest,
+  HttpsCredentialScope,
   IdentityValidationRequest,
   IdentityValidationResponse,
   LocalChangesResponse,
@@ -77,6 +80,7 @@ import type {
   ReviewModeRequest,
   SaveAppSettingsRequest,
   SaveGitignoreRequest,
+  SaveHttpsCredentialRequest,
   SaveProjectSettingsRequest,
   SaveRemoteSettingsRequest,
   SafetyBackupListResponse,
@@ -170,7 +174,11 @@ export interface AppCommandArgs {
   generate_ssh_key: { request: GenerateSshKeyRequest };
   validate_identity_for_write: { request: IdentityValidationRequest };
   list_https_credentials: undefined;
+  save_https_credential: { request: SaveHttpsCredentialRequest };
   delete_https_credential: { request: DeleteHttpsCredentialRequest };
+  submit_https_credential_prompt: {
+    request: SubmitHttpsCredentialPromptRequest;
+  };
   check_for_updates: { request: UpdateCheckRequest };
   update_install_gate: undefined;
   install_ready_update: undefined;
@@ -245,7 +253,9 @@ export interface AppCommandResponses {
   generate_ssh_key: SshKeyStatus;
   validate_identity_for_write: IdentityValidationResponse;
   list_https_credentials: HttpsCredentialListResponse;
+  save_https_credential: HttpsCredentialEntry;
   delete_https_credential: void;
+  submit_https_credential_prompt: void;
   check_for_updates: UpdateStatusEvent;
   update_install_gate: UpdateInstallGateResponse;
   install_ready_update: void;
@@ -276,6 +286,19 @@ export interface WindowCloseGuardRequest {
 
 export interface RendererCrashInjectionRequest {
   summary?: string | null;
+}
+
+export interface HttpsCredentialPromptEvent {
+  promptId: string;
+  request: HttpsCredentialPromptRequest;
+}
+
+export interface SubmitHttpsCredentialPromptRequest {
+  promptId: string;
+  username?: string | null;
+  token?: string | null;
+  scope?: HttpsCredentialScope | null;
+  cancelled: boolean;
 }
 
 export interface CrashDialogPayload {
@@ -694,10 +717,22 @@ export function listHttpsCredentials(): Promise<HttpsCredentialListResponse> {
   return invokeAppCommand("list_https_credentials");
 }
 
+export function saveHttpsCredential(
+  request: SaveHttpsCredentialRequest,
+): Promise<HttpsCredentialEntry> {
+  return invokeAppCommand("save_https_credential", { request });
+}
+
 export function deleteHttpsCredential(
   request: DeleteHttpsCredentialRequest,
 ): Promise<void> {
   return invokeAppCommand("delete_https_credential", { request });
+}
+
+export function submitHttpsCredentialPrompt(
+  request: SubmitHttpsCredentialPromptRequest,
+): Promise<void> {
+  return invokeAppCommand("submit_https_credential_prompt", { request });
 }
 
 export function checkForUpdates(

@@ -32,6 +32,7 @@ const commandMocks = vi.hoisted(() => ({
   openUpdateReleasePage: vi.fn(),
   saveAppSettings: vi.fn(),
   saveGitignore: vi.fn(),
+  saveHttpsCredential: vi.fn(),
   saveProjectSettings: vi.fn(),
   saveRemoteSettings: vi.fn(),
   settingsSnapshot: vi.fn(),
@@ -68,6 +69,13 @@ beforeEach(() => {
     ],
   });
   commandMocks.deleteHttpsCredential.mockResolvedValue(undefined);
+  commandMocks.saveHttpsCredential.mockResolvedValue({
+    protocol: "https",
+    host: "github.com",
+    path: null,
+    scope: "host",
+    username: "alice",
+  });
   commandMocks.saveAppSettings.mockImplementation(({ settings }) =>
     Promise.resolve(settings),
   );
@@ -327,6 +335,58 @@ describe("SettingsModal", () => {
     expect(
       screen.getByText("No HTTPS credentials are saved."),
     ).toBeInTheDocument();
+  });
+
+  it("edits saved HTTPS credentials without exposing the existing token", async () => {
+    commandMocks.listHttpsCredentials
+      .mockResolvedValueOnce({
+        credentials: [
+          {
+            protocol: "https",
+            host: "github.com",
+            path: null,
+            scope: "host",
+            username: "alice",
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        credentials: [
+          {
+            protocol: "https",
+            host: "github.com",
+            path: null,
+            scope: "host",
+            username: "bob",
+          },
+        ],
+      });
+
+    render(
+      <TestProviders>
+        <SettingsModal onOpenChange={vi.fn()} open />
+      </TestProviders>,
+    );
+
+    expect(await screen.findByText("github.com")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("Username"), {
+      target: { value: "bob" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save credential" }));
+
+    await waitFor(() =>
+      expect(commandMocks.saveHttpsCredential).toHaveBeenCalledWith({
+        protocol: "https",
+        host: "github.com",
+        path: null,
+        scope: "host",
+        username: "bob",
+        token: null,
+      }),
+    );
+    expect(await screen.findByText("Credential saved")).toBeInTheDocument();
+    expect(screen.getByText("bob - Host credential")).toBeInTheDocument();
   });
 
   it("persists the SSH passphrase remember setting", async () => {
