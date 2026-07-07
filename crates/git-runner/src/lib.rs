@@ -1039,9 +1039,10 @@ fn parse_percent(input: &str) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use artistic_git_test_support::write_executable_script;
     use artistic_git_test_support::{
-        git_dist_manifest_fixture, write_executable_file, write_executable_script,
-        write_git_dist_manifest, TestTempDir,
+        git_dist_manifest_fixture, write_executable_file, write_git_dist_manifest, TestTempDir,
     };
     use std::{cell::RefCell, rc::Rc};
 
