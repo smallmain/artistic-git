@@ -803,6 +803,7 @@ pub struct CommitRequest {
     pub large_file_threshold_mb: Option<u32>,
     pub large_file_decision: LargeFileDecision,
     pub disable_repository_gpgsign: bool,
+    pub push_immediately: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -832,6 +833,10 @@ pub enum CommitResponse {
     GpgSignFailed {
         summary: String,
         stderr: String,
+    },
+    Conflicts {
+        conflict: ConflictEnteredEvent,
+        recovery: Option<StashRecoveryPoint>,
     },
     NothingToCommit,
 }

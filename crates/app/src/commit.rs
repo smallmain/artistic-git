@@ -4,9 +4,15 @@ use crate::git_ops::{
 };
 use artistic_git_contracts::{
     AppError, AppResult, CommitRequest, CommitResponse, LargeFileDecision, LargeFileWarning,
+    OperationId, SyncCurrentBranchRequest, SyncCurrentBranchResponse,
 };
 use artistic_git_git_runner::GitRunner;
-use std::{ffi::OsString, fs, path::Path};
+use std::{
+    ffi::OsString,
+    fs,
+    path::Path,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 const OPERATION: &str = "commitChanges";
 
@@ -56,6 +62,14 @@ pub fn commit_changes(runner: &GitRunner, request: CommitRequest) -> AppResult<C
         | LargeFileDecision::CommitNormally => {}
     }
 
+    let operation_id = commit_operation_id();
+    if should_sync_before_commit(runner, &root)? {
+        let sync = sync_for_commit(runner, &root, &operation_id)?;
+        if let Some(conflict_response) = commit_conflict_response(sync) {
+            return Ok(conflict_response);
+        }
+    }
+
     let mut add_paths = paths.clone();
     if !lfs_tracked_paths.is_empty() && root.join(".gitattributes").exists() {
         add_paths.push(".gitattributes".to_owned());
@@ -79,11 +93,76 @@ pub fn commit_changes(runner: &GitRunner, request: CommitRequest) -> AppResult<C
     let oid = git_stdout(runner, Some(&root), ["rev-parse", "HEAD"], OPERATION)?
         .trim()
         .to_owned();
+    if request.push_immediately && repository_has_origin(runner, &root)? {
+        let sync = sync_for_commit(runner, &root, &operation_id)?;
+        if let Some(conflict_response) = commit_conflict_response(sync) {
+            return Ok(conflict_response);
+        }
+    }
+
     Ok(CommitResponse::Committed {
         oid,
         committed_paths: paths,
         lfs_tracked_paths,
     })
+}
+
+fn should_sync_before_commit(runner: &GitRunner, root: &Path) -> AppResult<bool> {
+    Ok(repository_has_origin(runner, root)? && upstream_branch(runner, root)?.is_some())
+}
+
+fn repository_has_origin(runner: &GitRunner, root: &Path) -> AppResult<bool> {
+    crate::remote::read_origin_url(runner, root, OPERATION).map(|origin| origin.is_some())
+}
+
+fn upstream_branch(runner: &GitRunner, root: &Path) -> AppResult<Option<String>> {
+    let (plan, output) = run_git_raw(
+        runner,
+        Some(root),
+        ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+        OPERATION,
+    )?;
+    if output.status.success() {
+        Ok(Some(
+            String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+        ))
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
+        if stderr.contains("no upstream") || stderr.contains("no such ref") {
+            Ok(None)
+        } else {
+            Err(crate::git_ops::command_failure(&plan, output, OPERATION))
+        }
+    }
+}
+
+fn sync_for_commit(
+    runner: &GitRunner,
+    root: &Path,
+    operation_id: &OperationId,
+) -> AppResult<SyncCurrentBranchResponse> {
+    crate::sync::sync_current_branch(
+        runner,
+        SyncCurrentBranchRequest {
+            repository_path: crate::git_ops::display_path(root),
+            operation_id: Some(operation_id.clone()),
+        },
+    )
+}
+
+fn commit_conflict_response(sync: SyncCurrentBranchResponse) -> Option<CommitResponse> {
+    sync.conflict.map(|conflict| CommitResponse::Conflicts {
+        conflict,
+        recovery: sync.stash_recovery,
+    })
+}
+
+fn commit_operation_id() -> OperationId {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    OperationId(format!("commit-changes-{millis}"))
 }
 
 fn large_files_without_lfs(
@@ -208,7 +287,11 @@ mod tests {
     use crate::git_ops::display_path;
     use artistic_git_git_runner::{GitDistribution, GitRunner};
     use artistic_git_test_support::{require_git_dist, GitDistError, TestTempDir};
-    use std::{ffi::OsString, io::Write, path::PathBuf};
+    use std::{
+        ffi::OsString,
+        io::Write,
+        path::{Path, PathBuf},
+    };
 
     #[test]
     fn commits_only_selected_paths() {
@@ -229,6 +312,7 @@ mod tests {
                 large_file_threshold_mb: None,
                 large_file_decision: LargeFileDecision::Prompt,
                 disable_repository_gpgsign: false,
+                push_immediately: false,
             },
         )
         .expect("commit selected path");
@@ -263,6 +347,7 @@ mod tests {
                 large_file_threshold_mb: Some(1),
                 large_file_decision: LargeFileDecision::Prompt,
                 disable_repository_gpgsign: false,
+                push_immediately: false,
             },
         )
         .expect("large file prompt");
@@ -298,6 +383,7 @@ mod tests {
                 large_file_threshold_mb: Some(1),
                 large_file_decision: LargeFileDecision::TrackWithLfs,
                 disable_repository_gpgsign: false,
+                push_immediately: false,
             },
         )
         .expect("track large file with lfs");
@@ -336,6 +422,7 @@ mod tests {
                 large_file_threshold_mb: Some(1),
                 large_file_decision: LargeFileDecision::CommitNormally,
                 disable_repository_gpgsign: false,
+                push_immediately: false,
             },
         )
         .expect("commit large file normally");
@@ -367,6 +454,7 @@ mod tests {
                 large_file_threshold_mb: None,
                 large_file_decision: LargeFileDecision::Prompt,
                 disable_repository_gpgsign: true,
+                push_immediately: false,
             },
         )
         .expect("disable repository gpgsign");
@@ -377,6 +465,125 @@ mod tests {
                 .trim(),
             "false"
         );
+    }
+
+    #[test]
+    fn commit_syncs_before_commit_and_pushes_selected_paths() {
+        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
+            return;
+        };
+        let fixture = DoubleClone::new(&runner);
+        fixture.peer.write("remote.txt", "remote\n");
+        fixture.peer.git(["add", "remote.txt"]);
+        fixture.peer.git(["commit", "-m", "remote change"]);
+        fixture.peer.git(["push"]);
+        fixture.local.write("selected.txt", "selected\n");
+        fixture.local.write("unselected.txt", "unselected\n");
+
+        let response = commit_changes(
+            &runner,
+            CommitRequest {
+                repository_path: display_path(&fixture.local.path),
+                paths: vec!["selected.txt".to_owned()],
+                message: "selected commit".to_owned(),
+                large_file_threshold_mb: None,
+                large_file_decision: LargeFileDecision::Prompt,
+                disable_repository_gpgsign: false,
+                push_immediately: true,
+            },
+        )
+        .expect("commit with sync and push");
+
+        assert!(matches!(response, CommitResponse::Committed { .. }));
+        assert_eq!(fixture.local.read("remote.txt"), "remote\n");
+        assert_eq!(fixture.local.read("unselected.txt"), "unselected\n");
+        assert_eq!(
+            fixture
+                .local
+                .git_output(["status", "--short", "--", "unselected.txt"])
+                .trim(),
+            "?? unselected.txt"
+        );
+        fixture.peer.git(["pull", "--ff-only"]);
+        assert_eq!(fixture.peer.read("selected.txt"), "selected\n");
+    }
+
+    #[test]
+    fn commit_push_immediately_publishes_branch_without_upstream() {
+        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
+            return;
+        };
+        let parent = TestTempDir::new("ag-commit-publish").expect("publish parent");
+        let remote = TestRepo::at(&runner, parent.path().join("remote.git"));
+        remote.git(["init", "--bare"]);
+        let repo = TestRepo::at(&runner, parent.path().join("repo"));
+        repo.git(["init", "-b", "main"]);
+        repo.git(["config", "user.name", "Tester"]);
+        repo.git(["config", "user.email", "tester@example.test"]);
+        repo.write("tracked.txt", "initial\n");
+        repo.git(["add", "tracked.txt"]);
+        repo.git(["commit", "-m", "initial"]);
+        repo.git([
+            "remote",
+            "add",
+            "origin",
+            display_path(&remote.path).as_str(),
+        ]);
+        repo.write("selected.txt", "selected\n");
+
+        let response = commit_changes(
+            &runner,
+            CommitRequest {
+                repository_path: display_path(&repo.path),
+                paths: vec!["selected.txt".to_owned()],
+                message: "publish selected".to_owned(),
+                large_file_threshold_mb: None,
+                large_file_decision: LargeFileDecision::Prompt,
+                disable_repository_gpgsign: false,
+                push_immediately: true,
+            },
+        )
+        .expect("commit publishes branch");
+
+        assert!(matches!(response, CommitResponse::Committed { .. }));
+        assert_eq!(
+            repo.git_output(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+                .trim(),
+            "origin/main"
+        );
+        assert_eq!(
+            remote.git_output(["show", "refs/heads/main:selected.txt"]),
+            "selected\n"
+        );
+    }
+
+    #[test]
+    fn commit_push_immediately_recovers_from_push_race() {
+        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
+            return;
+        };
+        let fixture = DoubleClone::new(&runner);
+        fixture.local.write("selected.txt", "selected\n");
+        fixture.install_one_shot_push_race_hook();
+
+        let response = commit_changes(
+            &runner,
+            CommitRequest {
+                repository_path: display_path(&fixture.local.path),
+                paths: vec!["selected.txt".to_owned()],
+                message: "selected with race".to_owned(),
+                large_file_threshold_mb: None,
+                large_file_decision: LargeFileDecision::Prompt,
+                disable_repository_gpgsign: false,
+                push_immediately: true,
+            },
+        )
+        .expect("commit push race self-heals");
+
+        assert!(matches!(response, CommitResponse::Committed { .. }));
+        fixture.peer.git(["pull", "--ff-only"]);
+        assert_eq!(fixture.peer.read("selected.txt"), "selected\n");
+        assert_eq!(fixture.peer.read("race.txt"), "race\n");
     }
 
     #[test]
@@ -405,7 +612,7 @@ mod tests {
 
     struct TestRepo {
         path: PathBuf,
-        _temp: TestTempDir,
+        _temp: Option<TestTempDir>,
         runner: GitRunner,
     }
 
@@ -414,7 +621,16 @@ mod tests {
             let temp = TestTempDir::new("ag-commit-repo").expect("temp repo");
             Self {
                 path: temp.path().to_path_buf(),
-                _temp: temp,
+                _temp: Some(temp),
+                runner: runner.clone(),
+            }
+        }
+
+        fn at(runner: &GitRunner, path: PathBuf) -> Self {
+            fs::create_dir_all(&path).expect("create repo path");
+            Self {
+                path,
+                _temp: None,
                 runner: runner.clone(),
             }
         }
@@ -460,5 +676,102 @@ mod tests {
             let mut file = fs::File::create(path).expect("create file");
             file.write_all(content).expect("write file");
         }
+    }
+
+    struct DoubleClone {
+        local: TestRepo,
+        peer: TestRepo,
+        _remote: TestRepo,
+        _parent: TestTempDir,
+    }
+
+    impl DoubleClone {
+        fn new(runner: &GitRunner) -> Self {
+            let parent = TestTempDir::new("ag-commit-double").expect("double clone parent");
+            let remote = TestRepo::at(runner, parent.path().join("remote.git"));
+            remote.git(["init", "--bare"]);
+
+            let seed = TestRepo::at(runner, parent.path().join("seed"));
+            seed.git(["init", "-b", "main"]);
+            seed.git(["config", "user.name", "Tester"]);
+            seed.git(["config", "user.email", "tester@example.test"]);
+            seed.write("tracked.txt", "initial\n");
+            seed.git(["add", "tracked.txt"]);
+            seed.git(["commit", "-m", "initial"]);
+            seed.git([
+                "remote",
+                "add",
+                "origin",
+                display_path(&remote.path).as_str(),
+            ]);
+            seed.git(["push", "-u", "origin", "main"]);
+
+            let local = TestRepo::at(runner, parent.path().join("local"));
+            local.git([
+                "clone",
+                display_path(&remote.path).as_str(),
+                display_path(&local.path).as_str(),
+            ]);
+            local.git(["config", "user.name", "Tester"]);
+            local.git(["config", "user.email", "tester@example.test"]);
+
+            let peer = TestRepo::at(runner, parent.path().join("peer"));
+            peer.git([
+                "clone",
+                display_path(&remote.path).as_str(),
+                display_path(&peer.path).as_str(),
+            ]);
+            peer.git(["config", "user.name", "Tester"]);
+            peer.git(["config", "user.email", "tester@example.test"]);
+
+            Self {
+                local,
+                peer,
+                _remote: remote,
+                _parent: parent,
+            }
+        }
+
+        fn install_one_shot_push_race_hook(&self) {
+            let marker = self.local.path.join(".git").join("ag-commit-race-once");
+            fs::write(&marker, "race\n").expect("write race marker");
+            let hook = self.local.path.join(".git").join("hooks").join("pre-push");
+            let script = format!(
+                r#"#!/bin/sh
+set -e
+marker={marker}
+peer={peer}
+if [ -f "$marker" ]; then
+  rm "$marker"
+  git -C "$peer" pull --ff-only
+  printf '%s\n' race > "$peer/race.txt"
+  git -C "$peer" add race.txt
+  git -C "$peer" commit -m 'race change'
+  git -C "$peer" push
+fi
+exit 0
+"#,
+                marker = shell_quote(&marker),
+                peer = shell_quote(&self.peer.path),
+            );
+            fs::write(&hook, script).expect("write pre-push hook");
+            make_executable(&hook);
+        }
+    }
+
+    fn make_executable(path: &Path) {
+        let _ = path;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mut permissions = fs::metadata(path).expect("hook metadata").permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(path, permissions).expect("make hook executable");
+        }
+    }
+
+    fn shell_quote(path: &Path) -> String {
+        format!("'{}'", display_path(path).replace('\'', "'\\''"))
     }
 }

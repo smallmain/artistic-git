@@ -12,7 +12,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppProviders } from "@/AppProviders";
 import { createI18n } from "@/i18n/i18n";
 import { createAppQueryClient } from "@/lib/query/client";
-import type { DiffPayload, LocalChange } from "@/lib/ipc/generated";
+import type {
+  ConflictEnteredEvent,
+  DiffPayload,
+  LocalChange,
+} from "@/lib/ipc/generated";
 
 import { RepositoryShell } from "./RepositoryShell";
 
@@ -113,6 +117,36 @@ function createLocalChange({
     path: newPath,
     payload,
     worktreeStatus,
+  };
+}
+
+function createConflictEvent(): ConflictEnteredEvent {
+  const file = {
+    fileKind: "text" as const,
+    path: "src/app.ts",
+    status: "unresolved" as const,
+  };
+  commandMocks.listConflicts.mockResolvedValue({
+    files: [file],
+    operation: { kind: "merge", label: "Merge" },
+  });
+  commandMocks.conflictDetail.mockResolvedValue({
+    detail: {
+      currentText: "before\n<<<<<<< HEAD\nown\n=======\nother\n>>>>>>> branch\n",
+      hunks: [],
+      kind: "text",
+      language: null,
+      otherText: "other\n",
+      ownText: "own\n",
+    },
+    file,
+  });
+
+  return {
+    files: [file],
+    operationId: "commit-conflict-test",
+    operationName: "commitChanges",
+    repositoryPath: "/repo/art",
   };
 }
 
@@ -885,6 +919,7 @@ describe("RepositoryShell commit flow", () => {
         largeFileThresholdMb: null,
         message: "Update assets",
         paths: ["src/app.ts", "assets/texture.png"],
+        pushImmediately: false,
         repositoryPath: "/repo/art",
       });
     },
@@ -911,7 +946,7 @@ describe("RepositoryShell commit flow", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("fetches before committing a branch with an upstream", async () => {
+  it("lets the commit command own pre-commit sync for a branch with an upstream", async () => {
     commandMocks.listBranches.mockResolvedValue({
       branches: [
         branchSummary({
@@ -935,7 +970,10 @@ describe("RepositoryShell commit flow", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Commit" }));
 
     await waitFor(() => expect(commandMocks.commitChanges).toHaveBeenCalled());
-    expect(commandMocks.fetchRepository).toHaveBeenCalledTimes(1);
+    expect(commandMocks.fetchRepository).not.toHaveBeenCalled();
+    expect(commandMocks.commitChanges).toHaveBeenCalledWith(
+      expect.objectContaining({ pushImmediately: true }),
+    );
   });
 
   it("skips the pre-commit fetch when the current branch has no upstream", async () => {
@@ -1021,6 +1059,37 @@ describe("RepositoryShell commit flow", () => {
       expect.objectContaining({
         disableRepositoryGpgsign: true,
         largeFileDecision: "prompt",
+      }),
+    );
+  });
+
+  it("opens conflict resolution and keeps the commit draft when commit sync conflicts", async () => {
+    const conflict = createConflictEvent();
+    commandMocks.commitChanges.mockResolvedValueOnce({
+      conflict,
+      recovery: null,
+      status: "conflicts",
+    });
+
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    const dialog = await openCommitDialog();
+    fireEvent.change(within(dialog).getByLabelText("Commit message"), {
+      target: { value: "Update assets" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Commit" }));
+
+    expect(
+      await screen.findByText("Commit paused for conflict resolution."),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByRole("dialog", { name: "Resolve conflicts" }),
+    ).toBeInTheDocument();
+    expect(screen.getByDisplayValue("Update assets")).toBeInTheDocument();
+    expect(commandMocks.commitChanges).toHaveBeenCalledWith(
+      expect.objectContaining({
+        paths: ["src/app.ts", "assets/texture.png"],
+        pushImmediately: true,
       }),
     );
   });

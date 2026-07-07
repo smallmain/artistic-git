@@ -828,16 +828,13 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       setGpgFailure(null);
       setLargeFileWarning(null);
       try {
-        if (shouldFetchBeforeCurrentBranchWrite) {
-          await runFetch();
-        }
-
         const response = await commitChanges({
           disableRepositoryGpgsign,
           largeFileDecision,
           largeFileThresholdMb: null,
           message: commitMessage,
           paths: selectedCommitPaths,
+          pushImmediately: commitPushImmediately,
           repositoryPath,
         });
 
@@ -856,6 +853,15 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
             stderr: response.stderr,
             summary: response.summary,
           });
+        } else if (response.status === "conflicts") {
+          if (response.recovery) {
+            setStashRecoveryByOperation((current) => ({
+              ...current,
+              [response.conflict.operationId]: response.recovery!,
+            }));
+          }
+          setCommitStatus(t("localChanges.commitConflict"));
+          setConflictEntered(response.conflict);
         } else {
           setCommitStatus(t("localChanges.nothingToCommit"));
         }
@@ -870,10 +876,10 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     [
       commitIds,
       commitMessage,
+      commitPushImmediately,
       repositoryPath,
-      runFetch,
       selectedCommitPaths,
-      shouldFetchBeforeCurrentBranchWrite,
+      setConflictEntered,
       t,
     ],
   );

@@ -148,6 +148,7 @@ export type CommitRequest = {
   largeFileThresholdMb: number | null;
   largeFileDecision: LargeFileDecision;
   disableRepositoryGpgsign: boolean;
+  pushImmediately: boolean;
 };
 
 export type CommitResponse =
@@ -163,6 +164,11 @@ export type CommitResponse =
       thresholdMb: number;
     }
   | { status: "gpgSignFailed"; summary: string; stderr: string }
+  | {
+      status: "conflicts";
+      conflict: ConflictEnteredEvent;
+      recovery: StashRecoveryPoint | null;
+    }
   | { status: "nothingToCommit" };
 
 export type CommitSummary = {

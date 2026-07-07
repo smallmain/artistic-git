@@ -614,19 +614,23 @@ fn commit_changes(
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::CommitResponse> {
     let repository_path = request.repository_path.clone();
     let response = backend.commit_changes(request)?;
-    if matches!(
-        response,
+    match &response {
         artistic_git_contracts::CommitResponse::Committed { .. }
-    ) {
-        emit_repo_changed(
-            &app_handle,
-            repository_path,
-            vec![
-                artistic_git_contracts::RepoQueryKind::LocalChanges,
-                artistic_git_contracts::RepoQueryKind::History,
-                artistic_git_contracts::RepoQueryKind::Summary,
-            ],
-        );
+        | artistic_git_contracts::CommitResponse::Conflicts { .. } => {
+            if let artistic_git_contracts::CommitResponse::Conflicts { conflict, .. } = &response {
+                let _ = app_handle.emit("conflict-entered", conflict);
+            }
+            emit_repo_changed(
+                &app_handle,
+                repository_path,
+                vec![
+                    artistic_git_contracts::RepoQueryKind::LocalChanges,
+                    artistic_git_contracts::RepoQueryKind::History,
+                    artistic_git_contracts::RepoQueryKind::Summary,
+                ],
+            );
+        }
+        _ => {}
     }
     Ok(response)
 }
