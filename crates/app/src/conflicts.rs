@@ -1148,7 +1148,13 @@ mod tests {
 
     #[test]
     fn rejects_absolute_or_parent_conflict_paths() {
-        assert!(validate_conflict_path("/tmp/file", "test").is_err());
+        let absolute_path = if cfg!(windows) {
+            "C:/tmp/file"
+        } else {
+            "/tmp/file"
+        };
+
+        assert!(validate_conflict_path(absolute_path, "test").is_err());
         assert!(validate_conflict_path("../file", "test").is_err());
         assert!(validate_conflict_path("src/file.txt", "test").is_ok());
     }

@@ -175,7 +175,7 @@ pub fn write_executable_script(
 
 fn executable_path(path: &str) -> String {
     if cfg!(windows) {
-        format!("{path}.exe")
+        format!("{path}.cmd")
     } else {
         path.to_owned()
     }
