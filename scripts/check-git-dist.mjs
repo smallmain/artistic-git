@@ -5,25 +5,37 @@ import { spawnSync } from "node:child_process";
 import { constants } from "node:fs";
 import { access, readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import {
+  GitDistConfigError,
+  assertRelativeResourcePath,
+  assertSha256,
+  configPath,
+  expectedManifestPaths,
+  getHostTarget,
+  getTarget,
+  isPlaceholderChecksum,
+  loadGitDistConfig,
+  requiredExecutableKeysForTarget,
+  sha256File,
+  supportedTargets,
+  validateGitDistConfig,
+} from "./git-dist-lib.mjs";
 
-const repoRoot = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "..",
+const args = process.argv.slice(2);
+const schemaOnly = args.includes("--schema-only");
+const explain = args.includes("--explain");
+const noExec = args.includes("--no-exec");
+const realBuild = args.includes("--real-build");
+const help = args.includes("--help") || args.includes("-h");
+const targetArg = args.find((arg) => arg.startsWith("--target="));
+const targetName = normalizeTargetArg(
+  targetArg?.slice("--target=".length) || getHostTarget(),
 );
-const configPath = path.join(repoRoot, "git-dist.toml");
-
-const args = new Set(process.argv.slice(2));
-const schemaOnly = args.has("--schema-only");
-const explain = args.has("--explain");
-const noExec = args.has("--no-exec");
-const help = args.has("--help") || args.has("-h");
-const targetArg = process.argv.find((arg) => arg.startsWith("--target="));
-const target = targetArg?.slice("--target=".length) || process.platform;
 
 const usage = `Usage:
   node scripts/check-git-dist.mjs --schema-only
-  ARTISTIC_GIT_DIST_DIR=/path/to/git-dist node scripts/check-git-dist.mjs [--no-exec] [--target=win32|darwin|linux]
+  node scripts/check-git-dist.mjs --schema-only --real-build [--target=${supportedTargets.join("|")}]
+  ARTISTIC_GIT_DIST_DIR=/path/to/git-dist node scripts/check-git-dist.mjs [--no-exec] [--target=${supportedTargets.join("|")}]
 
 This checker never searches PATH and never falls back to a system Git.`;
 
@@ -35,6 +47,17 @@ if (help) {
 function fail(message) {
   console.error(`git-dist check failed: ${message}`);
   process.exit(1);
+}
+
+function failConfig(error) {
+  if (error instanceof GitDistConfigError) {
+    console.error(`git-dist check failed: ${error.message}`);
+    for (const detail of error.details ?? []) {
+      console.error(`  - ${detail}`);
+    }
+    process.exit(1);
+  }
+  throw error;
 }
 
 function info(message) {
@@ -57,56 +80,21 @@ async function assertRegularFile(filePath, label) {
   }
 }
 
-function assertRelativeResourcePath(value, label) {
-  if (typeof value !== "string" || value.length === 0) {
-    fail(`manifest paths.${label} must be a non-empty relative path`);
+async function checkConfigContract(config, options = {}) {
+  const { warnings, placeholders } = validateGitDistConfig(config, options);
+  for (const warning of warnings) {
+    info(`warning: ${warning}`);
   }
-  if (path.isAbsolute(value) || value.split(/[\\/]+/).includes("..")) {
-    fail(
-      `manifest paths.${label} must stay inside ARTISTIC_GIT_DIST_DIR: ${value}`,
-    );
-  }
-}
-
-async function checkConfigContract() {
-  let text;
-  try {
-    text = await readFile(configPath, "utf8");
-  } catch {
-    fail(`missing root git-dist.toml at ${configPath}`);
-  }
-
-  const requiredPatterns = [
-    [/^schema_version\s*=\s*1$/m, "schema_version = 1"],
-    [/^\[versions\]$/m, "[versions]"],
-    [/^git\s*=/m, "versions.git"],
-    [/^git_lfs\s*=/m, "versions.git_lfs"],
-    [/^win32_openssh\s*=/m, "versions.win32_openssh"],
-    [/^\[resources\.layout\]$/m, "[resources.layout]"],
-    [/^git_executable\s*=/m, "resources.layout.git_executable"],
-    [/^git_lfs_executable\s*=/m, "resources.layout.git_lfs_executable"],
-    [/^windows_ssh_executable\s*=/m, "resources.layout.windows_ssh_executable"],
-    [/^\[sources\.windows\.x86_64\.git\]$/m, "Windows MinGit source"],
-    [/^\[sources\.windows\.x86_64\.git_lfs\]$/m, "Windows Git LFS source"],
-    [/^\[sources\.windows\.x86_64\.win32_openssh\]$/m, "Win32-OpenSSH source"],
-    [/^\[sources\.macos\.universal\.git\]$/m, "macOS Git source"],
-    [/^\[sources\.linux\.x86_64\.git\]$/m, "Linux Git source"],
-    [/^sha256\s*=/m, "source sha256 fields"],
-  ];
-
-  for (const [pattern, label] of requiredPatterns) {
-    if (!pattern.test(text)) {
-      fail(`git-dist.toml contract is missing ${label}`);
-    }
-  }
-
-  if (/"0{64}"/.test(text) || /placeholder\s*=\s*true/.test(text)) {
+  if (placeholders.length > 0) {
     info(
-      "git-dist.toml contains placeholder source pins; real build jobs must reject them.",
+      `git-dist.toml contains placeholder source pins: ${placeholders.join("; ")}`,
     );
   }
-
-  info("git-dist.toml contract fields are present.");
+  info(
+    realBuild
+      ? "git-dist.toml real-build contract passed."
+      : "git-dist.toml schema contract passed.",
+  );
 }
 
 function parseManifest(raw) {
@@ -125,7 +113,16 @@ function requireManifestString(manifest, key) {
   return value;
 }
 
-async function checkDistRoot() {
+function assertManifestVersionNotPlaceholder(manifest, key) {
+  const value = requireManifestString(manifest, key);
+  if (/placeholder|TODO/i.test(value)) {
+    fail(`manifest.${key} must not be a placeholder value: ${value}`);
+  }
+  return value;
+}
+
+async function checkDistRoot(config) {
+  const target = getTarget(config, targetName);
   const distDir = process.env.ARTISTIC_GIT_DIST_DIR;
   if (!distDir || distDir.trim().length === 0) {
     fail(
@@ -146,67 +143,88 @@ async function checkDistRoot() {
     );
   }
 
-  const manifestPath = path.join(distRoot, "manifest.json");
+  const manifestPath = path.join(distRoot, config.resources.layout.manifest);
   await assertRegularFile(manifestPath, "manifest.json");
   const manifest = parseManifest(await readFile(manifestPath, "utf8"));
 
-  if (manifest.schemaVersion !== 1) {
-    fail("manifest.schemaVersion must be 1");
+  if (manifest.schemaVersion !== config.manifest.schema_version) {
+    fail(`manifest.schemaVersion must be ${config.manifest.schema_version}`);
   }
 
   requireManifestString(manifest, "platform");
-  requireManifestString(manifest, "gitVersion");
-  requireManifestString(manifest, "gitLfsVersion");
-  requireManifestString(manifest, "helperVersion");
+  assertManifestVersionNotPlaceholder(manifest, "gitVersion");
+  assertManifestVersionNotPlaceholder(manifest, "gitLfsVersion");
+  assertManifestVersionNotPlaceholder(manifest, "helperVersion");
+
+  if (target.platform === "windows") {
+    assertManifestVersionNotPlaceholder(manifest, "windowsOpenSshVersion");
+  }
+
+  if (manifest.platform !== target.manifest_platform) {
+    fail(
+      `manifest.platform must match targets.${targetName}.manifest_platform (${target.manifest_platform}), got ${manifest.platform}`,
+    );
+  }
 
   if (!manifest.paths || typeof manifest.paths !== "object") {
     fail("manifest.paths is required");
   }
 
-  const requiredPathKeys = [
-    "gitExecutable",
-    "gitLfsExecutable",
-    "credentialHelper",
-    "sshAskpass",
-  ];
-  if (target === "win32") {
-    requiredPathKeys.push("windowsSshExecutable");
-  }
+  checkManifestPaths(config, manifest);
+  await checkManifestExecutablesAndChecksums(config, manifest, distRoot);
 
-  for (const key of requiredPathKeys) {
-    assertRelativeResourcePath(manifest.paths[key], key);
-  }
-
-  const executableKeys = [
-    "gitExecutable",
-    "gitLfsExecutable",
-    "credentialHelper",
-    "sshAskpass",
-  ];
-  if (manifest.paths.windowsSshExecutable) {
-    assertRelativeResourcePath(
-      manifest.paths.windowsSshExecutable,
-      "windowsSshExecutable",
+  if (!noExec && targetName === getHostTarget()) {
+    runVersionCheck(
+      path.join(distRoot, manifest.paths.gitExecutable),
+      ["--version"],
+      "embedded git",
+      expectedGitVersion(config, target),
     );
-    executableKeys.push("windowsSshExecutable");
-  }
-
-  for (const key of executableKeys) {
-    const mode =
-      target === process.platform && process.platform !== "win32"
-        ? constants.X_OK
-        : constants.R_OK;
-    await assertRegularFile(
-      path.join(distRoot, manifest.paths[key]),
-      `manifest paths.${key}`,
-    );
-    await assertPath(
-      path.join(distRoot, manifest.paths[key]),
-      `manifest paths.${key}`,
-      mode,
+    runVersionCheck(
+      path.join(distRoot, manifest.paths.gitLfsExecutable),
+      ["version"],
+      "embedded git-lfs",
+      `git-lfs/${config.versions.git_lfs}`,
     );
   }
 
+  info(`ARTISTIC_GIT_DIST_DIR is valid for ${manifest.platform}: ${distRoot}`);
+}
+
+function checkManifestPaths(config, manifest) {
+  const expectedPaths = expectedManifestPaths(config, targetName);
+  const requiredKeys = requiredExecutableKeysForTarget(config, targetName);
+
+  for (const key of requiredKeys) {
+    const actual = manifest.paths[key];
+    const expected = expectedPaths[key];
+    try {
+      assertRelativeResourcePath(actual, key);
+    } catch (error) {
+      fail(error.message);
+    }
+    if (actual !== expected) {
+      fail(
+        `manifest.paths.${key} must match git-dist.toml resources layout (${expected}), got ${actual}`,
+      );
+    }
+  }
+
+  if (
+    targetName !== "windows-x86_64" &&
+    manifest.paths.windowsSshExecutable !== undefined
+  ) {
+    fail(
+      "manifest.paths.windowsSshExecutable must be absent for non-Windows targets",
+    );
+  }
+}
+
+async function checkManifestExecutablesAndChecksums(
+  config,
+  manifest,
+  distRoot,
+) {
   if (
     !manifest.sha256 ||
     typeof manifest.sha256 !== "object" ||
@@ -215,23 +233,69 @@ async function checkDistRoot() {
     fail("manifest.sha256 must contain checksums for distributed files");
   }
 
-  if (!noExec && target === process.platform) {
-    runVersionCheck(
-      path.join(distRoot, manifest.paths.gitExecutable),
-      ["--version"],
-      "embedded git",
-    );
-    runVersionCheck(
-      path.join(distRoot, manifest.paths.gitLfsExecutable),
-      ["version"],
-      "embedded git-lfs",
-    );
+  const verifiedPaths = new Set();
+  const requiredKeys = requiredExecutableKeysForTarget(config, targetName);
+  for (const key of requiredKeys) {
+    const relativePath = manifest.paths[key];
+    const mode =
+      targetName === getHostTarget() && process.platform !== "win32"
+        ? constants.X_OK
+        : constants.R_OK;
+    const absolutePath = path.join(distRoot, relativePath);
+
+    await assertRegularFile(absolutePath, `manifest paths.${key}`);
+    await assertPath(absolutePath, `manifest paths.${key}`, mode);
+
+    const checksum = manifest.sha256[relativePath];
+    if (!checksum) {
+      fail(
+        `manifest.sha256 must include required executable path '${relativePath}' for ${key}`,
+      );
+    }
+    try {
+      assertSha256(checksum, `manifest.sha256["${relativePath}"]`);
+    } catch (error) {
+      fail(error.message);
+    }
+    if (isPlaceholderChecksum(checksum)) {
+      fail(
+        `manifest.sha256["${relativePath}"] must not be an all-zero placeholder`,
+      );
+    }
+
+    const actual = await sha256File(absolutePath);
+    if (actual !== checksum.toLowerCase()) {
+      fail(
+        `manifest.sha256["${relativePath}"] does not match file content: expected ${checksum}, got ${actual}`,
+      );
+    }
+    verifiedPaths.add(relativePath);
   }
 
-  info(`ARTISTIC_GIT_DIST_DIR is valid for ${manifest.platform}: ${distRoot}`);
+  for (const [relativePath, checksum] of Object.entries(manifest.sha256)) {
+    try {
+      assertRelativeResourcePath(relativePath, `sha256 key ${relativePath}`);
+      assertSha256(checksum, `manifest.sha256["${relativePath}"]`);
+    } catch (error) {
+      fail(error.message);
+    }
+    if (!verifiedPaths.has(relativePath)) {
+      const absolutePath = path.join(distRoot, relativePath);
+      await assertRegularFile(
+        absolutePath,
+        `manifest.sha256 key ${relativePath}`,
+      );
+      const actual = await sha256File(absolutePath);
+      if (actual !== checksum.toLowerCase()) {
+        fail(
+          `manifest.sha256["${relativePath}"] does not match file content: expected ${checksum}, got ${actual}`,
+        );
+      }
+    }
+  }
 }
 
-function runVersionCheck(executable, versionArgs, label) {
+function runVersionCheck(executable, versionArgs, label, expectedVersion) {
   const result = spawnSync(executable, versionArgs, {
     encoding: "utf8",
     env: {
@@ -251,7 +315,29 @@ function runVersionCheck(executable, versionArgs, label) {
       `${label} version check failed at explicit path ${executable}: ${result.stderr || result.stdout}`,
     );
   }
-  info(`${label}: ${result.stdout.trim()}`);
+
+  const output = result.stdout.trim();
+  if (!output.includes(expectedVersion)) {
+    fail(`${label} expected version '${expectedVersion}', got '${output}'`);
+  }
+  info(`${label}: ${output}`);
+}
+
+function expectedGitVersion(config, target) {
+  return target.platform === "windows"
+    ? config.versions.git_for_windows
+    : config.versions.git;
+}
+
+function normalizeTargetArg(value) {
+  const aliases = {
+    win32: "windows-x86_64",
+    windows: "windows-x86_64",
+    darwin: "macos-universal",
+    macos: "macos-universal",
+    linux: "linux-x86_64",
+  };
+  return aliases[value] ?? value;
 }
 
 if (explain) {
@@ -268,8 +354,16 @@ if (explain) {
   console.log("");
 }
 
-await checkConfigContract();
+try {
+  const { data: config } = await loadGitDistConfig(configPath);
+  await checkConfigContract(config, {
+    realBuild,
+    targetName: targetArg ? targetName : undefined,
+  });
 
-if (!schemaOnly) {
-  await checkDistRoot();
+  if (!schemaOnly) {
+    await checkDistRoot(config);
+  }
+} catch (error) {
+  failConfig(error);
 }

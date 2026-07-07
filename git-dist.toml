@@ -1,24 +1,38 @@
 # Artistic Git embedded Git distribution configuration.
 #
-# Phase 1A skeleton note:
-# - Version, URL, and SHA-256 values are explicit placeholders.
-# - The real distribution pipeline must replace every placeholder source before
-#   it is allowed to download, build, cache, or package binaries.
-# - Runtime/test code must consume only ARTISTIC_GIT_DIST_DIR or packaged
-#   resources; it must never fall back to PATH or a system Git executable.
+# This file is the single source of truth for the embedded Git, Git LFS, and
+# Windows OpenSSH distribution. Schema-only checks may keep documented
+# placeholders, but real build/fetch/package mode must reject every placeholder
+# pin and every non-stable source.
 
 schema_version = 1
 
+[meta]
+last_verified = "2026-07-07"
+version_source_policy = "official release pages or official source mirrors only"
+notes = "Win32-OpenSSH currently has no modern stable GitHub release; the latest official release is preview and remains a rejected placeholder."
+
 [versions]
-git = "0.0.0-placeholder"
-git_lfs = "0.0.0-placeholder"
-win32_openssh = "0.0.0-placeholder"
-helper = "0.0.0-placeholder"
+git = "2.55.0"
+git_for_windows = "2.55.0.windows.2"
+git_for_windows_package = "2.55.0.2"
+git_lfs = "3.7.1"
+win32_openssh = "10.0.0.0p2-Preview"
+helper = "0.1.0"
+
+[validation]
+schema_only_allows_placeholders = true
+real_build_rejects_placeholders = true
+real_build_rejects_non_stable_sources = true
+checksum_algorithm = "sha256"
+zero_sha256_is_placeholder = true
+allow_system_git_fallback = false
 
 [artifacts]
 name = "git-dist"
 archive_prefix = "artistic-git-dist"
 manifest = "manifest.json"
+retention_days = 14
 
 [resources.layout]
 root = "git-dist"
@@ -41,91 +55,197 @@ ssh_askpass_windows = "helpers/artistic-git-ssh-askpass.exe"
 schema_version = 1
 format = "GitDistManifest from crates/contracts"
 path_style = "relative-to-git-dist-root"
+required_executable_keys = ["gitExecutable", "gitLfsExecutable", "credentialHelper", "sshAskpass"]
+windows_required_executable_keys = ["gitExecutable", "gitLfsExecutable", "windowsSshExecutable", "credentialHelper", "sshAskpass"]
+checksum_key_style = "manifest relative executable path"
+
+[targets.windows-x86_64]
+platform = "windows"
+arch = "x86_64"
+manifest_platform = "windows-x86_64"
+artifact_name = "artistic-git-dist-windows-x86_64"
+sources = ["sources.windows.x86_64.git", "sources.windows.x86_64.git_lfs", "sources.windows.x86_64.win32_openssh"]
+
+[targets.macos-universal]
+platform = "macos"
+arch = "universal"
+manifest_platform = "macos-universal"
+artifact_name = "artistic-git-dist-macos-universal"
+sources = ["sources.macos.universal.git", "sources.macos.arm64.git_lfs", "sources.macos.x86_64.git_lfs"]
+
+[targets.linux-x86_64]
+platform = "linux"
+arch = "x86_64"
+manifest_platform = "linux-x86_64"
+artifact_name = "artistic-git-dist-linux-x86_64"
+sources = ["sources.linux.x86_64.git", "sources.linux.x86_64.git_lfs"]
 
 [sources.windows.x86_64.git]
+component = "git"
 kind = "archive"
 vendor = "Git for Windows MinGit"
-url = "TODO:https://github.com/git-for-windows/git/releases/download/v${versions.git}.windows.1/MinGit-${versions.git}-64-bit.zip"
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-placeholder = true
+version_key = "git_for_windows"
+package_version_key = "git_for_windows_package"
+stable = true
+url = "https://github.com/git-for-windows/git/releases/download/v2.55.0.windows.2/MinGit-2.55.0.2-64-bit.zip"
+release_url = "https://github.com/git-for-windows/git/releases/tag/v2.55.0.windows.2"
+asset_name = "MinGit-2.55.0.2-64-bit.zip"
+checksum.algorithm = "sha256"
+checksum.value = "e3ea2944cea4b3fabcd69c7c1669ef69b1b66c05ac7806d81224d0abad2dec31"
+checksum.source = "github-release-asset-digest"
+checksum.url = "https://github.com/git-for-windows/git/releases/tag/v2.55.0.windows.2"
+placeholder = false
 resources_path = "git/"
 
 [sources.windows.x86_64.git_lfs]
+component = "git_lfs"
 kind = "archive"
 vendor = "Git LFS official release"
-url = "TODO:https://github.com/git-lfs/git-lfs/releases/download/v${versions.git_lfs}/git-lfs-windows-amd64-v${versions.git_lfs}.zip"
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-placeholder = true
+version_key = "git_lfs"
+stable = true
+url = "https://github.com/git-lfs/git-lfs/releases/download/v3.7.1/git-lfs-windows-amd64-v3.7.1.zip"
+release_url = "https://github.com/git-lfs/git-lfs/releases/tag/v3.7.1"
+asset_name = "git-lfs-windows-amd64-v3.7.1.zip"
+checksum.algorithm = "sha256"
+checksum.value = "8683cdc3d6c029b49393dcebbaa6265bd6efd9abdcf837be855b4cd42e5e80b6"
+checksum.source = "github-release-asset-digest"
+checksum.url = "https://github.com/git-lfs/git-lfs/releases/tag/v3.7.1"
+placeholder = false
 resources_path = "git-lfs/"
 
 [sources.windows.x86_64.win32_openssh]
+component = "win32_openssh"
 kind = "archive"
 vendor = "Win32-OpenSSH official release"
-url = "TODO:https://github.com/PowerShell/Win32-OpenSSH/releases/download/v${versions.win32_openssh}/OpenSSH-Win64.zip"
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+version_key = "win32_openssh"
+stable = false
+channel = "preview"
+url = "https://github.com/PowerShell/Win32-OpenSSH/releases/download/10.0.0.0p2-Preview/OpenSSH-Win64.zip"
+release_url = "https://github.com/PowerShell/Win32-OpenSSH/releases/tag/10.0.0.0p2-Preview"
+asset_name = "OpenSSH-Win64.zip"
+checksum.algorithm = "sha256"
+checksum.value = "23f50f3458c4c5d0b12217c6a5ddfde0137210a30fa870e98b29827f7b43aba5"
+checksum.source = "github-release-asset-digest"
+checksum.url = "https://github.com/PowerShell/Win32-OpenSSH/releases/tag/10.0.0.0p2-Preview"
 placeholder = true
+placeholder_reason = "Official latest release is preview/non-production ready; no modern stable Win32-OpenSSH GitHub release was found on 2026-07-07."
 resources_path = "openssh/"
 
 [sources.macos.universal.git]
+component = "git"
 kind = "source-tarball"
 vendor = "Git official source"
-url = "TODO:https://www.kernel.org/pub/software/scm/git/git-${versions.git}.tar.xz"
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-placeholder = true
+version_key = "git"
+stable = true
+url = "https://www.kernel.org/pub/software/scm/git/git-2.55.0.tar.xz"
+release_url = "https://github.com/git/git/releases/tag/v2.55.0"
+asset_name = "git-2.55.0.tar.xz"
+checksum.algorithm = "sha256"
+checksum.value = "457fdb04dc8728e007d4688695e6912e6f680727920f2a40bf11eacc17505357"
+checksum.source = "kernel.org sha256sums.asc"
+checksum.url = "https://www.kernel.org/pub/software/scm/git/sha256sums.asc"
+placeholder = false
 resources_path = "git/"
 
 [sources.macos.arm64.git_lfs]
+component = "git_lfs"
 kind = "archive"
 vendor = "Git LFS official release"
-url = "TODO:https://github.com/git-lfs/git-lfs/releases/download/v${versions.git_lfs}/git-lfs-darwin-arm64-v${versions.git_lfs}.zip"
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-placeholder = true
+version_key = "git_lfs"
+stable = true
+url = "https://github.com/git-lfs/git-lfs/releases/download/v3.7.1/git-lfs-darwin-arm64-v3.7.1.zip"
+release_url = "https://github.com/git-lfs/git-lfs/releases/tag/v3.7.1"
+asset_name = "git-lfs-darwin-arm64-v3.7.1.zip"
+checksum.algorithm = "sha256"
+checksum.value = "76260fb34f4ee622ff0a66b857e5954aa49c7e343a92e57a1ec4a760618c94b2"
+checksum.source = "github-release-asset-digest"
+checksum.url = "https://github.com/git-lfs/git-lfs/releases/tag/v3.7.1"
+placeholder = false
 resources_path = "git-lfs/arm64/"
 
 [sources.macos.x86_64.git_lfs]
+component = "git_lfs"
 kind = "archive"
 vendor = "Git LFS official release"
-url = "TODO:https://github.com/git-lfs/git-lfs/releases/download/v${versions.git_lfs}/git-lfs-darwin-amd64-v${versions.git_lfs}.zip"
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-placeholder = true
+version_key = "git_lfs"
+stable = true
+url = "https://github.com/git-lfs/git-lfs/releases/download/v3.7.1/git-lfs-darwin-amd64-v3.7.1.zip"
+release_url = "https://github.com/git-lfs/git-lfs/releases/tag/v3.7.1"
+asset_name = "git-lfs-darwin-amd64-v3.7.1.zip"
+checksum.algorithm = "sha256"
+checksum.value = "b5b1b641c0648c83661fa9eda991cd3eff945264dabc2cdf411a80dfe7ec0970"
+checksum.source = "github-release-asset-digest"
+checksum.url = "https://github.com/git-lfs/git-lfs/releases/tag/v3.7.1"
+placeholder = false
 resources_path = "git-lfs/x86_64/"
 
 [sources.linux.x86_64.git]
+component = "git"
 kind = "source-tarball"
 vendor = "Git official source"
-url = "TODO:https://www.kernel.org/pub/software/scm/git/git-${versions.git}.tar.xz"
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-placeholder = true
+version_key = "git"
+stable = true
+url = "https://www.kernel.org/pub/software/scm/git/git-2.55.0.tar.xz"
+release_url = "https://github.com/git/git/releases/tag/v2.55.0"
+asset_name = "git-2.55.0.tar.xz"
+checksum.algorithm = "sha256"
+checksum.value = "457fdb04dc8728e007d4688695e6912e6f680727920f2a40bf11eacc17505357"
+checksum.source = "kernel.org sha256sums.asc"
+checksum.url = "https://www.kernel.org/pub/software/scm/git/sha256sums.asc"
+placeholder = false
 resources_path = "git/"
 
 [sources.linux.x86_64.git_lfs]
+component = "git_lfs"
 kind = "archive"
 vendor = "Git LFS official release"
-url = "TODO:https://github.com/git-lfs/git-lfs/releases/download/v${versions.git_lfs}/git-lfs-linux-amd64-v${versions.git_lfs}.tar.gz"
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-placeholder = true
+version_key = "git_lfs"
+stable = true
+url = "https://github.com/git-lfs/git-lfs/releases/download/v3.7.1/git-lfs-linux-amd64-v3.7.1.tar.gz"
+release_url = "https://github.com/git-lfs/git-lfs/releases/tag/v3.7.1"
+asset_name = "git-lfs-linux-amd64-v3.7.1.tar.gz"
+checksum.algorithm = "sha256"
+checksum.value = "1c0b6ee5200ca708c5cebebb18fdeb0e1c98f1af5c1a9cba205a4c0ab5a5ec08"
+checksum.source = "github-release-asset-digest"
+checksum.url = "https://github.com/git-lfs/git-lfs/releases/tag/v3.7.1"
+placeholder = false
 resources_path = "git-lfs/"
 
 [build.macos.git]
+source_ref = "sources.macos.universal.git"
 toolchain = "xcode"
+deployment_target = "13.0"
 arches = ["arm64", "x86_64"]
 universal_binary = true
-configure_flags = ["--prefix=/", "RUNTIME_PREFIX=YesPlease", "NO_GETTEXT=YesPlease", "NO_TCLTK=YesPlease"]
+configure_flags = ["--prefix=/"]
+make_flags = ["RUNTIME_PREFIX=YesPlease", "NO_GETTEXT=YesPlease", "NO_TCLTK=YesPlease"]
+install_root = "git/"
+post_install = ["lipo arm64/x86_64 git binaries into universal outputs", "strip debug symbols after checksum manifest is generated"]
 
 [build.linux.git]
+source_ref = "sources.linux.x86_64.git"
 container_image = "ubuntu:20.04"
 glibc_floor = "2.31"
 linking = "glibc-dynamic-with-static-third-party-libs"
+apt_packages = ["build-essential", "curl", "ca-certificates", "libssl-dev", "zlib1g-dev", "libcurl4-openssl-dev", "libpcre2-dev", "libexpat1-dev"]
 static_libraries = ["curl", "openssl", "zlib", "pcre2", "expat"]
+configure_flags = ["--prefix=/"]
 make_flags = ["NO_GETTEXT=YesPlease", "NO_PERL=YesPlease", "NO_TCLTK=YesPlease", "RUNTIME_PREFIX=YesPlease"]
+install_root = "git/"
 
 [build.windows.git]
+source_ref = "sources.windows.x86_64.git"
 strategy = "download-official-mingit"
+install_root = "git/"
 
 [build.git_lfs]
 strategy = "download-official-archives"
 macos_universal_binary = true
+install_root = "git-lfs/"
 
 [build.win32_openssh]
+source_ref = "sources.windows.x86_64.win32_openssh"
 strategy = "download-official-release"
 windows_only = true
+install_root = "openssh/"
+blocked_until = "official stable Win32-OpenSSH release is selected or risk exception is documented outside placeholder mode"

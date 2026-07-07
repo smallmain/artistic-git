@@ -4,15 +4,25 @@ on:
   pull_request:
     paths:
       - "git-dist.toml"
+      - "scripts/fetch-git-dist.mjs"
+      - "scripts/git-dist-lib.mjs"
       - "scripts/check-git-dist.mjs"
       - "docs/git-dist.md"
       - "src-tauri/resources/git-dist/**"
       - ".github/workflows/git-dist.yml"
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "Contract validation today; build mode is reserved for the future artifact pipeline."
+        type: choice
+        options:
+          - contract
+          - build
+        default: contract
 
 jobs:
   contract:
-    name: Validate git-dist skeleton
+    name: Validate git-dist contract
     runs-on: ubuntu-22.04
 
     steps:
@@ -27,19 +37,40 @@ jobs:
       - name: Validate git-dist config contract
         run: node scripts/check-git-dist.mjs --schema-only
 
+      - name: Validate fetch schema for all targets
+        shell: bash
+        run: |
+          set -euo pipefail
+          for target in windows-x86_64 macos-universal linux-x86_64; do
+            node scripts/fetch-git-dist.mjs --schema-only --target="${target}"
+          done
+
+      - name: Verify real build mode rejects placeholders
+        shell: bash
+        run: |
+          set +e
+          node scripts/check-git-dist.mjs --schema-only --real-build > real-build.log 2>&1
+          status=$?
+          cat real-build.log
+          if [ "$status" -eq 0 ]; then
+            echo "Expected real-build validation to reject the current Win32-OpenSSH placeholder."
+            exit 1
+          fi
+
       - name: Create placeholder artifact note
         shell: bash
         run: |
           mkdir -p git-dist-artifact-note
           cp git-dist.toml git-dist-artifact-note/git-dist.toml
           cat > git-dist-artifact-note/README.txt <<'NOTE'
-          This is a phase 1A placeholder artifact.
-          The real workflow will upload artistic-git-dist-<platform> archives
+          This is a phase 1A git-dist contract artifact.
+          The real workflow will upload artistic-git-dist-<target> archives
           containing manifest.json, embedded Git, Git LFS, Windows OpenSSH, and
-          helper binaries. It must reject placeholder pins from git-dist.toml.
+          helper binaries. It must reject placeholder pins and non-stable
+          sources from git-dist.toml before download, build, cache, or package.
           NOTE
 
-      - name: Upload placeholder artifact note
+      - name: Upload contract artifact note
         uses: actions/upload-artifact@v4
         with:
           name: artistic-git-dist-contract

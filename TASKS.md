@@ -100,7 +100,7 @@ graph TD
 
 依赖：阶段 0.5。产出与 1C 之间只有「resources 目录布局 + 版本自检」契约。
 
-- [ ] 单一构建配置文件（如 `git-dist.toml`）：git / git-lfs / Win32-OpenSSH 版本号 + 各平台产物或源码 SHA-256 + 完整编译配方（flags/容器镜像）集中钉死；取当时最新稳定版；git 版本优先选 fsmonitor 支持面最全者
+- [x] 单一构建配置文件（如 `git-dist.toml`）：git / git-lfs / Win32-OpenSSH 版本号 + 各平台产物或源码 SHA-256 + 完整编译配方（flags/容器镜像）集中钉死；取当时最新稳定版；git 版本优先选 fsmonitor 支持面最全者
 - [ ] Windows：下载官方 MinGit 预编译包 + 官方 Win32-OpenSSH 发行包，校验发布页二进制 SHA-256
 - [ ] macOS：CI 用 Xcode 工具链从官方源码以 `RUNTIME_PREFIX` 可重定位方式构建，arm64 + x86_64 分别构建后 lipo 合成 Universal；钉死源码 tarball SHA-256
 - [ ] Linux：Ubuntu 20.04 容器（glibc 2.31）构建；libcurl/openssl/zlib/pcre2/expat 全静态链入；`NO_GETTEXT/NO_PERL/NO_TCLTK` 裁剪；glibc 动态链接（不用 musl）

@@ -23,3 +23,7 @@ node scripts/check-git-dist.mjs
 
 The checker fails when the environment variable, manifest, or referenced
 executables are missing. It never searches for a system Git fallback.
+
+`manifest.sha256` is keyed by resource-relative executable path, for example
+`git/bin/git` or `helpers/artistic-git-credential-helper`, and must cover every
+required executable declared in `manifest.paths`.
