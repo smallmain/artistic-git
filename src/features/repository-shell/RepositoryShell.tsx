@@ -841,6 +841,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       ) : null}
       <CreateBranchDialog
         baseBranch={branchCreateBase}
+        baseBranches={branches}
         busy={branchActionBusy}
         checkoutImmediately={newBranchCheckout}
         createRemote={newBranchCreateRemote}
@@ -849,6 +850,10 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         name={newBranchName}
         onCheckoutImmediatelyChange={setNewBranchCheckout}
         onCreate={() => void runCreateBranch()}
+        onBaseBranchChange={(baseBranch) => {
+          setBranchCreateBase(baseBranch);
+          setBranchNameValidation(null);
+        }}
         onCreateRemoteChange={setNewBranchCreateRemote}
         onLocalChangesModeChange={setCheckoutMode}
         onNameChange={updateNewBranchName}
@@ -874,23 +879,15 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
           }
         }}
       />
-      <ConfirmDialog
-        confirmLabel={t("repository.deleteBranch")}
-        description={[
-          t("repository.deleteBranchDescription", {
-            name: branchToDelete?.name ?? "",
-          }),
-          t("repository.deleteBranchProtectionDescription"),
-        ].join(" ")}
+      <DeleteBranchDialog
+        branch={branchToDelete}
+        busy={branchActionBusy}
         onConfirm={() => void runDeleteBranch()}
         onOpenChange={(open) => {
           if (!open && !branchActionBusy) {
             setBranchToDelete(null);
           }
         }}
-        open={branchToDelete !== null}
-        title={t("repository.deleteBranchTitle")}
-        variant="danger"
       />
       <CommitChangesDialog
         busy={commitBusy}
@@ -1028,14 +1025,104 @@ function mapLocalChangeToItem(change: LocalChange): LocalChangeItem {
   };
 }
 
+function DeleteBranchDialog({
+  branch,
+  busy,
+  onConfirm,
+  onOpenChange,
+}: {
+  branch: BranchListItem | null;
+  busy: boolean;
+  onConfirm: () => void;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const { t } = useTranslation();
+
+  if (!branch) {
+    return null;
+  }
+
+  const description = branch.remoteOnly
+    ? t("repository.deleteRemoteOnlyBranchDescription", { name: branch.name })
+    : t("repository.deleteBranchDescription", { name: branch.name });
+  const hasUnmergedCommits = !branch.remoteOnly && branch.ahead > 0;
+  const canDelete = !branch.current && !busy;
+
+  return (
+    <DialogFrame
+      description={description}
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button
+            disabled={busy}
+            onClick={() => onOpenChange(false)}
+            type="button"
+            variant="ghost"
+          >
+            {t("actions.cancel")}
+          </Button>
+          <Button
+            disabled={!canDelete}
+            onClick={onConfirm}
+            type="button"
+            variant="destructive"
+          >
+            {t("repository.deleteBranch")}
+          </Button>
+        </div>
+      }
+      onOpenChange={onOpenChange}
+      title={t("repository.deleteBranchTitle")}
+    >
+      <div className="flex gap-3 rounded-md border bg-background p-3 text-sm">
+        <AlertTriangle className="mt-0.5 size-4 shrink-0 text-destructive" />
+        <div className="grid gap-2">
+          <p>{description}</p>
+          <p className="text-muted-foreground">
+            {t("repository.deleteBranchProtectionDescription")}
+          </p>
+        </div>
+      </div>
+
+      {hasUnmergedCommits ? (
+        <p className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm font-medium text-destructive">
+          {t("repository.deleteBranchUnmergedWarning", {
+            count: branch.ahead,
+          })}
+        </p>
+      ) : null}
+
+      <div className="grid gap-2 rounded-md border bg-background p-3 text-sm">
+        <label className="flex items-center gap-2">
+          <input
+            checked={Boolean(branch.remoteOnly)}
+            className="size-4"
+            disabled
+            readOnly
+            type="checkbox"
+          />
+          <span>{t("repository.deleteRemoteBranch")}</span>
+        </label>
+        <p className="text-muted-foreground">
+          {branch.remoteOnly
+            ? t("repository.deleteRemoteOnlyBranchRequired")
+            : t("repository.deleteRemoteBranchUnavailable")}
+        </p>
+      </div>
+    </DialogFrame>
+  );
+}
+
 function CreateBranchDialog({
   baseBranch,
+  baseBranches,
   busy,
   checkoutImmediately,
   createRemote,
   hasRemote,
   localChangesMode,
   name,
+  onBaseBranchChange,
   onCheckoutImmediatelyChange,
   onCreate,
   onCreateRemoteChange,
@@ -1045,12 +1132,14 @@ function CreateBranchDialog({
   validation,
 }: {
   baseBranch: BranchListItem | null;
+  baseBranches: BranchListItem[];
   busy: boolean;
   checkoutImmediately: boolean;
   createRemote: boolean;
   hasRemote: boolean;
   localChangesMode: CheckoutLocalChangesMode;
   name: string;
+  onBaseBranchChange: (baseBranch: BranchListItem) => void;
   onCheckoutImmediatelyChange: (checkoutImmediately: boolean) => void;
   onCreate: () => void;
   onCreateRemoteChange: (createRemote: boolean) => void;
@@ -1095,6 +1184,34 @@ function CreateBranchDialog({
       onOpenChange={onOpenChange}
       title={t("repository.createBranchTitle")}
     >
+      <label className="grid gap-2 text-sm">
+        <span className="font-medium">{t("repository.branchBase")}</span>
+        <select
+          className="h-9 rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          disabled={busy}
+          onChange={(event) => {
+            const nextBase = baseBranches.find(
+              (branch) => branch.name === event.target.value,
+            );
+            if (nextBase) {
+              onBaseBranchChange(nextBase);
+            }
+          }}
+          value={baseBranch.name}
+        >
+          {baseBranches.map((branch) => (
+            <option key={branch.name} value={branch.name}>
+              {branch.name}
+            </option>
+          ))}
+        </select>
+        {baseBranch.remoteOnly ? (
+          <span className="text-xs text-muted-foreground">
+            {t("repository.branchBaseRemoteOnly")}
+          </span>
+        ) : null}
+      </label>
+
       <label className="grid gap-2 text-sm">
         <span className="font-medium">{t("repository.branchName")}</span>
         <input
@@ -1481,10 +1598,18 @@ function StashDetailsDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const { t } = useTranslation();
+  const formatters = useLocalizedFormatters();
 
   if (!details) {
     return null;
   }
+
+  const createdAt = details.entry.createdAtUnixSeconds
+    ? formatters.formatDate(Number(details.entry.createdAtUnixSeconds) * 1000, {
+        dateStyle: "medium",
+        timeStyle: "short",
+      })
+    : t("repository.stashUnknownTime");
 
   return (
     <DialogFrame
@@ -1505,6 +1630,19 @@ function StashDetailsDialog({
       title={details.entry.message}
     >
       <div className="grid gap-3">
+        <dl className="grid gap-3 rounded-md border bg-background p-3 text-sm sm:grid-cols-2">
+          <div className="min-w-0">
+            <dt className="font-medium">{t("repository.stashSelector")}</dt>
+            <dd className="truncate text-muted-foreground">
+              {details.entry.selector}
+            </dd>
+          </div>
+          <div className="min-w-0">
+            <dt className="font-medium">{t("repository.stashCreatedAt")}</dt>
+            <dd className="truncate text-muted-foreground">{createdAt}</dd>
+          </div>
+        </dl>
+
         {details.entry.isAutoStash ? (
           <div className="rounded-md border bg-secondary px-3 py-2 text-sm">
             {t("repository.autoStashOrigin", {

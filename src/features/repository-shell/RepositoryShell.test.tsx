@@ -114,6 +114,50 @@ beforeEach(() => {
     stash: null,
     stdout: "",
   });
+  commandMocks.restoreStash.mockResolvedValue({
+    oid: "stashoid",
+    outcome: { status: "applied", dropped: false },
+    recovery: {
+      headOid: "abc1234",
+      id: "recovery-1",
+      stashOid: null,
+      stashSelector: null,
+    },
+    selector: "stash@{0}",
+  });
+  commandMocks.deleteStash.mockResolvedValue({
+    deletedSelector: "stash@{0}",
+    stdout: "",
+  });
+  commandMocks.stashDetails.mockResolvedValue({
+    entry: stashEntry({
+      message: "WIP material polish",
+      selector: "stash@{0}",
+    }),
+    files: [],
+    rawDiff: "",
+  });
+  commandMocks.validateBranchName.mockResolvedValue({
+    exists: false,
+    message: null,
+    name: "feature/new-art-pass",
+    valid: true,
+  });
+  commandMocks.createBranch.mockResolvedValue({
+    branchName: "feature/new-art-pass",
+    repositoryPath: "/repo/art",
+    status: "completed",
+  });
+  commandMocks.checkoutBranch.mockResolvedValue({
+    branchName: "feature/lookdev",
+    repositoryPath: "/repo/art",
+    status: "completed",
+  });
+  commandMocks.deleteBranch.mockResolvedValue({
+    branchName: "feature/lookdev",
+    repositoryPath: "/repo/art",
+    status: "completed",
+  });
   commandMocks.restoreChanges.mockResolvedValue({
     backedUpPaths: ["assets/texture.png"],
     backupRoot: "/trash/backup",
@@ -173,6 +217,318 @@ describe("RepositoryShell stash flow", () => {
         repositoryPath: "/repo/art",
       }),
     );
+  });
+
+  it("applies a stash without dropping it", async () => {
+    commandMocks.listStashes.mockResolvedValue({
+      stashes: [
+        stashEntry({
+          message: "WIP material polish",
+          selector: "stash@{0}",
+        }),
+      ],
+    });
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Apply stash" }));
+
+    await waitFor(() => expect(commandMocks.restoreStash).toHaveBeenCalled());
+    expect(commandMocks.restoreStash).toHaveBeenCalledWith({
+      dropOnSuccess: false,
+      operationName: null,
+      repositoryPath: "/repo/art",
+      selector: "stash@{0}",
+    });
+  });
+
+  it("requires confirmation before deleting a stash", async () => {
+    commandMocks.listStashes.mockResolvedValue({
+      stashes: [
+        stashEntry({
+          message: "WIP material polish",
+          selector: "stash@{0}",
+        }),
+      ],
+    });
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Delete stash" }),
+    );
+    expect(commandMocks.deleteStash).not.toHaveBeenCalled();
+
+    const dialog = screen.getByRole("dialog", { name: "Delete stash?" });
+    expect(dialog).toHaveTextContent(
+      "Delete stash “WIP material polish”? This cannot be undone.",
+    );
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Delete stash" }),
+    );
+
+    await waitFor(() => expect(commandMocks.deleteStash).toHaveBeenCalled());
+    expect(commandMocks.deleteStash).toHaveBeenCalledWith({
+      repositoryPath: "/repo/art",
+      selector: "stash@{0}",
+    });
+  });
+
+  it("shows stash details with creation time, files, diff, and Auto Stash origin", async () => {
+    commandMocks.listStashes.mockResolvedValue({
+      stashes: [
+        stashEntry({
+          isAutoStash: true,
+          message: "Auto Stash: switch branch",
+          origin: "switch branch",
+          selector: "stash@{0}",
+        }),
+      ],
+    });
+    commandMocks.stashDetails.mockResolvedValue({
+      entry: stashEntry({
+        createdAtUnixSeconds: "1767268800",
+        isAutoStash: true,
+        message: "Auto Stash: switch branch",
+        origin: "switch branch",
+        selector: "stash@{0}",
+      }),
+      files: [
+        {
+          changeKind: "modified",
+          fileKind: "text",
+          oldPath: null,
+          patch: "@@ -1 +1 @@\n-old\n+new",
+          path: "src/app.ts",
+        },
+      ],
+      rawDiff: "diff --git a/src/app.ts b/src/app.ts\n+new",
+    });
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Stash details" }),
+    );
+
+    const dialog = await screen.findByRole("dialog", {
+      name: "Auto Stash: switch branch",
+    });
+    expect(dialog).toHaveTextContent("Automatically created by switch branch.");
+    expect(dialog).toHaveTextContent("Created");
+    expect(dialog).toHaveTextContent("2026");
+    expect(dialog).toHaveTextContent("src/app.ts");
+    expect(dialog).toHaveTextContent("Modified");
+    expect(dialog).toHaveTextContent("diff --git a/src/app.ts b/src/app.ts");
+  });
+});
+
+describe("RepositoryShell branch flow", () => {
+  it("validates and creates a branch from the selected base without connecting remote creation", async () => {
+    mockBranchList();
+    commandMocks.validateBranchName.mockResolvedValueOnce({
+      exists: false,
+      message: null,
+      name: "feature/new-art-pass",
+      valid: true,
+    });
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    const dialog = await openCreateBranchDialog("main");
+    const baseSelect = within(dialog).getByLabelText("Base branch");
+    expect(baseSelect).toHaveValue("main");
+    fireEvent.change(baseSelect, { target: { value: "concept-pass" } });
+    expect(baseSelect).toHaveValue("concept-pass");
+    expect(dialog).toHaveTextContent(
+      "Remote-only branch. Creating from it will create a local tracking branch.",
+    );
+
+    fireEvent.change(within(dialog).getByLabelText("Branch name"), {
+      target: { value: "feature/new-art-pass" },
+    });
+
+    expect(
+      await within(dialog).findByText("Branch name is available."),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole("checkbox", {
+        name: "Switch to the new branch immediately",
+      }),
+    ).toBeChecked();
+    const remoteCheckbox = within(dialog).getByRole("checkbox", {
+      name: "Create remote branch during sync",
+    });
+    expect(remoteCheckbox).toBeChecked();
+    expect(remoteCheckbox).toBeDisabled();
+
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Create branch" }),
+    );
+
+    await waitFor(() => expect(commandMocks.createBranch).toHaveBeenCalled());
+    expect(commandMocks.createBranch).toHaveBeenCalledWith({
+      baseBranch: "concept-pass",
+      checkoutImmediately: true,
+      createRemote: false,
+      localChangesMode: "autoStash",
+      name: "feature/new-art-pass",
+      operationId: null,
+      repositoryPath: "/repo/art",
+    });
+  });
+
+  it("hides the create-remote checkbox when there is no remote", async () => {
+    commandMocks.repositorySummary.mockResolvedValueOnce({
+      currentBranch: "main",
+      hasOrigin: false,
+      headOid: "abc1234",
+      inProgress: false,
+      isDetached: false,
+      isUnborn: false,
+      remoteMode: "none",
+      repositoryPath: "/repo/art",
+    });
+    mockBranchList();
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    const dialog = await openCreateBranchDialog("main", {
+      waitForRemoteReady: false,
+    });
+
+    expect(
+      within(dialog).queryByRole("checkbox", {
+        name: "Create remote branch during sync",
+      }),
+    ).not.toBeInTheDocument();
+  });
+
+  it.each([
+    [
+      "invalid names",
+      {
+        exists: false,
+        message: "Branch names cannot contain spaces.",
+        name: "bad name",
+        valid: false,
+      },
+      "bad name",
+      "Branch names cannot contain spaces.",
+    ],
+    [
+      "duplicate names",
+      {
+        exists: true,
+        message: null,
+        name: "feature/lookdev",
+        valid: false,
+      },
+      "feature/lookdev",
+      "A branch with this name already exists.",
+    ],
+  ])(
+    "keeps the create branch action disabled for %s",
+    async (_label, validation, name, expectedMessage) => {
+      mockBranchList();
+      commandMocks.validateBranchName.mockResolvedValueOnce(validation);
+      renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+      const dialog = await openCreateBranchDialog("main");
+      fireEvent.change(within(dialog).getByLabelText("Branch name"), {
+        target: { value: name },
+      });
+
+      expect(await within(dialog).findByText(expectedMessage)).toBeVisible();
+      expect(
+        within(dialog).getByRole("button", { name: "Create branch" }),
+      ).toBeDisabled();
+    },
+  );
+
+  it("switches branches with the selected local-change handling mode", async () => {
+    mockBranchList();
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    const dialog = await openCheckoutBranchDialog("feature/lookdev");
+
+    expect(
+      within(dialog).getByRole("radio", { name: /Move changes with me/ }),
+    ).toBeChecked();
+    fireEvent.click(
+      within(dialog).getByRole("radio", { name: /Discard local changes/ }),
+    );
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Switch branch" }),
+    );
+
+    await waitFor(() => expect(commandMocks.checkoutBranch).toHaveBeenCalled());
+    expect(commandMocks.checkoutBranch).toHaveBeenCalledWith({
+      branchName: "feature/lookdev",
+      localChangesMode: "discard",
+      operationId: null,
+      repositoryPath: "/repo/art",
+    });
+  });
+
+  it("protects the current branch and warns before deleting an unmerged local branch", async () => {
+    mockBranchList();
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    fireEvent.contextMenu(await findSidebarText("main"));
+    expect(
+      screen.getByRole("menuitem", { name: "Delete branch" }),
+    ).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+
+    const dialog = await openDeleteBranchDialog("feature/lookdev");
+    expect(dialog).toHaveTextContent(
+      "Contains 2 unmerged commits; deleting it will lose them.",
+    );
+    const remoteCheckbox = within(dialog).getByRole("checkbox", {
+      name: "Delete remote branch",
+    });
+    expect(remoteCheckbox).not.toBeChecked();
+    expect(remoteCheckbox).toBeDisabled();
+
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Delete branch" }),
+    );
+
+    await waitFor(() => expect(commandMocks.deleteBranch).toHaveBeenCalled());
+    expect(commandMocks.deleteBranch).toHaveBeenCalledWith({
+      branchName: "feature/lookdev",
+      deleteRemote: false,
+      forceRemoteOnly: false,
+      repositoryPath: "/repo/art",
+    });
+  });
+
+  it("requires the remote delete confirmation for remote-only branches without executing remote push wiring", async () => {
+    mockBranchList();
+    commandMocks.deleteBranch.mockResolvedValueOnce({
+      branchName: "concept-pass",
+      repositoryPath: "/repo/art",
+      status: "completed",
+    });
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    const dialog = await openDeleteBranchDialog("concept-pass");
+    const remoteCheckbox = within(dialog).getByRole("checkbox", {
+      name: "Delete remote branch",
+    });
+    expect(remoteCheckbox).toBeChecked();
+    expect(remoteCheckbox).toBeDisabled();
+    expect(dialog).toHaveTextContent(
+      "This is a remote-only branch, so the remote deletion choice is required and cannot be changed here.",
+    );
+
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Delete branch" }),
+    );
+
+    await waitFor(() => expect(commandMocks.deleteBranch).toHaveBeenCalled());
+    expect(commandMocks.deleteBranch).toHaveBeenCalledWith({
+      branchName: "concept-pass",
+      deleteRemote: false,
+      forceRemoteOnly: true,
+      repositoryPath: "/repo/art",
+    });
   });
 });
 
@@ -352,6 +708,39 @@ async function openStashDialog() {
   return screen.getByRole("dialog", { name: "Create stash" });
 }
 
+async function openCreateBranchDialog(
+  baseBranchName: string,
+  { waitForRemoteReady = true }: { waitForRemoteReady?: boolean } = {},
+) {
+  if (waitForRemoteReady) {
+    await waitFor(() =>
+      expect(
+        screen.queryByText("No remote repository configured"),
+      ).not.toBeInTheDocument(),
+    );
+  }
+  fireEvent.contextMenu(await findSidebarText(baseBranchName));
+  fireEvent.click(
+    screen.getByRole("menuitem", { name: "Create new branch from base" }),
+  );
+
+  return screen.getByRole("dialog", { name: "Create branch" });
+}
+
+async function openCheckoutBranchDialog(branchName: string) {
+  fireEvent.contextMenu(await findSidebarText(branchName));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Switch branch" }));
+
+  return screen.getByRole("dialog", { name: "Switch branch" });
+}
+
+async function openDeleteBranchDialog(branchName: string) {
+  fireEvent.contextMenu(await findSidebarText(branchName));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Delete branch" }));
+
+  return screen.getByRole("dialog", { name: "Delete branch?" });
+}
+
 async function openCommitDialog() {
   fireEvent.click(await screen.findByRole("button", { name: /Local Changes/ }));
   await screen.findAllByText("src/app.ts");
@@ -369,4 +758,102 @@ async function openRestoreDialog(path: string) {
   fireEvent.click(screen.getByRole("button", { name: "Restore selected (1)" }));
 
   return screen.getByRole("dialog", { name: "Restore selected changes?" });
+}
+
+async function findSidebarText(text: string): Promise<HTMLElement> {
+  await waitFor(() => {
+    expect(
+      screen.getAllByText(text).some((candidate) => candidate.closest("aside")),
+    ).toBe(true);
+  });
+  const element = screen
+    .getAllByText(text)
+    .find((candidate) => candidate.closest("aside"));
+
+  if (!element) {
+    throw new Error(`Could not find sidebar text: ${text}`);
+  }
+
+  return element;
+}
+
+function mockBranchList() {
+  commandMocks.listBranches.mockResolvedValue({
+    branches: [
+      branchSummary({
+        current: true,
+        existence: "localOnly",
+        headOid: "abc1234",
+        shortName: "main",
+      }),
+      branchSummary({
+        ahead: 2,
+        existence: "localOnly",
+        headOid: "def5678",
+        shortName: "feature/lookdev",
+      }),
+      branchSummary({
+        behind: 1,
+        existence: "remoteOnly",
+        headOid: "789abcd",
+        shortName: "concept-pass",
+      }),
+    ],
+  });
+}
+
+function branchSummary({
+  ahead = 0,
+  behind = 0,
+  current = false,
+  existence,
+  headOid,
+  shortName,
+}: {
+  ahead?: number;
+  behind?: number;
+  current?: boolean;
+  existence: "localOnly" | "remoteOnly" | "localAndRemote";
+  headOid: string;
+  shortName: string;
+}) {
+  return {
+    ahead,
+    behind,
+    current,
+    existence,
+    headOid,
+    latestCommitUnixSeconds: "1760000000",
+    name:
+      existence === "remoteOnly"
+        ? `refs/remotes/origin/${shortName}`
+        : `refs/heads/${shortName}`,
+    shortName,
+    upstream: existence === "localAndRemote" ? `origin/${shortName}` : null,
+  };
+}
+
+function stashEntry({
+  createdAtUnixSeconds = "1760000000",
+  isAutoStash = false,
+  message,
+  origin = null,
+  selector,
+}: {
+  createdAtUnixSeconds?: string | null;
+  isAutoStash?: boolean;
+  message: string;
+  origin?: string | null;
+  selector: string;
+}) {
+  return {
+    branch: "main",
+    createdAtUnixSeconds,
+    index: 0,
+    isAutoStash,
+    message,
+    oid: "stashoid",
+    origin,
+    selector,
+  };
 }

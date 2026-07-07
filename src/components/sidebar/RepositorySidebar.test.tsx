@@ -68,7 +68,7 @@ describe("RepositorySidebar", () => {
     );
   });
 
-  it("keeps current and remote-only branch deletion disabled", () => {
+  it("keeps current branch deletion disabled and routes remote-only deletion to confirmation", () => {
     const onDeleteBranch = vi.fn();
 
     renderSidebar({ onDeleteBranch });
@@ -80,10 +80,10 @@ describe("RepositorySidebar", () => {
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
 
     fireEvent.contextMenu(screen.getByText("concept-pass"));
-    expect(
-      screen.getByRole("menuitem", { name: "Delete branch" }),
-    ).toBeDisabled();
-    expect(onDeleteBranch).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete branch" }));
+    expect(onDeleteBranch).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "concept-pass", remoteOnly: true }),
+    );
   });
 
   it("disables branch write actions when the repository has no commits", () => {

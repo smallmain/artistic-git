@@ -1025,6 +1025,204 @@ mod tests {
     }
 
     #[test]
+    fn creates_full_stash_including_untracked_and_manual_apply_keeps_stash() {
+        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
+            return;
+        };
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        repo.write("tracked.txt", "tracked changed\n");
+        repo.write("new/asset.txt", "untracked asset\n");
+
+        let response = create_stash(
+            &runner,
+            CreateStashRequest {
+                repository_path: display_path(&repo.path),
+                message: "manual full stash".to_owned(),
+                include_untracked: true,
+                paths: Vec::new(),
+            },
+        )
+        .expect("create full stash");
+        let stash = response.stash.expect("created stash");
+        let status = repo.git_output(["status", "--porcelain=v1"]);
+
+        assert!(response.created);
+        assert!(status.trim().is_empty());
+
+        let details = stash_details(
+            &runner,
+            StashDetailsRequest {
+                repository_path: display_path(&repo.path),
+                selector: stash.selector.clone(),
+            },
+        )
+        .expect("stash details");
+        assert_eq!(details.entry.oid, stash.oid);
+        assert!(
+            details
+                .files
+                .iter()
+                .any(|file| file.path == "tracked.txt"
+                    && file.change_kind == DiffChangeKind::Modified)
+        );
+        assert!(details
+            .files
+            .iter()
+            .any(|file| file.path == "new/asset.txt" && file.change_kind == DiffChangeKind::Added));
+
+        let restore = restore_stash(
+            &runner,
+            RestoreStashRequest {
+                repository_path: display_path(&repo.path),
+                selector: stash.selector,
+                drop_on_success: false,
+                operation_name: None,
+            },
+        )
+        .expect("manual apply stash");
+        let stashes = list_stashes(
+            &runner,
+            RepositoryPathRequest {
+                repository_path: display_path(&repo.path),
+            },
+        )
+        .expect("list stashes");
+
+        assert!(matches!(
+            restore.outcome,
+            StashRestoreOutcome::Applied { dropped: false }
+        ));
+        assert_eq!(repo.read("tracked.txt"), "tracked changed\n");
+        assert_eq!(repo.read("new/asset.txt"), "untracked asset\n");
+        assert!(stashes.stashes.iter().any(|entry| entry.oid == restore.oid));
+    }
+
+    #[test]
+    fn stash_details_marks_auto_origin_and_delete_drops_entry() {
+        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
+            return;
+        };
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        repo.write("tracked.txt", "auto stash change\n");
+
+        let stash = create_auto_stash(
+            &runner,
+            CreateAutoStashRequest {
+                repository_path: display_path(&repo.path),
+                reason: "Auto Stash: switch branch".to_owned(),
+                include_untracked: true,
+                paths: Vec::new(),
+            },
+        )
+        .expect("create auto stash")
+        .stash
+        .expect("created stash");
+        let details = stash_details(
+            &runner,
+            StashDetailsRequest {
+                repository_path: display_path(&repo.path),
+                selector: stash.selector.clone(),
+            },
+        )
+        .expect("stash details");
+
+        assert!(details.entry.is_auto_stash);
+        assert_eq!(details.entry.origin.as_deref(), Some("switch branch"));
+        assert!(details.files.iter().any(|file| file.path == "tracked.txt"));
+
+        let deleted = delete_stash(
+            &runner,
+            DeleteStashRequest {
+                repository_path: display_path(&repo.path),
+                selector: stash.selector,
+            },
+        )
+        .expect("delete stash");
+        let stashes = list_stashes(
+            &runner,
+            RepositoryPathRequest {
+                repository_path: display_path(&repo.path),
+            },
+        )
+        .expect("list stashes");
+
+        assert_eq!(deleted.deleted_selector, "stash@{0}");
+        assert!(stashes.stashes.is_empty());
+    }
+
+    #[test]
+    fn auto_stash_restore_conflict_keeps_original_until_cancel_recovers() {
+        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
+            return;
+        };
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        repo.write("tracked.txt", "stash side\n");
+        let stash = create_auto_stash(
+            &runner,
+            CreateAutoStashRequest {
+                repository_path: display_path(&repo.path),
+                reason: "switch branch".to_owned(),
+                include_untracked: true,
+                paths: Vec::new(),
+            },
+        )
+        .expect("create auto stash")
+        .stash
+        .expect("created stash");
+        repo.write("tracked.txt", "local side\n");
+
+        let response = restore_stash(
+            &runner,
+            RestoreStashRequest {
+                repository_path: display_path(&repo.path),
+                selector: stash.selector,
+                drop_on_success: true,
+                operation_name: None,
+            },
+        )
+        .expect("conflict keeps typed outcome");
+        let StashRestoreOutcome::Conflicts { .. } = response.outcome else {
+            panic!("expected conflict outcome");
+        };
+        let conflicted_stashes = list_stashes(
+            &runner,
+            RepositoryPathRequest {
+                repository_path: display_path(&repo.path),
+            },
+        )
+        .expect("list stashes after conflict");
+        assert!(conflicted_stashes
+            .stashes
+            .iter()
+            .any(|entry| entry.oid == response.oid && entry.is_auto_stash));
+
+        cancel_stash_restore(
+            &runner,
+            CancelStashRestoreRequest {
+                repository_path: display_path(&repo.path),
+                recovery: response.recovery,
+            },
+        )
+        .expect("cancel restore");
+        let stashes = list_stashes(
+            &runner,
+            RepositoryPathRequest {
+                repository_path: display_path(&repo.path),
+            },
+        )
+        .expect("list stashes");
+
+        assert_eq!(repo.read("tracked.txt"), "local side\n");
+        assert!(stashes
+            .stashes
+            .iter()
+            .any(|entry| entry.oid == response.oid && entry.is_auto_stash));
+    }
+
+    #[test]
     fn restores_stash_with_recovery_and_drops_auto_on_success() {
         let Some((runner, _dist_temp)) = real_runner_or_skip() else {
             return;

@@ -155,6 +155,10 @@ export function ConflictResolutionOverlay({
       : selectedPath
         ? [selectedPath]
         : [];
+  const sideLabels = React.useMemo(
+    () => conflictSideLabels(t, event.operationName),
+    [event.operationName, t],
+  );
 
   const mergeUpdatedFiles = React.useCallback(
     (updatedFiles: ConflictFile[]) => {
@@ -406,6 +410,7 @@ export function ConflictResolutionOverlay({
                 void runSelectSide(side, [detail.file.path]);
               }}
               saving={busyLabel !== null}
+              sideLabels={sideLabels}
             />
           ) : (
             <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
@@ -493,12 +498,14 @@ function ConflictDetailPanel({
   onSave,
   onSelectSide,
   saving,
+  sideLabels,
 }: {
   detail: ConflictFileDetail;
   file: ConflictFile;
   onSave: (content: string, pendingHunks: number) => void;
   onSelectSide: (side: ConflictSide) => void;
   saving: boolean;
+  sideLabels: ConflictSideLabels;
 }) {
   if (detail.kind === "binary") {
     return (
@@ -507,6 +514,7 @@ function ConflictDetailPanel({
         file={file}
         onSelectSide={onSelectSide}
         saving={saving}
+        sideLabels={sideLabels}
       />
     );
   }
@@ -519,6 +527,7 @@ function ConflictDetailPanel({
       onSave={onSave}
       onSelectSide={onSelectSide}
       saving={saving}
+      sideLabels={sideLabels}
     />
   );
 }
@@ -529,12 +538,14 @@ function TextConflictDetail({
   onSave,
   onSelectSide,
   saving,
+  sideLabels,
 }: {
   detail: Extract<ConflictFileDetail, { kind: "text" }>;
   file: ConflictFile;
   onSave: (content: string, pendingHunks: number) => void;
   onSelectSide: (side: ConflictSide) => void;
   saving: boolean;
+  sideLabels: ConflictSideLabels;
 }) {
   const { t } = useTranslation();
   const [manualMode, setManualMode] = React.useState(false);
@@ -583,7 +594,7 @@ function TextConflictDetail({
             type="button"
             variant="ghost"
           >
-            {t("conflicts.useOwn")}
+            {sideLabels.useOwn}
           </Button>
           <Button
             disabled={saving}
@@ -591,7 +602,7 @@ function TextConflictDetail({
             type="button"
             variant="ghost"
           >
-            {t("conflicts.useOther")}
+            {sideLabels.useOther}
           </Button>
           <label className="flex items-center gap-2 text-sm">
             <input
@@ -642,8 +653,8 @@ function TextConflictDetail({
       <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_22rem]">
         <div className="flex min-h-0 flex-col">
           <div className="grid shrink-0 grid-cols-2 border-b bg-card px-3 py-2 text-xs font-medium text-muted-foreground">
-            <span>{t("conflicts.ownVersion")}</span>
-            <span>{t("conflicts.otherVersion")}</span>
+            <span>{sideLabels.ownVersion}</span>
+            <span>{sideLabels.otherVersion}</span>
           </div>
           <DiffViewer
             content={{
@@ -657,48 +668,25 @@ function TextConflictDetail({
           />
         </div>
         <div className="flex min-h-0 flex-col border-l">
-          <div className="grid shrink-0 gap-2 border-b p-3">
+          <div className="grid max-h-80 shrink-0 gap-2 overflow-auto border-b p-3">
             {detail.hunks.length === 0 ? (
               <p className="text-sm text-muted-foreground">
                 {t("conflicts.noHunks")}
               </p>
             ) : (
               detail.hunks.map((hunk) => (
-                <div className="rounded-md border p-2" key={hunk.id}>
-                  <p className="mb-2 text-xs text-muted-foreground">
-                    {t("conflicts.hunkLabel", { line: hunk.startLine })}
-                  </p>
-                  <div className="grid grid-cols-2 gap-2">
-                    <Button
-                      onClick={() =>
-                        setSelections((current) => ({
-                          ...current,
-                          [hunk.id]: "own",
-                        }))
-                      }
-                      type="button"
-                      variant={
-                        selections[hunk.id] === "own" ? "secondary" : "ghost"
-                      }
-                    >
-                      {t("conflicts.useOwn")}
-                    </Button>
-                    <Button
-                      onClick={() =>
-                        setSelections((current) => ({
-                          ...current,
-                          [hunk.id]: "other",
-                        }))
-                      }
-                      type="button"
-                      variant={
-                        selections[hunk.id] === "other" ? "secondary" : "ghost"
-                      }
-                    >
-                      {t("conflicts.useOther")}
-                    </Button>
-                  </div>
-                </div>
+                <ConflictHunkCard
+                  hunk={hunk}
+                  key={hunk.id}
+                  onSelect={(side) =>
+                    setSelections((current) => ({
+                      ...current,
+                      [hunk.id]: side,
+                    }))
+                  }
+                  selectedSide={selections[hunk.id]}
+                  sideLabels={sideLabels}
+                />
               ))
             )}
           </div>
@@ -717,16 +705,106 @@ function TextConflictDetail({
   );
 }
 
+function ConflictHunkCard({
+  hunk,
+  onSelect,
+  selectedSide,
+  sideLabels,
+}: {
+  hunk: Extract<ConflictFileDetail, { kind: "text" }>["hunks"][number];
+  onSelect: (side: ConflictSide) => void;
+  selectedSide?: ConflictSide;
+  sideLabels: ConflictSideLabels;
+}) {
+  const { t } = useTranslation();
+
+  return (
+    <section
+      aria-label={t("conflicts.hunkLabel", { line: hunk.startLine })}
+      className="overflow-hidden rounded-md border bg-card"
+    >
+      <header className="border-b bg-muted/35 px-3 py-2">
+        <p className="text-xs font-medium text-muted-foreground">
+          {t("conflicts.hunkLabel", { line: hunk.startLine })}
+        </p>
+      </header>
+      <div className="grid grid-cols-2 divide-x">
+        <ConflictHunkSide
+          content={hunk.ownText}
+          label={sideLabels.ownSection}
+          onSelect={() => onSelect("own")}
+          selected={selectedSide === "own"}
+          selectLabel={sideLabels.useOwnHunk}
+        />
+        <ConflictHunkSide
+          content={hunk.otherText}
+          label={sideLabels.otherSection}
+          onSelect={() => onSelect("other")}
+          selected={selectedSide === "other"}
+          selectLabel={sideLabels.useOtherHunk}
+        />
+      </div>
+    </section>
+  );
+}
+
+function ConflictHunkSide({
+  content,
+  label,
+  onSelect,
+  selected,
+  selectLabel,
+}: {
+  content: string;
+  label: string;
+  onSelect: () => void;
+  selected: boolean;
+  selectLabel: string;
+}) {
+  const { t } = useTranslation();
+
+  return (
+    <div
+      className={cn(
+        "flex min-w-0 flex-col gap-2 p-2",
+        selected
+          ? "bg-primary/10 ring-1 ring-inset ring-primary"
+          : "bg-muted/15",
+      )}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className="min-w-0 truncate text-xs font-medium text-muted-foreground">
+          {label}
+        </span>
+        <Button
+          aria-pressed={selected}
+          className="h-7 shrink-0 px-2 text-xs"
+          onClick={onSelect}
+          type="button"
+          variant={selected ? "secondary" : "ghost"}
+        >
+          {selectLabel}
+        </Button>
+      </div>
+      <pre className="max-h-40 min-h-20 overflow-auto whitespace-pre-wrap break-words rounded bg-background/80 p-2 font-mono text-xs text-foreground">
+        {content.length > 0 ? content : t("conflicts.emptySection")}
+      </pre>
+    </div>
+  );
+}
+
 function BinaryConflictDetail({
   detail,
   file,
   onSelectSide,
   saving,
+  sideLabels,
 }: {
   detail: Extract<ConflictFileDetail, { kind: "binary" }>;
   file: ConflictFile;
   onSelectSide: (side: ConflictSide) => void;
   saving: boolean;
+  sideLabels: ConflictSideLabels;
 }) {
   const { t } = useTranslation();
 
@@ -743,13 +821,13 @@ function BinaryConflictDetail({
       <div className="grid min-h-0 flex-1 grid-cols-2 gap-3 overflow-auto p-3">
         <BinarySideCard
           disabled={saving}
-          label={t("conflicts.ownVersion")}
+          label={sideLabels.ownVersion}
           onSelect={() => onSelectSide("own")}
           side={detail.own}
         />
         <BinarySideCard
           disabled={saving}
-          label={t("conflicts.otherVersion")}
+          label={sideLabels.otherVersion}
           onSelect={() => onSelectSide("other")}
           side={detail.other}
         />
@@ -893,6 +971,46 @@ function containsConflictMarkers(content: string): boolean {
       line.startsWith(">>>>>>> ")
     );
   });
+}
+
+interface ConflictSideLabels {
+  otherSection: string;
+  otherVersion: string;
+  ownSection: string;
+  ownVersion: string;
+  useOther: string;
+  useOtherHunk: string;
+  useOwn: string;
+  useOwnHunk: string;
+}
+
+function conflictSideLabels(
+  t: (key: string) => string,
+  operationName: string,
+): ConflictSideLabels {
+  if (operationName.toLowerCase().includes("stash")) {
+    return {
+      otherSection: t("conflicts.stashOtherSection"),
+      otherVersion: t("conflicts.stashOtherVersion"),
+      ownSection: t("conflicts.stashOwnSection"),
+      ownVersion: t("conflicts.stashOwnVersion"),
+      useOther: t("conflicts.useStashOther"),
+      useOtherHunk: t("conflicts.useStashOtherHunk"),
+      useOwn: t("conflicts.useStashOwn"),
+      useOwnHunk: t("conflicts.useStashOwnHunk"),
+    };
+  }
+
+  return {
+    otherSection: t("conflicts.otherSection"),
+    otherVersion: t("conflicts.otherVersion"),
+    ownSection: t("conflicts.ownSection"),
+    ownVersion: t("conflicts.ownVersion"),
+    useOther: t("conflicts.useOther"),
+    useOtherHunk: t("conflicts.useOtherHunk"),
+    useOwn: t("conflicts.useOwn"),
+    useOwnHunk: t("conflicts.useOwnHunk"),
+  };
 }
 
 function errorSummary(error: unknown): string {

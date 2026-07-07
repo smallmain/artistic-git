@@ -75,10 +75,20 @@ describe("ConflictResolutionOverlay", () => {
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
 
-    const hunk = screen.getByText("Conflict at line 1").closest("div");
-    expect(hunk).not.toBeNull();
+    const hunk = screen.getByLabelText("Conflict at line 2");
+    expect(within(hunk).getByText("Own section")).toBeInTheDocument();
+    expect(within(hunk).getByText("Other section")).toBeInTheDocument();
+    expect(within(hunk).getByText("own line")).toBeInTheDocument();
+    expect(within(hunk).getByText("other line")).toBeInTheDocument();
+    expect(
+      screen.queryByText(/<<<<<<<|=======|>>>>>>>/),
+    ).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Resolution content")).toHaveValue(
+      "before\nown line\nother line\nafter\n",
+    );
+
     fireEvent.click(
-      within(hunk as HTMLElement).getByRole("button", { name: "Use own" }),
+      within(hunk).getByRole("button", { name: "Use own section" }),
     );
 
     expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
@@ -86,12 +96,101 @@ describe("ConflictResolutionOverlay", () => {
 
     await waitFor(() => {
       expect(api.saveConflictResolution).toHaveBeenCalledWith({
-        content: "own\n",
+        content: "before\nown line\nafter\n",
         path: "src/conflict.txt",
         pendingHunks: 0,
         repositoryPath: "/repo/art",
       });
     });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Complete" })).toBeEnabled();
+    });
+  });
+
+  it("allows manual text edits but blocks saving while markers or unresolved hunks remain", async () => {
+    const file = createFile({ status: "unresolved" });
+    const api = createApi({
+      conflictDetail: vi.fn(async () => createTextDetail(file)),
+      listConflicts: vi.fn(async () => ({
+        files: [file],
+        operation: mergeOperation,
+      })),
+      saveConflictResolution: vi.fn(async () => ({
+        file: resolvedFile(file),
+      })),
+    });
+
+    renderWithProviders(
+      <ConflictResolutionOverlay
+        api={api}
+        event={createEvent([file])}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const editor = await screen.findByLabelText("Resolution content");
+    fireEvent.change(editor, {
+      target: { value: "before\nmanual\n<<<<<<< HEAD\nafter\n" },
+    });
+
+    expect(
+      screen.getByText("Conflict markers remain in the resolution."),
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+
+    fireEvent.change(editor, {
+      target: { value: "before\nmanual\nafter\n" },
+    });
+
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    fireEvent.click(screen.getByLabelText("Mark resolved"));
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(api.saveConflictResolution).toHaveBeenCalledWith({
+        content: "before\nmanual\nafter\n",
+        path: "src/conflict.txt",
+        pendingHunks: 0,
+        repositoryPath: "/repo/art",
+      });
+    });
+  });
+
+  it("labels stash restore conflict sides as stashed and current branch content", async () => {
+    const file = createFile({ status: "unresolved" });
+    const api = createApi({
+      conflictDetail: vi.fn(async () => createTextDetail(file)),
+      listConflicts: vi.fn(async () => ({
+        files: [file],
+        operation: mergeOperation,
+      })),
+    });
+
+    renderWithProviders(
+      <ConflictResolutionOverlay
+        api={api}
+        event={createEvent([file], { operationName: "restoreStash" })}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const hunk = await screen.findByLabelText("Conflict at line 2");
+    expect(screen.getByText("Current branch version")).toBeInTheDocument();
+    expect(screen.getByText("Stashed version")).toBeInTheDocument();
+    expect(
+      within(hunk).getByText("Current branch content"),
+    ).toBeInTheDocument();
+    expect(within(hunk).getByText("Stashed content")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Use current branch" }),
+    ).toBeInTheDocument();
+    expect(
+      within(hunk).getByRole("button", {
+        name: "Use stashed section",
+      }),
+    ).toBeInTheDocument();
   });
 
   it("renders binary side details, image previews, and only resolves by choosing a side", async () => {
@@ -252,12 +351,16 @@ function resolvedFile(file: ConflictFile): ConflictFile {
   return { ...file, status: "resolved" };
 }
 
-function createEvent(files: ConflictFile[]): ConflictEnteredEvent {
+function createEvent(
+  files: ConflictFile[],
+  overrides: Partial<ConflictEnteredEvent> = {},
+): ConflictEnteredEvent {
   return {
     files,
     operationId: "op-conflict",
     operationName: "Resolving merge",
     repositoryPath: "/repo/art",
+    ...overrides,
   };
 }
 
@@ -271,24 +374,31 @@ function createFile(overrides: Partial<ConflictFile> = {}): ConflictFile {
 }
 
 function createTextDetail(file: ConflictFile): ConflictDetailResponse {
+  const prefix = "before\n";
+  const ownText = "own line\n";
+  const otherText = "other line\n";
+  const suffix = "after\n";
+  const startOffset = prefix.length;
+  const endOffset = startOffset + ownText.length + otherText.length;
+
   return {
     detail: {
-      currentText: "own\nother\n",
+      currentText: `${prefix}${ownText}${otherText}${suffix}`,
       hunks: [
         {
-          endLine: 2,
-          endOffset: 10,
+          endLine: 4,
+          endOffset,
           id: 0,
-          otherText: "other\n",
-          ownText: "own\n",
-          startLine: 1,
-          startOffset: 0,
+          otherText,
+          ownText,
+          startLine: 2,
+          startOffset,
         },
       ],
       kind: "text",
       language: "ts",
-      otherText: "other\n",
-      ownText: "own\n",
+      otherText: `${prefix}${otherText}${suffix}`,
+      ownText: `${prefix}${ownText}${suffix}`,
     },
     file,
   };

@@ -391,10 +391,7 @@ function BranchRow({
     !branch.current && !branchActionsDisabled && Boolean(onCheckout);
   const canCreateFromBase = !branchActionsDisabled && Boolean(onCreateFromBase);
   const canDelete =
-    !branch.current &&
-    !branch.remoteOnly &&
-    !branchActionsDisabled &&
-    Boolean(onDelete);
+    !branch.current && !branchActionsDisabled && Boolean(onDelete);
 
   return (
     <li
@@ -459,9 +456,7 @@ function BranchRow({
             branchActionsDisabledReason ??
             (branch.current
               ? t("repository.deleteCurrentBranchDisabled")
-              : branch.remoteOnly
-                ? t("repository.deleteRemoteOnlyBranchDisabled")
-                : undefined)
+              : undefined)
           }
           icon={<Trash2 className="size-3.5" aria-hidden="true" />}
           label={t("repository.deleteBranch")}

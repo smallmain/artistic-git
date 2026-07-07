@@ -130,6 +130,8 @@ fn track_large_files_with_lfs(runner: &GitRunner, root: &Path, paths: &[String])
         return Ok(());
     }
 
+    run_git_lfs(runner, Some(root), ["install", "--local"], OPERATION)?;
+
     let mut args = vec![OsString::from("track"), OsString::from("--filename")];
     args.push(OsString::from("--"));
     args.extend(paths.iter().map(OsString::from));
@@ -279,6 +281,105 @@ mod tests {
     }
 
     #[test]
+    fn large_file_track_with_lfs_installs_filters_and_commits_pointer() {
+        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
+            return;
+        };
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        repo.write_bytes("large.bin", &vec![7; 1024 * 1024 + 1]);
+
+        let response = commit_changes(
+            &runner,
+            CommitRequest {
+                repository_path: display_path(&repo.path),
+                paths: vec!["large.bin".to_owned()],
+                message: "track large".to_owned(),
+                large_file_threshold_mb: Some(1),
+                large_file_decision: LargeFileDecision::TrackWithLfs,
+                disable_repository_gpgsign: false,
+            },
+        )
+        .expect("track large file with lfs");
+
+        match response {
+            CommitResponse::Committed {
+                lfs_tracked_paths, ..
+            } => {
+                assert_eq!(lfs_tracked_paths, vec!["large.bin"]);
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+        assert!(repo
+            .read(".gitattributes")
+            .contains("large.bin filter=lfs diff=lfs merge=lfs -text"));
+        assert!(repo
+            .git_output(["show", "HEAD:large.bin"])
+            .starts_with("version https://git-lfs.github.com/spec/v1\n"));
+    }
+
+    #[test]
+    fn large_file_commit_normally_skips_lfs_tracking() {
+        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
+            return;
+        };
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        repo.write_bytes("large.bin", &vec![9; 1024 * 1024 + 1]);
+
+        let response = commit_changes(
+            &runner,
+            CommitRequest {
+                repository_path: display_path(&repo.path),
+                paths: vec!["large.bin".to_owned()],
+                message: "commit normally".to_owned(),
+                large_file_threshold_mb: Some(1),
+                large_file_decision: LargeFileDecision::CommitNormally,
+                disable_repository_gpgsign: false,
+            },
+        )
+        .expect("commit large file normally");
+
+        assert!(matches!(response, CommitResponse::Committed { .. }));
+        assert!(!repo.path.join(".gitattributes").exists());
+        assert_eq!(
+            repo.git_output(["cat-file", "-s", "HEAD:large.bin"]).trim(),
+            (1024 * 1024 + 1).to_string()
+        );
+    }
+
+    #[test]
+    fn disable_repository_gpgsign_writes_local_config_before_commit() {
+        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
+            return;
+        };
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        repo.git(["config", "--local", "commit.gpgsign", "true"]);
+        repo.write("tracked.txt", "signed config disabled\n");
+
+        let response = commit_changes(
+            &runner,
+            CommitRequest {
+                repository_path: display_path(&repo.path),
+                paths: vec!["tracked.txt".to_owned()],
+                message: "disable signing".to_owned(),
+                large_file_threshold_mb: None,
+                large_file_decision: LargeFileDecision::Prompt,
+                disable_repository_gpgsign: true,
+            },
+        )
+        .expect("disable repository gpgsign");
+
+        assert!(matches!(response, CommitResponse::Committed { .. }));
+        assert_eq!(
+            repo.git_output(["config", "--local", "--get", "commit.gpgsign"])
+                .trim(),
+            "false"
+        );
+    }
+
+    #[test]
     fn relative_path_validation_rejects_escape() {
         let error = validate_relative_paths(&["../outside".to_owned()], OPERATION)
             .expect_err("escape should be rejected");
@@ -345,6 +446,10 @@ mod tests {
 
         fn write(&self, relative: &str, content: &str) {
             self.write_bytes(relative, content.as_bytes());
+        }
+
+        fn read(&self, relative: &str) -> String {
+            fs::read_to_string(self.path.join(relative)).expect("read file")
         }
 
         fn write_bytes(&self, relative: &str, content: &[u8]) {
