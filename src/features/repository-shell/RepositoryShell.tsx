@@ -104,6 +104,10 @@ import { ReviewModeOverlay } from "@/features/review/ReviewModeOverlay";
 type MainTab = "history" | "localChanges";
 type StashScope = "all" | "selected";
 type WindowCloseBlockedReason = "closeWindow" | "quit";
+type SyncStatusTranslator = (
+  key: string,
+  options?: Record<string, unknown>,
+) => string;
 
 interface WindowCloseBlockedEvent {
   reason?: WindowCloseBlockedReason;
@@ -621,24 +625,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         }
         setConflictEntered(conflict);
       }
-      const changedBranches = response.branches.filter(
-        (branch) => branch.status !== "alreadyUpToDate",
-      ).length;
-      const appliedRules = response.autoTracking.filter(
-        (rule) => rule.status === "applied",
-      ).length;
-      const invalidRules = response.autoTracking.filter(
-        (rule) => rule.status === "invalid" || rule.status === "failed",
-      ).length;
-      setSyncStatus(
-        response.allUpToDate
-          ? t("repository.syncAllUpToDate")
-          : t("repository.syncBatchSummary", {
-              branches: changedBranches,
-              rules: appliedRules,
-              invalid: invalidRules,
-            }),
-      );
+      setSyncStatus(formatSyncAllStatus(response, t));
       setSyncFeedback(response.allUpToDate ? { kind: "all" } : null);
     },
     [setConflictEntered, t],
@@ -653,7 +640,6 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         setRemoteHistoryChange(response.remoteHistoryChange);
       }
       if (response.status === "alreadyUpToDate") {
-        setSyncStatus(t("repository.syncBranchUpToDate"));
         setSyncFeedback({ branchName: response.branchName, kind: "branch" });
       } else {
         setSyncFeedback(null);
@@ -668,6 +654,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         }
         setConflictEntered(conflict);
       }
+      setSyncStatus(formatSyncBranchStatus(response, t));
     },
     [setConflictEntered, t],
   );
@@ -2102,6 +2089,82 @@ function operationLabel(label: string, t: (key: string) => string): string {
     default:
       return label;
   }
+}
+
+function formatSyncAllStatus(
+  response: SyncAllBranchesResponse,
+  t: SyncStatusTranslator,
+): string {
+  if (response.allUpToDate) {
+    return t("repository.syncAllUpToDate");
+  }
+
+  const parts = [
+    ...response.branches.map((branch) => formatSyncBranchStatus(branch, t)),
+    ...response.autoTracking.map((rule) => formatSyncRuleStatus(rule, t)),
+  ];
+
+  return parts.length > 0 ? parts.join(" · ") : t("repository.syncAllUpToDate");
+}
+
+function formatSyncBranchStatus(
+  response: SyncBranchResponse,
+  t: SyncStatusTranslator,
+): string {
+  const message = syncMessageSuffix(response.message);
+  switch (response.status) {
+    case "alreadyUpToDate":
+      return t("repository.syncBranchResultUpToDate", {
+        branch: response.branchName,
+      });
+    case "published":
+      return t("repository.syncBranchResultPublished", {
+        branch: response.branchName,
+      });
+    case "failed":
+      return t("repository.syncBranchResultFailed", {
+        branch: response.branchName,
+        message,
+      });
+    case "conflicts":
+    case "remoteHistoryChanged":
+      return t("repository.syncBranchResultNeedsAttention", {
+        branch: response.branchName,
+        message,
+      });
+    default:
+      return t("repository.syncBranchResultSuccess", {
+        branch: response.branchName,
+      });
+  }
+}
+
+function formatSyncRuleStatus(
+  response: SyncAllBranchesResponse["autoTracking"][number],
+  t: SyncStatusTranslator,
+): string {
+  const message = syncMessageSuffix(response.message);
+  const source = response.sourceBranch;
+  const target = response.targetBranch;
+  switch (response.status) {
+    case "alreadyUpToDate":
+      return t("repository.syncRuleResultUpToDate", { source, target });
+    case "applied":
+      return t("repository.syncRuleResultSuccess", { source, target });
+    case "failed":
+      return t("repository.syncRuleResultFailed", { source, target, message });
+    case "conflicts":
+    case "invalid":
+      return t("repository.syncRuleResultNeedsAttention", {
+        source,
+        target,
+        message,
+      });
+  }
+}
+
+function syncMessageSuffix(message: string | null | undefined): string {
+  return message ? ` (${message})` : "";
 }
 
 function mapBranchSummaryToItem(branch: BranchSummary): BranchListItem {

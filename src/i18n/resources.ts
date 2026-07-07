@@ -183,10 +183,21 @@ export const resources = {
         syncBadge: "↑{{ahead}} to push ↓{{behind}} to pull",
         syncBatchSummary:
           "Synced {{branches}} branches and {{rules}} tracking rules ({{invalid}} skipped)",
+        syncBranchResultFailed: "{{branch}}: failed{{message}}",
+        syncBranchResultNeedsAttention:
+          "{{branch}}: needs attention{{message}}",
+        syncBranchResultPublished: "{{branch}}: published",
+        syncBranchResultSuccess: "{{branch}}: success",
+        syncBranchResultUpToDate: "{{branch}}: up to date",
         syncBranchUpToDate: "Branch is up to date",
         syncCurrentOnly: "Only the current branch can be synced in this phase",
         syncRequiresLocalBranch:
           "Check out this remote branch before syncing it",
+        syncRuleResultFailed: "{{source}} -> {{target}}: failed{{message}}",
+        syncRuleResultNeedsAttention:
+          "{{source}} -> {{target}}: needs attention{{message}}",
+        syncRuleResultSuccess: "{{source}} -> {{target}}: success",
+        syncRuleResultUpToDate: "{{source}} -> {{target}}: up to date",
         submodulesReady: "Submodules ready",
         tabs: "Repository tabs",
         untitledProject: "Untitled project",
@@ -324,6 +335,7 @@ export const resources = {
           autoTrackingSelf: "A branch cannot automatically track itself.",
           autoTrackingSource: "Source local branch",
           autoTrackingTarget: "Target origin branch",
+          autoTrackingTargetDeleted: "Target branch was deleted.",
           gitignore: ".gitignore",
           gitignoreLocalChange:
             "Saving writes .gitignore in the repository, so Git will show it as a local change.",
@@ -807,9 +819,19 @@ export const resources = {
         syncBadge: "↑{{ahead}} 待推送 ↓{{behind}} 待拉取",
         syncBatchSummary:
           "已同步 {{branches}} 个分支和 {{rules}} 条跟踪规则（跳过 {{invalid}} 条）",
+        syncBranchResultFailed: "{{branch}}：失败{{message}}",
+        syncBranchResultNeedsAttention: "{{branch}}：需关注{{message}}",
+        syncBranchResultPublished: "{{branch}}：已发布",
+        syncBranchResultSuccess: "{{branch}}：成功",
+        syncBranchResultUpToDate: "{{branch}}：已是最新",
         syncBranchUpToDate: "分支已是最新",
         syncCurrentOnly: "本阶段仅可同步当前分支",
         syncRequiresLocalBranch: "请先切换到该远程分支再同步",
+        syncRuleResultFailed: "{{source}} -> {{target}}：失败{{message}}",
+        syncRuleResultNeedsAttention:
+          "{{source}} -> {{target}}：需关注{{message}}",
+        syncRuleResultSuccess: "{{source}} -> {{target}}：成功",
+        syncRuleResultUpToDate: "{{source}} -> {{target}}：已是最新",
         submodulesReady: "子模块已就绪",
         tabs: "仓库选项卡",
         untitledProject: "未命名项目",
@@ -937,6 +959,7 @@ export const resources = {
           autoTrackingSelf: "分支不能自动跟踪自身。",
           autoTrackingSource: "源本地分支",
           autoTrackingTarget: "目标 origin 分支",
+          autoTrackingTargetDeleted: "目标分支已删除。",
           gitignore: ".gitignore",
           gitignoreLocalChange:
             "保存会写入仓库内 .gitignore，因此 Git 会把它显示为本地更改。",

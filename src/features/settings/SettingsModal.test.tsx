@@ -205,6 +205,33 @@ describe("SettingsModal", () => {
     expect(saveButtons.at(-1)).toBeDisabled();
   });
 
+  it("warns when an automatic tracking target branch was deleted", async () => {
+    commandMocks.loadProjectSettings.mockResolvedValue({
+      autoTrackingRules: [{ sourceBranch: "main", targetBranch: "deleted" }],
+      largeFileCheck: { enabled: true, thresholdMb: 50 },
+      path: "/repo/art",
+    });
+
+    render(
+      <TestProviders
+        initialWindowState={{
+          activeRepositoryPath: "/repo/art",
+          settingsSection: "project",
+        }}
+      >
+        <SettingsModal onOpenChange={vi.fn()} open />
+      </TestProviders>,
+    );
+
+    expect(
+      await screen.findByText("Target branch was deleted."),
+    ).toBeInTheDocument();
+    const saveButtons = screen.getAllByRole("button", {
+      name: "Save project settings",
+    });
+    expect(saveButtons.at(-1)).toBeEnabled();
+  });
+
   it("saves a valid automatic tracking rule with a remote-only target hint", async () => {
     commandMocks.saveProjectSettings.mockImplementation((request) =>
       Promise.resolve({

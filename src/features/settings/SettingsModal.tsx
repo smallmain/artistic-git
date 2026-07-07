@@ -1055,7 +1055,6 @@ function ProjectSettingsPanel({
   savingRemote: boolean;
 }) {
   const { t } = useTranslation();
-  const autoTrackingValidation = validateAutoTrackingRules(autoTrackingRules);
   const sourceOptions = branchOptions.filter(
     (branch) =>
       branch.existence === "localAndRemote" ||
@@ -1065,6 +1064,10 @@ function ProjectSettingsPanel({
     (branch) =>
       branch.existence === "localAndRemote" ||
       branch.existence === "remoteOnly",
+  );
+  const autoTrackingValidation = validateAutoTrackingRules(
+    autoTrackingRules,
+    targetOptions,
   );
 
   if (!activeRepositoryPath) {
@@ -1209,6 +1212,7 @@ function ProjectSettingsPanel({
           ) : null}
           {autoTrackingRules.map((rule, index) => {
             const rowError = autoTrackingValidation.rowErrors[index];
+            const rowWarning = autoTrackingValidation.rowWarnings[index];
             return (
               <div
                 className="grid gap-2 rounded-md border bg-background p-3"
@@ -1272,6 +1276,9 @@ function ProjectSettingsPanel({
                 {rowError ? (
                   <p className="text-sm text-destructive">{t(rowError)}</p>
                 ) : null}
+                {!rowError && rowWarning ? (
+                  <p className="text-sm text-warning">{t(rowWarning)}</p>
+                ) : null}
               </div>
             );
           })}
@@ -1315,8 +1322,12 @@ function ProjectSettingsPanel({
   );
 }
 
-function validateAutoTrackingRules(rules: AutoTrackingRule[]): {
+function validateAutoTrackingRules(
+  rules: AutoTrackingRule[],
+  targetOptions: BranchSummary[],
+): {
   rowErrors: Array<string | null>;
+  rowWarnings: Array<string | null>;
   valid: boolean;
 } {
   const sourceCounts = new Map<string, number>();
@@ -1325,6 +1336,9 @@ function validateAutoTrackingRules(rules: AutoTrackingRule[]): {
     sourceCounts.set(source, (sourceCounts.get(source) ?? 0) + 1);
   }
   const cyclicSources = cyclicAutoTrackingSources(rules);
+  const targetBranches = new Set(
+    targetOptions.map((branch) => branch.shortName),
+  );
 
   const rowErrors = rules.map((rule) => {
     const source = rule.sourceBranch.trim();
@@ -1343,9 +1357,22 @@ function validateAutoTrackingRules(rules: AutoTrackingRule[]): {
     }
     return null;
   });
+  const rowWarnings = rules.map((rule, index) => {
+    const target = rule.targetBranch.trim();
+    if (
+      rowErrors[index] === null &&
+      target &&
+      targetOptions.length > 0 &&
+      !targetBranches.has(target)
+    ) {
+      return "settings.project.autoTrackingTargetDeleted";
+    }
+    return null;
+  });
 
   return {
     rowErrors,
+    rowWarnings,
     valid: rowErrors.every((error) => error === null),
   };
 }

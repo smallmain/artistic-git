@@ -115,7 +115,8 @@ where
     }
 
     ensure_local_branch(runner, &root, &branch_name)?;
-    if remote_branch_oid(runner, &root, &branch_name)?.is_none() {
+    let has_origin_branch = remote_branch_oid(runner, &root, &branch_name)?.is_some();
+    if branch_upstream(runner, &root, &branch_name)?.is_none() || !has_origin_branch {
         return publish_non_current_branch(runner, &root, &branch_name);
     }
     cleanup_sync_worktree_residue(runner, &root);
@@ -180,7 +181,7 @@ where
                 },
                 &progress,
             )
-            .map(sync_branch_response_from_current)?
+            .map(sync_branch_response_from_current)
         } else {
             sync_branch_with_progress(
                 runner,
@@ -190,7 +191,15 @@ where
                     operation_id: Some(sync_branch_operation_id(&branch_name)),
                 },
                 &progress,
-            )?
+            )
+        };
+
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => {
+                branches.push(failed_branch_response(&root, &branch_name, error.summary));
+                continue;
+            }
         };
 
         if response.status == SyncCurrentBranchStatus::Conflicts {
@@ -208,7 +217,7 @@ where
     }
 
     let auto_tracking = if conflict.is_none() && remote_history_change.is_none() {
-        let rules = project_auto_tracking_rules(config, &root)?;
+        let rules = project_auto_tracking_rules(config, runner, &root)?;
         apply_auto_tracking_rules(runner, &root, &operation_id, &rules, &progress)?
     } else {
         Vec::new()
@@ -883,18 +892,41 @@ fn syncable_local_branches(runner: &GitRunner, root: &Path) -> AppResult<Vec<Str
 
 fn project_auto_tracking_rules(
     config: Option<&ConfigActor>,
+    runner: &GitRunner,
     root: &Path,
 ) -> AppResult<Vec<AutoTrackingRule>> {
     let Some(config) = config else {
         return Ok(Vec::new());
     };
-    Ok(crate::settings::load_project_settings(
+    let rules = crate::settings::load_project_settings(
         Some(config),
         crate::settings::ProjectSettingsRequest {
             repository_path: display_path(root),
         },
     )?
-    .auto_tracking_rules)
+    .auto_tracking_rules;
+    let inventory = branch_inventory(runner, root)?;
+    let retained = rules
+        .iter()
+        .filter(|rule| {
+            let source = rule.source_branch.trim();
+            source.is_empty() || inventory.local_branches.contains(source)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if retained.len() != rules.len() {
+        let retained_for_store = retained.clone();
+        config
+            .update_project(display_path(root), |project| {
+                project.auto_tracking_rules = retained_for_store;
+            })
+            .map_err(|source| {
+                expected_repo_error(format!("无法移除失效自动跟踪规则：{source}"), root)
+            })?;
+    }
+
+    Ok(retained)
 }
 
 fn apply_auto_tracking_rules<F>(
@@ -1358,7 +1390,7 @@ fn validate_auto_tracking_rules_for_inventory(
             } else if !inventory.remote_branches.contains(source) {
                 Some("源分支必须有对应的 origin 远程分支。".to_owned())
             } else if !inventory.remote_branches.contains(target) {
-                Some("目标分支必须是 origin 上存在的远程分支。".to_owned())
+                Some("目标分支已删除。".to_owned())
             } else {
                 None
             };
@@ -1532,6 +1564,30 @@ fn upstream_branch(runner: &GitRunner, root: &Path) -> AppResult<Option<String>>
         ))
     } else {
         Ok(None)
+    }
+}
+
+fn branch_upstream(
+    runner: &GitRunner,
+    root: &Path,
+    branch_name: &str,
+) -> AppResult<Option<String>> {
+    let ref_name = format!("refs/heads/{branch_name}");
+    let output = crate::git_ops::git_stdout(
+        runner,
+        Some(root),
+        [
+            "for-each-ref",
+            "--format=%(upstream:short)",
+            ref_name.as_str(),
+        ],
+        SYNC_BRANCH_OPERATION,
+    )?;
+    let upstream = output.trim();
+    if upstream.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(upstream.to_owned()))
     }
 }
 
@@ -2153,6 +2209,20 @@ fn sync_branch_response_from_current(response: SyncCurrentBranchResponse) -> Syn
     }
 }
 
+fn failed_branch_response(root: &Path, branch_name: &str, message: String) -> SyncBranchResponse {
+    SyncBranchResponse {
+        repository_path: display_path(root),
+        branch_name: branch_name.to_owned(),
+        upstream: None,
+        status: SyncCurrentBranchStatus::Failed,
+        attempts: 1,
+        message: Some(message),
+        conflict: None,
+        stash_recovery: None,
+        remote_history_change: None,
+    }
+}
+
 fn sync_branch_response_from_worktree(
     root: &Path,
     response: SyncCurrentBranchResponse,
@@ -2193,7 +2263,7 @@ fn command_failure(plan: &GitCommandPlan, output: Output, summary: impl Into<Str
 mod tests {
     use super::*;
     use artistic_git_contracts::SyncCurrentBranchStatus;
-    use artistic_git_core::config::AutoTrackingRule;
+    use artistic_git_core::config::{AutoTrackingRule, ConfigActor, ConfigPaths};
     use artistic_git_git_runner::{GitDistribution, GitRunner};
     use artistic_git_test_support::{require_git_dist, TestTempDir};
     use std::{
@@ -2691,6 +2761,85 @@ mod tests {
     }
 
     #[test]
+    fn sync_all_branches_records_failed_branch_and_continues() {
+        let Some((runner, _home)) = real_runner_or_skip() else {
+            return;
+        };
+        let fixture = DoubleClone::new(&runner);
+        fixture.create_tracking_branch("feature/failure");
+        fixture.create_tracking_branch("feature/success");
+        fixture.local.git([
+            "remote",
+            "add",
+            "other",
+            display_path(&fixture.remote.path).as_str(),
+        ]);
+        fixture.local.git(["fetch", "other"]);
+        fixture.local.git([
+            "branch",
+            "--set-upstream-to",
+            "other/feature/failure",
+            "feature/failure",
+        ]);
+
+        fixture.local.git(["checkout", "feature/failure"]);
+        fixture.local.write("failure-local.txt", "local\n");
+        fixture.local.git(["add", "failure-local.txt"]);
+        fixture
+            .local
+            .git(["commit", "-m", "local failure branch change"]);
+        fixture.local.git(["checkout", "main"]);
+
+        fixture.peer.git(["checkout", "feature/failure"]);
+        fixture.peer.write("failure-remote.txt", "remote\n");
+        fixture.peer.git(["add", "failure-remote.txt"]);
+        fixture
+            .peer
+            .git(["commit", "-m", "remote failure branch change"]);
+        fixture.peer.git(["push"]);
+
+        fixture.peer.git(["checkout", "feature/success"]);
+        fixture.peer.write("success-remote.txt", "remote\n");
+        fixture.peer.git(["add", "success-remote.txt"]);
+        fixture
+            .peer
+            .git(["commit", "-m", "remote success branch change"]);
+        fixture.peer.git(["push"]);
+
+        let response = sync_all_branches_with_progress(
+            &runner,
+            None,
+            SyncAllBranchesRequest {
+                repository_path: display_path(&fixture.local.path),
+                operation_id: Some(OperationId("sync-all-failure-test".to_owned())),
+            },
+            |_| {},
+        )
+        .expect("sync all branches");
+
+        let failed = response
+            .branches
+            .iter()
+            .find(|branch| branch.branch_name == "feature/failure")
+            .expect("failed branch response");
+        assert_eq!(failed.status, SyncCurrentBranchStatus::Failed);
+        assert!(failed
+            .message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("上游不属于 origin"));
+        assert!(response.branches.iter().any(|branch| {
+            branch.branch_name == "feature/success"
+                && branch.status == SyncCurrentBranchStatus::Pulled
+        }));
+        assert_eq!(
+            fixture.local.show("feature/success", "success-remote.txt"),
+            "remote\n"
+        );
+        assert_no_sync_worktrees(&fixture.local);
+    }
+
+    #[test]
     fn auto_tracking_rule_fast_forwards_source_to_remote_target_and_pushes() {
         let Some((runner, _home)) = real_runner_or_skip() else {
             return;
@@ -2729,6 +2878,81 @@ mod tests {
         assert_eq!(fixture.peer.read("release.txt"), "release\n");
         assert_eq!(fixture.local.read("tracked.txt"), "dirty current\n");
         assert!(fixture.local.status_clean());
+    }
+
+    #[test]
+    fn sync_all_removes_deleted_auto_tracking_source_and_marks_deleted_target() {
+        let Some((runner, _home)) = real_runner_or_skip() else {
+            return;
+        };
+        let fixture = DoubleClone::new(&runner);
+        fixture.create_tracking_branch("stable");
+        fixture.create_tracking_branch("release");
+        fixture.peer.git(["push", "origin", "--delete", "release"]);
+        fixture.local.git(["fetch", "origin", "--prune"]);
+
+        let config_temp = TestTempDir::new("ag-sync-config").expect("config temp");
+        let config = ConfigActor::load(ConfigPaths::new(
+            config_temp.path().join("settings.json"),
+            config_temp.path().join("projects.json"),
+        ))
+        .expect("load config");
+        config
+            .update_project(display_path(&fixture.local.path), |project| {
+                project.auto_tracking_rules = vec![
+                    AutoTrackingRule {
+                        source_branch: "deleted-source".to_owned(),
+                        target_branch: "main".to_owned(),
+                    },
+                    AutoTrackingRule {
+                        source_branch: "stable".to_owned(),
+                        target_branch: "release".to_owned(),
+                    },
+                ];
+            })
+            .expect("seed project rules");
+
+        let response = crate::sync_all_branches_with_config(
+            &runner,
+            Some(&config),
+            SyncAllBranchesRequest {
+                repository_path: display_path(&fixture.local.path),
+                operation_id: Some(OperationId("sync-all-invalid-rules-test".to_owned())),
+            },
+            |_| {},
+        )
+        .expect("sync all branches");
+
+        assert_eq!(response.auto_tracking.len(), 1);
+        assert_eq!(response.auto_tracking[0].source_branch, "stable");
+        assert_eq!(response.auto_tracking[0].target_branch, "release");
+        assert_eq!(
+            response.auto_tracking[0].status,
+            AutoTrackingRuleStatus::Invalid
+        );
+        assert_eq!(
+            response.auto_tracking[0].message.as_deref(),
+            Some("目标分支已删除。")
+        );
+        assert!(response.branches.iter().any(|branch| {
+            branch.branch_name == "stable"
+                && branch.status == SyncCurrentBranchStatus::AlreadyUpToDate
+        }));
+
+        let project = crate::settings::load_project_settings(
+            Some(&config),
+            crate::settings::ProjectSettingsRequest {
+                repository_path: display_path(&fixture.local.path),
+            },
+        )
+        .expect("load project settings");
+        assert_eq!(
+            project.auto_tracking_rules,
+            vec![AutoTrackingRule {
+                source_branch: "stable".to_owned(),
+                target_branch: "release".to_owned(),
+            }]
+        );
     }
 
     #[test]

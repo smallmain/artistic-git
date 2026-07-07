@@ -1215,6 +1215,7 @@ describe("RepositoryShell branch flow", () => {
           attempts: 1,
           branchName: "main",
           conflict: null,
+          message: null,
           remoteHistoryChange: null,
           repositoryPath: "/repo/art",
           status: "pulled",
@@ -1241,8 +1242,63 @@ describe("RepositoryShell branch flow", () => {
       }),
     );
     expect(
+      await screen.findByText("main: success · release -> main: success"),
+    ).toBeInTheDocument();
+  });
+
+  it("summarizes batch sync failures and attention items", async () => {
+    mockBranchList();
+    commandMocks.syncAllBranches.mockResolvedValueOnce({
+      allUpToDate: false,
+      autoTracking: [
+        {
+          conflict: null,
+          message: "Target branch was deleted.",
+          sourceBranch: "stable",
+          stashRecovery: null,
+          status: "invalid",
+          targetBranch: "release",
+        },
+      ],
+      branches: [
+        {
+          attempts: 1,
+          branchName: "main",
+          conflict: null,
+          message: null,
+          remoteHistoryChange: null,
+          repositoryPath: "/repo/art",
+          status: "pulled",
+          stashRecovery: null,
+          upstream: "origin/main",
+        },
+        {
+          attempts: 1,
+          branchName: "feature/oops",
+          conflict: null,
+          message: "Needs manual cleanup.",
+          remoteHistoryChange: null,
+          repositoryPath: "/repo/art",
+          status: "failed",
+          stashRecovery: null,
+          upstream: null,
+        },
+      ],
+      conflict: null,
+      remoteHistoryChange: null,
+      repositoryPath: "/repo/art",
+      stashRecovery: null,
+    });
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    const syncButtons = await screen.findAllByRole("button", {
+      name: "Sync",
+    });
+    fireEvent.click(syncButtons[0]);
+
+    expect(
       await screen.findByText(
-        "Synced 1 branches and 1 tracking rules (0 skipped)",
+        "main: success · feature/oops: failed (Needs manual cleanup.) · stable -> release: needs attention (Target branch was deleted.)",
       ),
     ).toBeInTheDocument();
   });
@@ -1367,6 +1423,9 @@ describe("RepositoryShell branch flow", () => {
         repositoryPath: "/repo/art",
       }),
     );
+    expect(
+      await screen.findByText("feature/unpublished: published"),
+    ).toBeInTheDocument();
   });
 
   it("prompts before accepting rewritten remote history and resets through the dedicated command", async () => {
