@@ -1,5 +1,7 @@
 pub mod config;
+pub mod keyring;
 pub mod logging;
+pub mod retry;
 
 use serde::Serialize;
 use specta::Type;

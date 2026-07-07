@@ -12,3 +12,4 @@ serde.workspace = true
 specta.workspace = true
 specta-serde.workspace = true
 specta-typescript.workspace = true
+tracing.workspace = true

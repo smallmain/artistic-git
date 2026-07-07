@@ -63,6 +63,7 @@ dependencies = [
  "specta",
  "specta-serde",
  "specta-typescript",
+ "tracing",
 ]
 
 [[package]]
@@ -111,6 +112,8 @@ name = "artistic-git-shell"
 version = "0.1.0"
 dependencies = [
  "artistic-git-app",
+ "artistic-git-contracts",
+ "artistic-git-core",
  "tauri",
  "tauri-build",
 ]

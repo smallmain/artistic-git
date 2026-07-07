@@ -116,14 +116,14 @@ graph TD
 
 依赖：阶段 0.5。
 
-- [ ] `AppError`：三级分类（可预期/非预期/致命）+ 操作上下文 + git 命令与完整输出；所有 Tauri 命令统一 `Result<T, AppError>`；错误在到达前端前已完整写入日志
-- [ ] panic hook：记录日志并转为崩溃事件上报（不直接 abort 进程）；禁止 panic 外泄命令边界
-- [ ] 日志：`tracing` + 按天滚动 appender 写 `appLogDir/`，保留 30 天；结构化含时间戳/级别/git 命令与完整输出；提供「打开日志目录」命令
-- [ ] 配置 actor（多窗口共享）：`appConfigDir/settings.json` + `appDataDir/projects.json`（规范化绝对路径为 key）；内存唯一模型 + mutex 串行写 + 临时文件 rename 原子落盘 + 高频更新防抖 + 读改写只动对应条目；变更后向所有窗口广播事件
-- [ ] settings 模型：语言/主题/Fetch 间隔/Git 用户信息/自动检查更新/Gravatar 开关/onboarded 标志/记住密码短语开关/全局默认窗口几何/上次克隆父目录
-- [ ] projects 模型：自动跟踪规则/侧栏比例与折叠状态/视图模式/窗口几何/最近打开时间/审查模式崩溃标记/大文件检查配置；最近项目列表由其派生
-- [ ] `keyring` crate 封装：HTTPS 凭据（默认按 host 共享，支持 `protocol + host + path` 覆盖）与 SSH 密码短语的存取删接口
-- [ ] 通用自动重试工具：网络类失败最多 3 次指数退避（1s→2s→4s）
+- [x] `AppError`：三级分类（可预期/非预期/致命）+ 操作上下文 + git 命令与完整输出；所有 Tauri 命令统一 `Result<T, AppError>`；错误在到达前端前已完整写入日志
+- [x] panic hook：记录日志并转为崩溃事件上报（不直接 abort 进程）；禁止 panic 外泄命令边界
+- [x] 日志：`tracing` + 按天滚动 appender 写 `appLogDir/`，保留 30 天；结构化含时间戳/级别/git 命令与完整输出；提供「打开日志目录」命令
+- [x] 配置 actor（多窗口共享）：`appConfigDir/settings.json` + `appDataDir/projects.json`（规范化绝对路径为 key）；内存唯一模型 + mutex 串行写 + 临时文件 rename 原子落盘 + 高频更新防抖 + 读改写只动对应条目；变更后向所有窗口广播事件
+- [x] settings 模型：语言/主题/Fetch 间隔/Git 用户信息/自动检查更新/Gravatar 开关/onboarded 标志/记住密码短语开关/全局默认窗口几何/上次克隆父目录
+- [x] projects 模型：自动跟踪规则/侧栏比例与折叠状态/视图模式/窗口几何/最近打开时间/审查模式崩溃标记/大文件检查配置；最近项目列表由其派生
+- [x] `keyring` crate 封装：HTTPS 凭据（默认按 host 共享，支持 `protocol + host + path` 覆盖）与 SSH 密码短语的存取删接口
+- [x] 通用自动重试工具：网络类失败最多 3 次指数退避（1s→2s→4s）
 
 **验收**：单测覆盖原子写/并发读改写不丢字段/防抖合并/广播；日志滚动与保留策略；AppError 序列化契约（TS 类型同步）稳定。
 

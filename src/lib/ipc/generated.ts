@@ -24,6 +24,31 @@ export type AppInfo = {
 	identifier: string,
 };
 
+export type AppSettings = {
+	schemaVersion?: number,
+	language?: LanguagePreference,
+	appearance?: AppearanceSettings,
+	git?: GitSettings,
+	updates?: UpdateSettings,
+	privacy?: PrivacySettings,
+	onboarding?: OnboardingSettings,
+	window?: GlobalWindowSettings,
+	paths?: PathSettings,
+	logging?: LoggingSettings,
+	recentProjectLimit?: number,
+};
+
+export type AppearanceSettings = {
+	theme?: ThemePreference,
+};
+
+export type AutoTrackingRule = {
+	sourceBranch: string,
+	targetBranch: string,
+};
+
+export type ConfigChangeEvent = { type: "settingsUpdated"; settings: AppSettings } | { type: "projectUpdated"; projectKey: string; project: ProjectSettings } | { type: "projectRemoved"; projectKey: string; project: ProjectSettings | null };
+
 export type ConflictEnteredEvent = {
 	operationId: OperationId,
 	repositoryPath: string,
@@ -87,14 +112,50 @@ export type GitDistPaths = {
 	sshAskpass: string,
 };
 
+export type GitSettings = {
+	autoFetch?: boolean,
+	fetchIntervalSeconds?: number,
+	user?: GitUserSettings,
+	rememberSshPassphrase?: boolean,
+};
+
+export type GitUserSettings = {
+	name?: string | null,
+	email?: string | null,
+};
+
+export type GlobalWindowSettings = {
+	defaultGeometry?: WindowGeometry,
+};
+
 export type HealthResponse = {
 	app: AppInfo,
 	status: string,
 };
 
+export type LanguagePreference = "system" | "zhCn" | "enUs";
+
+export type LargeFileCheckSettings = {
+	enabled?: boolean,
+	thresholdMb?: number,
+};
+
 export type LfsLockStatus = {
 	locked: boolean,
 	owner: string | null,
+};
+
+export type LocalChangesViewMode = "flat" | "tree";
+
+export type LogLevelPreference = "error" | "warn" | "info" | "debug" | "trace";
+
+export type LoggingSettings = {
+	level?: LogLevelPreference,
+	retainDays?: number,
+};
+
+export type OnboardingSettings = {
+	onboarded?: boolean,
 };
 
 export type OpenLogDirResponse = {
@@ -118,7 +179,34 @@ export type OperationProgressEvent = {
 	cancellable: boolean,
 };
 
+export type PathSettings = {
+	lastCloneParentDir?: string | null,
+};
+
+export type PrivacySettings = {
+	gravatarEnabled?: boolean,
+};
+
 export type ProgressState = { kind: "indeterminate" } | { kind: "percent"; value: number | null };
+
+export type ProjectSettings = {
+	path?: string,
+	displayName?: string | null,
+	pinned?: boolean,
+	lastOpenedAt?: string | null,
+	lastBranch?: string | null,
+	autoTrackingRules?: AutoTrackingRule[],
+	sidebar?: SidebarLayoutSettings,
+	localChangesViewMode?: LocalChangesViewMode,
+	windowGeometry?: WindowGeometry | null,
+	reviewModeCrash?: ReviewModeCrashMarker | null,
+	largeFileCheck?: LargeFileCheckSettings,
+};
+
+export type ProjectsDocument = {
+	schemaVersion?: number,
+	projects?: { [key in string]: ProjectSettings },
+};
 
 export type RepoChangedEvent = {
 	repositoryPath: string,
@@ -126,3 +214,30 @@ export type RepoChangedEvent = {
 };
 
 export type RepoQueryKind = "summary" | "branches" | "stashes" | "localChanges" | "history";
+
+export type ReviewModeCrashMarker = {
+	autoStashRef?: string | null,
+	enteredAt?: string | null,
+	operationId?: string | null,
+};
+
+export type SidebarLayoutSettings = {
+	widthPx?: number,
+	branchSectionRatioPercent?: number,
+	branchesCollapsed?: boolean,
+	stashesCollapsed?: boolean,
+};
+
+export type ThemePreference = "system" | "light" | "dark";
+
+export type UpdateSettings = {
+	autoCheck?: boolean,
+};
+
+export type WindowGeometry = {
+	width?: number,
+	height?: number,
+	x?: number | null,
+	y?: number | null,
+	maximized?: boolean,
+};

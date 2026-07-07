@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::BTreeMap;
 
+pub type AppResult<T> = Result<T, AppError>;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct OperationId(pub String);
@@ -329,5 +331,22 @@ mod tests {
         assert!(!expected.should_report());
         assert!(fatal.should_report());
         assert!(fatal.category.terminates_app());
+    }
+
+    #[test]
+    fn app_error_serializes_full_git_command_output() {
+        let error = AppError::unexpected("git failed", "fetch").with_git(GitCommandError {
+            command: vec!["git".to_owned(), "fetch".to_owned(), "origin".to_owned()],
+            exit_code: Some(128),
+            stdout: "stdout text".to_owned(),
+            stderr: "stderr text".to_owned(),
+        });
+
+        let json = serde_json::to_value(error).expect("serialize error");
+
+        assert_eq!(json["git"]["command"][1], "fetch");
+        assert_eq!(json["git"]["exitCode"], 128);
+        assert_eq!(json["git"]["stdout"], "stdout text");
+        assert_eq!(json["git"]["stderr"], "stderr text");
     }
 }

@@ -13,18 +13,29 @@ use thiserror::Error;
 
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;
 pub const DEFAULT_RECENT_PROJECT_LIMIT: u16 = 20;
-pub const DEFAULT_FETCH_INTERVAL_SECONDS: u64 = 300;
-pub const DEFAULT_LOG_RETENTION_DAYS: u16 = 14;
+pub const DEFAULT_FETCH_INTERVAL_SECONDS: u32 = 60;
+pub const DEFAULT_LOG_RETENTION_DAYS: u16 = 30;
+pub const DEFAULT_WINDOW_WIDTH: u32 = 1280;
+pub const DEFAULT_WINDOW_HEIGHT: u32 = 720;
+pub const DEFAULT_SIDEBAR_WIDTH_PX: u16 = 280;
+pub const DEFAULT_BRANCH_SECTION_RATIO_PERCENT: u8 = 60;
+pub const DEFAULT_LARGE_FILE_THRESHOLD_MB: u32 = 50;
 pub const DEFAULT_DEBOUNCE_DELAY: Duration = Duration::from_millis(250);
 
 pub type ConfigStoreResult<T> = Result<T, ConfigStoreError>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 pub struct AppSettings {
     pub schema_version: u32,
+    pub language: LanguagePreference,
     pub appearance: AppearanceSettings,
     pub git: GitSettings,
+    pub updates: UpdateSettings,
+    pub privacy: PrivacySettings,
+    pub onboarding: OnboardingSettings,
+    pub window: GlobalWindowSettings,
+    pub paths: PathSettings,
     pub logging: LoggingSettings,
     pub recent_project_limit: u16,
 }
@@ -33,16 +44,30 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             schema_version: CONFIG_SCHEMA_VERSION,
+            language: LanguagePreference::System,
             appearance: AppearanceSettings::default(),
             git: GitSettings::default(),
+            updates: UpdateSettings::default(),
+            privacy: PrivacySettings::default(),
+            onboarding: OnboardingSettings::default(),
+            window: GlobalWindowSettings::default(),
+            paths: PathSettings::default(),
             logging: LoggingSettings::default(),
             recent_project_limit: DEFAULT_RECENT_PROJECT_LIMIT,
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
+pub enum LanguagePreference {
+    System,
+    ZhCn,
+    EnUs,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
 pub struct AppearanceSettings {
     pub theme: ThemePreference,
 }
@@ -64,10 +89,12 @@ pub enum ThemePreference {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 pub struct GitSettings {
     pub auto_fetch: bool,
-    pub fetch_interval_seconds: u64,
+    pub fetch_interval_seconds: u32,
+    pub user: GitUserSettings,
+    pub remember_ssh_passphrase: bool,
 }
 
 impl Default for GitSettings {
@@ -75,12 +102,57 @@ impl Default for GitSettings {
         Self {
             auto_fetch: true,
             fetch_interval_seconds: DEFAULT_FETCH_INTERVAL_SECONDS,
+            user: GitUserSettings::default(),
+            remember_ssh_passphrase: false,
         }
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct GitUserSettings {
+    pub name: Option<String>,
+    pub email: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
+pub struct UpdateSettings {
+    pub auto_check: bool,
+}
+
+impl Default for UpdateSettings {
+    fn default() -> Self {
+        Self { auto_check: true }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PrivacySettings {
+    pub gravatar_enabled: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct OnboardingSettings {
+    pub onboarded: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct GlobalWindowSettings {
+    pub default_geometry: WindowGeometry,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PathSettings {
+    pub last_clone_parent_dir: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
 pub struct LoggingSettings {
     pub level: LogLevelPreference,
     pub retain_days: u16,
@@ -91,6 +163,28 @@ impl Default for LoggingSettings {
         Self {
             level: LogLevelPreference::Info,
             retain_days: DEFAULT_LOG_RETENTION_DAYS,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct WindowGeometry {
+    pub width: u32,
+    pub height: u32,
+    pub x: Option<i32>,
+    pub y: Option<i32>,
+    pub maximized: bool,
+}
+
+impl Default for WindowGeometry {
+    fn default() -> Self {
+        Self {
+            width: DEFAULT_WINDOW_WIDTH,
+            height: DEFAULT_WINDOW_HEIGHT,
+            x: None,
+            y: None,
+            maximized: false,
         }
     }
 }
@@ -106,7 +200,7 @@ pub enum LogLevelPreference {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 pub struct ProjectsDocument {
     pub schema_version: u32,
     pub projects: BTreeMap<String, ProjectSettings>,
@@ -121,24 +215,126 @@ impl Default for ProjectsDocument {
     }
 }
 
+impl ProjectsDocument {
+    pub fn recent_projects(&self, limit: usize) -> Vec<ProjectSettings> {
+        let mut projects = self.projects.values().cloned().collect::<Vec<_>>();
+        projects.sort_by(|left, right| {
+            right
+                .last_opened_at
+                .cmp(&left.last_opened_at)
+                .then_with(|| left.path.cmp(&right.path))
+        });
+        projects.truncate(limit);
+        projects
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 pub struct ProjectSettings {
     pub path: String,
     pub display_name: Option<String>,
     pub pinned: bool,
     pub last_opened_at: Option<String>,
     pub last_branch: Option<String>,
+    pub auto_tracking_rules: Vec<AutoTrackingRule>,
+    pub sidebar: SidebarLayoutSettings,
+    pub local_changes_view_mode: LocalChangesViewMode,
+    pub window_geometry: Option<WindowGeometry>,
+    pub review_mode_crash: Option<ReviewModeCrashMarker>,
+    pub large_file_check: LargeFileCheckSettings,
+}
+
+impl Default for ProjectSettings {
+    fn default() -> Self {
+        Self {
+            path: String::new(),
+            display_name: None,
+            pinned: false,
+            last_opened_at: None,
+            last_branch: None,
+            auto_tracking_rules: Vec::new(),
+            sidebar: SidebarLayoutSettings::default(),
+            local_changes_view_mode: LocalChangesViewMode::Flat,
+            window_geometry: None,
+            review_mode_crash: None,
+            large_file_check: LargeFileCheckSettings::default(),
+        }
+    }
 }
 
 impl ProjectSettings {
     pub fn new(path: impl Into<String>) -> Self {
         Self {
             path: path.into(),
-            display_name: None,
-            pinned: false,
-            last_opened_at: None,
-            last_branch: None,
+            ..Self::default()
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoTrackingRule {
+    pub source_branch: String,
+    pub target_branch: String,
+}
+
+impl AutoTrackingRule {
+    pub fn new(source_branch: impl Into<String>, target_branch: impl Into<String>) -> Self {
+        Self {
+            source_branch: source_branch.into(),
+            target_branch: target_branch.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct SidebarLayoutSettings {
+    pub width_px: u16,
+    pub branch_section_ratio_percent: u8,
+    pub branches_collapsed: bool,
+    pub stashes_collapsed: bool,
+}
+
+impl Default for SidebarLayoutSettings {
+    fn default() -> Self {
+        Self {
+            width_px: DEFAULT_SIDEBAR_WIDTH_PX,
+            branch_section_ratio_percent: DEFAULT_BRANCH_SECTION_RATIO_PERCENT,
+            branches_collapsed: false,
+            stashes_collapsed: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum LocalChangesViewMode {
+    Flat,
+    Tree,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ReviewModeCrashMarker {
+    pub auto_stash_ref: Option<String>,
+    pub entered_at: Option<String>,
+    pub operation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct LargeFileCheckSettings {
+    pub enabled: bool,
+    pub threshold_mb: u32,
+}
+
+impl Default for LargeFileCheckSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            threshold_mb: DEFAULT_LARGE_FILE_THRESHOLD_MB,
         }
     }
 }
@@ -158,15 +354,48 @@ impl ConfigPaths {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum ConfigChangeEvent {
+    SettingsUpdated {
+        settings: AppSettings,
+    },
+    ProjectUpdated {
+        #[serde(rename = "projectKey")]
+        project_key: String,
+        project: ProjectSettings,
+    },
+    ProjectRemoved {
+        #[serde(rename = "projectKey")]
+        project_key: String,
+        project: Option<ProjectSettings>,
+    },
+}
+
+pub trait ConfigChangeSubscriber: Send + Sync + 'static {
+    fn on_config_change(&self, event: ConfigChangeEvent);
+}
+
+impl<F> ConfigChangeSubscriber for F
+where
+    F: Fn(ConfigChangeEvent) + Send + Sync + 'static,
+{
+    fn on_config_change(&self, event: ConfigChangeEvent) {
+        self(event);
+    }
+}
+
+#[derive(Clone)]
 pub struct ConfigActor {
     store: Arc<ConfigStore>,
+    subscribers: Arc<Mutex<Vec<Arc<dyn ConfigChangeSubscriber>>>>,
 }
 
 impl ConfigActor {
     pub fn load(paths: ConfigPaths) -> ConfigStoreResult<Self> {
         Ok(Self {
             store: Arc::new(ConfigStore::load(paths)?),
+            subscribers: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
@@ -182,11 +411,23 @@ impl ConfigActor {
         self.store.projects()
     }
 
+    pub fn subscribe(&self, subscriber: Arc<dyn ConfigChangeSubscriber>) -> ConfigStoreResult<()> {
+        self.subscribers
+            .lock()
+            .map_err(|_| ConfigStoreError::LockPoisoned)?
+            .push(subscriber);
+        Ok(())
+    }
+
     pub fn update_settings(
         &self,
         update: impl FnOnce(&mut AppSettings),
     ) -> ConfigStoreResult<AppSettings> {
-        self.store.update_settings(update)
+        let settings = self.store.update_settings(update)?;
+        self.broadcast(ConfigChangeEvent::SettingsUpdated {
+            settings: settings.clone(),
+        })?;
+        Ok(settings)
     }
 
     pub fn update_project(
@@ -194,7 +435,36 @@ impl ConfigActor {
         project_path: impl Into<String>,
         update: impl FnOnce(&mut ProjectSettings),
     ) -> ConfigStoreResult<ProjectSettings> {
-        self.store.update_project(project_path, update)
+        let project = self.store.update_project(project_path, update)?;
+        self.broadcast(ConfigChangeEvent::ProjectUpdated {
+            project_key: project.path.clone(),
+            project: project.clone(),
+        })?;
+        Ok(project)
+    }
+
+    pub fn remove_project(&self, project_path: &str) -> ConfigStoreResult<Option<ProjectSettings>> {
+        let project_key = normalize_project_path_key(project_path)?;
+        let project = self.store.remove_project(&project_key)?;
+        self.broadcast(ConfigChangeEvent::ProjectRemoved {
+            project_key,
+            project: project.clone(),
+        })?;
+        Ok(project)
+    }
+
+    fn broadcast(&self, event: ConfigChangeEvent) -> ConfigStoreResult<()> {
+        let subscribers = self
+            .subscribers
+            .lock()
+            .map_err(|_| ConfigStoreError::LockPoisoned)?
+            .clone();
+
+        for subscriber in subscribers {
+            subscriber.on_config_change(event.clone());
+        }
+
+        Ok(())
     }
 }
 
@@ -228,11 +498,12 @@ impl ConfigStore {
     }
 
     pub fn project(&self, project_path: &str) -> ConfigStoreResult<Option<ProjectSettings>> {
+        let project_key = normalize_project_path_key(project_path)?;
         Ok(self
             .lock_state()?
             .projects
             .projects
-            .get(project_path)
+            .get(&project_key)
             .cloned())
     }
 
@@ -260,7 +531,7 @@ impl ConfigStore {
         project_path: impl Into<String>,
         update: impl FnOnce(&mut ProjectSettings),
     ) -> ConfigStoreResult<ProjectSettings> {
-        let project_path = project_path.into();
+        let project_path = normalize_project_path_key(project_path.into())?;
         let mut state = self.lock_state()?;
         let mut next_projects = state.projects.clone();
         let entry = next_projects
@@ -283,9 +554,10 @@ impl ConfigStore {
     }
 
     pub fn remove_project(&self, project_path: &str) -> ConfigStoreResult<Option<ProjectSettings>> {
+        let project_key = normalize_project_path_key(project_path)?;
         let mut state = self.lock_state()?;
         let mut next_projects = state.projects.clone();
-        let removed_project = next_projects.projects.remove(project_path);
+        let removed_project = next_projects.projects.remove(&project_key);
 
         atomic_write_json(&self.paths.projects_path, &next_projects)?;
         state.projects = next_projects;
@@ -377,6 +649,8 @@ impl DebouncedFlush {
 pub enum ConfigStoreError {
     #[error("invalid config file path: {path}")]
     InvalidPath { path: PathBuf },
+    #[error("failed to resolve current directory: {source}")]
+    CurrentDir { source: io::Error },
     #[error("failed to read config file {path}: {source}")]
     Read { path: PathBuf, source: io::Error },
     #[error("failed to parse config file {path}: {source}")]
@@ -399,6 +673,40 @@ pub enum ConfigStoreError {
     Persist { path: PathBuf, source: io::Error },
     #[error("config store lock poisoned")]
     LockPoisoned,
+}
+
+pub fn normalize_project_path_key(path: impl AsRef<Path>) -> ConfigStoreResult<String> {
+    let path = path.as_ref();
+    if path.as_os_str().is_empty() {
+        return Err(ConfigStoreError::InvalidPath {
+            path: path.to_path_buf(),
+        });
+    }
+
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|source| ConfigStoreError::CurrentDir { source })?
+            .join(path)
+    };
+
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+
+    let key = normalized.to_string_lossy().into_owned();
+    #[cfg(windows)]
+    let key = key.replace('\\', "/");
+
+    Ok(key)
 }
 
 fn read_json_or_default<T>(path: &Path) -> ConfigStoreResult<T>
@@ -477,7 +785,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+    use std::{
+        sync::{Arc, Mutex},
+        thread,
+        time::Duration,
+    };
     use tempfile::tempdir;
 
     #[test]
@@ -486,16 +798,41 @@ mod tests {
         let projects = ProjectsDocument::default();
 
         assert_eq!(settings.schema_version, CONFIG_SCHEMA_VERSION);
+        assert_eq!(settings.language, LanguagePreference::System);
         assert_eq!(settings.appearance.theme, ThemePreference::System);
         assert!(settings.git.auto_fetch);
         assert_eq!(
             settings.git.fetch_interval_seconds,
             DEFAULT_FETCH_INTERVAL_SECONDS
         );
+        assert_eq!(settings.git.user, GitUserSettings::default());
+        assert!(!settings.git.remember_ssh_passphrase);
+        assert!(settings.updates.auto_check);
+        assert!(!settings.privacy.gravatar_enabled);
+        assert!(!settings.onboarding.onboarded);
+        assert_eq!(
+            settings.window.default_geometry,
+            WindowGeometry {
+                width: DEFAULT_WINDOW_WIDTH,
+                height: DEFAULT_WINDOW_HEIGHT,
+                x: None,
+                y: None,
+                maximized: false,
+            }
+        );
+        assert_eq!(settings.paths.last_clone_parent_dir, None);
         assert_eq!(settings.logging.level, LogLevelPreference::Info);
+        assert_eq!(settings.logging.retain_days, DEFAULT_LOG_RETENTION_DAYS);
         assert_eq!(settings.recent_project_limit, DEFAULT_RECENT_PROJECT_LIMIT);
         assert_eq!(projects.schema_version, CONFIG_SCHEMA_VERSION);
         assert!(projects.projects.is_empty());
+
+        let project = ProjectSettings::new("/repo/project");
+        assert_eq!(project.sidebar, SidebarLayoutSettings::default());
+        assert_eq!(project.local_changes_view_mode, LocalChangesViewMode::Flat);
+        assert_eq!(project.window_geometry, None);
+        assert_eq!(project.review_mode_crash, None);
+        assert_eq!(project.large_file_check, LargeFileCheckSettings::default());
     }
 
     #[test]
@@ -557,6 +894,150 @@ mod tests {
         assert_eq!(one.last_branch.as_deref(), Some("main"));
         assert_eq!(two.display_name.as_deref(), Some("Two"));
         assert_eq!(two.last_branch, None);
+    }
+
+    #[test]
+    fn deserializes_old_settings_with_new_defaults() {
+        let settings: AppSettings = serde_json::from_str(
+            r#"{
+              "schemaVersion": 1,
+              "appearance": { "theme": "dark" },
+              "git": { "autoFetch": false, "fetchIntervalSeconds": 120 },
+              "logging": { "level": "info", "retainDays": 14 },
+              "recentProjectLimit": 10
+            }"#,
+        )
+        .expect("deserialize settings");
+
+        assert_eq!(settings.appearance.theme, ThemePreference::Dark);
+        assert!(!settings.git.auto_fetch);
+        assert_eq!(settings.git.user, GitUserSettings::default());
+        assert!(!settings.privacy.gravatar_enabled);
+        assert!(!settings.onboarding.onboarded);
+        assert_eq!(settings.window.default_geometry.width, DEFAULT_WINDOW_WIDTH);
+    }
+
+    #[test]
+    fn project_keys_are_normalized_absolute_paths() {
+        let relative_key =
+            normalize_project_path_key("fixtures/../repo").expect("normalize relative project");
+
+        assert!(Path::new(&relative_key).is_absolute());
+        assert!(relative_key.ends_with("/repo"));
+        assert!(!relative_key.contains("/../"));
+    }
+
+    #[test]
+    fn concurrent_project_updates_do_not_drop_fields() {
+        let temp_dir = tempdir().expect("create temp dir");
+        let paths = ConfigPaths::new(
+            temp_dir.path().join("settings.json"),
+            temp_dir.path().join("projects.json"),
+        );
+        let store = Arc::new(ConfigStore::load(paths).expect("load store"));
+        let repo = temp_dir.path().join("repo");
+        let repo_key = repo.to_string_lossy().into_owned();
+
+        let first_store = Arc::clone(&store);
+        let first_repo = repo_key.clone();
+        let first = thread::spawn(move || {
+            first_store
+                .update_project(first_repo, |project| {
+                    project.display_name = Some("Project".to_owned());
+                    project
+                        .auto_tracking_rules
+                        .push(AutoTrackingRule::new("feature", "main"));
+                })
+                .expect("first update");
+        });
+
+        let second_store = Arc::clone(&store);
+        let second_repo = repo_key.clone();
+        let second = thread::spawn(move || {
+            second_store
+                .update_project(second_repo, |project| {
+                    project.last_branch = Some("feature".to_owned());
+                    project.sidebar.stashes_collapsed = true;
+                })
+                .expect("second update");
+        });
+
+        first.join().expect("join first thread");
+        second.join().expect("join second thread");
+
+        let project = store
+            .project(&repo_key)
+            .expect("read project")
+            .expect("project exists");
+
+        assert_eq!(project.display_name.as_deref(), Some("Project"));
+        assert_eq!(project.last_branch.as_deref(), Some("feature"));
+        assert_eq!(project.auto_tracking_rules.len(), 1);
+        assert!(project.sidebar.stashes_collapsed);
+    }
+
+    #[test]
+    fn recent_projects_are_derived_from_last_opened_at() {
+        let mut document = ProjectsDocument::default();
+        document.projects.insert(
+            "/repo/old".to_owned(),
+            ProjectSettings {
+                path: "/repo/old".to_owned(),
+                last_opened_at: Some("2026-01-01T00:00:00Z".to_owned()),
+                ..ProjectSettings::default()
+            },
+        );
+        document.projects.insert(
+            "/repo/new".to_owned(),
+            ProjectSettings {
+                path: "/repo/new".to_owned(),
+                last_opened_at: Some("2026-02-01T00:00:00Z".to_owned()),
+                ..ProjectSettings::default()
+            },
+        );
+
+        let recent = document.recent_projects(1);
+
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].path, "/repo/new");
+    }
+
+    #[test]
+    fn config_actor_broadcasts_changes_to_subscribers() {
+        let temp_dir = tempdir().expect("create temp dir");
+        let paths = ConfigPaths::new(
+            temp_dir.path().join("settings.json"),
+            temp_dir.path().join("projects.json"),
+        );
+        let actor = ConfigActor::load(paths).expect("load actor");
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured_events = Arc::clone(&events);
+
+        actor
+            .subscribe(Arc::new(move |event| {
+                captured_events.lock().expect("lock events").push(event);
+            }))
+            .expect("subscribe");
+
+        actor
+            .update_settings(|settings| settings.language = LanguagePreference::EnUs)
+            .expect("update settings");
+        actor
+            .update_project("/repo/one", |project| {
+                project.local_changes_view_mode = LocalChangesViewMode::Tree;
+            })
+            .expect("update project");
+
+        let events = events.lock().expect("lock events");
+        assert!(matches!(
+            events.first(),
+            Some(ConfigChangeEvent::SettingsUpdated { .. })
+        ));
+        assert!(matches!(
+            events.get(1),
+            Some(ConfigChangeEvent::ProjectUpdated { project, .. })
+                if project.local_changes_view_mode == LocalChangesViewMode::Tree
+        ));
     }
 
     #[test]
