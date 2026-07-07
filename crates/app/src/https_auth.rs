@@ -51,6 +51,17 @@ pub struct DeleteHttpsCredentialRequest {
     pub scope: HttpsCredentialScope,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveHttpsCredentialRequest {
+    pub protocol: String,
+    pub host: String,
+    pub path: Option<String>,
+    pub scope: HttpsCredentialScope,
+    pub username: String,
+    pub token: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum HttpsCredentialPromptReason {
@@ -101,6 +112,25 @@ pub trait HttpsCredentialPrompter {
         &mut self,
         request: HttpsCredentialPromptRequest,
     ) -> HttpsCredentialPromptResult;
+}
+
+pub trait HttpsCredentialPromptSink: Send + Sync + 'static {
+    fn prompt_https_credentials(
+        &self,
+        request: HttpsCredentialPromptRequest,
+    ) -> HttpsCredentialPromptResult;
+}
+
+#[derive(Debug, Default)]
+pub struct CancellingHttpsCredentialPromptSink;
+
+impl HttpsCredentialPromptSink for CancellingHttpsCredentialPromptSink {
+    fn prompt_https_credentials(
+        &self,
+        _request: HttpsCredentialPromptRequest,
+    ) -> HttpsCredentialPromptResult {
+        HttpsCredentialPromptResult::Cancel
+    }
 }
 
 impl<F> HttpsCredentialPrompter for F
@@ -251,6 +281,39 @@ impl HttpsCredentialFlow {
         self.vault.delete_https_credential(&key)?;
         self.rejected_credentials.remove(&key);
         Ok(())
+    }
+
+    pub fn save_credential(
+        &mut self,
+        request: SaveHttpsCredentialRequest,
+    ) -> Result<HttpsCredentialEntry, HttpsCredentialFlowError> {
+        let username = request.username.trim();
+        if username.is_empty() {
+            return Err(HttpsCredentialFlowError::MissingCredentialFields);
+        }
+
+        let key = key_for_scope(
+            &request.protocol,
+            &request.host,
+            request.path.as_deref(),
+            request.scope,
+        )?;
+        let existing = self.vault.get_https_credential(&key)?;
+        let token = request
+            .token
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .or_else(|| existing.map(|credential| credential.token))
+            .ok_or(HttpsCredentialFlowError::MissingCredentialFields)?;
+
+        self.vault
+            .set_https_credential(&key, HttpsCredential::new(username.to_owned(), token))?;
+        self.rejected_credentials.remove(&key);
+        Ok(credential_entry(HttpsCredentialRecord {
+            key,
+            username: username.to_owned(),
+        }))
     }
 
     fn handle_get(
@@ -859,5 +922,54 @@ mod tests {
                 }],
             }
         );
+    }
+
+    #[test]
+    fn settings_save_can_update_username_without_revealing_existing_token() {
+        let mut flow = flow();
+        let key = HttpsCredentialKey::shared_host("https", "github.com");
+        flow.vault()
+            .set_https_credential(&key, HttpsCredential::new("alice", "saved-token"))
+            .expect("set existing credential");
+
+        let entry = flow
+            .save_credential(SaveHttpsCredentialRequest {
+                protocol: "https".to_owned(),
+                host: "github.com".to_owned(),
+                path: None,
+                scope: HttpsCredentialScope::Host,
+                username: "bob".to_owned(),
+                token: None,
+            })
+            .expect("save credential");
+
+        assert_eq!(entry.username, "bob");
+        assert_eq!(
+            flow.vault()
+                .get_https_credential(&key)
+                .expect("read credential"),
+            Some(HttpsCredential::new("bob", "saved-token"))
+        );
+    }
+
+    #[test]
+    fn settings_save_requires_token_for_new_credential() {
+        let mut flow = flow();
+
+        let error = flow
+            .save_credential(SaveHttpsCredentialRequest {
+                protocol: "https".to_owned(),
+                host: "github.com".to_owned(),
+                path: None,
+                scope: HttpsCredentialScope::Host,
+                username: "alice".to_owned(),
+                token: None,
+            })
+            .expect_err("new credential requires token");
+
+        assert!(matches!(
+            error,
+            HttpsCredentialFlowError::MissingCredentialFields
+        ));
     }
 }

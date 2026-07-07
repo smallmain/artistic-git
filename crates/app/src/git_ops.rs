@@ -1,6 +1,7 @@
 use artistic_git_contracts::{AppError, AppResult, GitCommandError};
 use artistic_git_git_runner::{GitCommandPlan, GitRunner};
 use std::{
+    cell::RefCell,
     ffi::OsString,
     fs, io,
     path::{Component, Path, PathBuf},
@@ -8,6 +9,45 @@ use std::{
 };
 
 pub(crate) const DEFAULT_LARGE_FILE_THRESHOLD_MB: u32 = 50;
+
+thread_local! {
+    static AUTH_CONTEXT: RefCell<Vec<AuthCommandContext>> = RefCell::new(Vec::new());
+}
+
+#[derive(Clone)]
+struct AuthCommandContext {
+    runtime: crate::auth_ipc::AuthRuntime,
+    interaction_policy: crate::auth_ipc::InteractionPolicy,
+}
+
+pub(crate) fn with_auth_runtime<T>(
+    auth_runtime: Option<&crate::auth_ipc::AuthRuntime>,
+    interaction_policy: crate::auth_ipc::InteractionPolicy,
+    action: impl FnOnce() -> T,
+) -> T {
+    let Some(auth_runtime) = auth_runtime else {
+        return action();
+    };
+
+    AUTH_CONTEXT.with(|contexts| {
+        contexts.borrow_mut().push(AuthCommandContext {
+            runtime: auth_runtime.clone(),
+            interaction_policy,
+        });
+    });
+    let _guard = AuthContextGuard;
+    action()
+}
+
+struct AuthContextGuard;
+
+impl Drop for AuthContextGuard {
+    fn drop(&mut self) {
+        AUTH_CONTEXT.with(|contexts| {
+            contexts.borrow_mut().pop();
+        });
+    }
+}
 
 pub(crate) fn canonical_repository_path(path: &str, operation_name: &str) -> AppResult<PathBuf> {
     fs::canonicalize(Path::new(path)).map_err(|source| {
@@ -88,6 +128,7 @@ where
     S: Into<OsString>,
 {
     let plan = plan_git(runner, root, args);
+    let plan = apply_auth_context_to_plan(plan, root, operation_name)?;
     command_to_output(plan.to_command(), &plan, operation_name)
 }
 
@@ -123,11 +164,77 @@ where
     S: Into<OsString>,
 {
     let plan = plan_git(runner, root, args);
+    let plan = apply_auth_context_to_plan(plan, root, operation_name)?;
     let output = plan
         .to_command()
         .output()
         .map_err(|source| spawn_error(&plan, source, operation_name))?;
     Ok((plan, output))
+}
+
+pub(crate) fn run_git_raw_authenticated<I, S>(
+    runner: &GitRunner,
+    auth_runtime: Option<&crate::auth_ipc::AuthRuntime>,
+    interaction_policy: crate::auth_ipc::InteractionPolicy,
+    root: Option<&Path>,
+    args: I,
+    operation_name: &str,
+) -> AppResult<(GitCommandPlan, Output)>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<OsString>,
+{
+    let plan = plan_git(runner, root, args);
+    let plan =
+        apply_auth_runtime_to_plan(plan, auth_runtime, interaction_policy, root, operation_name)?;
+    let output = plan
+        .to_command()
+        .output()
+        .map_err(|source| spawn_error(&plan, source, operation_name))?;
+    Ok((plan, output))
+}
+
+pub(crate) fn apply_auth_context_to_plan(
+    plan: GitCommandPlan,
+    root: Option<&Path>,
+    operation_name: &str,
+) -> AppResult<GitCommandPlan> {
+    let context = AUTH_CONTEXT.with(|contexts| contexts.borrow().last().cloned());
+    let Some(context) = context else {
+        return Ok(plan);
+    };
+
+    apply_auth_runtime_to_plan(
+        plan,
+        Some(&context.runtime),
+        context.interaction_policy,
+        root,
+        operation_name,
+    )
+}
+
+fn apply_auth_runtime_to_plan(
+    plan: GitCommandPlan,
+    auth_runtime: Option<&crate::auth_ipc::AuthRuntime>,
+    interaction_policy: crate::auth_ipc::InteractionPolicy,
+    root: Option<&Path>,
+    operation_name: &str,
+) -> AppResult<GitCommandPlan> {
+    let Some(auth_runtime) = auth_runtime else {
+        return Ok(plan);
+    };
+
+    auth_runtime
+        .inject_once(
+            interaction_policy,
+            root.map(Path::to_path_buf),
+            plan,
+            root.map(|path| {
+                crate::auth_ipc::AuthInvocationContext::new().with_repository_path(path)
+            })
+            .unwrap_or_default(),
+        )
+        .map_err(|source| auth_ipc_error(source, operation_name))
 }
 
 pub(crate) fn command_failure(
@@ -211,11 +318,85 @@ fn spawn_error(plan: &GitCommandPlan, source: io::Error, operation_name: &str) -
     )
 }
 
+fn auth_ipc_error(source: crate::auth_ipc::AuthIpcError, operation_name: &str) -> AppError {
+    logged(AppError::unexpected(
+        format!("authentication helper setup failed: {source}"),
+        operation_name,
+    ))
+}
+
 fn invalid_path(operation_name: &str) -> AppError {
     logged(AppError::expected(
         "selected paths must stay inside the repository",
         operation_name,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth_ipc::{AuthRuntime, InteractionPolicy, StaticAuthIpcHandler};
+    use artistic_git_git_runner::{GitDistribution, GitRunner};
+    use artistic_git_helpers::{AUTH_INVOCATION_ID_ENV, AUTH_SOCKET_ENV, AUTH_TOKEN_ENV};
+    use artistic_git_test_support::{
+        git_dist_manifest_fixture, write_executable_file, write_git_dist_manifest, TestTempDir,
+    };
+    use std::sync::Arc;
+
+    #[test]
+    fn auth_context_injects_helper_config_and_ipc_environment() {
+        let (runner, temp) = fake_runner();
+        let runtime = AuthRuntime::start_at(
+            &runner,
+            temp.path().join("auth.sock"),
+            Arc::new(StaticAuthIpcHandler::empty()),
+        )
+        .expect("auth runtime");
+        let plan = runner
+            .git_command_builder()
+            .args(["fetch", "origin"])
+            .build();
+
+        let injected = with_auth_runtime(Some(&runtime), InteractionPolicy::interactive(), || {
+            apply_auth_context_to_plan(plan, Some(Path::new("/repo")), "test")
+        })
+        .expect("inject auth");
+
+        let args = injected
+            .args
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(args.iter().any(|arg| arg.starts_with("credential.helper=")));
+        assert!(args.iter().any(|arg| arg == "credential.useHttpPath=true"));
+        assert!(args.iter().any(|arg| arg.starts_with("core.sshCommand=")));
+        assert_eq!(
+            injected.environment.variable(AUTH_SOCKET_ENV),
+            Some(temp.path().join("auth.sock").as_os_str())
+        );
+        assert!(injected.environment.variable(AUTH_TOKEN_ENV).is_some());
+        assert!(injected
+            .environment
+            .variable(AUTH_INVOCATION_ID_ENV)
+            .is_some());
+        assert_eq!(args[args.len() - 2], "fetch");
+        assert_eq!(args[args.len() - 1], "origin");
+    }
+
+    fn fake_runner() -> (GitRunner, TestTempDir) {
+        let temp = TestTempDir::new("ag-git-ops-auth").expect("temp");
+        let manifest = git_dist_manifest_fixture();
+        write_git_dist_manifest(temp.path(), &manifest).expect("manifest");
+        write_executable_file(&temp.path().join(&manifest.paths.git_executable)).expect("git");
+        write_executable_file(&temp.path().join(&manifest.paths.git_lfs_executable))
+            .expect("git-lfs");
+        write_executable_file(&temp.path().join(&manifest.paths.credential_helper))
+            .expect("credential helper");
+        write_executable_file(&temp.path().join(&manifest.paths.ssh_askpass)).expect("ssh askpass");
+        let distribution = GitDistribution::from_root(temp.path()).expect("distribution");
+        let runner = GitRunner::from_distribution(distribution, temp.path().join("home"));
+        (runner, temp)
+    }
 }
 
 fn logged(error: AppError) -> AppError {

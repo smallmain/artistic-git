@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     env, fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{mpsc, Arc, Mutex},
 };
 use tauri::{
     menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu},
@@ -24,6 +24,141 @@ struct LoggingState {
 #[derive(Default)]
 struct WindowRegistry {
     inner: Mutex<WindowRegistryInner>,
+}
+
+#[derive(Default)]
+struct HttpsCredentialPromptState {
+    registry: Arc<HttpsCredentialPromptRegistry>,
+}
+
+#[derive(Default)]
+struct HttpsCredentialPromptRegistry {
+    inner: Mutex<HttpsCredentialPromptRegistryInner>,
+}
+
+#[derive(Default)]
+struct HttpsCredentialPromptRegistryInner {
+    next_id: u64,
+    pending: BTreeMap<String, mpsc::Sender<HttpsCredentialPromptResponse>>,
+}
+
+enum HttpsCredentialPromptResponse {
+    Submit(artistic_git_app::https_auth::HttpsCredentialPromptSubmission),
+    Cancel,
+}
+
+#[derive(Clone)]
+struct TauriHttpsCredentialPromptSink {
+    app: tauri::AppHandle,
+    registry: Arc<HttpsCredentialPromptRegistry>,
+}
+
+impl artistic_git_app::https_auth::HttpsCredentialPromptSink for TauriHttpsCredentialPromptSink {
+    fn prompt_https_credentials(
+        &self,
+        request: artistic_git_app::HttpsCredentialPromptRequest,
+    ) -> artistic_git_app::https_auth::HttpsCredentialPromptResult {
+        self.registry.prompt(&self.app, request)
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HttpsCredentialPromptEvent {
+    prompt_id: String,
+    request: artistic_git_app::HttpsCredentialPromptRequest,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SubmitHttpsCredentialPromptRequest {
+    prompt_id: String,
+    username: Option<String>,
+    token: Option<String>,
+    scope: Option<artistic_git_app::HttpsCredentialScope>,
+    cancelled: bool,
+}
+
+impl HttpsCredentialPromptRegistry {
+    fn prompt(
+        &self,
+        app: &tauri::AppHandle,
+        request: artistic_git_app::HttpsCredentialPromptRequest,
+    ) -> artistic_git_app::https_auth::HttpsCredentialPromptResult {
+        let (tx, rx) = mpsc::channel();
+        let prompt_id = {
+            let mut inner = match self.inner.lock() {
+                Ok(inner) => inner,
+                Err(_) => {
+                    return artistic_git_app::https_auth::HttpsCredentialPromptResult::Cancel;
+                }
+            };
+            inner.next_id = inner.next_id.saturating_add(1);
+            let prompt_id = format!("https-credential-{}", inner.next_id);
+            inner.pending.insert(prompt_id.clone(), tx);
+            prompt_id
+        };
+
+        let event = HttpsCredentialPromptEvent {
+            prompt_id: prompt_id.clone(),
+            request,
+        };
+        if app.emit("https-credential-prompt", event).is_err() {
+            self.remove(&prompt_id);
+            return artistic_git_app::https_auth::HttpsCredentialPromptResult::Cancel;
+        }
+
+        match rx.recv() {
+            Ok(HttpsCredentialPromptResponse::Submit(submission)) => {
+                artistic_git_app::https_auth::HttpsCredentialPromptResult::Submit(submission)
+            }
+            Ok(HttpsCredentialPromptResponse::Cancel) | Err(_) => {
+                artistic_git_app::https_auth::HttpsCredentialPromptResult::Cancel
+            }
+        }
+    }
+
+    fn submit(&self, request: SubmitHttpsCredentialPromptRequest) -> Result<(), String> {
+        let sender = self.remove(&request.prompt_id).ok_or_else(|| {
+            format!(
+                "HTTPS credential prompt {} is no longer active",
+                request.prompt_id
+            )
+        })?;
+
+        let response = if request.cancelled {
+            HttpsCredentialPromptResponse::Cancel
+        } else {
+            let username = request
+                .username
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "username is required".to_owned())?
+                .to_owned();
+            let token = request
+                .token
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "token is required".to_owned())?;
+            HttpsCredentialPromptResponse::Submit(
+                artistic_git_app::https_auth::HttpsCredentialPromptSubmission::new(
+                    username,
+                    token,
+                    request
+                        .scope
+                        .unwrap_or(artistic_git_app::HttpsCredentialScope::Host),
+                ),
+            )
+        };
+
+        sender
+            .send(response)
+            .map_err(|_| "HTTPS credential prompt receiver was dropped".to_owned())
+    }
+
+    fn remove(&self, prompt_id: &str) -> Option<mpsc::Sender<HttpsCredentialPromptResponse>> {
+        self.inner.lock().ok()?.pending.remove(prompt_id)
+    }
 }
 
 #[derive(Default)]
@@ -1099,11 +1234,32 @@ fn list_https_credentials(
 }
 
 #[tauri::command]
+fn save_https_credential(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_app::SaveHttpsCredentialRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_app::HttpsCredentialEntry> {
+    backend.save_https_credential(request)
+}
+
+#[tauri::command]
 fn delete_https_credential(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_app::DeleteHttpsCredentialRequest,
 ) -> artistic_git_contracts::AppResult<()> {
     backend.delete_https_credential(request)
+}
+
+#[tauri::command]
+fn submit_https_credential_prompt(
+    state: State<'_, HttpsCredentialPromptState>,
+    request: SubmitHttpsCredentialPromptRequest,
+) -> artistic_git_contracts::AppResult<()> {
+    state.registry.submit(request).map_err(|message| {
+        artistic_git_app::logged_app_error(artistic_git_contracts::AppError::expected(
+            message,
+            "submitHttpsCredentialPrompt",
+        ))
+    })
 }
 
 pub fn run() {
@@ -1127,7 +1283,11 @@ pub fn run() {
             });
             app.manage(WindowRegistry::default());
             app.manage(updater_runtime::UpdaterRuntimeState::default());
-            app.manage(repository_backend(app)?);
+            let credential_prompts = Arc::new(HttpsCredentialPromptRegistry::default());
+            app.manage(HttpsCredentialPromptState {
+                registry: Arc::clone(&credential_prompts),
+            });
+            app.manage(repository_backend(app, credential_prompts)?);
 
             Ok(())
         })
@@ -1200,7 +1360,9 @@ pub fn run() {
             generate_ssh_key,
             validate_identity_for_write,
             list_https_credentials,
+            save_https_credential,
             delete_https_credential,
+            submit_https_credential_prompt,
             updater_runtime::check_for_updates,
             updater_runtime::update_install_gate,
             updater_runtime::install_ready_update
@@ -1986,6 +2148,7 @@ fn window_command_error(
 
 fn repository_backend(
     app: &tauri::App,
+    credential_prompts: Arc<HttpsCredentialPromptRegistry>,
 ) -> Result<artistic_git_app::RepositoryBackend, Box<dyn std::error::Error>> {
     let dist_root = git_dist_root(app)?;
     let app_data_dir = app.path().app_data_dir()?;
@@ -2011,9 +2174,13 @@ fn repository_backend(
         let _ = app_handle.emit("config-change", &event);
     }))?;
 
-    Ok(artistic_git_app::RepositoryBackend::new(
+    Ok(artistic_git_app::RepositoryBackend::with_https_prompt_sink(
         runner,
         Some(config),
+        Arc::new(TauriHttpsCredentialPromptSink {
+            app: app.handle().clone(),
+            registry: credential_prompts,
+        }),
     ))
 }
 

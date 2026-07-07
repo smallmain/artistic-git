@@ -25,7 +25,7 @@ use artistic_git_core::diff_engine::{
     classify_diff_file, detect_image, parse_lfs_pointer, DiffChangeKind as CoreDiffChangeKind,
     DiffFileKind as CoreDiffFileKind, DiffFileProbe,
 };
-use artistic_git_core::keyring::{InMemoryCredentialStore, KeyringVault};
+use artistic_git_core::keyring::{KeyringVault, SystemCredentialStore};
 use artistic_git_git_runner::{
     parse_git_progress_line, CancelToken, GitCommandPlan, GitRunner, OperationBusy,
 };
@@ -55,19 +55,44 @@ pub struct RepositoryBackend {
     fetch_states: crate::fetch::FetchStateStore,
     clone_operations: Arc<Mutex<BTreeMap<String, CancelToken>>>,
     https_credentials: Arc<Mutex<crate::https_auth::HttpsCredentialFlow>>,
+    auth_runtime: Option<crate::auth_ipc::AuthRuntime>,
 }
 
 impl RepositoryBackend {
     pub fn new(runner: GitRunner, config: Option<ConfigActor>) -> Self {
-        let vault = KeyringVault::new(Arc::new(InMemoryCredentialStore::default()));
+        Self::with_https_prompt_sink(
+            runner,
+            config,
+            Arc::new(crate::https_auth::CancellingHttpsCredentialPromptSink),
+        )
+    }
+
+    pub fn with_https_prompt_sink(
+        runner: GitRunner,
+        config: Option<ConfigActor>,
+        prompt_sink: Arc<dyn crate::https_auth::HttpsCredentialPromptSink>,
+    ) -> Self {
+        let vault = KeyringVault::new(Arc::new(SystemCredentialStore::default()));
+        Self::with_https_vault_and_prompt_sink(runner, config, vault, prompt_sink)
+    }
+
+    pub fn with_https_vault_and_prompt_sink(
+        runner: GitRunner,
+        config: Option<ConfigActor>,
+        vault: KeyringVault,
+        prompt_sink: Arc<dyn crate::https_auth::HttpsCredentialPromptSink>,
+    ) -> Self {
+        let https_credentials = Arc::new(Mutex::new(crate::https_auth::HttpsCredentialFlow::new(
+            vault,
+        )));
+        let auth_runtime = start_auth_runtime(&runner, Arc::clone(&https_credentials), prompt_sink);
         Self {
             runner,
             config,
             fetch_states: crate::fetch::FetchStateStore::default(),
             clone_operations: Arc::new(Mutex::new(BTreeMap::new())),
-            https_credentials: Arc::new(Mutex::new(crate::https_auth::HttpsCredentialFlow::new(
-                vault,
-            ))),
+            https_credentials,
+            auth_runtime,
         }
     }
 
@@ -114,12 +139,18 @@ impl RepositoryBackend {
             self.register_clone_operation(operation_id, token.clone())?;
         }
 
-        let result = clone_repository_with_cancel_and_progress(
-            &self.runner,
-            self.config.as_ref(),
-            request,
-            &token,
-            progress,
+        let result = crate::git_ops::with_auth_runtime(
+            self.auth_runtime.as_ref(),
+            crate::auth_ipc::InteractionPolicy::interactive(),
+            || {
+                clone_repository_with_cancel_and_progress(
+                    &self.runner,
+                    self.config.as_ref(),
+                    request,
+                    &token,
+                    progress,
+                )
+            },
         );
 
         if let Some(operation_id) = &operation_id {
@@ -193,14 +224,23 @@ impl RepositoryBackend {
         &self,
         request: FetchRepositoryRequest,
     ) -> AppResult<FetchRepositoryResponse> {
-        crate::fetch::fetch_repository(&self.runner, &self.fetch_states, request)
+        crate::fetch::fetch_repository_with_auth(
+            &self.runner,
+            self.auth_runtime.as_ref(),
+            &self.fetch_states,
+            request,
+        )
     }
 
     pub fn sync_current_branch(
         &self,
         request: artistic_git_contracts::SyncCurrentBranchRequest,
     ) -> AppResult<artistic_git_contracts::SyncCurrentBranchResponse> {
-        crate::sync_current_branch(&self.runner, request)
+        crate::git_ops::with_auth_runtime(
+            self.auth_runtime.as_ref(),
+            crate::auth_ipc::InteractionPolicy::interactive(),
+            || crate::sync_current_branch(&self.runner, request),
+        )
     }
 
     pub fn sync_current_branch_with_progress<F>(
@@ -211,14 +251,22 @@ impl RepositoryBackend {
     where
         F: Fn(OperationProgressEvent),
     {
-        crate::sync_current_branch_with_progress(&self.runner, request, progress)
+        crate::git_ops::with_auth_runtime(
+            self.auth_runtime.as_ref(),
+            crate::auth_ipc::InteractionPolicy::interactive(),
+            || crate::sync_current_branch_with_progress(&self.runner, request, progress),
+        )
     }
 
     pub fn sync_branch(
         &self,
         request: artistic_git_contracts::SyncBranchRequest,
     ) -> AppResult<artistic_git_contracts::SyncBranchResponse> {
-        crate::sync_branch(&self.runner, request)
+        crate::git_ops::with_auth_runtime(
+            self.auth_runtime.as_ref(),
+            crate::auth_ipc::InteractionPolicy::interactive(),
+            || crate::sync_branch(&self.runner, request),
+        )
     }
 
     pub fn sync_branch_with_progress<F>(
@@ -229,7 +277,11 @@ impl RepositoryBackend {
     where
         F: Fn(OperationProgressEvent),
     {
-        crate::sync_branch_with_progress(&self.runner, request, progress)
+        crate::git_ops::with_auth_runtime(
+            self.auth_runtime.as_ref(),
+            crate::auth_ipc::InteractionPolicy::interactive(),
+            || crate::sync_branch_with_progress(&self.runner, request, progress),
+        )
     }
 
     pub fn sync_all_branches_with_progress<F>(
@@ -240,14 +292,29 @@ impl RepositoryBackend {
     where
         F: Fn(OperationProgressEvent),
     {
-        crate::sync_all_branches_with_config(&self.runner, self.config.as_ref(), request, progress)
+        crate::git_ops::with_auth_runtime(
+            self.auth_runtime.as_ref(),
+            crate::auth_ipc::InteractionPolicy::interactive(),
+            || {
+                crate::sync_all_branches_with_config(
+                    &self.runner,
+                    self.config.as_ref(),
+                    request,
+                    progress,
+                )
+            },
+        )
     }
 
     pub fn accept_remote_history(
         &self,
         request: AcceptRemoteHistoryRequest,
     ) -> AppResult<AcceptRemoteHistoryResponse> {
-        crate::accept_remote_history(&self.runner, request)
+        crate::git_ops::with_auth_runtime(
+            self.auth_runtime.as_ref(),
+            crate::auth_ipc::InteractionPolicy::interactive(),
+            || crate::accept_remote_history(&self.runner, request),
+        )
     }
 
     pub fn start_review_mode(
@@ -505,6 +572,66 @@ impl RepositoryBackend {
             .map_err(|_| credentials_registry_error("deleteHttpsCredential"))?;
         flow.delete_credential(request)
             .map_err(|source| credentials_flow_error(source, "deleteHttpsCredential"))
+    }
+
+    pub fn save_https_credential(
+        &self,
+        request: crate::https_auth::SaveHttpsCredentialRequest,
+    ) -> AppResult<crate::https_auth::HttpsCredentialEntry> {
+        let mut flow = self
+            .https_credentials
+            .lock()
+            .map_err(|_| credentials_registry_error("saveHttpsCredential"))?;
+        flow.save_credential(request)
+            .map_err(|source| credentials_flow_error(source, "saveHttpsCredential"))
+    }
+}
+
+fn start_auth_runtime(
+    runner: &GitRunner,
+    https_credentials: Arc<Mutex<crate::https_auth::HttpsCredentialFlow>>,
+    prompt_sink: Arc<dyn crate::https_auth::HttpsCredentialPromptSink>,
+) -> Option<crate::auth_ipc::AuthRuntime> {
+    let handler = move |context: crate::auth_ipc::AuthIpcRequestContext,
+                        payload: artistic_git_helpers::HelperIpcPayload| {
+        match payload {
+            artistic_git_helpers::HelperIpcPayload::Credential { credential } => {
+                let mut flow = match https_credentials.lock() {
+                    Ok(flow) => flow,
+                    Err(error) => {
+                        return artistic_git_helpers::HelperIpcResponse::Error {
+                            message: format!("HTTPS credential registry is poisoned: {error}"),
+                        };
+                    }
+                };
+                let prompt_sink = Arc::clone(&prompt_sink);
+                let mut prompter = move |request| prompt_sink.prompt_https_credentials(request);
+                match flow.handle_git_credential_request(
+                    &credential,
+                    context.interaction_policy,
+                    &mut prompter,
+                ) {
+                    Ok(outcome) => outcome.response,
+                    Err(error) => artistic_git_helpers::HelperIpcResponse::Error {
+                        message: error.to_string(),
+                    },
+                }
+            }
+            artistic_git_helpers::HelperIpcPayload::Askpass { .. } => {
+                artistic_git_helpers::HelperIpcResponse::Error {
+                    message: "SSH askpass prompts are not handled by the HTTPS credential flow"
+                        .to_owned(),
+                }
+            }
+        }
+    };
+
+    match crate::auth_ipc::AuthRuntime::start(runner, Arc::new(handler)) {
+        Ok(runtime) => Some(runtime),
+        Err(error) => {
+            tracing::warn!(error = %error, "failed to start auth IPC runtime");
+            None
+        }
     }
 }
 
@@ -1118,6 +1245,7 @@ where
             target.directory_name.clone(),
         ])
         .build();
+    let plan = crate::git_ops::apply_auth_context_to_plan(plan, None, OPERATION)?;
     let mut command = plan.to_command();
     command.current_dir(&target.parent);
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -1357,6 +1485,7 @@ where
             OsString::from("--progress"),
         ])
         .build();
+    let plan = crate::git_ops::apply_auth_context_to_plan(plan, Some(root), operation_name)?;
     run_command_with_progress(
         plan,
         operation_name,

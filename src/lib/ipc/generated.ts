@@ -942,6 +942,15 @@ export type SaveGitignoreRequest = {
   content: string;
 };
 
+export type SaveHttpsCredentialRequest = {
+  protocol: string;
+  host: string;
+  path: string | null;
+  scope: HttpsCredentialScope;
+  username: string;
+  token: string | null;
+};
+
 export type SaveProjectSettingsRequest = {
   repositoryPath: string;
   largeFileCheck: LargeFileCheckSettings;
