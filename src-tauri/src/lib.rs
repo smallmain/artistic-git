@@ -31,6 +31,7 @@ struct WindowRegistryInner {
     label_to_repository: BTreeMap<String, String>,
     repository_to_label: BTreeMap<String, String>,
     close_guard_labels: BTreeSet<String>,
+    pending_crashes_by_label: BTreeMap<String, CrashDialogPayload>,
     pending_exit_after_close_guards: bool,
     next_window_id: u64,
 }
@@ -53,6 +54,28 @@ struct WindowCloseBlockedEvent {
     reason: WindowCloseBlockedReason,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CrashDialogPayload {
+    summary: String,
+    details: String,
+    source: CrashDialogSource,
+    window_label: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+enum CrashDialogSource {
+    Renderer,
+    RustPanic,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RendererCrashInjectionRequest {
+    summary: Option<String>,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 enum WindowCloseBlockedReason {
@@ -65,6 +88,7 @@ enum WindowCloseBlockedReason {
 struct WindowContextResponse {
     label: String,
     repository_path: Option<String>,
+    pending_crash: Option<CrashDialogPayload>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -121,10 +145,12 @@ fn window_context(
         .label_to_repository
         .get(&label)
         .cloned();
+    let pending_crash = registry_take_pending_crash(&registry, &label);
 
     Ok(WindowContextResponse {
         label,
         repository_path,
+        pending_crash,
     })
 }
 
@@ -225,6 +251,7 @@ fn register_window_repository(
 
     Ok(WindowContextResponse {
         label,
+        pending_crash: None,
         repository_path: Some(project_settings.path),
     })
 }
@@ -263,6 +290,23 @@ fn cancel_pending_window_exit(
     registry: State<'_, WindowRegistry>,
 ) -> artistic_git_contracts::AppResult<()> {
     registry_set_pending_exit_after_close_guards(&registry, false)
+}
+
+#[tauri::command]
+fn inject_renderer_crash(
+    app_handle: tauri::AppHandle,
+    window: tauri::Window,
+    registry: State<'_, WindowRegistry>,
+    request: RendererCrashInjectionRequest,
+) -> artistic_git_contracts::AppResult<()> {
+    handle_renderer_crash(
+        &app_handle,
+        &registry,
+        window.label(),
+        request
+            .summary
+            .unwrap_or_else(default_renderer_crash_summary),
+    )
 }
 
 #[tauri::command]
@@ -993,7 +1037,7 @@ pub fn run() {
             let logging_guard = artistic_git_core::logging::initialize_logging(&logging_config)?;
             let app_handle = app.handle().clone();
             artistic_git_core::logging::install_panic_hook_with_reporter(move |report| {
-                let _ = app_handle.emit("crash-reported", &report);
+                let _ = app_handle.emit("crash-reported", crash_payload_from_panic_report(report));
             });
             app.manage(LoggingState {
                 _guard: logging_guard,
@@ -1014,6 +1058,7 @@ pub fn run() {
             close_current_window,
             set_window_close_guard,
             cancel_pending_window_exit,
+            inject_renderer_crash,
             open_log_dir,
             open_repository,
             clone_repository,
@@ -1371,6 +1416,7 @@ fn registry_unregister(registry: &WindowRegistry, label: &str) {
             inner.repository_to_label.remove(&repository_path);
         }
         inner.close_guard_labels.remove(label);
+        inner.pending_crashes_by_label.remove(label);
     }
 }
 
@@ -1431,6 +1477,85 @@ fn registry_has_close_guards(registry: &WindowRegistry) -> bool {
         .lock()
         .map(|inner| !inner.close_guard_labels.is_empty())
         .unwrap_or(false)
+}
+
+fn registry_set_pending_crash(
+    registry: &WindowRegistry,
+    label: &str,
+    crash: CrashDialogPayload,
+) -> artistic_git_contracts::AppResult<()> {
+    let mut inner = registry
+        .inner
+        .lock()
+        .map_err(|_| window_command_error("window registry lock poisoned", "rendererCrash"))?;
+    inner
+        .pending_crashes_by_label
+        .insert(label.to_owned(), crash);
+    Ok(())
+}
+
+fn registry_take_pending_crash(
+    registry: &WindowRegistry,
+    label: &str,
+) -> Option<CrashDialogPayload> {
+    registry
+        .inner
+        .lock()
+        .ok()
+        .and_then(|mut inner| inner.pending_crashes_by_label.remove(label))
+}
+
+fn handle_renderer_crash(
+    app: &tauri::AppHandle,
+    registry: &WindowRegistry,
+    label: &str,
+    summary: String,
+) -> artistic_git_contracts::AppResult<()> {
+    let crash = renderer_crash_payload(label, summary);
+    registry_set_pending_crash(registry, label, crash)?;
+
+    let Some(window) = app.get_webview_window(label) else {
+        return Err(window_command_error(
+            format!("failed to reload crashed window {label}: window not found"),
+            "rendererCrash",
+        ));
+    };
+
+    window.reload().map_err(|error| {
+        window_command_error(
+            format!("failed to reload crashed window {label}: {error}"),
+            "rendererCrash",
+        )
+    })
+}
+
+fn renderer_crash_payload(label: &str, summary: String) -> CrashDialogPayload {
+    CrashDialogPayload {
+        details: format!(
+            "Renderer process for window `{label}` was reported unhealthy. The window was reloaded to isolate the crash from other windows."
+        ),
+        source: CrashDialogSource::Renderer,
+        summary,
+        window_label: Some(label.to_owned()),
+    }
+}
+
+fn default_renderer_crash_summary() -> String {
+    "Renderer process crashed; this window was reloaded.".to_owned()
+}
+
+fn crash_payload_from_panic_report(
+    report: artistic_git_core::logging::PanicReport,
+) -> CrashDialogPayload {
+    CrashDialogPayload {
+        details: format!(
+            "Rust panic crossed a runtime boundary.\n\nLocation: {}\nPayload: {}",
+            report.location, report.payload
+        ),
+        source: CrashDialogSource::RustPanic,
+        summary: format!("Rust panic: {}", report.payload),
+        window_label: None,
+    }
 }
 
 fn registry_label_for_repository(
@@ -1916,5 +2041,47 @@ mod tests {
         registry_set_pending_exit_after_close_guards(&registry, false)
             .expect("cancel pending exit");
         assert!(!registry_pending_exit_after_close_guards(&registry));
+    }
+
+    #[test]
+    fn window_menu_renderer_crash_payload_is_consumed_once() {
+        let registry = WindowRegistry::default();
+        let crash = renderer_crash_payload("repo-1", "Renderer crashed".to_owned());
+
+        registry_set_pending_crash(&registry, "repo-1", crash.clone()).expect("set crash");
+
+        assert_eq!(
+            registry_take_pending_crash(&registry, "repo-1"),
+            Some(crash)
+        );
+        assert_eq!(registry_take_pending_crash(&registry, "repo-1"), None);
+    }
+
+    #[test]
+    fn window_menu_unregister_clears_pending_renderer_crash() {
+        let registry = WindowRegistry::default();
+        registry_set_pending_crash(
+            &registry,
+            "repo-1",
+            renderer_crash_payload("repo-1", "Renderer crashed".to_owned()),
+        )
+        .expect("set crash");
+
+        registry_unregister(&registry, "repo-1");
+
+        assert_eq!(registry_take_pending_crash(&registry, "repo-1"), None);
+    }
+
+    #[test]
+    fn window_menu_panic_report_maps_to_crash_dialog_payload() {
+        let payload = crash_payload_from_panic_report(artistic_git_core::logging::PanicReport {
+            location: "src-tauri/src/lib.rs:1:1".to_owned(),
+            payload: "panic payload".to_owned(),
+        });
+
+        assert_eq!(payload.source, CrashDialogSource::RustPanic);
+        assert_eq!(payload.summary, "Rust panic: panic payload");
+        assert!(payload.details.contains("src-tauri/src/lib.rs:1:1"));
+        assert!(payload.details.contains("panic payload"));
     }
 }

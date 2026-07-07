@@ -3,9 +3,10 @@ import { useTranslation } from "react-i18next";
 
 import { DetailsDialog } from "@/components/dialogs/DetailsDialog";
 import { Button } from "@/components/ui/button";
+import type { CrashDialogPayload } from "@/lib/ipc/commands";
 
 interface CrashDetailsDialogProps {
-  crash: Error | string;
+  crash: CrashDialogPayload | Error | string;
   onCopyDetails?: (details: string) => Promise<void> | void;
   onOpenChange: (open: boolean) => void;
   onRestart?: () => Promise<void> | void;
@@ -42,15 +43,33 @@ export function CrashDetailsDialog({
       onCopyDetails={onCopyDetails}
       onOpenChange={onOpenChange}
       open={open}
-      summary={typeof crash === "string" ? crash : crash.message}
+      summary={crashSummary(crash)}
       title={t("dialogs.crash.title")}
     />
   );
 }
 
-function formatCrashDetails(crash: Error | string): string {
+function crashSummary(crash: CrashDialogPayload | Error | string): string {
   if (typeof crash === "string") {
     return crash;
+  }
+
+  if (crash instanceof Error) {
+    return crash.message;
+  }
+
+  return crash.summary;
+}
+
+function formatCrashDetails(
+  crash: CrashDialogPayload | Error | string,
+): string {
+  if (typeof crash === "string") {
+    return crash;
+  }
+
+  if (!(crash instanceof Error)) {
+    return crash.details;
   }
 
   return JSON.stringify(

@@ -10,6 +10,7 @@ import { SettingsModal } from "@/features/settings/SettingsModal";
 import { StartScreen } from "@/features/start/StartScreen";
 import {
   closeCurrentWindow,
+  type CrashDialogPayload,
   newProjectWindow,
   openLogDir,
   registerWindowRepository,
@@ -52,6 +53,9 @@ function WindowRuntimeBridge() {
           void registerWindowRepository({ repositoryPath }).catch(
             dispatchAppError,
           );
+        }
+        if (context.pendingCrash) {
+          dispatchAppCrash(context.pendingCrash);
         }
       })
       .catch(() => {
@@ -168,7 +172,15 @@ function focusCurrentSearchInput() {
 }
 
 function dispatchAppError(error: unknown) {
-  window.dispatchEvent(new CustomEvent("artistic-git:error", { detail: error }));
+  window.dispatchEvent(
+    new CustomEvent("artistic-git:error", { detail: error }),
+  );
+}
+
+function dispatchAppCrash(crash: unknown) {
+  window.dispatchEvent(
+    new CustomEvent("artistic-git:crash", { detail: crash }),
+  );
 }
 
 function AppRouter() {
@@ -205,9 +217,12 @@ function GlobalSettingsModal() {
 
 function GlobalErrorDialogs() {
   const [error, setError] = React.useState<Error | string | null>(null);
-  const [crash, setCrash] = React.useState<Error | string | null>(null);
+  const [crash, setCrash] = React.useState<
+    Error | string | CrashDialogPayload | null
+  >(null);
 
   React.useEffect(() => {
+    let unlistenCrashReported: (() => void) | undefined;
     const handleError = (event: ErrorEvent) => {
       setError(event.error instanceof Error ? event.error : event.message);
     };
@@ -218,15 +233,21 @@ function GlobalErrorDialogs() {
       setError(normalizeThrowable((event as CustomEvent).detail));
     };
     const handleAppCrash = (event: Event) => {
-      setCrash(normalizeThrowable((event as CustomEvent).detail));
+      setCrash(normalizeCrash((event as CustomEvent).detail));
     };
 
     window.addEventListener("error", handleError);
     window.addEventListener("unhandledrejection", handleUnhandledRejection);
     window.addEventListener("artistic-git:error", handleAppError);
     window.addEventListener("artistic-git:crash", handleAppCrash);
+    void listen<CrashDialogPayload>("crash-reported", (event) => {
+      setCrash(event.payload);
+    }).then((resolvedUnlisten) => {
+      unlistenCrashReported = resolvedUnlisten;
+    });
 
     return () => {
+      unlistenCrashReported?.();
       window.removeEventListener("error", handleError);
       window.removeEventListener(
         "unhandledrejection",
@@ -280,4 +301,23 @@ function normalizeThrowable(value: unknown): Error | string {
   }
 
   return "Unknown error";
+}
+
+function normalizeCrash(value: unknown): CrashDialogPayload | Error | string {
+  if (isCrashDialogPayload(value)) {
+    return value;
+  }
+
+  return normalizeThrowable(value);
+}
+
+function isCrashDialogPayload(value: unknown): value is CrashDialogPayload {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "summary" in value &&
+    typeof value.summary === "string" &&
+    "details" in value &&
+    typeof value.details === "string"
+  );
 }

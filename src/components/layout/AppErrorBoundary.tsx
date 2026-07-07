@@ -27,7 +27,7 @@ export class AppErrorBoundary extends React.Component<
 
     return (
       <>
-        {this.props.children}
+        {error === null ? this.props.children : null}
         <ErrorDetailsDialog
           error={error ?? ""}
           onOpenChange={(open) => {

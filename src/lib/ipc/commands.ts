@@ -107,6 +107,7 @@ export interface AppCommandArgs {
   close_current_window: undefined;
   set_window_close_guard: { request: WindowCloseGuardRequest };
   cancel_pending_window_exit: undefined;
+  inject_renderer_crash: { request: RendererCrashInjectionRequest };
   open_log_dir: undefined;
   open_repository: { request: OpenRepositoryRequest };
   clone_repository: { request: CloneRepositoryRequest };
@@ -178,6 +179,7 @@ export interface AppCommandResponses {
   close_current_window: void;
   set_window_close_guard: void;
   cancel_pending_window_exit: void;
+  inject_renderer_crash: void;
   open_log_dir: OpenLogDirResponse;
   open_repository: OpenRepositoryResponse;
   clone_repository: CloneRepositoryResponse;
@@ -247,6 +249,7 @@ export type OpenRepositoryWindowAction =
 export interface WindowContextResponse {
   label: string;
   repositoryPath: string | null;
+  pendingCrash: CrashDialogPayload | null;
 }
 
 export interface NewWindowResponse {
@@ -259,6 +262,17 @@ export interface OpenRepositoryWindowRequest {
 
 export interface WindowCloseGuardRequest {
   active: boolean;
+}
+
+export interface RendererCrashInjectionRequest {
+  summary?: string | null;
+}
+
+export interface CrashDialogPayload {
+  summary: string;
+  details: string;
+  source: "renderer" | "rustPanic";
+  windowLabel: string | null;
 }
 
 export interface OpenRepositoryWindowResponse {
@@ -332,6 +346,12 @@ export function setWindowCloseGuard(
 
 export function cancelPendingWindowExit(): Promise<void> {
   return invokeAppCommand("cancel_pending_window_exit");
+}
+
+export function injectRendererCrash(
+  request: RendererCrashInjectionRequest = {},
+): Promise<void> {
+  return invokeAppCommand("inject_renderer_crash", { request });
 }
 
 export function openLogDir(): Promise<OpenLogDirResponse> {

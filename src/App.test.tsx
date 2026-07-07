@@ -4,7 +4,9 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
 } from "@testing-library/react";
+import { listen, type EventCallback } from "@tauri-apps/api/event";
 import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -13,6 +15,7 @@ import { AppProviders } from "./AppProviders";
 import { ConfirmDialog } from "./components/dialogs/ConfirmDialog";
 import { CrashDetailsDialog } from "./components/dialogs/CrashDetailsDialog";
 import { ErrorDetailsDialog } from "./components/dialogs/ErrorDetailsDialog";
+import { AppErrorBoundary } from "./components/layout/AppErrorBoundary";
 import { createI18n } from "./i18n/i18n";
 import type { LanguagePreference } from "./i18n/resources";
 import type { AppError } from "./lib/ipc/generated";
@@ -27,6 +30,8 @@ const commandMocks = vi.hoisted(() => ({
   registerWindowRepository: vi.fn(),
   windowContext: vi.fn(),
 }));
+
+const tauriEventListeners = new Map<string, EventCallback<unknown>>();
 
 vi.mock("@/lib/ipc/commands", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/ipc/commands")>();
@@ -73,6 +78,11 @@ beforeEach(() => {
   document.documentElement.removeAttribute("data-theme");
   document.documentElement.style.colorScheme = "";
   vi.clearAllMocks();
+  tauriEventListeners.clear();
+  vi.mocked(listen).mockImplementation(async (name, handler) => {
+    tauriEventListeners.set(name, handler as EventCallback<unknown>);
+    return () => undefined;
+  });
   commandMocks.closeCurrentWindow.mockResolvedValue(undefined);
   commandMocks.newProjectWindow.mockResolvedValue({ label: "start-1" });
   commandMocks.openLogDir.mockResolvedValue({ opened: false, path: "/logs" });
@@ -82,6 +92,7 @@ beforeEach(() => {
   });
   commandMocks.windowContext.mockResolvedValue({
     label: "main",
+    pendingCrash: null,
     repositoryPath: null,
   });
 });
@@ -280,6 +291,76 @@ describe("App", () => {
     });
 
     expect(screen.getByRole("dialog")).toHaveTextContent("Renderer crashed");
+  });
+
+  it("opens the crash dialog from Rust panic reports emitted by Tauri", async () => {
+    renderWithProviders(<App />);
+
+    await waitFor(() =>
+      expect(tauriEventListeners.has("crash-reported")).toBe(true),
+    );
+
+    await act(async () => {
+      tauriEventListeners.get("crash-reported")?.({
+        event: "crash-reported",
+        id: 1,
+        payload: {
+          details:
+            "Rust panic crossed a runtime boundary.\n\nLocation: src/lib.rs:1:1\nPayload: panic payload",
+          source: "rustPanic",
+          summary: "Rust panic: panic payload",
+          windowLabel: null,
+        },
+      });
+    });
+
+    expect(screen.getByRole("dialog")).toHaveTextContent(
+      "Rust panic: panic payload",
+    );
+  });
+
+  it("opens a pending renderer crash after a window reload", async () => {
+    commandMocks.windowContext.mockResolvedValue({
+      label: "repo-1",
+      pendingCrash: {
+        details:
+          "Renderer process for window `repo-1` was reported unhealthy. The window was reloaded to isolate the crash from other windows.",
+        source: "renderer",
+        summary: "Renderer process crashed; this window was reloaded.",
+        windowLabel: "repo-1",
+      },
+      repositoryPath: "/repo/art-project",
+    });
+
+    renderWithProviders(<App />);
+
+    expect(await screen.findByRole("dialog")).toHaveTextContent(
+      "Renderer process crashed; this window was reloaded.",
+    );
+  });
+});
+
+describe("AppErrorBoundary", () => {
+  it("renders an error dialog when a React subtree throws", () => {
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+
+    function BrokenView(): ReactElement {
+      throw new Error("Repository view failed");
+    }
+
+    renderWithProviders(
+      <AppErrorBoundary>
+        <BrokenView />
+      </AppErrorBoundary>,
+    );
+
+    expect(screen.getByRole("dialog")).toHaveTextContent(
+      "Repository view failed",
+    );
+
+    consoleError.mockRestore();
   });
 });
 
