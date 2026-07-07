@@ -172,7 +172,25 @@ export const resources = {
       },
       settings: {
         about: {
+          checkForUpdates: "Check for updates",
+          installBlocked: "Update installation is not available yet.",
+          installBlockedConflict:
+            "Resolve active conflicts before restarting to install the update.",
+          installBlockedGitOperation:
+            "Wait for the current Git operation to finish before restarting to install the update.",
+          installBlockedReviewMode:
+            "Finish review mode before restarting to install the update.",
+          installUpdate: "Restart and install",
           unknown: "Unknown",
+          updateAvailable: "Version {{version}} is available. Downloading...",
+          updateChecking: "Checking for updates...",
+          updateDownloading:
+            "Downloading version {{version}} ({{percent}}%).",
+          updateFailed: "Check failed: {{message}}",
+          updateIdle: "No update check has run in this window yet.",
+          updateNotAvailable: "Artistic Git is up to date.",
+          updateReady: "Version {{version}} is ready to install.",
+          updates: "Updates",
           version: "Version {{version}}",
         },
         description:
@@ -183,6 +201,7 @@ export const resources = {
           copyPublicKey: "Copy public key",
           email: "Email",
           emailInvalid: "Enter a valid email address.",
+          autoCheckUpdates: "Check for updates automatically",
           autoFetch: "Fetch from origin automatically",
           fetch: "Fetch",
           fetchIntervalRange:
@@ -211,7 +230,7 @@ export const resources = {
           ssh: "SSH key",
           sshDetected: "ed25519 public key detected",
           sshMissing: "No ed25519 public key detected",
-          updatePlaceholder: "Update check placeholder",
+          updates: "Updates",
         },
         navigation: "Settings sections",
         project: {
@@ -662,7 +681,22 @@ export const resources = {
       },
       settings: {
         about: {
+          checkForUpdates: "检查更新",
+          installBlocked: "更新安装暂不可用。",
+          installBlockedConflict: "请先解决当前冲突，再重启安装更新。",
+          installBlockedGitOperation:
+            "请等待当前 Git 操作完成后再重启安装更新。",
+          installBlockedReviewMode: "请先结束审查模式，再重启安装更新。",
+          installUpdate: "重启并安装",
           unknown: "未知",
+          updateAvailable: "发现版本 {{version}}，正在下载...",
+          updateChecking: "正在检查更新...",
+          updateDownloading: "正在下载版本 {{version}}（{{percent}}%）。",
+          updateFailed: "检查失败：{{message}}",
+          updateIdle: "此窗口尚未检查更新。",
+          updateNotAvailable: "Artistic Git 已是最新版本。",
+          updateReady: "版本 {{version}} 已准备好安装。",
+          updates: "更新",
           version: "版本 {{version}}",
         },
         description: "配置身份、项目行为和应用偏好。",
@@ -672,6 +706,7 @@ export const resources = {
           copyPublicKey: "复制公钥",
           email: "邮箱",
           emailInvalid: "请输入有效邮箱。",
+          autoCheckUpdates: "自动检查更新",
           autoFetch: "自动从 origin Fetch",
           fetch: "Fetch",
           fetchIntervalRange: "Fetch 间隔必须在 {{min}} 到 {{max}} 秒之间。",
@@ -699,7 +734,7 @@ export const resources = {
           ssh: "SSH Key",
           sshDetected: "已检测到 ed25519 公钥",
           sshMissing: "未检测到 ed25519 公钥",
-          updatePlaceholder: "更新检查占位",
+          updates: "更新",
         },
         navigation: "设置分区",
         project: {

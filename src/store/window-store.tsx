@@ -11,6 +11,10 @@ import type {
   RepoChangedEvent,
   SidebarLayoutSettings,
 } from "@/lib/ipc/generated";
+import type {
+  UpdateInstallGateResponse,
+  UpdateStatusEvent,
+} from "@/lib/ipc/update-types";
 import { RealtimeEventBridge } from "@/lib/realtime";
 
 export interface RecentProject {
@@ -36,6 +40,8 @@ export interface WindowStoreState {
   settingsModalOpen: boolean;
   settingsSection: SettingsSection;
   sidebarLayout: Required<SidebarLayoutSettings>;
+  updateInstallGate: UpdateInstallGateResponse;
+  updateStatus: UpdateStatusEvent | null;
   windowLabel: string | null;
 }
 
@@ -60,6 +66,8 @@ export interface WindowStoreActions {
   setRepoChanged: (event: RepoChangedEvent) => void;
   setSettingsSection: (section: SettingsSection) => void;
   setSidebarLayout: (sidebarLayout: Partial<SidebarLayoutSettings>) => void;
+  setUpdateInstallGate: (gate: UpdateInstallGateResponse) => void;
+  setUpdateStatus: (event: UpdateStatusEvent | null) => void;
   setWindowLabel: (windowLabel: string | null) => void;
 }
 
@@ -87,6 +95,12 @@ const initialWindowStoreState: WindowStoreState = {
     stashesCollapsed: false,
     widthPx: 320,
   },
+  updateInstallGate: {
+    blocked: true,
+    message: "no downloaded update is ready to install",
+    reason: "noReadyUpdate",
+  },
+  updateStatus: null,
   windowLabel: null,
 };
 
@@ -203,6 +217,12 @@ export function createWindowStore(
           sidebarLayout: nextSidebarLayout,
         };
       });
+    },
+    setUpdateInstallGate: (gate) => {
+      set({ updateInstallGate: gate });
+    },
+    setUpdateStatus: (event) => {
+      set({ updateStatus: event });
     },
     setWindowLabel: (windowLabel) => {
       set({ windowLabel });

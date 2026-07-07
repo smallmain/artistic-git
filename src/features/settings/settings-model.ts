@@ -239,6 +239,20 @@ export function settingsWithRememberSshPassphrase(
   };
 }
 
+export function settingsWithUpdatePreferences(
+  settings: AppSettings | null | undefined,
+  updates: Partial<NonNullable<AppSettings["updates"]>>,
+): AppSettings {
+  const normalized = normalizeAppSettings(settings);
+  return {
+    ...normalized,
+    updates: {
+      ...normalized.updates,
+      ...updates,
+    },
+  };
+}
+
 export function settingsWithOnboarded(
   settings: AppSettings | null | undefined,
   onboarded: boolean,

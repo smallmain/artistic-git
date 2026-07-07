@@ -77,6 +77,11 @@ import type {
   SyncCurrentBranchRequest,
   SyncCurrentBranchResponse,
 } from "./generated";
+import type {
+  UpdateCheckRequest,
+  UpdateInstallGateResponse,
+  UpdateStatusEvent,
+} from "./update-types";
 
 export interface AppCommandArgs {
   health: undefined;
@@ -132,6 +137,9 @@ export interface AppCommandArgs {
   validate_identity_for_write: { request: IdentityValidationRequest };
   list_https_credentials: undefined;
   delete_https_credential: { request: DeleteHttpsCredentialRequest };
+  check_for_updates: { request: UpdateCheckRequest };
+  update_install_gate: undefined;
+  install_ready_update: undefined;
 }
 
 export interface AppCommandResponses {
@@ -188,6 +196,9 @@ export interface AppCommandResponses {
   validate_identity_for_write: IdentityValidationResponse;
   list_https_credentials: HttpsCredentialListResponse;
   delete_https_credential: void;
+  check_for_updates: UpdateStatusEvent;
+  update_install_gate: UpdateInstallGateResponse;
+  install_ready_update: void;
 }
 
 export type AppCommandName = keyof AppCommandResponses;
@@ -529,6 +540,20 @@ export function deleteHttpsCredential(
   request: DeleteHttpsCredentialRequest,
 ): Promise<void> {
   return invokeAppCommand("delete_https_credential", { request });
+}
+
+export function checkForUpdates(
+  request: UpdateCheckRequest,
+): Promise<UpdateStatusEvent> {
+  return invokeAppCommand("check_for_updates", { request });
+}
+
+export function updateInstallGate(): Promise<UpdateInstallGateResponse> {
+  return invokeAppCommand("update_install_gate");
+}
+
+export function installReadyUpdate(): Promise<void> {
+  return invokeAppCommand("install_ready_update");
 }
 
 function normalizeIpcError(error: unknown): AppError | Error {

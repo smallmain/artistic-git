@@ -233,6 +233,65 @@ describe("SettingsModal", () => {
       ),
     );
   });
+
+  it("persists the automatic update check setting", async () => {
+    render(
+      <TestProviders>
+        <SettingsModal onOpenChange={vi.fn()} open />
+      </TestProviders>,
+    );
+
+    const autoUpdateToggle = await screen.findByLabelText(
+      "Check for updates automatically",
+    );
+    fireEvent.click(autoUpdateToggle);
+
+    await waitFor(() =>
+      expect(commandMocks.saveAppSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          settings: expect.objectContaining({
+            updates: expect.objectContaining({
+              autoCheck: false,
+            }),
+          }),
+        }),
+      ),
+    );
+  });
+
+  it("shows about update status and dispatches a manual check request", async () => {
+    const dispatchEvent = vi.spyOn(window, "dispatchEvent");
+
+    render(
+      <TestProviders
+        initialWindowState={{
+          settingsSection: "about",
+          updateStatus: {
+            requestId: "manual-1",
+            source: "manual",
+            targetWindowLabel: "main",
+            status: {
+              message: "network unavailable",
+              state: "failed",
+              visible: true,
+            },
+          },
+        }}
+      >
+        <SettingsModal onOpenChange={vi.fn()} open />
+      </TestProviders>,
+    );
+
+    expect(
+      await screen.findByText("Check failed: network unavailable"),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Check for updates" }));
+
+    expect(dispatchEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "artistic-git:check-updates" }),
+    );
+  });
 });
 
 function TestProviders({

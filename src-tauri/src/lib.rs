@@ -9,6 +9,8 @@ use tauri::{
     Emitter, Manager, PhysicalPosition, PhysicalSize, State, WebviewUrl, WindowEvent,
 };
 
+mod updater_runtime;
+
 const MENU_EVENT_NAME: &str = "app-menu";
 const APP_HOMEPAGE: &str = "https://github.com/smallmain/artistic-git";
 const APP_CHANGELOG: &str = "https://github.com/smallmain/artistic-git/releases";
@@ -793,6 +795,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(handle_second_instance))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .menu(build_app_menu)
         .on_menu_event(handle_menu_event)
         .on_window_event(handle_window_event)
@@ -808,6 +811,7 @@ pub fn run() {
                 _guard: logging_guard,
             });
             app.manage(WindowRegistry::default());
+            app.manage(updater_runtime::UpdaterRuntimeState::default());
             app.manage(repository_backend(app)?);
 
             Ok(())
@@ -865,7 +869,10 @@ pub fn run() {
             generate_ssh_key,
             validate_identity_for_write,
             list_https_credentials,
-            delete_https_credential
+            delete_https_credential,
+            updater_runtime::check_for_updates,
+            updater_runtime::update_install_gate,
+            updater_runtime::install_ready_update
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Artistic Git");

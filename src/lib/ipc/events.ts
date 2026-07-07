@@ -11,12 +11,14 @@ import type {
   OperationProgressEvent,
   RepoChangedEvent,
 } from "./generated";
+import type { UpdateStatusEvent } from "./update-types";
 
 export type AppEventName =
   | "repo-changed"
   | "operation-progress"
   | "fetch-state"
   | "conflict-entered"
+  | "update-status"
   | "config-change";
 
 export interface AppEventPayloads {
@@ -24,6 +26,7 @@ export interface AppEventPayloads {
   "operation-progress": OperationProgressEvent;
   "fetch-state": FetchStateEvent;
   "conflict-entered": ConflictEnteredEvent;
+  "update-status": UpdateStatusEvent;
   "config-change": ConfigChangeEvent;
 }
 

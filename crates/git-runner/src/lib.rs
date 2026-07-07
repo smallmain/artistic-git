@@ -620,6 +620,16 @@ pub struct OperationConcurrency {
 }
 
 impl OperationConcurrency {
+    pub fn busy_state(&self) -> Option<OperationBusy> {
+        if self.write_busy.load(Ordering::Acquire) {
+            Some(OperationBusy::WriteBusy)
+        } else if self.background_busy.load(Ordering::Acquire) {
+            Some(OperationBusy::BackgroundBusy)
+        } else {
+            None
+        }
+    }
+
     pub fn try_begin_write(&self) -> Result<WritePermit<'_>, OperationBusy> {
         self.write_busy
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -653,6 +663,19 @@ impl OperationConcurrency {
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .map(|_| BackgroundPermit { owner: self })
             .map_err(|_| OperationBusy::BackgroundBusy)
+    }
+
+    pub fn try_begin_exclusive(&self) -> Result<ExclusivePermit<'_>, OperationBusy> {
+        self.write_busy
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .map_err(|_| OperationBusy::WriteBusy)?;
+
+        if self.background_busy.load(Ordering::Acquire) {
+            self.write_busy.store(false, Ordering::Release);
+            return Err(OperationBusy::BackgroundBusy);
+        }
+
+        Ok(ExclusivePermit { owner: self })
     }
 }
 
@@ -732,6 +755,17 @@ pub struct BackgroundPermit<'a> {
 impl Drop for BackgroundPermit<'_> {
     fn drop(&mut self) {
         self.owner.background_busy.store(false, Ordering::Release);
+    }
+}
+
+#[derive(Debug)]
+pub struct ExclusivePermit<'a> {
+    owner: &'a OperationConcurrency,
+}
+
+impl Drop for ExclusivePermit<'_> {
+    fn drop(&mut self) {
+        self.owner.write_busy.store(false, Ordering::Release);
     }
 }
 
@@ -1354,6 +1388,56 @@ mod tests {
         let _next_background = concurrency
             .try_begin_background()
             .expect("background lock released");
+    }
+
+    #[test]
+    fn exclusive_lock_blocks_write_and_background_operations() {
+        let concurrency = OperationConcurrency::default();
+        let exclusive = concurrency
+            .try_begin_exclusive()
+            .expect("exclusive lock starts");
+
+        assert_eq!(concurrency.busy_state(), Some(OperationBusy::WriteBusy));
+        assert_eq!(
+            concurrency.try_begin_write().expect_err("write is blocked"),
+            OperationBusy::WriteBusy
+        );
+        assert_eq!(
+            concurrency
+                .try_begin_background()
+                .expect_err("background is blocked"),
+            OperationBusy::WriteBusy
+        );
+
+        drop(exclusive);
+        assert_eq!(concurrency.busy_state(), None);
+        let _background = concurrency
+            .try_begin_background()
+            .expect("background starts after exclusive lock drops");
+    }
+
+    #[test]
+    fn exclusive_lock_rejects_existing_background_operation() {
+        let concurrency = OperationConcurrency::default();
+        let background = concurrency
+            .try_begin_background()
+            .expect("background starts");
+
+        assert_eq!(
+            concurrency
+                .try_begin_exclusive()
+                .expect_err("exclusive lock detects background"),
+            OperationBusy::BackgroundBusy
+        );
+        assert_eq!(
+            concurrency.busy_state().expect("background remains"),
+            OperationBusy::BackgroundBusy
+        );
+
+        drop(background);
+        concurrency
+            .try_begin_exclusive()
+            .expect("exclusive lock starts after background drops");
     }
 
     #[test]

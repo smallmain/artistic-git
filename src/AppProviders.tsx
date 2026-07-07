@@ -5,6 +5,7 @@ import { type i18n as I18nInstance } from "i18next";
 
 import { appI18n } from "@/i18n/i18n";
 import { SettingsRuntimeBridge } from "@/features/settings/SettingsRuntimeBridge";
+import { UpdaterRuntimeBridge } from "@/features/updater/UpdaterRuntimeBridge";
 import { LanguageProvider } from "@/i18n/LanguageProvider";
 import type { LanguagePreference } from "@/i18n/resources";
 import { createAppQueryClient } from "@/lib/query/client";
@@ -51,6 +52,7 @@ export function AppProviders({
               store={windowStore}
             >
               <SettingsRuntimeBridge />
+              <UpdaterRuntimeBridge />
               {children}
             </WindowStoreProvider>
           </ThemeProvider>

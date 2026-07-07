@@ -106,6 +106,7 @@ function AppMenuBridge() {
           void openLogDir().catch(dispatchAppError);
           break;
         case "check-updates":
+          openSettings("about");
           window.dispatchEvent(new CustomEvent("artistic-git:check-updates"));
           break;
       }

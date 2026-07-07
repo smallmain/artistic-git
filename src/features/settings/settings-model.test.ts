@@ -6,6 +6,7 @@ import {
   sameGitUser,
   settingsWithFetchPreferences,
   settingsWithGitUser,
+  settingsWithUpdatePreferences,
   validateFetchIntervalSeconds,
   validateGitUser,
 } from "./settings-model";
@@ -90,5 +91,25 @@ describe("fetch interval settings", () => {
     expect(next.git?.autoFetch).toBe(false);
     expect(next.git?.fetchIntervalSeconds).toBe(120);
     expect(next.git?.user).toEqual(current.git?.user);
+  });
+});
+
+describe("update settings", () => {
+  it("defaults automatic update checks on", () => {
+    expect(defaultAppSettings.updates?.autoCheck).toBe(true);
+  });
+
+  it("updates automatic check preferences without touching fetch settings", () => {
+    const current = settingsWithFetchPreferences(defaultAppSettings, {
+      autoFetch: false,
+      fetchIntervalSeconds: 120,
+    });
+    const next = settingsWithUpdatePreferences(current, {
+      autoCheck: false,
+    });
+
+    expect(next.updates?.autoCheck).toBe(false);
+    expect(next.git?.autoFetch).toBe(false);
+    expect(next.git?.fetchIntervalSeconds).toBe(120);
   });
 });

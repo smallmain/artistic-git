@@ -2,6 +2,7 @@ import {
   Check,
   Clipboard,
   Cloud,
+  Download,
   FolderCog,
   Info,
   KeyRound,
@@ -29,6 +30,10 @@ import type {
   RemoteSettingsResponse,
   SshKeyStatus,
 } from "@/lib/ipc/generated";
+import type {
+  UpdateInstallGateResponse,
+  UpdateStatusEvent,
+} from "@/lib/ipc/update-types";
 import {
   deleteHttpsCredential,
   generateSshKey,
@@ -61,6 +66,7 @@ import {
   settingsWithLanguage,
   settingsWithRememberSshPassphrase,
   settingsWithTheme,
+  settingsWithUpdatePreferences,
   validateFetchIntervalSeconds,
   type FetchIntervalValidation,
   validateGitUser,
@@ -105,6 +111,10 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
   const appSettings = useWindowStore((state) => state.appSettings);
   const appVersion = useWindowStore((state) => state.appVersion);
   const section = useWindowStore((state) => state.settingsSection);
+  const updateInstallGate = useWindowStore(
+    (state) => state.updateInstallGate,
+  );
+  const updateStatus = useWindowStore((state) => state.updateStatus);
   const setSection = useWindowStore((state) => state.setSettingsSection);
   const setAppSettings = useWindowStore((state) => state.setAppSettings);
   const setAppVersion = useWindowStore((state) => state.setAppVersion);
@@ -502,6 +512,12 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
     void persistSettings(next);
   };
 
+  const persistAutoUpdateCheck = (autoCheck: boolean) => {
+    const next = settingsWithUpdatePreferences(draft, { autoCheck });
+    setDraft(next);
+    void persistSettings(next);
+  };
+
   const forgetHttpsCredential = async (credential: HttpsCredentialEntry) => {
     const key = httpsCredentialKey(credential);
     if (credentialRemoveArmed !== key) {
@@ -595,6 +611,7 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
               onUpdateDraft={setDraft}
               onUpdateUser={updateDraftUser}
               onRememberSshPassphraseChange={persistRememberSshPassphrase}
+              onAutoUpdateCheckChange={persistAutoUpdateCheck}
               credentials={httpsCredentials?.credentials ?? []}
               credentialRemoveArmed={credentialRemoveArmed}
               deletingCredentialKey={deletingCredentialKey}
@@ -641,6 +658,18 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
           {section === "about" ? (
             <AboutSettings
               appVersion={appVersion ?? t("settings.about.unknown")}
+              installGate={updateInstallGate}
+              onCheckUpdates={() =>
+                window.dispatchEvent(
+                  new CustomEvent("artistic-git:check-updates"),
+                )
+              }
+              onInstallUpdate={() =>
+                window.dispatchEvent(
+                  new CustomEvent("artistic-git:install-update"),
+                )
+              }
+              updateStatus={updateStatus}
             />
           ) : null}
         </div>
@@ -661,6 +690,7 @@ function GeneralSettings({
   onCopyPublicKey,
   onForgetCredential,
   onGenerateSshKey,
+  onAutoUpdateCheckChange,
   onLanguageChange,
   onRememberSshPassphraseChange,
   onSave,
@@ -683,6 +713,7 @@ function GeneralSettings({
   onCopyPublicKey: () => void;
   onForgetCredential: (credential: HttpsCredentialEntry) => void;
   onGenerateSshKey: () => void;
+  onAutoUpdateCheckChange: (checked: boolean) => void;
   onLanguageChange: (value: "system" | "en" | "zh-CN") => void;
   onRememberSshPassphraseChange: (checked: boolean) => void;
   onSave: () => void;
@@ -843,6 +874,17 @@ function GeneralSettings({
 
       <SettingsGroup
         icon={<RefreshCw className="size-4" aria-hidden="true" />}
+        title={t("settings.general.updates")}
+      >
+        <ToggleRow
+          checked={draft.updates?.autoCheck ?? true}
+          label={t("settings.general.autoCheckUpdates")}
+          onChange={onAutoUpdateCheckChange}
+        />
+      </SettingsGroup>
+
+      <SettingsGroup
+        icon={<RefreshCw className="size-4" aria-hidden="true" />}
         title={t("settings.general.fetch")}
       >
         <ToggleRow
@@ -942,9 +984,6 @@ function GeneralSettings({
         />
       </SettingsGroup>
 
-      <SettingsGroup title={t("settings.general.placeholders")}>
-        <PlaceholderRow label={t("settings.general.updatePlaceholder")} />
-      </SettingsGroup>
     </section>
   );
 }
@@ -1120,11 +1159,38 @@ function ProjectSettingsPanel({
   );
 }
 
-function AboutSettings({ appVersion }: { appVersion: string }) {
+function AboutSettings({
+  appVersion,
+  installGate,
+  onCheckUpdates,
+  onInstallUpdate,
+  updateStatus,
+}: {
+  appVersion: string;
+  installGate: UpdateInstallGateResponse;
+  onCheckUpdates: () => void;
+  onInstallUpdate: () => void;
+  updateStatus: UpdateStatusEvent | null;
+}) {
   const { t } = useTranslation();
+  const status = updateStatus?.status ?? null;
+  const checking =
+    status?.state === "checking" ||
+    status?.state === "available" ||
+    status?.state === "downloading";
+  const ready = status?.state === "ready";
+  const notes =
+    status?.state === "available" ||
+    status?.state === "downloading" ||
+    status?.state === "ready"
+      ? status.notes
+      : null;
+  const installBlockedMessage = installGate.blocked
+    ? updateInstallGateMessage(installGate, t)
+    : null;
 
   return (
-    <section className="space-y-4">
+    <section className="space-y-6">
       <div className="flex items-center gap-3">
         <div className="flex size-10 items-center justify-center rounded-md border bg-background">
           <Check className="size-5" aria-hidden="true" />
@@ -1136,8 +1202,135 @@ function AboutSettings({ appVersion }: { appVersion: string }) {
           </p>
         </div>
       </div>
+
+      <SettingsGroup
+        icon={<RefreshCw className="size-4" aria-hidden="true" />}
+        title={t("settings.about.updates")}
+      >
+        <div className="flex flex-wrap gap-2">
+          <Button
+            className="gap-2"
+            disabled={checking}
+            onClick={onCheckUpdates}
+            type="button"
+            variant="secondary"
+          >
+            <RefreshCw className="size-4" aria-hidden="true" />
+            {t("settings.about.checkForUpdates")}
+          </Button>
+          <Button
+            className="gap-2"
+            disabled={!ready || installGate.blocked}
+            onClick={onInstallUpdate}
+            type="button"
+          >
+            <Download className="size-4" aria-hidden="true" />
+            {t("settings.about.installUpdate")}
+          </Button>
+        </div>
+
+        <UpdateStatusMessage status={status} />
+
+        {status?.state === "downloading" ? (
+          <div className="h-2 overflow-hidden rounded-full bg-muted">
+            <div
+              className="h-full bg-primary"
+              style={{
+                width: `${Math.round((status.progress ?? 0) * 100)}%`,
+              }}
+            />
+          </div>
+        ) : null}
+
+        {installBlockedMessage && ready ? (
+          <p className="text-sm text-muted-foreground">
+            {installBlockedMessage}
+          </p>
+        ) : null}
+
+        {notes ? (
+          <div className="max-h-52 overflow-auto whitespace-pre-wrap rounded-md border bg-background p-3 text-sm">
+            {notes}
+          </div>
+        ) : null}
+      </SettingsGroup>
     </section>
   );
+}
+
+function UpdateStatusMessage({
+  status,
+}: {
+  status: UpdateStatusEvent["status"] | null;
+}) {
+  const { t } = useTranslation();
+
+  if (!status) {
+    return (
+      <p className="text-sm text-muted-foreground">
+        {t("settings.about.updateIdle")}
+      </p>
+    );
+  }
+
+  switch (status.state) {
+    case "checking":
+      return (
+        <p className="text-sm text-muted-foreground">
+          {t("settings.about.updateChecking")}
+        </p>
+      );
+    case "available":
+      return (
+        <p className="text-sm text-muted-foreground">
+          {t("settings.about.updateAvailable", { version: status.version })}
+        </p>
+      );
+    case "downloading":
+      return (
+        <p className="text-sm text-muted-foreground">
+          {t("settings.about.updateDownloading", {
+            percent: Math.round((status.progress ?? 0) * 100),
+            version: status.version,
+          })}
+        </p>
+      );
+    case "ready":
+      return (
+        <p className="text-sm text-muted-foreground">
+          {t("settings.about.updateReady", { version: status.version })}
+        </p>
+      );
+    case "notAvailable":
+      return (
+        <p className="text-sm text-muted-foreground">
+          {t("settings.about.updateNotAvailable")}
+        </p>
+      );
+    case "failed":
+      return status.visible ? (
+        <p className="text-sm text-destructive">
+          {t("settings.about.updateFailed", { message: status.message })}
+        </p>
+      ) : null;
+  }
+}
+
+function updateInstallGateMessage(
+  gate: UpdateInstallGateResponse,
+  t: ReturnType<typeof useTranslation>["t"],
+): string {
+  switch (gate.reason) {
+    case "gitOperation":
+    case "backgroundOperation":
+      return t("settings.about.installBlockedGitOperation");
+    case "conflict":
+      return t("settings.about.installBlockedConflict");
+    case "reviewMode":
+      return t("settings.about.installBlockedReviewMode");
+    default:
+      return gate.message ?? t("settings.about.installBlocked");
+  }
 }
 
 function httpsCredentialKey(credential: HttpsCredentialEntry): string {
@@ -1244,13 +1437,5 @@ function ToggleRow({
         type="checkbox"
       />
     </label>
-  );
-}
-
-function PlaceholderRow({ label }: { label: string }) {
-  return (
-    <div className="rounded-md border border-dashed bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
-      {label}
-    </div>
   );
 }
