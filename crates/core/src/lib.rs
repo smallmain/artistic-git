@@ -1,4 +1,5 @@
 pub mod config;
+pub mod diff_engine;
 pub mod history_graph;
 pub mod keyring;
 pub mod logging;

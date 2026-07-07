@@ -1,4 +1,4 @@
-import { AlertTriangle, FileText, GitBranch, History } from "lucide-react";
+import { AlertTriangle, FileText, History } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -9,6 +9,11 @@ import {
   type StashListItem,
 } from "@/components/sidebar/RepositorySidebar";
 import { Button } from "@/components/ui/button";
+import { HistoryWorkbench } from "@/features/history/HistoryWorkbench";
+import {
+  demoLocalChanges,
+  LocalChangesPanel,
+} from "@/features/local-changes";
 import { cn } from "@/lib/utils";
 import { useWindowStore } from "@/store/window-store";
 
@@ -82,7 +87,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     }),
     [focusedBranch.name, repositoryPath, t],
   );
-  const localChangeCount = 4;
+  const localChangeCount = demoLocalChanges.length;
   const busy = activeOperation !== null;
 
   return (
@@ -153,11 +158,21 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
           </div>
         ) : null}
 
-        <div className="min-h-0 flex-1 overflow-auto">
+        <div className="min-h-0 flex-1 overflow-hidden p-4">
           {activeTab === "history" ? (
-            <HistoryPlaceholder branch={focusedBranch} />
+            <div className="flex h-full min-h-0 flex-col gap-3">
+              <div className="shrink-0 rounded-md border bg-card px-3 py-2 text-sm text-muted-foreground">
+                {t("repository.focusedBranch", {
+                  branch: focusedBranch.name,
+                  commit: focusedBranch.latestCommitId,
+                })}
+              </div>
+              <div className="min-h-0 flex-1 overflow-auto">
+                <HistoryWorkbench />
+              </div>
+            </div>
           ) : (
-            <LocalChangesPlaceholder changeCount={localChangeCount} />
+            <LocalChangesPanel changes={demoLocalChanges} />
           )}
         </div>
       </section>
@@ -199,44 +214,5 @@ function TabButton({
         </span>
       ) : null}
     </button>
-  );
-}
-
-function HistoryPlaceholder({ branch }: { branch: BranchListItem }) {
-  const { t } = useTranslation();
-
-  return (
-    <section className="flex h-full min-h-96 flex-col items-center justify-center gap-3 px-8 text-center">
-      <GitBranch className="size-10 text-muted-foreground" aria-hidden="true" />
-      <div>
-        <h2 className="text-lg font-medium">
-          {t("repository.historyPlaceholder")}
-        </h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {t("repository.focusedBranch", {
-            branch: branch.name,
-            commit: branch.latestCommitId,
-          })}
-        </p>
-      </div>
-    </section>
-  );
-}
-
-function LocalChangesPlaceholder({ changeCount }: { changeCount: number }) {
-  const { t } = useTranslation();
-
-  return (
-    <section className="flex h-full min-h-96 flex-col items-center justify-center gap-3 px-8 text-center">
-      <FileText className="size-10 text-muted-foreground" aria-hidden="true" />
-      <div>
-        <h2 className="text-lg font-medium">
-          {t("repository.localChangesPlaceholder")}
-        </h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {t("repository.localChangesCount", { count: changeCount })}
-        </p>
-      </div>
-    </section>
   );
 }

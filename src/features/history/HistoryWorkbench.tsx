@@ -17,7 +17,9 @@ import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
 import { TruncatedText } from "@/components/ui/truncated-text";
+import { DiffViewer } from "@/features/diff";
 import { useLocalizedFormatters } from "@/i18n/format";
+import type { DiffPayload } from "@/lib/ipc/generated";
 import { cn } from "@/lib/utils";
 
 import { resolveAvatarPresentation } from "./avatar";
@@ -666,20 +668,50 @@ function CommitDetailPanel({
               ))}
             </div>
             <div className="min-w-0 p-4">
-              <div className="flex h-full flex-col rounded-md border bg-background">
-                <div className="border-b px-4 py-3 text-sm font-medium">
-                  {activeFile?.path ?? t("history.details.noFile")}
+              {activeFile ? (
+                <DiffViewer
+                  content={{
+                    kind:
+                      activeFile.changeKind === "renamed" &&
+                      activeFile.additions === 0 &&
+                      activeFile.deletions === 0
+                        ? "moved"
+                        : "text",
+                    newText: activeFile.preview ?? activeFile.path,
+                    oldText: activeFile.oldPath ?? activeFile.preview ?? "",
+                  }}
+                  payload={createCommitDiffPayload(activeFile)}
+                  source="commitDetails"
+                />
+              ) : (
+                <div className="flex h-full items-center justify-center rounded-md border bg-background p-6 text-center text-sm text-muted-foreground">
+                  {t("history.details.noFile")}
                 </div>
-                <div className="flex flex-1 items-center justify-center p-6 text-center text-sm text-muted-foreground">
-                  {t("history.details.diffPlaceholder")}
-                </div>
-              </div>
+              )}
             </div>
           </div>
         </div>
       </aside>
     </div>
   );
+}
+
+function createCommitDiffPayload(file: HistoryCommit["changedFiles"][number]): DiffPayload {
+  return {
+    changeKind: file.changeKind,
+    fileKind: "text",
+    lfsLock: null,
+    metadata: {
+      additions: String(file.additions),
+      deletions: String(file.deletions),
+      contentChanged:
+        file.changeKind === "renamed" && file.additions === 0 && file.deletions === 0
+          ? "false"
+          : "true",
+    },
+    newPath: file.path,
+    oldPath: file.oldPath ?? null,
+  };
 }
 
 function matchesBranchFilter(

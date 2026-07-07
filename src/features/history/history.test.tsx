@@ -91,9 +91,7 @@ describe("HistoryWorkbench", () => {
 
     fireEvent.click(screen.getByText("Tag release candidate assets"));
     expect(screen.getByText("Copy hash")).toBeInTheDocument();
-    expect(
-      screen.getByText("2D diff preview placeholder for the selected file."),
-    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Diff viewer")).toBeInTheDocument();
   });
 
   it("debounces search, shows loading, and renders de-duplicated results", async () => {

@@ -140,7 +140,13 @@ describe("App", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Local Changes/ }));
 
-    expect(screen.getByText("Local changes placeholder")).toBeInTheDocument();
+    expect(
+      screen.getByLabelText("Search files and contents"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getAllByText("src/preview/render-preview.ts").length,
+    ).toBeGreaterThan(0);
+    expect(screen.getByLabelText("Diff viewer")).toBeInTheDocument();
   });
 
   it("filters and collapses sidebar sections", () => {

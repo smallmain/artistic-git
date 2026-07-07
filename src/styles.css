@@ -142,6 +142,43 @@ body {
   font-feature-settings: "tnum";
 }
 
+.diff-checkerboard {
+  background-color: hsl(var(--background));
+  background-image:
+    linear-gradient(45deg, hsl(var(--muted)) 25%, transparent 25%),
+    linear-gradient(-45deg, hsl(var(--muted)) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, hsl(var(--muted)) 75%),
+    linear-gradient(-45deg, transparent 75%, hsl(var(--muted)) 75%);
+  background-position:
+    0 0,
+    0 8px,
+    8px -8px,
+    -8px 0;
+  background-size: 16px 16px;
+}
+
+.diff-codemirror .cm-editor,
+.diff-codemirror .cm-mergeView {
+  height: 100%;
+}
+
+.diff-codemirror .cm-mergeView {
+  overflow: auto;
+}
+
+.diff-codemirror .cm-mergeViewEditors {
+  min-height: 100%;
+}
+
+.diff-codemirror .cm-mergeViewEditor {
+  min-width: 0;
+}
+
+.diff-codemirror .cm-editor {
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
