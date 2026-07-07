@@ -22,7 +22,9 @@ import { defaultAppSettings } from "./settings-model";
 import { SettingsModal } from "./SettingsModal";
 
 const commandMocks = vi.hoisted(() => ({
+  deleteHttpsCredential: vi.fn(),
   generateSshKey: vi.fn(),
+  listHttpsCredentials: vi.fn(),
   loadGitignore: vi.fn(),
   loadProjectSettings: vi.fn(),
   loadRemoteSettings: vi.fn(),
@@ -52,6 +54,21 @@ beforeEach(() => {
       publicKeyPath: null,
     },
   });
+  commandMocks.listHttpsCredentials.mockResolvedValue({
+    credentials: [
+      {
+        protocol: "https",
+        host: "github.com",
+        path: null,
+        scope: "host",
+        username: "alice",
+      },
+    ],
+  });
+  commandMocks.deleteHttpsCredential.mockResolvedValue(undefined);
+  commandMocks.saveAppSettings.mockImplementation(({ settings }) =>
+    Promise.resolve(settings),
+  );
   commandMocks.loadProjectSettings.mockResolvedValue({
     largeFileCheck: { enabled: true, thresholdMb: 50 },
     path: "/repo/art",
@@ -145,6 +162,76 @@ describe("SettingsModal", () => {
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: ["repository", "/repo/art", "history"],
     });
+  });
+
+  it("lists and forgets saved HTTPS credentials with confirmation", async () => {
+    commandMocks.listHttpsCredentials
+      .mockResolvedValueOnce({
+        credentials: [
+          {
+            protocol: "https",
+            host: "github.com",
+            path: null,
+            scope: "host",
+            username: "alice",
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ credentials: [] });
+
+    render(
+      <TestProviders>
+        <SettingsModal onOpenChange={vi.fn()} open />
+      </TestProviders>,
+    );
+
+    expect(await screen.findByText("github.com")).toBeInTheDocument();
+    expect(screen.getByText("alice - Host credential")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Forget credential" }));
+    expect(
+      await screen.findByText("Select the credential again to forget it."),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Confirm forget" }));
+
+    await waitFor(() =>
+      expect(commandMocks.deleteHttpsCredential).toHaveBeenCalledWith({
+        protocol: "https",
+        host: "github.com",
+        path: null,
+        scope: "host",
+      }),
+    );
+    expect(await screen.findByText("Credential forgotten")).toBeInTheDocument();
+    expect(
+      screen.getByText("No HTTPS credentials are saved."),
+    ).toBeInTheDocument();
+  });
+
+  it("persists the SSH passphrase remember setting", async () => {
+    render(
+      <TestProviders>
+        <SettingsModal onOpenChange={vi.fn()} open />
+      </TestProviders>,
+    );
+
+    const rememberToggle = await screen.findByLabelText(
+      "Remember SSH passphrases in secure storage",
+    );
+    fireEvent.click(rememberToggle);
+
+    await waitFor(() =>
+      expect(commandMocks.saveAppSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          settings: expect.objectContaining({
+            git: expect.objectContaining({
+              rememberSshPassphrase: true,
+            }),
+          }),
+        }),
+      ),
+    );
   });
 });
 

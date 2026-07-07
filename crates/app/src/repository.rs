@@ -18,6 +18,7 @@ use artistic_git_contracts::{
 use artistic_git_core::config::{
     AppSettings, ConfigActor, GitUserSettings, ProjectSettings, WindowGeometry,
 };
+use artistic_git_core::keyring::{InMemoryCredentialStore, KeyringVault};
 use artistic_git_git_runner::{
     parse_git_progress_line, CancelToken, GitCommandPlan, GitRunner, OperationBusy,
 };
@@ -43,15 +44,20 @@ pub struct RepositoryBackend {
     config: Option<ConfigActor>,
     fetch_states: crate::fetch::FetchStateStore,
     clone_operations: Arc<Mutex<BTreeMap<String, CancelToken>>>,
+    https_credentials: Arc<Mutex<crate::https_auth::HttpsCredentialFlow>>,
 }
 
 impl RepositoryBackend {
     pub fn new(runner: GitRunner, config: Option<ConfigActor>) -> Self {
+        let vault = KeyringVault::new(Arc::new(InMemoryCredentialStore::default()));
         Self {
             runner,
             config,
             fetch_states: crate::fetch::FetchStateStore::default(),
             clone_operations: Arc::new(Mutex::new(BTreeMap::new())),
+            https_credentials: Arc::new(Mutex::new(crate::https_auth::HttpsCredentialFlow::new(
+                vault,
+            ))),
         }
     }
 
@@ -339,6 +345,43 @@ impl RepositoryBackend {
     ) -> AppResult<crate::settings::IdentityValidationResponse> {
         crate::settings::validate_identity_for_write(&self.runner, request)
     }
+
+    pub fn list_https_credentials(
+        &self,
+    ) -> AppResult<crate::https_auth::HttpsCredentialListResponse> {
+        let flow = self
+            .https_credentials
+            .lock()
+            .map_err(|_| credentials_registry_error("listHttpsCredentials"))?;
+        flow.list_credentials()
+            .map_err(|source| credentials_flow_error(source, "listHttpsCredentials"))
+    }
+
+    pub fn delete_https_credential(
+        &self,
+        request: crate::https_auth::DeleteHttpsCredentialRequest,
+    ) -> AppResult<()> {
+        let mut flow = self
+            .https_credentials
+            .lock()
+            .map_err(|_| credentials_registry_error("deleteHttpsCredential"))?;
+        flow.delete_credential(request)
+            .map_err(|source| credentials_flow_error(source, "deleteHttpsCredential"))
+    }
+}
+
+fn credentials_registry_error(operation_name: &str) -> AppError {
+    logged(AppError::unexpected(
+        "credential registry lock poisoned",
+        operation_name,
+    ))
+}
+
+fn credentials_flow_error(
+    source: crate::https_auth::HttpsCredentialFlowError,
+    operation_name: &str,
+) -> AppError {
+    logged(AppError::expected(source.to_string(), operation_name))
 }
 
 pub fn open_repository(

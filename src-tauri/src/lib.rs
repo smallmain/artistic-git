@@ -753,6 +753,21 @@ fn validate_identity_for_write(
     backend.validate_identity_for_write(request)
 }
 
+#[tauri::command]
+fn list_https_credentials(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+) -> artistic_git_contracts::AppResult<artistic_git_app::HttpsCredentialListResponse> {
+    backend.list_https_credentials()
+}
+
+#[tauri::command]
+fn delete_https_credential(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_app::DeleteHttpsCredentialRequest,
+) -> artistic_git_contracts::AppResult<()> {
+    backend.delete_https_credential(request)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -825,7 +840,9 @@ pub fn run() {
             save_gitignore,
             ssh_key_status,
             generate_ssh_key,
-            validate_identity_for_write
+            validate_identity_for_write,
+            list_https_credentials,
+            delete_https_credential
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Artistic Git");

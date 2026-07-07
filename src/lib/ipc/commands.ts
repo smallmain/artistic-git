@@ -35,6 +35,7 @@ import type {
   CreateStashRequest,
   CreateStashResponse,
   DeleteBranchRequest,
+  DeleteHttpsCredentialRequest,
   DeleteStashRequest,
   DeleteStashResponse,
   FetchRepositoryRequest,
@@ -43,6 +44,7 @@ import type {
   GitignoreFileResponse,
   GitignoreRequest,
   HealthResponse,
+  HttpsCredentialListResponse,
   IdentityValidationRequest,
   IdentityValidationResponse,
   LocalChangesResponse,
@@ -125,6 +127,8 @@ export interface AppCommandArgs {
   ssh_key_status: undefined;
   generate_ssh_key: { request: GenerateSshKeyRequest };
   validate_identity_for_write: { request: IdentityValidationRequest };
+  list_https_credentials: undefined;
+  delete_https_credential: { request: DeleteHttpsCredentialRequest };
 }
 
 export interface AppCommandResponses {
@@ -178,14 +182,14 @@ export interface AppCommandResponses {
   ssh_key_status: SshKeyStatus;
   generate_ssh_key: SshKeyStatus;
   validate_identity_for_write: IdentityValidationResponse;
+  list_https_credentials: HttpsCredentialListResponse;
+  delete_https_credential: void;
 }
 
 export type AppCommandName = keyof AppCommandResponses;
 
 export type OpenRepositoryWindowAction =
-  | "useCurrent"
-  | "focusedExisting"
-  | "created";
+  "useCurrent" | "focusedExisting" | "created";
 
 export interface WindowContextResponse {
   label: string;
@@ -505,6 +509,16 @@ export function validateIdentityForWrite(
   request: IdentityValidationRequest,
 ): Promise<IdentityValidationResponse> {
   return invokeAppCommand("validate_identity_for_write", { request });
+}
+
+export function listHttpsCredentials(): Promise<HttpsCredentialListResponse> {
+  return invokeAppCommand("list_https_credentials");
+}
+
+export function deleteHttpsCredential(
+  request: DeleteHttpsCredentialRequest,
+): Promise<void> {
+  return invokeAppCommand("delete_https_credential", { request });
 }
 
 function normalizeIpcError(error: unknown): AppError | Error {

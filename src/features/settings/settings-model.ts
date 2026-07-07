@@ -198,6 +198,20 @@ export function settingsWithFetchPreferences(
   };
 }
 
+export function settingsWithRememberSshPassphrase(
+  settings: AppSettings | null | undefined,
+  rememberSshPassphrase: boolean,
+): AppSettings {
+  const normalized = normalizeAppSettings(settings);
+  return {
+    ...normalized,
+    git: {
+      ...normalized.git,
+      rememberSshPassphrase,
+    },
+  };
+}
+
 export function settingsWithOnboarded(
   settings: AppSettings | null | undefined,
   onboarded: boolean,

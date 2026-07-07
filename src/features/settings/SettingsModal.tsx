@@ -22,13 +22,17 @@ import type {
   AppSettings,
   GitUserSettings,
   GitignoreFileResponse,
+  HttpsCredentialEntry,
+  HttpsCredentialListResponse,
   IdentitySourcesResponse,
   ProjectSettings,
   RemoteSettingsResponse,
   SshKeyStatus,
 } from "@/lib/ipc/generated";
 import {
+  deleteHttpsCredential,
   generateSshKey,
+  listHttpsCredentials,
   loadGitignore,
   loadProjectSettings,
   loadRemoteSettings,
@@ -55,6 +59,7 @@ import {
   normalizeProjectSettings,
   settingsWithFetchPreferences,
   settingsWithLanguage,
+  settingsWithRememberSshPassphrase,
   settingsWithTheme,
   validateFetchIntervalSeconds,
   type FetchIntervalValidation,
@@ -117,6 +122,8 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
     React.useState<GitignoreFileResponse | null>(null);
   const [remoteSettings, setRemoteSettings] =
     React.useState<RemoteSettingsResponse | null>(null);
+  const [httpsCredentials, setHttpsCredentials] =
+    React.useState<HttpsCredentialListResponse | null>(null);
   const [gitignoreDraft, setGitignoreDraft] = React.useState("");
   const [remoteUrlDraft, setRemoteUrlDraft] = React.useState("");
   const [loading, setLoading] = React.useState(open);
@@ -124,8 +131,14 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
   const [savingProject, setSavingProject] = React.useState(false);
   const [savingGitignore, setSavingGitignore] = React.useState(false);
   const [savingRemote, setSavingRemote] = React.useState(false);
+  const [deletingCredentialKey, setDeletingCredentialKey] = React.useState<
+    string | null
+  >(null);
   const [status, setStatus] = React.useState<string | null>(null);
   const [remoteRemoveArmed, setRemoteRemoveArmed] = React.useState(false);
+  const [credentialRemoveArmed, setCredentialRemoveArmed] = React.useState<
+    string | null
+  >(null);
   const [identityTouched, setIdentityTouched] = React.useState(false);
   const [identitySaveAttempted, setIdentitySaveAttempted] =
     React.useState(false);
@@ -172,6 +185,22 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
         if (active) {
           setLoading(false);
         }
+      });
+
+    void listHttpsCredentials()
+      .then((response) => {
+        if (active) {
+          setHttpsCredentials(response);
+          setCredentialRemoveArmed(null);
+        }
+      })
+      .catch((error) => {
+        if (active) {
+          setHttpsCredentials({ credentials: [] });
+        }
+        window.dispatchEvent(
+          new CustomEvent("artistic-git:error", { detail: error }),
+        );
       });
 
     return () => {
@@ -462,6 +491,45 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
     }
   };
 
+  const persistRememberSshPassphrase = (rememberSshPassphrase: boolean) => {
+    const next = settingsWithRememberSshPassphrase(
+      draft,
+      rememberSshPassphrase,
+    );
+    setDraft(next);
+    void persistSettings(next);
+  };
+
+  const forgetHttpsCredential = async (credential: HttpsCredentialEntry) => {
+    const key = httpsCredentialKey(credential);
+    if (credentialRemoveArmed !== key) {
+      setCredentialRemoveArmed(key);
+      setStatus(t("settings.status.credentialRemoveArmed"));
+      return;
+    }
+
+    setDeletingCredentialKey(key);
+    setStatus(null);
+    try {
+      await deleteHttpsCredential({
+        protocol: credential.protocol,
+        host: credential.host,
+        path: credential.path,
+        scope: credential.scope,
+      });
+      const next = await listHttpsCredentials();
+      setHttpsCredentials(next);
+      setCredentialRemoveArmed(null);
+      setStatus(t("settings.status.credentialForgotten"));
+    } catch (error) {
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:error", { detail: error }),
+      );
+    } finally {
+      setDeletingCredentialKey(null);
+    }
+  };
+
   return (
     <DialogFrame
       className="h-[min(760px,calc(100vh-48px))] max-w-5xl"
@@ -524,6 +592,13 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
               onThemeChange={persistTheme}
               onUpdateDraft={setDraft}
               onUpdateUser={updateDraftUser}
+              onRememberSshPassphraseChange={persistRememberSshPassphrase}
+              credentials={httpsCredentials?.credentials ?? []}
+              credentialRemoveArmed={credentialRemoveArmed}
+              deletingCredentialKey={deletingCredentialKey}
+              onForgetCredential={(credential) =>
+                void forgetHttpsCredential(credential)
+              }
               saving={savingSettings}
               showIdentityValidation={showIdentityValidation}
               sshKey={sshKey}
@@ -573,14 +648,19 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
 }
 
 function GeneralSettings({
+  credentialRemoveArmed,
+  credentials,
+  deletingCredentialKey,
   draft,
   fetchIntervalValidation,
   gitUser,
   identitySources,
   identityValidation,
   onCopyPublicKey,
+  onForgetCredential,
   onGenerateSshKey,
   onLanguageChange,
+  onRememberSshPassphraseChange,
   onSave,
   onSaveFetch,
   onThemeChange,
@@ -590,14 +670,19 @@ function GeneralSettings({
   showIdentityValidation,
   sshKey,
 }: {
+  credentialRemoveArmed: string | null;
+  credentials: HttpsCredentialEntry[];
+  deletingCredentialKey: string | null;
   draft: AppSettings;
   fetchIntervalValidation: FetchIntervalValidation;
   gitUser: GitUserSettings;
   identitySources: IdentitySourcesResponse | null;
   identityValidation: GitUserValidation;
   onCopyPublicKey: () => void;
+  onForgetCredential: (credential: HttpsCredentialEntry) => void;
   onGenerateSshKey: () => void;
   onLanguageChange: (value: "system" | "en" | "zh-CN") => void;
+  onRememberSshPassphraseChange: (checked: boolean) => void;
   onSave: () => void;
   onSaveFetch: () => void;
   onThemeChange: (value: "system" | "light" | "dark") => void;
@@ -698,6 +783,60 @@ function GeneralSettings({
             {t("settings.general.generateSshKey")}
           </Button>
         </div>
+        <ToggleRow
+          checked={draft.git?.rememberSshPassphrase ?? false}
+          label={t("settings.general.rememberSshPassphrase")}
+          onChange={onRememberSshPassphraseChange}
+        />
+      </SettingsGroup>
+
+      <SettingsGroup
+        icon={<KeyRound className="size-4" aria-hidden="true" />}
+        title={t("settings.general.httpsCredentials")}
+      >
+        {credentials.length > 0 ? (
+          <div className="space-y-2">
+            {credentials.map((credential) => {
+              const key = httpsCredentialKey(credential);
+              const armed = credentialRemoveArmed === key;
+              return (
+                <div
+                  className="flex items-center justify-between gap-3 rounded-md border bg-background px-3 py-2"
+                  key={key}
+                >
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-medium">
+                      {credential.host}
+                      {credential.path ? `/${credential.path}` : ""}
+                    </div>
+                    <div className="truncate text-xs text-muted-foreground">
+                      {credential.username} -{" "}
+                      {credential.scope === "path"
+                        ? t("settings.general.pathCredential")
+                        : t("settings.general.hostCredential")}
+                    </div>
+                  </div>
+                  <Button
+                    className="shrink-0 gap-2"
+                    disabled={deletingCredentialKey === key}
+                    onClick={() => onForgetCredential(credential)}
+                    type="button"
+                    variant={armed ? "destructive" : "secondary"}
+                  >
+                    <Trash2 className="size-4" aria-hidden="true" />
+                    {armed
+                      ? t("settings.general.confirmForgetCredential")
+                      : t("settings.general.forgetCredential")}
+                  </Button>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <p className="rounded-md border border-dashed bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+            {t("settings.general.noHttpsCredentials")}
+          </p>
+        )}
       </SettingsGroup>
 
       <SettingsGroup
@@ -802,7 +941,6 @@ function GeneralSettings({
       </SettingsGroup>
 
       <SettingsGroup title={t("settings.general.placeholders")}>
-        <PlaceholderRow label={t("settings.general.credentialsPlaceholder")} />
         <PlaceholderRow label={t("settings.general.updatePlaceholder")} />
       </SettingsGroup>
     </section>
@@ -998,6 +1136,15 @@ function AboutSettings({ appVersion }: { appVersion: string }) {
       </div>
     </section>
   );
+}
+
+function httpsCredentialKey(credential: HttpsCredentialEntry): string {
+  return [
+    credential.protocol,
+    credential.host,
+    credential.scope,
+    credential.path ?? "",
+  ].join("\n");
 }
 
 function SettingsGroup({
