@@ -17,6 +17,8 @@ pub mod branches;
 pub mod commit;
 pub mod conflicts;
 pub mod fetch;
+#[cfg(test)]
+mod full_chain_e2e;
 pub(crate) mod git_ops;
 pub mod https_auth;
 pub mod remote;
