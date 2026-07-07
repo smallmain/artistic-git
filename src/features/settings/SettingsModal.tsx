@@ -363,8 +363,10 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
     setStatus(null);
     try {
       const saved = await saveProjectSettings({
-        repositoryPath: activeRepositoryPath,
         largeFileCheck,
+        localChangesViewMode: null,
+        repositoryPath: activeRepositoryPath,
+        sidebar: null,
       });
       setProject(saved);
       setProjectSettings(activeRepositoryPath, saved);

@@ -31,9 +31,11 @@ const commandMocks = vi.hoisted(() => ({
   listConflicts: vi.fn(),
   listLocalChanges: vi.fn(),
   listStashes: vi.fn(),
+  loadProjectSettings: vi.fn(),
   repositorySummary: vi.fn(),
   restoreChanges: vi.fn(),
   restoreStash: vi.fn(),
+  saveProjectSettings: vi.fn(),
   revertCommit: vi.fn(),
   saveWindowGeometry: vi.fn(),
   saveConflictResolution: vi.fn(),
@@ -63,6 +65,30 @@ beforeEach(() => {
   window.localStorage.clear();
   vi.clearAllMocks();
   commandMocks.saveWindowGeometry.mockResolvedValue({});
+  commandMocks.loadProjectSettings.mockResolvedValue({
+    largeFileCheck: { enabled: true, thresholdMb: 50 },
+    localChangesViewMode: "flat",
+    path: "/repo/art",
+    sidebar: {
+      branchSectionRatioPercent: 60,
+      branchesCollapsed: false,
+      stashesCollapsed: false,
+      widthPx: 280,
+    },
+  });
+  commandMocks.saveProjectSettings.mockImplementation((request) =>
+    Promise.resolve({
+      largeFileCheck: request.largeFileCheck,
+      localChangesViewMode: request.localChangesViewMode ?? "flat",
+      path: request.repositoryPath,
+      sidebar: request.sidebar ?? {
+        branchSectionRatioPercent: 60,
+        branchesCollapsed: false,
+        stashesCollapsed: false,
+        widthPx: 280,
+      },
+    }),
+  );
   commandMocks.repositorySummary.mockResolvedValue({
     currentBranch: "main",
     hasOrigin: true,
@@ -188,6 +214,89 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+});
+
+describe("RepositoryShell session preferences", () => {
+  it("restores and saves the project local changes view mode", async () => {
+    commandMocks.loadProjectSettings.mockResolvedValueOnce({
+      largeFileCheck: { enabled: true, thresholdMb: 50 },
+      localChangesViewMode: "tree",
+      path: "/repo/art",
+      sidebar: {
+        branchSectionRatioPercent: 72,
+        branchesCollapsed: false,
+        stashesCollapsed: true,
+        widthPx: 340,
+      },
+    });
+
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: /Local Changes/ }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Tree view" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      ),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Flat view" }));
+
+    await waitFor(() =>
+      expect(commandMocks.saveProjectSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          largeFileCheck: { enabled: true, thresholdMb: 50 },
+          localChangesViewMode: "flat",
+          repositoryPath: "/repo/art",
+          sidebar: expect.objectContaining({
+            branchSectionRatioPercent: 72,
+            stashesCollapsed: true,
+            widthPx: 340,
+          }),
+        }),
+      ),
+    );
+  });
+
+  it("persists sidebar layout changes to project settings", async () => {
+    commandMocks.loadProjectSettings.mockResolvedValueOnce({
+      largeFileCheck: { enabled: true, thresholdMb: 75 },
+      localChangesViewMode: "flat",
+      path: "/repo/art",
+      sidebar: {
+        branchSectionRatioPercent: 68,
+        branchesCollapsed: true,
+        stashesCollapsed: false,
+        widthPx: 360,
+      },
+    });
+
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    await waitFor(() =>
+      expect(
+        screen.queryByLabelText("Search branches"),
+      ).not.toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Branches" }));
+
+    await waitFor(() =>
+      expect(commandMocks.saveProjectSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          largeFileCheck: { enabled: true, thresholdMb: 75 },
+          localChangesViewMode: "flat",
+          repositoryPath: "/repo/art",
+          sidebar: expect.objectContaining({
+            branchesCollapsed: false,
+            widthPx: 360,
+          }),
+        }),
+      ),
+    );
+  });
 });
 
 describe("RepositoryShell stash flow", () => {

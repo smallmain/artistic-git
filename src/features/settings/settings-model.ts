@@ -3,7 +3,9 @@ import type {
   GitUserSettings,
   LanguagePreference as BackendLanguagePreference,
   LargeFileCheckSettings,
+  LocalChangesViewMode,
   ProjectSettings,
+  SidebarLayoutSettings,
   ToolGitIdentity,
 } from "@/lib/ipc/generated";
 import type {
@@ -46,6 +48,22 @@ export const defaultAppSettings: AppSettings = {
 export const defaultLargeFileCheck: Required<LargeFileCheckSettings> = {
   enabled: true,
   thresholdMb: 50,
+};
+
+export const defaultSidebarLayout: Required<SidebarLayoutSettings> = {
+  widthPx: 280,
+  branchSectionRatioPercent: 60,
+  branchesCollapsed: false,
+  stashesCollapsed: false,
+};
+
+export const defaultLocalChangesViewMode: LocalChangesViewMode = "flat";
+
+export type NormalizedProjectSettings = ProjectSettings & {
+  largeFileCheck: Required<LargeFileCheckSettings>;
+  localChangesViewMode: LocalChangesViewMode;
+  path: string;
+  sidebar: Required<SidebarLayoutSettings>;
 };
 
 export function normalizeAppSettings(
@@ -104,9 +122,18 @@ export function normalizeAppSettings(
   };
 }
 
-export function normalizeProjectSettings(project?: ProjectSettings | null) {
+export function normalizeProjectSettings(
+  project?: ProjectSettings | null,
+): NormalizedProjectSettings {
   return {
     ...project,
+    path: project?.path ?? "",
+    sidebar: {
+      ...defaultSidebarLayout,
+      ...project?.sidebar,
+    },
+    localChangesViewMode:
+      project?.localChangesViewMode ?? defaultLocalChangesViewMode,
     largeFileCheck: {
       ...defaultLargeFileCheck,
       ...project?.largeFileCheck,

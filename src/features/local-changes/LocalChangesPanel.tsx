@@ -44,8 +44,10 @@ export function LocalChangesPanel({
   onSelectedChange,
   onRestore,
   onStash,
+  onViewModeChange,
   selectedId,
   storageKey = defaultStorageKey,
+  viewMode,
 }: LocalChangesPanelProps) {
   const { t } = useTranslation();
   const [checkedIds, setCheckedIds] = React.useState<Set<string>>(
@@ -55,9 +57,10 @@ export function LocalChangesPanel({
     string | null
   >(selectedId ?? changes[0]?.id ?? null);
   const [searchTerm, setSearchTerm] = React.useState("");
-  const [viewMode, setViewMode] = React.useState<LocalChangesViewMode>(() =>
-    readViewMode(storageKey),
-  );
+  const [internalViewMode, setInternalViewMode] =
+    React.useState<LocalChangesViewMode>(
+      () => viewMode ?? readViewMode(storageKey),
+    );
   const [contextMenu, setContextMenu] = React.useState<{
     ids: string[];
     x: number;
@@ -65,6 +68,7 @@ export function LocalChangesPanel({
   } | null>(null);
 
   const effectiveSelectedId = selectedId ?? internalSelectedId;
+  const effectiveViewMode = viewMode ?? internalViewMode;
   const filteredChanges = React.useMemo(
     () => filterChanges(changes, searchTerm),
     [changes, searchTerm],
@@ -85,8 +89,11 @@ export function LocalChangesPanel({
   }, [onSelectedChange, selectedChange]);
 
   const updateViewMode = (mode: LocalChangesViewMode) => {
-    setViewMode(mode);
-    window.localStorage.setItem(storageKey, mode);
+    if (viewMode === undefined) {
+      setInternalViewMode(mode);
+      window.localStorage.setItem(storageKey, mode);
+    }
+    onViewModeChange?.(mode);
   };
 
   const toggleIds = (ids: string[], checked: boolean) => {
@@ -127,20 +134,20 @@ export function LocalChangesPanel({
             />
             <div className="flex items-center gap-1">
               <IconButton
-                aria-pressed={viewMode === "flat"}
+                aria-pressed={effectiveViewMode === "flat"}
                 label={t("localChanges.flatView")}
                 onClick={() => updateViewMode("flat")}
                 tooltip={t("localChanges.flatView")}
-                variant={viewMode === "flat" ? "secondary" : "ghost"}
+                variant={effectiveViewMode === "flat" ? "secondary" : "ghost"}
               >
                 <List className="size-4" aria-hidden="true" />
               </IconButton>
               <IconButton
-                aria-pressed={viewMode === "tree"}
+                aria-pressed={effectiveViewMode === "tree"}
                 label={t("localChanges.treeView")}
                 onClick={() => updateViewMode("tree")}
                 tooltip={t("localChanges.treeView")}
-                variant={viewMode === "tree" ? "secondary" : "ghost"}
+                variant={effectiveViewMode === "tree" ? "secondary" : "ghost"}
               >
                 <FolderTree className="size-4" aria-hidden="true" />
               </IconButton>
@@ -167,7 +174,7 @@ export function LocalChangesPanel({
             <div className="p-4 text-sm text-muted-foreground">
               {t("localChanges.empty")}
             </div>
-          ) : viewMode === "flat" ? (
+          ) : effectiveViewMode === "flat" ? (
             <FlatChangeList
               changes={filteredChanges}
               checkedIds={checkedIds}

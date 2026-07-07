@@ -1,7 +1,7 @@
 use artistic_git_contracts::{AppError, AppResult, OperationContext};
 use artistic_git_core::config::{
     normalize_project_path_key, AppSettings, ConfigActor, GitUserSettings, LargeFileCheckSettings,
-    ProjectSettings, WindowGeometry,
+    LocalChangesViewMode, ProjectSettings, SidebarLayoutSettings, WindowGeometry,
 };
 use artistic_git_git_runner::{GitRunner, IdentityValidationHook, WriteOperationRequest};
 use serde::{Deserialize, Serialize};
@@ -43,6 +43,8 @@ pub struct ProjectSettingsRequest {
 pub struct SaveProjectSettingsRequest {
     pub repository_path: String,
     pub large_file_check: LargeFileCheckSettings,
+    pub sidebar: Option<SidebarLayoutSettings>,
+    pub local_changes_view_mode: Option<LocalChangesViewMode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Type)]
@@ -222,6 +224,12 @@ pub fn save_project_settings(
     config
         .update_project(request.repository_path, |project| {
             project.large_file_check = request.large_file_check;
+            if let Some(sidebar) = request.sidebar {
+                project.sidebar = sidebar;
+            }
+            if let Some(local_changes_view_mode) = request.local_changes_view_mode {
+                project.local_changes_view_mode = local_changes_view_mode;
+            }
         })
         .map_err(|source| config_error(source, "saveProjectSettings"))
 }

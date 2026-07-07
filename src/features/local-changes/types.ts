@@ -21,7 +21,9 @@ export interface LocalChangesPanelProps {
   onRestore?: (checkedIds: string[]) => void;
   onSelectedChange?: (change: LocalChangeItem | null) => void;
   onStash?: (checkedIds: string[]) => void;
+  onViewModeChange?: (viewMode: LocalChangesViewMode) => void;
   repositoryPath?: string;
   selectedId?: string | null;
   storageKey?: string;
+  viewMode?: LocalChangesViewMode;
 }

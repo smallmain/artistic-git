@@ -20,7 +20,10 @@ import { useTranslation } from "react-i18next";
 import { IconButton } from "@/components/ui/icon-button";
 import { Tooltip } from "@/components/ui/tooltip";
 import { TruncatedText } from "@/components/ui/truncated-text";
-import type { FetchStateEvent } from "@/lib/ipc/generated";
+import type {
+  FetchStateEvent,
+  SidebarLayoutSettings,
+} from "@/lib/ipc/generated";
 import { cn } from "@/lib/utils";
 import { useWindowStore } from "@/store/window-store";
 
@@ -61,6 +64,7 @@ interface RepositorySidebarProps {
   onFetch?: () => void;
   onOpenSettings?: () => void;
   onShowStashDetails?: (stash: StashListItem) => void;
+  onSidebarLayoutChange?: (layout: Required<SidebarLayoutSettings>) => void;
   onSyncBranch?: (branch: BranchListItem) => void;
   repository: RepositorySummary;
   stashes: StashListItem[];
@@ -85,6 +89,7 @@ export function RepositorySidebar({
   onFetch,
   onOpenSettings,
   onShowStashDetails,
+  onSidebarLayoutChange,
   onSyncBranch,
   repository,
   stashes,
@@ -115,6 +120,17 @@ export function RepositorySidebar({
       branches.some((branch) => branch.ahead > 0 || branch.behind > 0),
     [branches, repository.hasRemote],
   );
+  const updateSidebarLayout = React.useCallback(
+    (layout: Partial<SidebarLayoutSettings>) => {
+      const nextLayout = {
+        ...sidebarLayout,
+        ...layout,
+      };
+      setSidebarLayout(nextLayout);
+      onSidebarLayoutChange?.(nextLayout);
+    },
+    [onSidebarLayoutChange, setSidebarLayout, sidebarLayout],
+  );
 
   const startSidebarResize = React.useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
@@ -124,7 +140,7 @@ export function RepositorySidebar({
       event.currentTarget.setPointerCapture?.(event.pointerId);
 
       const handlePointerMove = (moveEvent: PointerEvent) => {
-        setSidebarLayout({
+        updateSidebarLayout({
           widthPx: clamp(
             startWidth + moveEvent.clientX - startX,
             minSidebarWidth,
@@ -140,7 +156,7 @@ export function RepositorySidebar({
       window.addEventListener("pointermove", handlePointerMove);
       window.addEventListener("pointerup", handlePointerUp);
     },
-    [setSidebarLayout, sidebarLayout.widthPx],
+    [sidebarLayout.widthPx, updateSidebarLayout],
   );
 
   const startSectionResize = React.useCallback(
@@ -158,7 +174,7 @@ export function RepositorySidebar({
       const handlePointerMove = (moveEvent: PointerEvent) => {
         const ratio = ((moveEvent.clientY - rect.top) / rect.height) * 100;
 
-        setSidebarLayout({
+        updateSidebarLayout({
           branchSectionRatioPercent: clamp(
             Math.round(ratio),
             minBranchRatio,
@@ -174,7 +190,7 @@ export function RepositorySidebar({
       window.addEventListener("pointermove", handlePointerMove);
       window.addEventListener("pointerup", handlePointerUp);
     },
-    [setSidebarLayout],
+    [updateSidebarLayout],
   );
 
   return (
@@ -250,7 +266,7 @@ export function RepositorySidebar({
           icon={<GitBranch className="size-4" aria-hidden="true" />}
           maxHeight={`${sidebarLayout.branchSectionRatioPercent}%`}
           onCollapseChange={(branchesCollapsed) => {
-            setSidebarLayout({ branchesCollapsed });
+            updateSidebarLayout({ branchesCollapsed });
           }}
           onQueryChange={setBranchQuery}
           query={branchQuery}
@@ -289,7 +305,7 @@ export function RepositorySidebar({
           icon={<Layers className="size-4" aria-hidden="true" />}
           maxHeight={`${100 - sidebarLayout.branchSectionRatioPercent}%`}
           onCollapseChange={(stashesCollapsed) => {
-            setSidebarLayout({ stashesCollapsed });
+            updateSidebarLayout({ stashesCollapsed });
           }}
           onQueryChange={setStashQuery}
           query={stashQuery}

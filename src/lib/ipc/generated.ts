@@ -786,6 +786,8 @@ export type SaveGitignoreRequest = {
 export type SaveProjectSettingsRequest = {
   repositoryPath: string;
   largeFileCheck: LargeFileCheckSettings;
+  sidebar: SidebarLayoutSettings | null;
+  localChangesViewMode: LocalChangesViewMode | null;
 };
 
 export type SaveRemoteSettingsRequest = {

@@ -39,9 +39,11 @@ import {
   listConflicts,
   listLocalChanges,
   listStashes,
+  loadProjectSettings,
   restoreChanges,
   restoreStash,
   repositorySummary,
+  saveProjectSettings,
   saveWindowGeometry,
   saveConflictResolution,
   selectConflictSide,
@@ -57,6 +59,8 @@ import type {
   FetchStateEvent,
   LargeFileWarning,
   LocalChange,
+  LocalChangesViewMode,
+  SidebarLayoutSettings,
   StashEntry,
   StashDetailsResponse,
   StashRecoveryPoint,
@@ -66,6 +70,7 @@ import { cn } from "@/lib/utils";
 import { useWindowStore } from "@/store/window-store";
 import {
   normalizeAppSettings,
+  normalizeProjectSettings,
   validateFetchIntervalSeconds,
 } from "@/features/settings/settings-model";
 
@@ -197,6 +202,11 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     queryKey: repoQueryKeys.localChanges(repositoryPath),
     retry: false,
   });
+  const projectSettingsQuery = useQuery({
+    queryFn: () => loadProjectSettings({ repositoryPath }),
+    queryKey: ["repository", repositoryPath, "projectSettings"] as const,
+    retry: false,
+  });
   const branches = React.useMemo(
     () =>
       branchesQuery.data?.branches.map(mapBranchSummaryToItem) ?? demoBranches,
@@ -236,6 +246,13 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   );
   const operations = useWindowStore((state) => state.operationsById);
   const appSettings = useWindowStore((state) => state.appSettings);
+  const projectSettings = useWindowStore(
+    (state) => state.projectSettingsByRepository[repositoryPath] ?? null,
+  );
+  const setProjectSettings = useWindowStore(
+    (state) => state.setProjectSettings,
+  );
+  const setSidebarLayout = useWindowStore((state) => state.setSidebarLayout);
   const storedFetchState = useWindowStore(
     (state) => state.fetchStatesByRepository[repositoryPath] ?? null,
   );
@@ -252,6 +269,14 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     [operations],
   );
   const fetchState = liveFetchState ?? storedFetchState;
+  const effectiveProjectSettings = React.useMemo(
+    () =>
+      normalizeProjectSettings(
+        projectSettings ??
+          projectSettingsQuery.data ?? { path: repositoryPath },
+      ),
+    [projectSettings, projectSettingsQuery.data, repositoryPath],
+  );
 
   React.useEffect(() => {
     const handleFetchState = (event: Event) => {
@@ -292,6 +317,23 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       window.removeEventListener("beforeunload", persistGeometry);
     };
   }, [repositoryPath]);
+
+  React.useEffect(() => {
+    if (!projectSettingsQuery.data) {
+      return;
+    }
+
+    const normalizedProject = normalizeProjectSettings(
+      projectSettingsQuery.data,
+    );
+    setProjectSettings(repositoryPath, normalizedProject);
+    setSidebarLayout(normalizedProject.sidebar);
+  }, [
+    projectSettingsQuery.data,
+    repositoryPath,
+    setProjectSettings,
+    setSidebarLayout,
+  ]);
 
   React.useEffect(() => {
     const name = newBranchName.trim();
@@ -404,6 +446,45 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   const fetchPreferences = normalizeAppSettings(appSettings).git;
   const fetchInterval = validateFetchIntervalSeconds(
     fetchPreferences?.fetchIntervalSeconds,
+  );
+  const persistProjectPreferences = React.useCallback(
+    async (updates: {
+      localChangesViewMode?: LocalChangesViewMode;
+      sidebar?: Required<SidebarLayoutSettings>;
+    }) => {
+      const nextProject = {
+        ...effectiveProjectSettings,
+        localChangesViewMode:
+          updates.localChangesViewMode ??
+          effectiveProjectSettings.localChangesViewMode,
+        sidebar: updates.sidebar ?? effectiveProjectSettings.sidebar,
+      };
+
+      setProjectSettings(repositoryPath, nextProject);
+      if (updates.sidebar) {
+        setSidebarLayout(updates.sidebar);
+      }
+
+      try {
+        const saved = await saveProjectSettings({
+          largeFileCheck: nextProject.largeFileCheck,
+          localChangesViewMode: nextProject.localChangesViewMode,
+          repositoryPath,
+          sidebar: nextProject.sidebar,
+        });
+        setProjectSettings(repositoryPath, normalizeProjectSettings(saved));
+      } catch (error) {
+        window.dispatchEvent(
+          new CustomEvent("artistic-git:error", { detail: error }),
+        );
+      }
+    },
+    [
+      effectiveProjectSettings,
+      repositoryPath,
+      setProjectSettings,
+      setSidebarLayout,
+    ],
   );
 
   const runFetch = React.useCallback(async () => {
@@ -986,6 +1067,9 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         onDeleteStash={setStashToDelete}
         onFetch={() => void runSyncCurrentBranch()}
         onOpenSettings={() => openSettings("general")}
+        onSidebarLayoutChange={(layout) => {
+          void persistProjectPreferences({ sidebar: layout });
+        }}
         onShowStashDetails={(stash) => void showStashDetails(stash)}
         onSyncBranch={() => void runSyncCurrentBranch()}
         repository={repository}
@@ -1078,6 +1162,12 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
               onCommit={setCommitIds}
               onRestore={setRestoreIds}
               onStash={openCreateStashDialog}
+              onViewModeChange={(viewMode) => {
+                void persistProjectPreferences({
+                  localChangesViewMode: viewMode,
+                });
+              }}
+              viewMode={effectiveProjectSettings.localChangesViewMode}
             />
           )}
         </div>
