@@ -107,6 +107,7 @@ pub struct UpdateInstallGateResponse {
 pub enum UpdateInstallBlockedReason {
     GitOperation,
     BackgroundOperation,
+    CloseGuard,
     NoReadyUpdate,
     UnsupportedInstallFormat,
 }
@@ -318,7 +319,17 @@ pub fn install_ready_update(
         .try_begin_exclusive()
         .map_err(|busy| install_busy_error(busy, INSTALL_OPERATION))?;
 
-    ready
+    if let Some(blocker) = close_guard_install_gate_response(&app_handle) {
+        return Err(install_gate_error(blocker, INSTALL_OPERATION));
+    }
+
+    close_all_windows_for_update_install(&app_handle)?;
+    if let Some(blocker) = close_guard_install_gate_response(&app_handle) {
+        let _ = set_update_install_closing_windows(&app_handle, false);
+        return Err(install_gate_error(blocker, INSTALL_OPERATION));
+    }
+
+    let install_result = ready
         .update
         .install(ready.bytes.as_slice())
         .map_err(|error| {
@@ -326,7 +337,13 @@ pub fn install_ready_update(
                 format!("failed to install update: {error}"),
                 INSTALL_OPERATION,
             )
-        })
+        });
+    if let Err(error) = install_result {
+        let _ = set_update_install_closing_windows(&app_handle, false);
+        return Err(error);
+    }
+
+    app_handle.restart();
 }
 
 pub(crate) fn retarget_ready_update_prompt(
@@ -388,11 +405,7 @@ fn install_gate_response(
             reason: Some(install_block_reason(busy)),
             message: Some(install_busy_message(busy).to_owned()),
         }),
-        None => Ok(UpdateInstallGateResponse {
-            blocked: false,
-            reason: None,
-            message: None,
-        }),
+        None => Ok(close_guard_install_gate_response(app_handle).unwrap_or_else(allowed_gate)),
     }
 }
 
@@ -604,6 +617,47 @@ fn release_page_only_message(reason: UpdateReleasePageReason) -> &'static str {
     }
 }
 
+fn allowed_gate() -> UpdateInstallGateResponse {
+    UpdateInstallGateResponse {
+        blocked: false,
+        reason: None,
+        message: None,
+    }
+}
+
+fn close_guard_install_gate_response(app_handle: &AppHandle) -> Option<UpdateInstallGateResponse> {
+    let blocked = app_handle
+        .try_state::<crate::WindowRegistry>()
+        .map(|registry| crate::registry_has_close_guards(&registry))
+        .unwrap_or(false);
+
+    close_guard_install_gate_response_for_blocked(blocked)
+}
+
+fn close_guard_install_gate_response_for_blocked(
+    blocked: bool,
+) -> Option<UpdateInstallGateResponse> {
+    blocked.then(|| UpdateInstallGateResponse {
+        blocked: true,
+        reason: Some(UpdateInstallBlockedReason::CloseGuard),
+        message: Some(close_guard_install_message().to_owned()),
+    })
+}
+
+fn close_guard_install_message() -> &'static str {
+    "restart update is blocked because a window has an operation or recovery prompt that must finish before closing"
+}
+
+fn install_gate_error(blocker: UpdateInstallGateResponse, operation_name: &str) -> AppError {
+    artistic_git_app::logged_app_error(AppError::expected(
+        blocker
+            .message
+            .as_deref()
+            .unwrap_or("restart update is blocked"),
+        operation_name,
+    ))
+}
+
 fn install_busy_error(busy: OperationBusy, operation_name: &str) -> AppError {
     artistic_git_app::logged_app_error(AppError::expected(
         install_busy_message(busy),
@@ -627,6 +681,53 @@ fn install_block_reason(busy: OperationBusy) -> UpdateInstallBlockedReason {
         OperationBusy::WriteBusy => UpdateInstallBlockedReason::GitOperation,
         OperationBusy::BackgroundBusy => UpdateInstallBlockedReason::BackgroundOperation,
     }
+}
+
+fn close_all_windows_for_update_install(app_handle: &AppHandle) -> AppResult<()> {
+    set_update_install_closing_windows(app_handle, true)?;
+
+    let windows = app_handle.webview_windows();
+    let labels = windows.keys().cloned().collect::<Vec<_>>();
+
+    if let Err(message) = close_update_install_windows(labels, |label| {
+        let Some(window) = windows.get(label) else {
+            return Ok(());
+        };
+
+        window
+            .close()
+            .map_err(|error| format!("failed to close window {label}: {error}"))
+    }) {
+        let _ = set_update_install_closing_windows(app_handle, false);
+        return Err(artistic_git_app::unexpected_command_error(
+            message,
+            INSTALL_OPERATION,
+        ));
+    }
+
+    Ok(())
+}
+
+fn set_update_install_closing_windows(app_handle: &AppHandle, closing: bool) -> AppResult<()> {
+    if let Some(registry) = app_handle.try_state::<crate::WindowRegistry>() {
+        crate::registry_set_update_install_closing_windows(&registry, closing)?;
+    }
+
+    Ok(())
+}
+
+fn close_update_install_windows<F>(
+    labels: Vec<String>,
+    mut close_window: F,
+) -> Result<Vec<String>, String>
+where
+    F: FnMut(&str) -> Result<(), String>,
+{
+    for label in &labels {
+        close_window(label)?;
+    }
+
+    Ok(labels)
 }
 
 impl UpdaterRuntimeState {
@@ -867,6 +968,40 @@ mod tests {
             .expect("routed event");
 
         assert_eq!(event.target_window_label, Some("repo-2".to_owned()));
+    }
+
+    #[test]
+    fn close_guard_install_gate_blocks_update_install() {
+        let gate = close_guard_install_gate_response_for_blocked(true)
+            .expect("close guard should block install");
+
+        assert!(gate.blocked);
+        assert_eq!(gate.reason, Some(UpdateInstallBlockedReason::CloseGuard));
+        assert_eq!(gate.message.as_deref(), Some(close_guard_install_message()));
+    }
+
+    #[test]
+    fn close_guard_install_gate_allows_when_no_window_is_guarded() {
+        assert_eq!(close_guard_install_gate_response_for_blocked(false), None);
+    }
+
+    #[test]
+    fn update_install_closes_every_window_before_install() {
+        let mut closed = Vec::new();
+        let labels = vec![
+            "repo-1".to_owned(),
+            "repo-2".to_owned(),
+            "start-3".to_owned(),
+        ];
+
+        let attempted = close_update_install_windows(labels.clone(), |label| {
+            closed.push(label.to_owned());
+            Ok(())
+        })
+        .expect("close windows");
+
+        assert_eq!(attempted, labels);
+        assert_eq!(closed, vec!["repo-1", "repo-2", "start-3"]);
     }
 
     #[test]

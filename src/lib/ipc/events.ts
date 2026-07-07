@@ -1,4 +1,5 @@
 import {
+  emit,
   listen,
   type EventCallback,
   type UnlistenFn,
@@ -11,7 +12,11 @@ import type {
   OperationProgressEvent,
   RepoChangedEvent,
 } from "./generated";
-import type { UpdateStatusEvent } from "./update-types";
+import type {
+  UpdateInstallGateRequestEvent,
+  UpdateInstallGateWindowResponseEvent,
+  UpdateStatusEvent,
+} from "./update-types";
 
 export type AppEventName =
   | "repo-changed"
@@ -19,6 +24,8 @@ export type AppEventName =
   | "fetch-state"
   | "conflict-entered"
   | "update-status"
+  | "update-install-gate-request"
+  | "update-install-gate-response"
   | "config-change";
 
 export interface AppEventPayloads {
@@ -27,6 +34,8 @@ export interface AppEventPayloads {
   "fetch-state": FetchStateEvent;
   "conflict-entered": ConflictEnteredEvent;
   "update-status": UpdateStatusEvent;
+  "update-install-gate-request": UpdateInstallGateRequestEvent;
+  "update-install-gate-response": UpdateInstallGateWindowResponseEvent;
   "config-change": ConfigChangeEvent;
 }
 
@@ -35,4 +44,11 @@ export function listenAppEvent<TName extends AppEventName>(
   handler: EventCallback<AppEventPayloads[TName]>,
 ): Promise<UnlistenFn> {
   return listen<AppEventPayloads[TName]>(name, handler);
+}
+
+export function emitAppEvent<TName extends AppEventName>(
+  name: TName,
+  payload: AppEventPayloads[TName],
+): Promise<void> {
+  return emit(name, payload);
 }

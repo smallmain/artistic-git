@@ -41,9 +41,21 @@ export interface UpdateInstallGateResponse {
   message: string | null;
 }
 
+export interface UpdateInstallGateRequestEvent {
+  requestId: string;
+  requesterWindowLabel: string | null;
+}
+
+export interface UpdateInstallGateWindowResponseEvent {
+  gate: UpdateInstallGateResponse;
+  requestId: string;
+  responderWindowLabel: string | null;
+}
+
 export type UpdateInstallBlockedReason =
   | "gitOperation"
   | "backgroundOperation"
+  | "closeGuard"
   | "noReadyUpdate"
   | "unsupportedInstallFormat"
   | "conflict"

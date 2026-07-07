@@ -11,9 +11,12 @@ import type { ReactNode } from "react";
 import { I18nextProvider } from "react-i18next";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { AppEventPayloads } from "@/lib/ipc/events";
+import type { AppEventName, AppEventPayloads } from "@/lib/ipc/events";
 import { createI18n } from "@/i18n/i18n";
-import type { UpdateStatusEvent } from "@/lib/ipc/update-types";
+import type {
+  UpdateInstallGateResponse,
+  UpdateStatusEvent,
+} from "@/lib/ipc/update-types";
 import {
   WindowStoreProvider,
   useWindowStore,
@@ -26,10 +29,12 @@ import {
   UpdaterRuntimeBridge,
 } from "./UpdaterRuntimeBridge";
 
+type AppEventHandler = EventCallback<AppEventPayloads[AppEventName]>;
 type UpdateStatusHandler = EventCallback<AppEventPayloads["update-status"]>;
 
 const bridgeMocks = vi.hoisted(() => ({
   checkForUpdates: vi.fn(),
+  emitAppEvent: vi.fn(),
   installReadyUpdate: vi.fn(),
   listenAppEvent: vi.fn(),
   openUpdateReleasePage: vi.fn(),
@@ -44,22 +49,38 @@ vi.mock("@/lib/ipc/commands", () => ({
 }));
 
 vi.mock("@/lib/ipc/events", () => ({
+  emitAppEvent: bridgeMocks.emitAppEvent,
   listenAppEvent: bridgeMocks.listenAppEvent,
 }));
 
+let appEventHandlers: Map<AppEventName, Set<AppEventHandler>>;
 let updateStatusHandler: UpdateStatusHandler | null = null;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  appEventHandlers = new Map();
   updateStatusHandler = null;
-  bridgeMocks.listenAppEvent.mockImplementation((name, handler) => {
-    if (name === "update-status") {
-      updateStatusHandler = handler;
-    }
-    return Promise.resolve(() => {
-      updateStatusHandler = null;
-    });
-  });
+  bridgeMocks.listenAppEvent.mockImplementation(
+    (name: AppEventName, handler: AppEventHandler) => {
+      let handlers = appEventHandlers.get(name);
+      if (!handlers) {
+        handlers = new Set();
+        appEventHandlers.set(name, handlers);
+      }
+      handlers.add(handler);
+
+      if (name === "update-status") {
+        updateStatusHandler = handler as UpdateStatusHandler;
+      }
+      return Promise.resolve(() => {
+        handlers.delete(handler);
+        if (name === "update-status" && updateStatusHandler === handler) {
+          updateStatusHandler = null;
+        }
+      });
+    },
+  );
+  bridgeMocks.emitAppEvent.mockImplementation(defaultEmitAppEvent);
   bridgeMocks.checkForUpdates.mockResolvedValue({
     requestId: "manual-1",
     source: "manual",
@@ -179,9 +200,11 @@ describe("UpdaterRuntimeBridge", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("Version 0.2.0 is available.")).toBeInTheDocument();
     expect(screen.getByText("Fixed update flow")).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Restart and install" }),
-    ).toBeEnabled();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Restart and install" }),
+      ).toBeEnabled(),
+    );
   });
 
   it("opens a manual update prompt with download progress", async () => {
@@ -416,6 +439,109 @@ describe("UpdaterRuntimeBridge", () => {
     expect(screen.getByText("Retargeted notes")).toBeInTheDocument();
   });
 
+  it("blocks install when conflict resolution is active in another window", async () => {
+    mockRemoteWindowInstallGate({
+      blocked: true,
+      message: "finish conflict resolution before installing an update",
+      reason: "conflict",
+    });
+
+    render(
+      <TestProviders
+        initialWindowState={{
+          updateStatus: {
+            requestId: "manual-2",
+            source: "manual",
+            targetWindowLabel: "main",
+            status: {
+              notes: null,
+              state: "ready",
+              version: "0.2.0",
+            },
+          },
+        }}
+      >
+        <UpdaterRuntimeBridge />
+        <UpdateProbe />
+      </TestProviders>,
+    );
+
+    window.dispatchEvent(new CustomEvent("artistic-git:install-update"));
+
+    expect(await screen.findByText("conflict")).toBeInTheDocument();
+    expect(bridgeMocks.installReadyUpdate).not.toHaveBeenCalled();
+  });
+
+  it("blocks install when review mode is active in another window", async () => {
+    mockRemoteWindowInstallGate({
+      blocked: true,
+      message: "finish review mode before installing an update",
+      reason: "reviewMode",
+    });
+
+    render(
+      <TestProviders
+        initialWindowState={{
+          updateStatus: {
+            requestId: "manual-2",
+            source: "manual",
+            targetWindowLabel: "main",
+            status: {
+              notes: null,
+              state: "ready",
+              version: "0.2.0",
+            },
+          },
+        }}
+      >
+        <UpdaterRuntimeBridge />
+        <UpdateProbe />
+      </TestProviders>,
+    );
+
+    window.dispatchEvent(new CustomEvent("artistic-git:install-update"));
+
+    expect(await screen.findByText("reviewMode")).toBeInTheDocument();
+    expect(bridgeMocks.installReadyUpdate).not.toHaveBeenCalled();
+  });
+
+  it("shows a close guard blocker returned by the backend install gate", async () => {
+    bridgeMocks.updateInstallGate.mockResolvedValue({
+      blocked: true,
+      message:
+        "restart update is blocked because a window has an operation or recovery prompt that must finish before closing",
+      reason: "closeGuard",
+    });
+
+    render(
+      <TestProviders>
+        <UpdaterRuntimeBridge />
+      </TestProviders>,
+    );
+
+    await waitFor(() => expect(updateStatusHandler).not.toBeNull());
+
+    await emitUpdateStatus({
+      requestId: "manual-close-guard-1",
+      source: "manual",
+      targetWindowLabel: "main",
+      status: {
+        notes: null,
+        state: "ready",
+        version: "0.2.0",
+      },
+    });
+
+    expect(
+      await screen.findByText(
+        "Finish the active window operation before restarting to install the update.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Restart and install" }),
+    ).toBeDisabled();
+  });
+
   it("blocks install when conflict resolution is active in this window", async () => {
     render(
       <TestProviders
@@ -487,12 +613,91 @@ describe("UpdaterRuntimeBridge", () => {
     expect(await screen.findByText("reviewMode")).toBeInTheDocument();
     expect(bridgeMocks.installReadyUpdate).not.toHaveBeenCalled();
   });
+
+  it("answers install gate requests when this window has a blocker", async () => {
+    render(
+      <TestProviders
+        initialWindowState={{
+          conflictsByRepository: {
+            "/repo/art": {
+              files: [],
+              operationId: "conflict-1",
+              operationName: "restoreStash",
+              repositoryPath: "/repo/art",
+            },
+          },
+        }}
+      >
+        <UpdaterRuntimeBridge />
+      </TestProviders>,
+    );
+
+    await waitFor(() =>
+      expect(appEventHandlers.has("update-install-gate-request")).toBe(true),
+    );
+
+    emitToAppEventHandlers("update-install-gate-request", {
+      requestId: "external-request-1",
+      requesterWindowLabel: "repo-2",
+    });
+
+    await waitFor(() =>
+      expect(bridgeMocks.emitAppEvent).toHaveBeenCalledWith(
+        "update-install-gate-response",
+        expect.objectContaining({
+          gate: expect.objectContaining({ reason: "conflict" }),
+          requestId: "external-request-1",
+          responderWindowLabel: "main",
+        }),
+      ),
+    );
+  });
 });
 
 async function emitUpdateStatus(payload: UpdateStatusEvent) {
   await act(async () => {
     updateStatusHandler?.({ payload } as Parameters<UpdateStatusHandler>[0]);
   });
+}
+
+function defaultEmitAppEvent<TName extends AppEventName>(
+  name: TName,
+  payload: AppEventPayloads[TName],
+): Promise<void> {
+  emitToAppEventHandlers(name, payload);
+  return Promise.resolve();
+}
+
+function emitToAppEventHandlers<TName extends AppEventName>(
+  name: TName,
+  payload: AppEventPayloads[TName],
+): void {
+  const event = {
+    payload,
+  } as Parameters<EventCallback<AppEventPayloads[TName]>>[0];
+  for (const handler of appEventHandlers.get(name) ?? []) {
+    (handler as EventCallback<AppEventPayloads[TName]>)(event);
+  }
+}
+
+function mockRemoteWindowInstallGate(gate: UpdateInstallGateResponse) {
+  bridgeMocks.emitAppEvent.mockImplementation(
+    (name: AppEventName, payload: AppEventPayloads[AppEventName]) => {
+      defaultEmitAppEvent(name, payload);
+
+      if (name === "update-install-gate-request") {
+        const request =
+          payload as AppEventPayloads["update-install-gate-request"];
+        emitToAppEventHandlers("update-install-gate-response", {
+          gate,
+          requestId: request.requestId,
+          responderWindowLabel: "repo-2",
+        });
+      }
+
+      return Promise.resolve();
+    },
+  );
 }
 
 function UpdateProbe() {
