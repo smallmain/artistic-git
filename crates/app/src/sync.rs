@@ -387,7 +387,7 @@ where
         ensure_clean_worktree(runner, root)?;
 
         let Some(upstream) = upstream_branch(runner, root)? else {
-            push_with_retry(runner, root, ["push", "-u", "origin", branch_name])?;
+            push_with_retry_forward_safe(runner, root, ["push", "-u", "origin", branch_name])?;
             return Ok(response(
                 root,
                 branch_name,
@@ -425,7 +425,14 @@ where
             ));
         }
 
-        let before_push = sync_local_to_upstream(runner, root, &upstream, operation_id, progress)?;
+        let before_push =
+            match sync_local_to_upstream(runner, root, &upstream, operation_id, progress) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    reset_to_start(runner, root, starting_head);
+                    return Err(error);
+                }
+            };
         if let Some(conflict) = before_push.conflict {
             return Ok(conflict_response(
                 root,
@@ -464,16 +471,14 @@ where
                 continue;
             }
             PushOutcome::NonFastForward => {
-                reset_to_start(runner, root, starting_head);
-                return Err(expected_repo_error("远程更新过于频繁，请稍后重试。", root));
+                return Err(push_race_exhausted_error(root));
             }
-            PushOutcome::Failed(error) => return Err(error),
+            PushOutcome::Failed(error) => return Err(forward_safe_publish_error(error)),
         }
     }
 
     if last_non_fast_forward {
-        reset_to_start(runner, root, starting_head);
-        Err(expected_repo_error("远程更新过于频繁，请稍后重试。", root))
+        Err(push_race_exhausted_error(root))
     } else {
         Err(expected_repo_error("同步失败，请稍后重试。", root))
     }
@@ -2120,6 +2125,34 @@ where
     }
 }
 
+fn push_with_retry_forward_safe<I, S>(runner: &GitRunner, root: &Path, args: I) -> AppResult<()>
+where
+    I: Clone + IntoIterator<Item = S>,
+    S: Clone + Into<OsString>,
+{
+    match push_with_retry_raw(runner, root, args) {
+        PushOutcome::Success => Ok(()),
+        PushOutcome::NonFastForward => Err(expected_repo_error(
+            "远程已有同名分支且包含本地没有的提交；本地提交已保留为未推送状态，下次同步会继续推送。",
+            root,
+        )),
+        PushOutcome::Failed(error) => Err(forward_safe_publish_error(error)),
+    }
+}
+
+fn push_race_exhausted_error(root: &Path) -> AppError {
+    expected_repo_error(
+        "远程更新过于频繁；本地提交已保留为未推送状态，下次同步会继续推送。",
+        root,
+    )
+}
+
+fn forward_safe_publish_error(mut error: AppError) -> AppError {
+    let summary = error.summary.trim_end_matches('。');
+    error.summary = format!("{summary}；本地提交已保留为未推送状态，下次同步会继续推送。");
+    error
+}
+
 fn push_with_retry_raw<I, S>(runner: &GitRunner, root: &Path, args: I) -> PushOutcome
 where
     I: Clone + IntoIterator<Item = S>,
@@ -2636,7 +2669,7 @@ mod tests {
     }
 
     #[test]
-    fn sync_current_branch_caps_push_race_retries_and_restores_start() {
+    fn sync_current_branch_caps_push_race_retries_forward_safe() {
         let Some((runner, _home)) = real_runner_or_skip() else {
             return;
         };
@@ -2656,10 +2689,133 @@ mod tests {
         )
         .expect_err("push race should stop after capped retries");
 
-        assert!(error.summary.contains("远程更新过于频繁"));
+        assert!(
+            error.summary.contains("远程更新过于频繁"),
+            "{}\n{:?}",
+            error.summary,
+            error.git
+        );
+        assert!(
+            error.summary.contains("本地提交已保留为未推送状态"),
+            "{}",
+            error.summary
+        );
+        assert_ne!(
+            fixture.local.git_output(["rev-parse", "HEAD"]),
+            starting_head
+        );
+        assert_eq!(fixture.local.show("HEAD", "local.txt"), "local\n");
+        let (ahead, _) = test_ahead_behind(&fixture.local, "HEAD...@{u}");
+        assert!(
+            ahead > 0,
+            "local branch should remain ahead after push failure"
+        );
+        assert!(fixture.local.status_clean());
+
+        fixture.remove_push_hook();
+        let response = sync_current_branch(
+            &runner,
+            SyncCurrentBranchRequest {
+                repository_path: display_path(&fixture.local.path),
+                operation_id: None,
+            },
+        )
+        .expect("next sync should publish preserved commit");
+
+        assert_eq!(response.status, SyncCurrentBranchStatus::PulledAndPushed);
+        fixture.peer.git(["pull", "--ff-only"]);
+        assert_eq!(fixture.peer.read("local.txt"), "local\n");
+        assert!(fixture.local.status_clean());
+    }
+
+    #[test]
+    fn sync_current_branch_push_failure_keeps_local_commits_ahead() {
+        let Some((runner, _home)) = real_runner_or_skip() else {
+            return;
+        };
+        let fixture = DoubleClone::new(&runner);
+        fixture.local.write("local.txt", "local\n");
+        fixture.local.git(["add", "local.txt"]);
+        fixture.local.git(["commit", "-m", "local change"]);
+        let local_head = fixture.local.git_output(["rev-parse", "HEAD"]);
+        fixture.install_failing_push_hook();
+
+        let error = sync_current_branch(
+            &runner,
+            SyncCurrentBranchRequest {
+                repository_path: display_path(&fixture.local.path),
+                operation_id: None,
+            },
+        )
+        .expect_err("push failure should stop at publish boundary");
+
+        assert!(error.summary.contains("Git 推送失败"), "{}", error.summary);
+        assert!(
+            error.summary.contains("本地提交已保留为未推送状态"),
+            "{}",
+            error.summary
+        );
+        assert_eq!(fixture.local.git_output(["rev-parse", "HEAD"]), local_head);
+        let (ahead, behind) = test_ahead_behind(&fixture.local, "HEAD...@{u}");
+        assert_eq!((ahead, behind), (1, 0));
+        assert!(fixture.local.status_clean());
+
+        fixture.remove_push_hook();
+        let response = sync_current_branch(
+            &runner,
+            SyncCurrentBranchRequest {
+                repository_path: display_path(&fixture.local.path),
+                operation_id: None,
+            },
+        )
+        .expect("next sync should publish preserved commit");
+
+        assert_eq!(response.status, SyncCurrentBranchStatus::Pushed);
+        fixture.peer.git(["pull", "--ff-only"]);
+        assert_eq!(fixture.peer.read("local.txt"), "local\n");
+        assert!(fixture.local.status_clean());
+    }
+
+    #[test]
+    fn sync_current_branch_rolls_back_local_phase_failure() {
+        let Some((runner, _home)) = real_runner_or_skip() else {
+            return;
+        };
+        let fixture = DoubleClone::new(&runner);
+        let starting_head = fixture.local.git_output(["rev-parse", "HEAD"]);
+        let starting_tree = fixture.local.git_output(["rev-parse", "HEAD^{tree}"]);
+        let gitlink_oid = fixture.peer.git_output(["rev-parse", "HEAD"]);
+        fixture.peer.write(
+            ".gitmodules",
+            "[submodule \"broken\"]\n\tpath = broken\n\turl = /definitely/missing/artistic-git-submodule.git\n",
+        );
+        fixture.peer.git(["add", ".gitmodules"]);
+        fixture.peer.git([
+            OsString::from("update-index"),
+            OsString::from("--add"),
+            OsString::from("--cacheinfo"),
+            OsString::from(format!("160000,{},broken", gitlink_oid.trim())),
+        ]);
+        fixture.peer.git(["commit", "-m", "add broken submodule"]);
+        fixture.peer.git(["push"]);
+
+        let error = sync_current_branch(
+            &runner,
+            SyncCurrentBranchRequest {
+                repository_path: display_path(&fixture.local.path),
+                operation_id: None,
+            },
+        )
+        .expect_err("submodule update failure should roll back local phase");
+
+        assert!(error.summary.contains("submodule") || error.summary.contains("子模块"));
         assert_eq!(
             fixture.local.git_output(["rev-parse", "HEAD"]),
             starting_head
+        );
+        assert_eq!(
+            fixture.local.git_output(["rev-parse", "HEAD^{tree}"]),
+            starting_tree
         );
         assert!(fixture.local.status_clean());
     }
@@ -3759,7 +3915,7 @@ mod tests {
         fn new(runner: &GitRunner) -> Self {
             let parent = TestTempDir::new("ag-sync-double").expect("double clone parent");
             let remote = TestRepo::at(runner, parent.path().join("remote.git"));
-            remote.git(["init", "--bare"]);
+            remote.git(["init", "--bare", "-b", "main"]);
 
             let seed = TestRepo::at(runner, parent.path().join("seed"));
             seed.git(["init", "-b", "main"]);
@@ -3867,6 +4023,21 @@ exit 0
             fs::write(&hook, script).expect("write repeating pre-push hook");
             make_executable(&hook);
         }
+
+        fn install_failing_push_hook(&self) {
+            let hook = self.local.path.join(".git").join("hooks").join("pre-push");
+            let script = r#"#!/bin/sh
+printf '%s\n' 'simulated publish failure' >&2
+exit 1
+"#;
+            fs::write(&hook, script).expect("write failing pre-push hook");
+            make_executable(&hook);
+        }
+
+        fn remove_push_hook(&self) {
+            let hook = self.local.path.join(".git").join("hooks").join("pre-push");
+            let _ = fs::remove_file(hook);
+        }
     }
 
     struct SubmoduleSyncFixture {
@@ -3889,7 +4060,7 @@ exit 0
             child.git(["commit", "-m", "initial child"]);
 
             let remote = TestRepo::at(runner, parent.path().join("remote.git"));
-            remote.git(["init", "--bare"]);
+            remote.git(["init", "--bare", "-b", "main"]);
 
             let seed = TestRepo::at(runner, parent.path().join("seed"));
             seed.git(["init", "-b", "main"]);
@@ -4052,6 +4223,20 @@ exit 0
         );
     }
 
+    fn test_ahead_behind(repo: &TestRepo, spec: &str) -> (u32, u32) {
+        let counts = repo.git_output(["rev-list", "--left-right", "--count", spec]);
+        let mut parts = counts.split_whitespace();
+        let ahead = parts
+            .next()
+            .and_then(|part| part.parse().ok())
+            .expect("ahead count");
+        let behind = parts
+            .next()
+            .and_then(|part| part.parse().ok())
+            .expect("behind count");
+        (ahead, behind)
+    }
+
     fn shell_quote(path: &Path) -> String {
         format!("'{}'", display_path(path).replace('\'', "'\\''"))
     }
@@ -4065,9 +4250,11 @@ exit 0
             }
         };
         let temp = TestTempDir::new("ag-sync-runner-home").expect("temp home");
+        let home = temp.path().join("home");
+        fs::create_dir_all(&home).expect("runner home");
         let distribution =
             GitDistribution::from_manifest(dist.root, dist.manifest).expect("git distribution");
-        let runner = GitRunner::from_distribution(distribution, temp.path().join("home"));
+        let runner = GitRunner::from_distribution(distribution, home);
         Some((runner, temp))
     }
 }
