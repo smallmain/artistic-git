@@ -56,6 +56,8 @@ export const resources = {
         finish: "Finish setup",
         identity: "Author",
         next: "Next",
+        macosTranslocation:
+          "On macOS, move Artistic Git to /Applications and open it once with right-click -> Open before regular use.",
         passphrase: "Passphrase",
         passphraseHelp:
           "Leave empty on a personal computer if you do not want daily prompts.",
@@ -702,6 +704,8 @@ export const resources = {
         finish: "完成设置",
         identity: "作者",
         next: "下一步",
+        macosTranslocation:
+          "macOS 上请先将 Artistic Git 移动到 /Applications，并右键选择「打开」一次后再日常使用。",
         passphrase: "密码短语",
         passphraseHelp: "个人电脑可留空，这样日常使用时无需重复输入。",
         placeholder:

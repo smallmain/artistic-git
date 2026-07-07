@@ -148,6 +148,9 @@ describe("App", () => {
     expect(
       screen.getByRole("heading", { name: "Setup Wizard" }),
     ).toBeInTheDocument();
+    expect(
+      screen.getByText(/move Artistic Git to \/Applications/),
+    ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Skip" }));
 

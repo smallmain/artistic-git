@@ -176,6 +176,10 @@ export function OnboardingWizard() {
           />
         </div>
 
+        <p className="rounded-md border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+          {t("onboarding.macosTranslocation")}
+        </p>
+
         {step === "identity" ? (
           <div className="space-y-3">
             <label className="grid gap-1 text-sm">
