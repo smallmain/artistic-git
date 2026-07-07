@@ -581,7 +581,7 @@ fn current_operating_system() -> RuntimeOperatingSystem {
 fn appimage_env_present(_app_handle: &AppHandle) -> bool {
     #[cfg(target_os = "linux")]
     {
-        return _app_handle.env().appimage.is_some() || std::env::var_os("APPIMAGE").is_some();
+        _app_handle.env().appimage.is_some() || std::env::var_os("APPIMAGE").is_some()
     }
 
     #[cfg(not(target_os = "linux"))]
