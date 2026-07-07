@@ -27,9 +27,9 @@ use artistic_git_contracts::{
     RevertCommitRequest, RevertCommitResponse, ReviewModeRecoveryRequest,
     ReviewModeRecoveryResponse, ReviewModeRequest, SafetyBackupListResponse,
     SaveRemoteSettingsRequest, StartReviewModeRequest, StartReviewModeResponse,
-    StashDetailsRequest, StashDetailsResponse, StashListResponse, SyncBranchRequest,
-    SyncBranchResponse, SyncCurrentBranchRequest, SyncCurrentBranchResponse,
-    SyncReviewModeResponse,
+    StashDetailsRequest, StashDetailsResponse, StashListResponse, SyncAllBranchesRequest,
+    SyncAllBranchesResponse, SyncBranchRequest, SyncBranchResponse, SyncCurrentBranchRequest,
+    SyncCurrentBranchResponse, SyncReviewModeResponse,
 };
 use artistic_git_core::config::{
     AppSettings, ConfigChangeEvent, ProjectSettings, ProjectsDocument,
@@ -55,6 +55,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register::<SyncCurrentBranchResponse>()
         .register::<SyncBranchRequest>()
         .register::<SyncBranchResponse>()
+        .register::<SyncAllBranchesRequest>()
+        .register::<SyncAllBranchesResponse>()
         .register::<AcceptRemoteHistoryRequest>()
         .register::<AcceptRemoteHistoryResponse>()
         .register::<StartReviewModeRequest>()

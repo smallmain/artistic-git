@@ -85,6 +85,8 @@ import type {
   StashListResponse,
   StartReviewModeRequest,
   StartReviewModeResponse,
+  SyncAllBranchesRequest,
+  SyncAllBranchesResponse,
   SyncBranchRequest,
   SyncBranchResponse,
   SyncCurrentBranchRequest,
@@ -116,6 +118,7 @@ export interface AppCommandArgs {
   fetch_repository: { request: FetchRepositoryRequest };
   sync_current_branch: { request: SyncCurrentBranchRequest };
   sync_branch: { request: SyncBranchRequest };
+  sync_all_branches: { request: SyncAllBranchesRequest };
   accept_remote_history: { request: AcceptRemoteHistoryRequest };
   start_review_mode: { request: StartReviewModeRequest };
   sync_review_mode: { request: ReviewModeRequest };
@@ -188,6 +191,7 @@ export interface AppCommandResponses {
   fetch_repository: FetchRepositoryResponse;
   sync_current_branch: SyncCurrentBranchResponse;
   sync_branch: SyncBranchResponse;
+  sync_all_branches: SyncAllBranchesResponse;
   accept_remote_history: AcceptRemoteHistoryResponse;
   start_review_mode: StartReviewModeResponse;
   sync_review_mode: SyncReviewModeResponse;
@@ -398,6 +402,12 @@ export function syncBranch(
   request: SyncBranchRequest,
 ): Promise<SyncBranchResponse> {
   return invokeAppCommand("sync_branch", { request });
+}
+
+export function syncAllBranches(
+  request: SyncAllBranchesRequest,
+): Promise<SyncAllBranchesResponse> {
+  return invokeAppCommand("sync_all_branches", { request });
 }
 
 export function acceptRemoteHistory(

@@ -66,7 +66,8 @@ import {
   setWindowCloseGuard,
   stashDetails,
   startReviewMode,
-  syncCurrentBranch,
+  syncAllBranches,
+  syncBranch,
   syncReviewMode,
   validateBranchName,
 } from "@/lib/ipc/commands";
@@ -81,6 +82,8 @@ import type {
   LocalChangesViewMode,
   ReviewModeState,
   RemoteHistoryChange,
+  SyncAllBranchesResponse,
+  SyncBranchResponse,
   SafetyBackupSummary,
   SidebarLayoutSettings,
   StashEntry,
@@ -175,6 +178,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   const [branchActionBusy, setBranchActionBusy] = React.useState(false);
   const [fetchBusy, setFetchBusy] = React.useState(false);
   const [syncBusy, setSyncBusy] = React.useState(false);
+  const [syncStatus, setSyncStatus] = React.useState<string | null>(null);
   const [historyWriteBusy, setHistoryWriteBusy] = React.useState(false);
   const [safetyBackupBusy, setSafetyBackupBusy] = React.useState(false);
   const [reviewBusy, setReviewBusy] = React.useState(false);
@@ -476,21 +480,23 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       ? t("repository.sync")
       : syncBusy
         ? t("repository.sync")
-        : commitBusy
-          ? t("localChanges.commitBusy")
-          : restoreBusy
-            ? t("localChanges.restoreBusy")
-            : branchActionBusy
-              ? t("repository.branchBusy")
-              : safetyBackupBusy
-                ? t("repository.safetyBackupBusy")
-                : stashActionBusy
-                  ? t("repository.stashBusy")
-                  : historyWriteBusy
-                    ? t("history.revert.busy")
-                    : reviewBusy
-                      ? t("review.busy")
-                      : t("repository.ready");
+        : syncStatus
+          ? syncStatus
+          : commitBusy
+            ? t("localChanges.commitBusy")
+            : restoreBusy
+              ? t("localChanges.restoreBusy")
+              : branchActionBusy
+                ? t("repository.branchBusy")
+                : safetyBackupBusy
+                  ? t("repository.safetyBackupBusy")
+                  : stashActionBusy
+                    ? t("repository.stashBusy")
+                    : historyWriteBusy
+                      ? t("history.revert.busy")
+                      : reviewBusy
+                        ? t("review.busy")
+                        : t("repository.ready");
   const selectedCommitPaths = React.useMemo(
     () => pathsForChangeIds(commitIds ?? [], localChanges),
     [commitIds, localChanges],
@@ -540,6 +546,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
 
       try {
         const saved = await saveProjectSettings({
+          autoTrackingRules: nextProject.autoTrackingRules,
           largeFileCheck: nextProject.largeFileCheck,
           localChangesViewMode: nextProject.localChangesViewMode,
           repositoryPath,
@@ -593,17 +600,45 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     }
   }, [queryClient, repository.hasRemote, repositoryPath]);
 
-  const runSyncCurrentBranch = React.useCallback(async () => {
-    if (syncBusy || !repository.hasRemote) {
-      return;
-    }
+  const handleSyncAllResponse = React.useCallback(
+    (response: SyncAllBranchesResponse) => {
+      if (response.remoteHistoryChange) {
+        setRemoteHistoryChange(response.remoteHistoryChange);
+      }
+      const { conflict, stashRecovery } = response;
+      if (conflict) {
+        if (stashRecovery) {
+          setStashRecoveryByOperation((current) => ({
+            ...current,
+            [conflict.operationId]: stashRecovery,
+          }));
+        }
+        setConflictEntered(conflict);
+      }
+      const changedBranches = response.branches.filter(
+        (branch) => branch.status !== "alreadyUpToDate",
+      ).length;
+      const appliedRules = response.autoTracking.filter(
+        (rule) => rule.status === "applied",
+      ).length;
+      const invalidRules = response.autoTracking.filter(
+        (rule) => rule.status === "invalid" || rule.status === "failed",
+      ).length;
+      setSyncStatus(
+        response.allUpToDate
+          ? t("repository.syncAllUpToDate")
+          : t("repository.syncBatchSummary", {
+              branches: changedBranches,
+              rules: appliedRules,
+              invalid: invalidRules,
+            }),
+      );
+    },
+    [setConflictEntered, t],
+  );
 
-    setSyncBusy(true);
-    try {
-      const response = await syncCurrentBranch({
-        operationId: null,
-        repositoryPath,
-      });
+  const handleSyncBranchResponse = React.useCallback(
+    (response: SyncBranchResponse) => {
       if (
         response.status === "remoteHistoryChanged" &&
         response.remoteHistoryChange
@@ -620,6 +655,23 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         }
         setConflictEntered(conflict);
       }
+    },
+    [setConflictEntered],
+  );
+
+  const runSyncAllBranches = React.useCallback(async () => {
+    if (syncBusy || !repository.hasRemote) {
+      return;
+    }
+
+    setSyncBusy(true);
+    setSyncStatus(null);
+    try {
+      const response = await syncAllBranches({
+        operationId: null,
+        repositoryPath,
+      });
+      handleSyncAllResponse(response);
       await Promise.all([
         queryClient.invalidateQueries({
           queryKey: repoQueryKeys.summary(repositoryPath),
@@ -643,11 +695,57 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     }
   }, [
     queryClient,
+    handleSyncAllResponse,
     repository.hasRemote,
     repositoryPath,
-    setConflictEntered,
     syncBusy,
   ]);
+
+  const runSyncBranch = React.useCallback(
+    async (branch: BranchListItem) => {
+      if (syncBusy || !repository.hasRemote) {
+        return;
+      }
+
+      setSyncBusy(true);
+      setSyncStatus(null);
+      try {
+        const response = await syncBranch({
+          branchName: branch.name,
+          operationId: null,
+          repositoryPath,
+        });
+        handleSyncBranchResponse(response);
+        await Promise.all([
+          queryClient.invalidateQueries({
+            queryKey: repoQueryKeys.summary(repositoryPath),
+          }),
+          queryClient.invalidateQueries({
+            queryKey: repoQueryKeys.branches(repositoryPath),
+          }),
+          queryClient.invalidateQueries({
+            queryKey: repoQueryKeys.history(repositoryPath),
+          }),
+          queryClient.invalidateQueries({
+            queryKey: repoQueryKeys.localChanges(repositoryPath),
+          }),
+        ]);
+      } catch (error) {
+        window.dispatchEvent(
+          new CustomEvent("artistic-git:error", { detail: error }),
+        );
+      } finally {
+        setSyncBusy(false);
+      }
+    },
+    [
+      handleSyncBranchResponse,
+      queryClient,
+      repository.hasRemote,
+      repositoryPath,
+      syncBusy,
+    ],
+  );
 
   const runAcceptRemoteHistory = React.useCallback(async () => {
     if (!remoteHistoryChange) {
@@ -1591,7 +1689,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
           setDeleteRemoteBranch(Boolean(branch.remoteOnly));
         }}
         onDeleteStash={setStashToDelete}
-        onFetch={() => void runSyncCurrentBranch()}
+        onFetch={() => void runSyncAllBranches()}
         onOpenSettings={() => openSettings("general")}
         onReviewMode={() => void runStartReviewMode()}
         onSidebarLayoutChange={(layout) => {
@@ -1599,7 +1697,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         }}
         onShowSafetyBackups={() => void refreshSafetyBackups()}
         onShowStashDetails={(stash) => void showStashDetails(stash)}
-        onSyncBranch={() => void runSyncCurrentBranch()}
+        onSyncBranch={(branch) => void runSyncBranch(branch)}
         repository={repository}
         stashes={stashes}
       />
@@ -1981,6 +2079,7 @@ function mapBranchSummaryToItem(branch: BranchSummary): BranchListItem {
     ahead: branch.ahead,
     behind: branch.behind,
     current: branch.current,
+    existence: branch.existence,
     latestCommitId: branch.headOid?.slice(0, 7) ?? "",
     name: branch.shortName || branch.name,
     remoteOnly: branch.existence === "remoteOnly",

@@ -228,6 +228,17 @@ impl RepositoryBackend {
         crate::sync_branch_with_progress(&self.runner, request, progress)
     }
 
+    pub fn sync_all_branches_with_progress<F>(
+        &self,
+        request: artistic_git_contracts::SyncAllBranchesRequest,
+        progress: F,
+    ) -> AppResult<artistic_git_contracts::SyncAllBranchesResponse>
+    where
+        F: Fn(OperationProgressEvent),
+    {
+        crate::sync_all_branches_with_config(&self.runner, self.config.as_ref(), request, progress)
+    }
+
     pub fn accept_remote_history(
         &self,
         request: AcceptRemoteHistoryRequest,

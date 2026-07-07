@@ -442,6 +442,31 @@ fn sync_branch(
 }
 
 #[tauri::command]
+fn sync_all_branches(
+    app_handle: tauri::AppHandle,
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::SyncAllBranchesRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::SyncAllBranchesResponse> {
+    let response = backend.sync_all_branches_with_progress(request, |event| {
+        let _ = app_handle.emit("operation-progress", &event);
+    })?;
+    if let Some(conflict) = response.conflict.as_ref() {
+        let _ = app_handle.emit("conflict-entered", conflict);
+    }
+    emit_repo_changed(
+        &app_handle,
+        response.repository_path.clone(),
+        vec![
+            artistic_git_contracts::RepoQueryKind::Summary,
+            artistic_git_contracts::RepoQueryKind::Branches,
+            artistic_git_contracts::RepoQueryKind::History,
+            artistic_git_contracts::RepoQueryKind::LocalChanges,
+        ],
+    );
+    Ok(response)
+}
+
+#[tauri::command]
 fn accept_remote_history(
     app_handle: tauri::AppHandle,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
@@ -1067,6 +1092,7 @@ pub fn run() {
             fetch_repository,
             sync_current_branch,
             sync_branch,
+            sync_all_branches,
             accept_remote_history,
             start_review_mode,
             sync_review_mode,

@@ -25,6 +25,7 @@ export const resources = {
         openLogDir: "Open log folder",
         openProject: "Open Project",
         openSettings: "Open settings",
+        remove: "Remove",
         restartApp: "Restart app",
       },
       updaterPrompt: {
@@ -178,8 +179,13 @@ export const resources = {
         stashUnknownTime: "Unknown time",
         stashes: "Stashes",
         sync: "Sync",
+        syncAllUpToDate: "All syncable branches are up to date",
         syncBadge: "↑{{ahead}} to push ↓{{behind}} to pull",
+        syncBatchSummary:
+          "Synced {{branches}} branches and {{rules}} tracking rules ({{invalid}} skipped)",
         syncCurrentOnly: "Only the current branch can be synced in this phase",
+        syncRequiresRemoteBranch:
+          "Only local branches with an origin branch are included",
         submodulesReady: "Submodules ready",
         tabs: "Repository tabs",
         untitledProject: "Untitled project",
@@ -304,6 +310,19 @@ export const resources = {
         },
         navigation: "Settings sections",
         project: {
+          addAutoTrackingRule: "Add automatic tracking rule",
+          autoTracking: "Automatic tracking",
+          autoTrackingCycle: "Automatic tracking rules cannot form a cycle.",
+          autoTrackingDuplicateSource:
+            "Each source branch can appear in only one automatic tracking rule.",
+          autoTrackingHelp:
+            "After branch sync, fast-forward a local source branch to a selected origin branch and push the source branch.",
+          autoTrackingInvalid:
+            "Fix automatic tracking rule errors before saving project settings.",
+          autoTrackingMissing: "Select both branches for this rule.",
+          autoTrackingSelf: "A branch cannot automatically track itself.",
+          autoTrackingSource: "Source local branch",
+          autoTrackingTarget: "Target origin branch",
           gitignore: ".gitignore",
           gitignoreLocalChange:
             "Saving writes .gitignore in the repository, so Git will show it as a local change.",
@@ -313,9 +332,11 @@ export const resources = {
           noRepository: "Open a repository to edit project settings.",
           clearOriginHelp: "Clear this field and save twice to remove origin.",
           noOriginConfigured: "No origin remote configured",
+          noAutoTrackingRules: "No automatic tracking rules configured.",
           originConfigured: "origin configured",
           originUrl: "Origin URL",
           remote: "Remote",
+          remoteBranchOption: "{{branch}} (remote only)",
           remotePlaceholder: "Remote settings placeholder",
           removeOrigin: "Remove origin",
           removeOriginWarning:
@@ -638,6 +659,7 @@ export const resources = {
         openLogDir: "打开日志目录",
         openProject: "打开项目",
         openSettings: "打开设置",
+        remove: "移除",
         restartApp: "重启应用",
       },
       updaterPrompt: {
@@ -780,8 +802,12 @@ export const resources = {
         stashUnknownTime: "未知时间",
         stashes: "储藏",
         sync: "同步",
+        syncAllUpToDate: "所有可同步分支均已是最新",
         syncBadge: "↑{{ahead}} 待推送 ↓{{behind}} 待拉取",
+        syncBatchSummary:
+          "已同步 {{branches}} 个分支和 {{rules}} 条跟踪规则（跳过 {{invalid}} 条）",
         syncCurrentOnly: "本阶段仅可同步当前分支",
+        syncRequiresRemoteBranch: "仅包含有对应 origin 分支的本地分支",
         submodulesReady: "子模块已就绪",
         tabs: "仓库选项卡",
         untitledProject: "未命名项目",
@@ -897,18 +923,32 @@ export const resources = {
         },
         navigation: "设置分区",
         project: {
+          addAutoTrackingRule: "添加自动跟踪规则",
+          autoTracking: "自动跟踪",
+          autoTrackingCycle: "自动跟踪规则不能成环。",
+          autoTrackingDuplicateSource:
+            "每个源分支只能出现在一条自动跟踪规则中。",
+          autoTrackingHelp:
+            "分支同步后，将本地源分支快进到选定的 origin 分支并推送源分支。",
+          autoTrackingInvalid: "修正自动跟踪规则错误后再保存项目设置。",
+          autoTrackingMissing: "请为此规则选择两个分支。",
+          autoTrackingSelf: "分支不能自动跟踪自身。",
+          autoTrackingSource: "源本地分支",
+          autoTrackingTarget: "目标 origin 分支",
           gitignore: ".gitignore",
           gitignoreLocalChange:
             "保存会写入仓库内 .gitignore，因此 Git 会把它显示为本地更改。",
           largeFileCheck: "启用大文件检查",
           largeFiles: "大文件",
           loadingGitignore: "正在加载 .gitignore",
+          noAutoTrackingRules: "尚未配置自动跟踪规则。",
           noRepository: "打开仓库后可编辑项目设置。",
           clearOriginHelp: "清空此字段并连续保存两次即可移除 origin。",
           noOriginConfigured: "未配置 origin 远程仓库",
           originConfigured: "已配置 origin",
           originUrl: "Origin URL",
           remote: "远程",
+          remoteBranchOption: "{{branch}}（仅远程）",
           remotePlaceholder: "远程设置占位",
           removeOrigin: "移除 origin",
           removeOriginWarning:

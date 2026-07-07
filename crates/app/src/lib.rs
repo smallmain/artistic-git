@@ -1,8 +1,8 @@
 use artistic_git_contracts::{
     AcceptRemoteHistoryRequest, AcceptRemoteHistoryResponse, AppError, AppErrorCategory, AppResult,
     CommitRequest, CommitResponse, DeleteSafetyBackupRequest, DeleteSafetyBackupResponse,
-    OperationContext, OperationProgressEvent, SyncBranchRequest, SyncBranchResponse,
-    SyncCurrentBranchRequest, SyncCurrentBranchResponse,
+    OperationContext, OperationProgressEvent, SyncAllBranchesRequest, SyncAllBranchesResponse,
+    SyncBranchRequest, SyncBranchResponse, SyncCurrentBranchRequest, SyncCurrentBranchResponse,
 };
 use artistic_git_core::AppInfo;
 use artistic_git_git_runner::{
@@ -153,6 +153,19 @@ where
 {
     let _permit = begin_identity_write(runner, "syncBranch", &request.repository_path, false)?;
     sync::sync_branch_with_progress(runner, request, progress)
+}
+
+pub fn sync_all_branches_with_config<F>(
+    runner: &GitRunner,
+    config: Option<&artistic_git_core::config::ConfigActor>,
+    request: SyncAllBranchesRequest,
+    progress: F,
+) -> AppResult<SyncAllBranchesResponse>
+where
+    F: Fn(OperationProgressEvent),
+{
+    let _permit = begin_identity_write(runner, "syncAllBranches", &request.repository_path, false)?;
+    sync::sync_all_branches_with_progress(runner, config, request, progress)
 }
 
 pub fn accept_remote_history(

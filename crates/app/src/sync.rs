@@ -1,13 +1,17 @@
 use artistic_git_contracts::{
     AcceptRemoteHistoryRequest, AcceptRemoteHistoryResponse, AppError, AppResult,
-    ConflictEnteredEvent, ConflictListRequest, CreateAutoStashRequest, GitCommandError,
-    OperationContext, OperationId, OperationProgressEvent, RemoteHistoryChange, StashEntry,
-    StashRecoveryPoint, StashRestoreOutcome, SyncBranchRequest, SyncBranchResponse,
-    SyncCurrentBranchRequest, SyncCurrentBranchResponse, SyncCurrentBranchStatus,
+    AutoTrackingRuleResult, AutoTrackingRuleStatus, BranchExistence, ConflictEnteredEvent,
+    ConflictListRequest, CreateAutoStashRequest, GitCommandError, OperationContext, OperationId,
+    OperationProgressEvent, RemoteHistoryChange, RepositoryPathRequest, StashEntry,
+    StashRecoveryPoint, StashRestoreOutcome, SyncAllBranchesRequest, SyncAllBranchesResponse,
+    SyncBranchRequest, SyncBranchResponse, SyncCurrentBranchRequest, SyncCurrentBranchResponse,
+    SyncCurrentBranchStatus,
 };
+use artistic_git_core::config::{AutoTrackingRule, ConfigActor};
 use artistic_git_git_runner::{GitCommandPlan, GitRunner};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::{BTreeMap, BTreeSet},
     ffi::{OsStr, OsString},
     fs,
     path::{Path, PathBuf},
@@ -20,6 +24,9 @@ use crate::git_ops::{canonical_repository_path, display_path, run_git_raw};
 
 const SYNC_OPERATION: &str = "syncCurrentBranch";
 const SYNC_BRANCH_OPERATION: &str = "syncBranch";
+const SYNC_ALL_OPERATION: &str = "syncAllBranches";
+const AUTO_TRACKING_OPERATION: &str = "autoTracking";
+const AUTO_TRACKING_STASH_RESTORE_OPERATION: &str = "autoTracking:restoreStash";
 const SYNC_STASH_RESTORE_OPERATION: &str = "syncCurrentBranch:restoreStash";
 const ACCEPT_REMOTE_HISTORY_OPERATION: &str = "acceptRemoteHistory";
 const ACCEPT_REMOTE_HISTORY_STASH_RESTORE_OPERATION: &str = "acceptRemoteHistory:restoreStash";
@@ -116,6 +123,100 @@ where
             sync_branch_via_worktree(runner, &root, &branch_name, &operation_id, &progress)
         }
     }
+}
+
+pub fn sync_all_branches_with_progress<F>(
+    runner: &GitRunner,
+    config: Option<&ConfigActor>,
+    request: SyncAllBranchesRequest,
+    progress: F,
+) -> AppResult<SyncAllBranchesResponse>
+where
+    F: Fn(OperationProgressEvent),
+{
+    let root = canonical_repository_path(&request.repository_path, SYNC_ALL_OPERATION)?;
+    ensure_committed_head(runner, &root)?;
+    ensure_origin(runner, &root)?;
+    let operation_id = request
+        .operation_id
+        .clone()
+        .unwrap_or_else(sync_all_operation_id);
+    let current_branch = current_branch_name(runner, &root)?;
+    let branch_names = syncable_local_branches(runner, &root)?;
+    let mut branches = Vec::new();
+    let mut conflict = None;
+    let mut stash_recovery = None;
+    let mut remote_history_change = None;
+
+    for branch_name in branch_names {
+        let response = if current_branch.as_deref() == Some(branch_name.as_str()) {
+            sync_current_branch_with_progress(
+                runner,
+                SyncCurrentBranchRequest {
+                    repository_path: display_path(&root),
+                    operation_id: Some(operation_id.clone()),
+                },
+                &progress,
+            )
+            .map(sync_branch_response_from_current)?
+        } else {
+            sync_branch_with_progress(
+                runner,
+                SyncBranchRequest {
+                    repository_path: display_path(&root),
+                    branch_name: branch_name.clone(),
+                    operation_id: Some(sync_branch_operation_id(&branch_name)),
+                },
+                &progress,
+            )?
+        };
+
+        if response.status == SyncCurrentBranchStatus::Conflicts {
+            conflict = response.conflict.clone();
+            stash_recovery = response.stash_recovery.clone();
+            branches.push(response);
+            break;
+        }
+        if response.status == SyncCurrentBranchStatus::RemoteHistoryChanged {
+            remote_history_change = response.remote_history_change.clone();
+            branches.push(response);
+            break;
+        }
+        branches.push(response);
+    }
+
+    let auto_tracking = if conflict.is_none() && remote_history_change.is_none() {
+        let rules = project_auto_tracking_rules(config, &root)?;
+        apply_auto_tracking_rules(runner, &root, &operation_id, &rules, &progress)?
+    } else {
+        Vec::new()
+    };
+
+    if conflict.is_none() {
+        if let Some(tracking_conflict) = auto_tracking.iter().find_map(|result| {
+            (result.status == AutoTrackingRuleStatus::Conflicts).then(|| result.clone())
+        }) {
+            conflict = tracking_conflict.conflict;
+            stash_recovery = tracking_conflict.stash_recovery;
+        }
+    }
+
+    let all_up_to_date = branches
+        .iter()
+        .all(|branch| branch.status == SyncCurrentBranchStatus::AlreadyUpToDate)
+        && auto_tracking
+            .iter()
+            .all(|rule| rule.status == AutoTrackingRuleStatus::AlreadyUpToDate);
+
+    Ok(SyncAllBranchesResponse {
+        repository_path: display_path(&root),
+        branches,
+        auto_tracking,
+        all_up_to_date,
+        conflict,
+        stash_recovery,
+        remote_history_change,
+    })
 }
 
 pub fn accept_remote_history(
@@ -379,6 +480,7 @@ fn sync_branch_fast_path(
                 upstream: Some(format!("origin/{branch_name}")),
                 status: SyncCurrentBranchStatus::RemoteHistoryChanged,
                 attempts: 1,
+                message: None,
                 conflict: None,
                 stash_recovery: None,
                 remote_history_change: Some(change),
@@ -405,6 +507,7 @@ fn sync_branch_fast_path(
                         upstream: Some(format!("origin/{branch_name}")),
                         status: SyncCurrentBranchStatus::Pushed,
                         attempts: 1,
+                        message: None,
                         conflict: None,
                         stash_recovery: None,
                         remote_history_change: None,
@@ -454,6 +557,7 @@ fn sync_branch_fast_path(
         upstream: Some(format!("origin/{branch_name}")),
         status,
         attempts: 1,
+        message: None,
         conflict: None,
         stash_recovery: None,
         remote_history_change: None,
@@ -741,6 +845,571 @@ fn remote_branch_oid(
         .map(str::to_owned))
 }
 
+fn syncable_local_branches(runner: &GitRunner, root: &Path) -> AppResult<Vec<String>> {
+    Ok(crate::repository::list_branches(
+        runner,
+        RepositoryPathRequest {
+            repository_path: display_path(root),
+        },
+    )?
+    .branches
+    .into_iter()
+    .filter(|branch| branch.existence == BranchExistence::LocalAndRemote)
+    .map(|branch| branch.short_name)
+    .collect())
+}
+
+fn project_auto_tracking_rules(
+    config: Option<&ConfigActor>,
+    root: &Path,
+) -> AppResult<Vec<AutoTrackingRule>> {
+    let Some(config) = config else {
+        return Ok(Vec::new());
+    };
+    Ok(crate::settings::load_project_settings(
+        Some(config),
+        crate::settings::ProjectSettingsRequest {
+            repository_path: display_path(root),
+        },
+    )?
+    .auto_tracking_rules)
+}
+
+fn apply_auto_tracking_rules<F>(
+    runner: &GitRunner,
+    root: &Path,
+    operation_id: &OperationId,
+    rules: &[AutoTrackingRule],
+    progress: &F,
+) -> AppResult<Vec<AutoTrackingRuleResult>>
+where
+    F: Fn(OperationProgressEvent) + ?Sized,
+{
+    let inventory = branch_inventory(runner, root)?;
+    let validations = validate_auto_tracking_rules_for_inventory(rules, &inventory);
+    let mut results = Vec::new();
+
+    for validation in validations {
+        if let Some(message) = validation.message {
+            results.push(AutoTrackingRuleResult {
+                source_branch: validation.rule.source_branch,
+                target_branch: validation.rule.target_branch,
+                status: AutoTrackingRuleStatus::Invalid,
+                message: Some(message),
+                conflict: None,
+                stash_recovery: None,
+            });
+            continue;
+        }
+
+        let source = validation.rule.source_branch;
+        let target = validation.rule.target_branch;
+        let source_sync = sync_branch_with_progress(
+            runner,
+            SyncBranchRequest {
+                repository_path: display_path(root),
+                branch_name: source.clone(),
+                operation_id: Some(sync_branch_operation_id(&source)),
+            },
+            progress,
+        )?;
+        if source_sync.status == SyncCurrentBranchStatus::Conflicts {
+            results.push(AutoTrackingRuleResult {
+                source_branch: source,
+                target_branch: target,
+                status: AutoTrackingRuleStatus::Conflicts,
+                message: None,
+                conflict: source_sync.conflict,
+                stash_recovery: source_sync.stash_recovery,
+            });
+            break;
+        }
+        if source_sync.status == SyncCurrentBranchStatus::RemoteHistoryChanged {
+            results.push(AutoTrackingRuleResult {
+                source_branch: source,
+                target_branch: target,
+                status: AutoTrackingRuleStatus::Failed,
+                message: Some("源分支远程历史发生改写，需要先处理。".to_owned()),
+                conflict: None,
+                stash_recovery: None,
+            });
+            break;
+        }
+
+        if inventory.local_branches.contains(&target) {
+            let target_sync = sync_branch_with_progress(
+                runner,
+                SyncBranchRequest {
+                    repository_path: display_path(root),
+                    branch_name: target.clone(),
+                    operation_id: Some(sync_branch_operation_id(&target)),
+                },
+                progress,
+            )?;
+            if target_sync.status == SyncCurrentBranchStatus::Conflicts {
+                results.push(AutoTrackingRuleResult {
+                    source_branch: source,
+                    target_branch: target,
+                    status: AutoTrackingRuleStatus::Conflicts,
+                    message: None,
+                    conflict: target_sync.conflict,
+                    stash_recovery: target_sync.stash_recovery,
+                });
+                break;
+            }
+            if target_sync.status == SyncCurrentBranchStatus::RemoteHistoryChanged {
+                results.push(AutoTrackingRuleResult {
+                    source_branch: source,
+                    target_branch: target,
+                    status: AutoTrackingRuleStatus::Failed,
+                    message: Some("目标分支远程历史发生改写，需要先处理。".to_owned()),
+                    conflict: None,
+                    stash_recovery: None,
+                });
+                break;
+            }
+        } else {
+            fetch_remote_tracking_branch(runner, root, &target)?;
+        }
+
+        results.push(apply_auto_tracking_rule(
+            runner,
+            root,
+            &source,
+            &target,
+            operation_id,
+        )?);
+        if results
+            .last()
+            .map(|result| result.status == AutoTrackingRuleStatus::Conflicts)
+            .unwrap_or(false)
+        {
+            break;
+        }
+    }
+
+    Ok(results)
+}
+
+fn apply_auto_tracking_rule(
+    runner: &GitRunner,
+    root: &Path,
+    source: &str,
+    target: &str,
+    operation_id: &OperationId,
+) -> AppResult<AutoTrackingRuleResult> {
+    let target_ref = format!("refs/remotes/origin/{target}");
+    if current_branch_name(runner, root)?.as_deref() == Some(source) {
+        apply_current_auto_tracking_rule(runner, root, source, target, &target_ref, operation_id)
+    } else {
+        apply_non_current_auto_tracking_rule(runner, root, source, target, &target_ref)
+    }
+}
+
+fn apply_current_auto_tracking_rule(
+    runner: &GitRunner,
+    root: &Path,
+    source: &str,
+    target: &str,
+    target_ref: &str,
+    operation_id: &OperationId,
+) -> AppResult<AutoTrackingRuleResult> {
+    let auto_stash = create_auto_tracking_stash(runner, root)?;
+    let before = rev_parse(runner, root, "HEAD")?;
+    ensure_clean_worktree(runner, root)?;
+    let (plan, output) = run_git_raw(
+        runner,
+        Some(root),
+        ["merge", "--ff-only", target_ref],
+        AUTO_TRACKING_OPERATION,
+    )?;
+    if !output.status.success() {
+        if let Some((conflict, stash_recovery)) =
+            restore_auto_tracking_stash(runner, root, auto_stash, operation_id)?
+        {
+            return Ok(AutoTrackingRuleResult {
+                source_branch: source.to_owned(),
+                target_branch: target.to_owned(),
+                status: AutoTrackingRuleStatus::Conflicts,
+                message: None,
+                conflict: Some(conflict),
+                stash_recovery: Some(stash_recovery),
+            });
+        }
+        return Ok(AutoTrackingRuleResult {
+            source_branch: source.to_owned(),
+            target_branch: target.to_owned(),
+            status: AutoTrackingRuleStatus::Failed,
+            message: Some(command_failure(&plan, output, "自动跟踪无法快进合并。").summary),
+            conflict: None,
+            stash_recovery: None,
+        });
+    }
+
+    let after = rev_parse(runner, root, "HEAD")?;
+    if before != after {
+        let refspec = format!("{source}:{source}");
+        match push_with_retry_raw(
+            runner,
+            root,
+            [
+                OsString::from("push"),
+                OsString::from("origin"),
+                OsString::from(refspec.as_str()),
+            ],
+        ) {
+            PushOutcome::Success => {}
+            PushOutcome::NonFastForward => {
+                if let Some((conflict, stash_recovery)) =
+                    restore_auto_tracking_stash(runner, root, auto_stash, operation_id)?
+                {
+                    return Ok(AutoTrackingRuleResult {
+                        source_branch: source.to_owned(),
+                        target_branch: target.to_owned(),
+                        status: AutoTrackingRuleStatus::Conflicts,
+                        message: None,
+                        conflict: Some(conflict),
+                        stash_recovery: Some(stash_recovery),
+                    });
+                }
+                return Ok(AutoTrackingRuleResult {
+                    source_branch: source.to_owned(),
+                    target_branch: target.to_owned(),
+                    status: AutoTrackingRuleStatus::Failed,
+                    message: Some("自动跟踪推送被远程拒绝，请稍后重试。".to_owned()),
+                    conflict: None,
+                    stash_recovery: None,
+                });
+            }
+            PushOutcome::Failed(error) => {
+                if let Some((conflict, stash_recovery)) =
+                    restore_auto_tracking_stash(runner, root, auto_stash, operation_id)?
+                {
+                    return Ok(AutoTrackingRuleResult {
+                        source_branch: source.to_owned(),
+                        target_branch: target.to_owned(),
+                        status: AutoTrackingRuleStatus::Conflicts,
+                        message: None,
+                        conflict: Some(conflict),
+                        stash_recovery: Some(stash_recovery),
+                    });
+                }
+                return Ok(AutoTrackingRuleResult {
+                    source_branch: source.to_owned(),
+                    target_branch: target.to_owned(),
+                    status: AutoTrackingRuleStatus::Failed,
+                    message: Some(error.summary),
+                    conflict: None,
+                    stash_recovery: None,
+                });
+            }
+        }
+    }
+
+    let restore = restore_auto_tracking_stash(runner, root, auto_stash, operation_id)?;
+    if let Some((conflict, stash_recovery)) = restore {
+        return Ok(AutoTrackingRuleResult {
+            source_branch: source.to_owned(),
+            target_branch: target.to_owned(),
+            status: AutoTrackingRuleStatus::Conflicts,
+            message: None,
+            conflict: Some(conflict),
+            stash_recovery: Some(stash_recovery),
+        });
+    }
+
+    Ok(AutoTrackingRuleResult {
+        source_branch: source.to_owned(),
+        target_branch: target.to_owned(),
+        status: if before == after {
+            AutoTrackingRuleStatus::AlreadyUpToDate
+        } else {
+            AutoTrackingRuleStatus::Applied
+        },
+        message: None,
+        conflict: None,
+        stash_recovery: None,
+    })
+}
+
+fn apply_non_current_auto_tracking_rule(
+    runner: &GitRunner,
+    root: &Path,
+    source: &str,
+    target: &str,
+    target_ref: &str,
+) -> AppResult<AutoTrackingRuleResult> {
+    let source_ref = format!("refs/heads/{source}");
+    let before = rev_parse(runner, root, &source_ref)?;
+    let target_oid = rev_parse(runner, root, target_ref)?;
+    if before == target_oid {
+        return Ok(AutoTrackingRuleResult {
+            source_branch: source.to_owned(),
+            target_branch: target.to_owned(),
+            status: AutoTrackingRuleStatus::AlreadyUpToDate,
+            message: None,
+            conflict: None,
+            stash_recovery: None,
+        });
+    }
+    if !is_ancestor(runner, root, &before, &target_oid)? {
+        return Ok(AutoTrackingRuleResult {
+            source_branch: source.to_owned(),
+            target_branch: target.to_owned(),
+            status: AutoTrackingRuleStatus::Failed,
+            message: Some("自动跟踪无法快进合并。".to_owned()),
+            conflict: None,
+            stash_recovery: None,
+        });
+    }
+
+    update_ref(runner, root, &source_ref, &target_oid)?;
+    let refspec = format!("{source}:{source}");
+    match push_with_retry_raw(
+        runner,
+        root,
+        [
+            OsString::from("push"),
+            OsString::from("origin"),
+            OsString::from(refspec.as_str()),
+        ],
+    ) {
+        PushOutcome::Success => Ok(AutoTrackingRuleResult {
+            source_branch: source.to_owned(),
+            target_branch: target.to_owned(),
+            status: AutoTrackingRuleStatus::Applied,
+            message: None,
+            conflict: None,
+            stash_recovery: None,
+        }),
+        PushOutcome::NonFastForward => Ok(AutoTrackingRuleResult {
+            source_branch: source.to_owned(),
+            target_branch: target.to_owned(),
+            status: AutoTrackingRuleStatus::Failed,
+            message: Some("自动跟踪推送被远程拒绝，请稍后重试。".to_owned()),
+            conflict: None,
+            stash_recovery: None,
+        }),
+        PushOutcome::Failed(error) => Err(error),
+    }
+}
+
+fn fetch_remote_tracking_branch(
+    runner: &GitRunner,
+    root: &Path,
+    branch_name: &str,
+) -> AppResult<()> {
+    let refspec = format!("refs/heads/{branch_name}:refs/remotes/origin/{branch_name}");
+    run_retryable_git(
+        runner,
+        root,
+        [
+            OsString::from("fetch"),
+            OsString::from("origin"),
+            OsString::from(refspec),
+        ],
+        AUTO_TRACKING_OPERATION,
+    )
+}
+
+fn update_ref(runner: &GitRunner, root: &Path, ref_name: &str, oid: &str) -> AppResult<()> {
+    let (plan, output) = run_git_raw(
+        runner,
+        Some(root),
+        ["update-ref", ref_name, oid],
+        AUTO_TRACKING_OPERATION,
+    )?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(command_failure(&plan, output, "无法更新自动跟踪分支。"))
+    }
+}
+
+fn create_auto_tracking_stash(runner: &GitRunner, root: &Path) -> AppResult<Option<StashEntry>> {
+    Ok(crate::stash_impl::create_auto_stash(
+        runner,
+        CreateAutoStashRequest {
+            repository_path: display_path(root),
+            reason: "before applying automatic tracking".to_owned(),
+            include_untracked: true,
+            paths: Vec::new(),
+        },
+    )?
+    .stash)
+}
+
+fn restore_auto_tracking_stash(
+    runner: &GitRunner,
+    root: &Path,
+    auto_stash: Option<StashEntry>,
+    operation_id: &OperationId,
+) -> AppResult<Option<(ConflictEnteredEvent, StashRecoveryPoint)>> {
+    let Some(auto_stash) = auto_stash else {
+        return Ok(None);
+    };
+    let restore = crate::stash_impl::restore_stash_for_root(
+        runner,
+        root,
+        &auto_stash.selector,
+        true,
+        AUTO_TRACKING_STASH_RESTORE_OPERATION,
+        Some(operation_id),
+    )?;
+    match restore.outcome {
+        StashRestoreOutcome::Applied { .. } => Ok(None),
+        StashRestoreOutcome::Conflicts { conflict } => Ok(Some((conflict, restore.recovery))),
+    }
+}
+
+#[derive(Debug)]
+struct BranchInventory {
+    local_branches: BTreeSet<String>,
+    remote_branches: BTreeSet<String>,
+}
+
+#[derive(Debug)]
+struct AutoTrackingValidation {
+    rule: AutoTrackingRule,
+    message: Option<String>,
+}
+
+fn branch_inventory(runner: &GitRunner, root: &Path) -> AppResult<BranchInventory> {
+    let output = crate::git_ops::git_stdout(
+        runner,
+        Some(root),
+        [
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/heads",
+            "refs/remotes/origin",
+        ],
+        AUTO_TRACKING_OPERATION,
+    )?;
+    let mut local_branches = BTreeSet::new();
+    let mut remote_branches = BTreeSet::new();
+    for refname in output.lines().map(str::trim) {
+        if let Some(branch) = refname.strip_prefix("refs/heads/") {
+            if !branch.starts_with("backup/") {
+                local_branches.insert(branch.to_owned());
+            }
+        } else if let Some(branch) = refname.strip_prefix("refs/remotes/origin/") {
+            if branch != "HEAD" && !branch.starts_with("backup/") {
+                remote_branches.insert(branch.to_owned());
+            }
+        }
+    }
+    Ok(BranchInventory {
+        local_branches,
+        remote_branches,
+    })
+}
+
+fn validate_auto_tracking_rules_for_inventory(
+    rules: &[AutoTrackingRule],
+    inventory: &BranchInventory,
+) -> Vec<AutoTrackingValidation> {
+    let mut source_counts = BTreeMap::<String, usize>::new();
+    for rule in rules {
+        *source_counts
+            .entry(rule.source_branch.trim().to_owned())
+            .or_default() += 1;
+    }
+    let cycle_sources = cyclic_auto_tracking_sources(rules);
+
+    rules
+        .iter()
+        .cloned()
+        .map(|rule| {
+            let source = rule.source_branch.trim();
+            let target = rule.target_branch.trim();
+            let message = if source.is_empty() || target.is_empty() {
+                Some("自动跟踪规则缺少分支。".to_owned())
+            } else if source == target {
+                Some("自动跟踪规则不能指向自身。".to_owned())
+            } else if source_counts.get(source).copied().unwrap_or(0) > 1 {
+                Some("每个源分支只能有一条自动跟踪规则。".to_owned())
+            } else if cycle_sources.contains(source) {
+                Some("自动跟踪规则不能成环。".to_owned())
+            } else if !inventory.local_branches.contains(source) {
+                Some("源分支必须是本地分支。".to_owned())
+            } else if !inventory.remote_branches.contains(source) {
+                Some("源分支必须有对应的 origin 远程分支。".to_owned())
+            } else if !inventory.remote_branches.contains(target) {
+                Some("目标分支必须是 origin 上存在的远程分支。".to_owned())
+            } else {
+                None
+            };
+
+            AutoTrackingValidation {
+                rule: AutoTrackingRule {
+                    source_branch: source.to_owned(),
+                    target_branch: target.to_owned(),
+                },
+                message,
+            }
+        })
+        .collect()
+}
+
+pub fn validate_auto_tracking_rules(rules: &[AutoTrackingRule]) -> AppResult<()> {
+    let mut sources = BTreeSet::new();
+    for rule in rules {
+        let source = rule.source_branch.trim();
+        let target = rule.target_branch.trim();
+        if source.is_empty() || target.is_empty() {
+            return Err(AppError::expected(
+                "自动跟踪规则缺少分支。",
+                "saveProjectSettings",
+            ));
+        }
+        if source == target {
+            return Err(AppError::expected(
+                "自动跟踪规则不能指向自身。",
+                "saveProjectSettings",
+            ));
+        }
+        if !sources.insert(source.to_owned()) {
+            return Err(AppError::expected(
+                "每个源分支只能有一条自动跟踪规则。",
+                "saveProjectSettings",
+            ));
+        }
+    }
+    if !cyclic_auto_tracking_sources(rules).is_empty() {
+        return Err(AppError::expected(
+            "自动跟踪规则不能成环。",
+            "saveProjectSettings",
+        ));
+    }
+    Ok(())
+}
+
+fn cyclic_auto_tracking_sources(rules: &[AutoTrackingRule]) -> BTreeSet<String> {
+    let graph = rules
+        .iter()
+        .map(|rule| {
+            (
+                rule.source_branch.trim().to_owned(),
+                rule.target_branch.trim().to_owned(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut cyclic = BTreeSet::new();
+    for source in graph.keys() {
+        let mut seen = BTreeSet::new();
+        let mut cursor = source.as_str();
+        while let Some(next) = graph.get(cursor) {
+            if !seen.insert(cursor.to_owned()) {
+                cyclic.extend(seen);
+                break;
+            }
+            cursor = next;
+        }
+    }
+    cyclic
+}
+
 fn is_ancestor(
     runner: &GitRunner,
     root: &Path,
@@ -984,6 +1653,14 @@ fn sync_branch_operation_id(branch_name: &str) -> OperationId {
         "sync-branch-{}-{millis}",
         sanitize_path_component(branch_name)
     ))
+}
+
+fn sync_all_operation_id() -> OperationId {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    OperationId(format!("sync-all-branches-{millis}"))
 }
 
 fn accept_remote_history_operation_id() -> OperationId {
@@ -1447,6 +2124,7 @@ fn sync_branch_response_from_current(response: SyncCurrentBranchResponse) -> Syn
         upstream: response.upstream,
         status: response.status,
         attempts: response.attempts,
+        message: None,
         conflict: response.conflict,
         stash_recovery: response.stash_recovery,
         remote_history_change: response.remote_history_change,
@@ -1463,6 +2141,7 @@ fn sync_branch_response_from_worktree(
         upstream: response.upstream,
         status: response.status,
         attempts: response.attempts,
+        message: None,
         conflict: response.conflict,
         stash_recovery: response.stash_recovery,
         remote_history_change: response.remote_history_change,
@@ -1492,6 +2171,7 @@ fn command_failure(plan: &GitCommandPlan, output: Output, summary: impl Into<Str
 mod tests {
     use super::*;
     use artistic_git_contracts::SyncCurrentBranchStatus;
+    use artistic_git_core::config::AutoTrackingRule;
     use artistic_git_git_runner::{GitDistribution, GitRunner};
     use artistic_git_test_support::{require_git_dist, TestTempDir};
     use std::{
@@ -1866,6 +2546,136 @@ mod tests {
             .local
             .git_output(["status", "--porcelain=v1"])
             .contains("UU tracked.txt"));
+    }
+
+    #[test]
+    fn sync_all_branches_syncs_current_and_non_current_tracking_branches() {
+        let Some((runner, _home)) = real_runner_or_skip() else {
+            return;
+        };
+        let fixture = DoubleClone::new(&runner);
+        fixture.create_tracking_branch("feature/batch");
+
+        fixture.peer.git(["checkout", "main"]);
+        fixture.peer.write("main-remote.txt", "main remote\n");
+        fixture.peer.git(["add", "main-remote.txt"]);
+        fixture.peer.git(["commit", "-m", "main remote"]);
+        fixture.peer.git(["push"]);
+
+        fixture.peer.git(["checkout", "feature/batch"]);
+        fixture.peer.write("feature-remote.txt", "feature remote\n");
+        fixture.peer.git(["add", "feature-remote.txt"]);
+        fixture.peer.git(["commit", "-m", "feature remote"]);
+        fixture.peer.git(["push"]);
+
+        fixture.local.git(["checkout", "feature/batch"]);
+        fixture.local.write("feature-local.txt", "feature local\n");
+        fixture.local.git(["add", "feature-local.txt"]);
+        fixture.local.git(["commit", "-m", "feature local"]);
+        fixture.local.git(["checkout", "main"]);
+        fixture.local.write("tracked.txt", "dirty current\n");
+
+        let response = sync_all_branches_with_progress(
+            &runner,
+            None,
+            SyncAllBranchesRequest {
+                repository_path: display_path(&fixture.local.path),
+                operation_id: Some(OperationId("sync-all-test".to_owned())),
+            },
+            |_| {},
+        )
+        .expect("sync all branches");
+
+        assert_eq!(response.branches.len(), 2);
+        assert!(response
+            .branches
+            .iter()
+            .any(|branch| branch.branch_name == "main"
+                && branch.status == SyncCurrentBranchStatus::Pulled));
+        assert!(response.branches.iter().any(|branch| {
+            branch.branch_name == "feature/batch"
+                && branch.status == SyncCurrentBranchStatus::PulledAndPushed
+        }));
+        assert_eq!(fixture.local.read("tracked.txt"), "dirty current\n");
+        assert!(fixture.local.path.join("main-remote.txt").exists());
+        assert_eq!(
+            fixture.local.show("feature/batch", "feature-remote.txt"),
+            "feature remote\n"
+        );
+        fixture.peer.git(["checkout", "feature/batch"]);
+        fixture.peer.git(["pull", "--ff-only"]);
+        assert_eq!(fixture.peer.read("feature-local.txt"), "feature local\n");
+        assert!(fixture.local.status_clean());
+    }
+
+    #[test]
+    fn auto_tracking_rule_fast_forwards_source_to_remote_target_and_pushes() {
+        let Some((runner, _home)) = real_runner_or_skip() else {
+            return;
+        };
+        let fixture = DoubleClone::new(&runner);
+        fixture.create_tracking_branch("stable");
+        fixture.create_tracking_branch("release");
+
+        fixture.peer.git(["checkout", "release"]);
+        fixture.peer.write("release.txt", "release\n");
+        fixture.peer.git(["add", "release.txt"]);
+        fixture.peer.git(["commit", "-m", "release update"]);
+        fixture.peer.git(["push"]);
+        fixture.local.write("tracked.txt", "dirty current\n");
+
+        let results = apply_auto_tracking_rules(
+            &runner,
+            &fixture.local.path,
+            &OperationId("auto-tracking-test".to_owned()),
+            &[AutoTrackingRule {
+                source_branch: "stable".to_owned(),
+                target_branch: "release".to_owned(),
+            }],
+            &|_| {},
+        )
+        .expect("apply auto tracking");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].status, AutoTrackingRuleStatus::Applied);
+        assert_eq!(
+            fixture.local.git_output(["rev-parse", "stable"]),
+            fixture.local.git_output(["rev-parse", "origin/release"])
+        );
+        fixture.peer.git(["checkout", "stable"]);
+        fixture.peer.git(["pull", "--ff-only"]);
+        assert_eq!(fixture.peer.read("release.txt"), "release\n");
+        assert_eq!(fixture.local.read("tracked.txt"), "dirty current\n");
+        assert!(fixture.local.status_clean());
+    }
+
+    #[test]
+    fn auto_tracking_validation_rejects_duplicate_sources_and_cycles() {
+        let duplicate = validate_auto_tracking_rules(&[
+            AutoTrackingRule {
+                source_branch: "a".to_owned(),
+                target_branch: "b".to_owned(),
+            },
+            AutoTrackingRule {
+                source_branch: "a".to_owned(),
+                target_branch: "c".to_owned(),
+            },
+        ])
+        .expect_err("duplicate source should fail");
+        assert!(duplicate.summary.contains("源分支"));
+
+        let cycle = validate_auto_tracking_rules(&[
+            AutoTrackingRule {
+                source_branch: "a".to_owned(),
+                target_branch: "b".to_owned(),
+            },
+            AutoTrackingRule {
+                source_branch: "b".to_owned(),
+                target_branch: "a".to_owned(),
+            },
+        ])
+        .expect_err("cycle should fail");
+        assert!(cycle.summary.contains("成环"));
     }
 
     #[test]

@@ -39,6 +39,7 @@ export interface BranchListItem {
   ahead: number;
   behind: number;
   current?: boolean;
+  existence?: "localOnly" | "remoteOnly" | "localAndRemote";
   latestCommitId: string;
   name: string;
   remoteOnly?: boolean;
@@ -122,7 +123,12 @@ export function RepositorySidebar({
   const hasPendingSync = React.useMemo(
     () =>
       repository.hasRemote &&
-      branches.some((branch) => branch.ahead > 0 || branch.behind > 0),
+      branches.some(
+        (branch) =>
+          !branch.remoteOnly &&
+          (branch.existence === "localAndRemote" || Boolean(branch.upstream)) &&
+          (branch.ahead > 0 || branch.behind > 0),
+      ),
     [branches, repository.hasRemote],
   );
   const updateSidebarLayout = React.useCallback(
@@ -526,7 +532,11 @@ function BranchRow({
   const canDelete =
     !branch.current && !branchActionsDisabled && Boolean(onDelete);
   const canSync =
-    hasRemote && branch.current && !branchActionsDisabled && Boolean(onSync);
+    hasRemote &&
+    !branch.remoteOnly &&
+    (branch.existence === "localAndRemote" || Boolean(branch.upstream)) &&
+    !branchActionsDisabled &&
+    Boolean(onSync);
 
   return (
     <li
@@ -577,7 +587,7 @@ function BranchRow({
           <OptionalActionButton
             busy={busy}
             disabledTooltip={
-              branch.current ? undefined : t("repository.syncCurrentOnly")
+              canSync ? undefined : t("repository.syncRequiresRemoteBranch")
             }
             icon={<RefreshCw className="size-3.5" aria-hidden="true" />}
             label={t("repository.sync")}

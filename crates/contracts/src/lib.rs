@@ -279,6 +279,13 @@ pub struct SyncBranchRequest {
     pub operation_id: Option<OperationId>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncAllBranchesRequest {
+    pub repository_path: String,
+    pub operation_id: Option<OperationId>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum SyncCurrentBranchStatus {
@@ -289,6 +296,7 @@ pub enum SyncCurrentBranchStatus {
     Published,
     Conflicts,
     RemoteHistoryChanged,
+    Failed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -312,6 +320,40 @@ pub struct SyncBranchResponse {
     pub upstream: Option<String>,
     pub status: SyncCurrentBranchStatus,
     pub attempts: u8,
+    pub message: Option<String>,
+    pub conflict: Option<ConflictEnteredEvent>,
+    pub stash_recovery: Option<StashRecoveryPoint>,
+    pub remote_history_change: Option<RemoteHistoryChange>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum AutoTrackingRuleStatus {
+    Applied,
+    AlreadyUpToDate,
+    Invalid,
+    Conflicts,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoTrackingRuleResult {
+    pub source_branch: String,
+    pub target_branch: String,
+    pub status: AutoTrackingRuleStatus,
+    pub message: Option<String>,
+    pub conflict: Option<ConflictEnteredEvent>,
+    pub stash_recovery: Option<StashRecoveryPoint>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncAllBranchesResponse {
+    pub repository_path: String,
+    pub branches: Vec<SyncBranchResponse>,
+    pub auto_tracking: Vec<AutoTrackingRuleResult>,
+    pub all_up_to_date: bool,
     pub conflict: Option<ConflictEnteredEvent>,
     pub stash_recovery: Option<StashRecoveryPoint>,
     pub remote_history_change: Option<RemoteHistoryChange>,

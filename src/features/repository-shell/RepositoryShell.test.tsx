@@ -61,6 +61,8 @@ const commandMocks = vi.hoisted(() => ({
   settingsSnapshot: vi.fn(),
   stashDetails: vi.fn(),
   startReviewMode: vi.fn(),
+  syncAllBranches: vi.fn(),
+  syncBranch: vi.fn(),
   syncCurrentBranch: vi.fn(),
   syncReviewMode: vi.fn(),
   validateBranchName: vi.fn(),
@@ -283,6 +285,36 @@ beforeEach(() => {
     stdout: "",
   });
   commandMocks.syncCurrentBranch.mockResolvedValue({
+    attempts: 1,
+    branchName: "main",
+    conflict: null,
+    remoteHistoryChange: null,
+    repositoryPath: "/repo/art",
+    status: "alreadyUpToDate",
+    stashRecovery: null,
+    upstream: "origin/main",
+  });
+  commandMocks.syncAllBranches.mockResolvedValue({
+    allUpToDate: true,
+    autoTracking: [],
+    branches: [
+      {
+        attempts: 1,
+        branchName: "main",
+        conflict: null,
+        remoteHistoryChange: null,
+        repositoryPath: "/repo/art",
+        status: "alreadyUpToDate",
+        stashRecovery: null,
+        upstream: "origin/main",
+      },
+    ],
+    conflict: null,
+    remoteHistoryChange: null,
+    repositoryPath: "/repo/art",
+    stashRecovery: null,
+  });
+  commandMocks.syncBranch.mockResolvedValue({
     attempts: 1,
     branchName: "main",
     conflict: null,
@@ -1123,8 +1155,37 @@ describe("RepositoryShell branch flow", () => {
     });
   });
 
-  it("syncs the current branch from the project sync button", async () => {
+  it("batch syncs tracked branches from the project sync button", async () => {
     mockBranchList();
+    commandMocks.syncAllBranches.mockResolvedValueOnce({
+      allUpToDate: false,
+      autoTracking: [
+        {
+          conflict: null,
+          message: null,
+          sourceBranch: "release",
+          stashRecovery: null,
+          status: "applied",
+          targetBranch: "main",
+        },
+      ],
+      branches: [
+        {
+          attempts: 1,
+          branchName: "main",
+          conflict: null,
+          remoteHistoryChange: null,
+          repositoryPath: "/repo/art",
+          status: "pulled",
+          stashRecovery: null,
+          upstream: "origin/main",
+        },
+      ],
+      conflict: null,
+      remoteHistoryChange: null,
+      repositoryPath: "/repo/art",
+      stashRecovery: null,
+    });
     renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
 
     const syncButtons = await screen.findAllByRole("button", {
@@ -1133,18 +1194,77 @@ describe("RepositoryShell branch flow", () => {
     fireEvent.click(syncButtons[0]);
 
     await waitFor(() =>
-      expect(commandMocks.syncCurrentBranch).toHaveBeenCalledWith({
+      expect(commandMocks.syncAllBranches).toHaveBeenCalledWith({
         operationId: null,
         repositoryPath: "/repo/art",
       }),
     );
+    expect(
+      await screen.findByText(
+        "Synced 1 branches and 1 tracking rules (0 skipped)",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("syncs only the selected branch from a branch row action", async () => {
+    commandMocks.listBranches.mockResolvedValue({
+      branches: [
+        branchSummary({
+          current: true,
+          existence: "localAndRemote",
+          headOid: "abc1234",
+          shortName: "main",
+        }),
+        branchSummary({
+          ahead: 2,
+          existence: "localAndRemote",
+          headOid: "def5678",
+          shortName: "feature/lookdev",
+        }),
+      ],
+    });
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    const branchLabel = await findSidebarText("feature/lookdev");
+    const branchRow = branchLabel.closest("li");
+    expect(branchRow).not.toBeNull();
+    fireEvent.click(
+      within(branchRow as HTMLElement).getByRole("button", { name: "Sync" }),
+    );
+
+    await waitFor(() =>
+      expect(commandMocks.syncBranch).toHaveBeenCalledWith({
+        branchName: "feature/lookdev",
+        operationId: null,
+        repositoryPath: "/repo/art",
+      }),
+    );
+    expect(commandMocks.syncAllBranches).not.toHaveBeenCalled();
   });
 
   it("prompts before accepting rewritten remote history and resets through the dedicated command", async () => {
     mockBranchList();
-    commandMocks.syncCurrentBranch.mockResolvedValueOnce({
-      attempts: 1,
-      branchName: "main",
+    commandMocks.syncAllBranches.mockResolvedValueOnce({
+      allUpToDate: false,
+      autoTracking: [],
+      branches: [
+        {
+          attempts: 1,
+          branchName: "main",
+          conflict: null,
+          remoteHistoryChange: {
+            branchName: "main",
+            localHead: "localabcdef1234567890",
+            previousRemoteHead: "localabcdef1234567890",
+            remoteHead: "remoteabcdef1234567890",
+            upstream: "origin/main",
+          },
+          repositoryPath: "/repo/art",
+          status: "remoteHistoryChanged",
+          stashRecovery: null,
+          upstream: "origin/main",
+        },
+      ],
       conflict: null,
       remoteHistoryChange: {
         branchName: "main",
@@ -1154,9 +1274,7 @@ describe("RepositoryShell branch flow", () => {
         upstream: "origin/main",
       },
       repositoryPath: "/repo/art",
-      status: "remoteHistoryChanged",
       stashRecovery: null,
-      upstream: "origin/main",
     });
     renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
 

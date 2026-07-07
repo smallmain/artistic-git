@@ -78,6 +78,18 @@ export type AutoTrackingRule = {
   targetBranch: string;
 };
 
+export type AutoTrackingRuleResult = {
+  sourceBranch: string;
+  targetBranch: string;
+  status: AutoTrackingRuleStatus;
+  message: string | null;
+  conflict: ConflictEnteredEvent | null;
+  stashRecovery: StashRecoveryPoint | null;
+};
+
+export type AutoTrackingRuleStatus =
+  "applied" | "alreadyUpToDate" | "invalid" | "conflicts" | "failed";
+
 export type BranchExistence = "localOnly" | "remoteOnly" | "localAndRemote";
 
 export type BranchListResponse = {
@@ -912,6 +924,7 @@ export type SaveGitignoreRequest = {
 export type SaveProjectSettingsRequest = {
   repositoryPath: string;
   largeFileCheck: LargeFileCheckSettings;
+  autoTrackingRules?: AutoTrackingRule[];
   sidebar: SidebarLayoutSettings | null;
   localChangesViewMode: LocalChangesViewMode | null;
 };
@@ -1007,6 +1020,21 @@ export type StashRestoreStateEvent = {
 export type StashRestoreStatus =
   "applying" | "applied" | "conflicted" | "cancelled";
 
+export type SyncAllBranchesRequest = {
+  repositoryPath: string;
+  operationId: OperationId | null;
+};
+
+export type SyncAllBranchesResponse = {
+  repositoryPath: string;
+  branches: SyncBranchResponse[];
+  autoTracking: AutoTrackingRuleResult[];
+  allUpToDate: boolean;
+  conflict: ConflictEnteredEvent | null;
+  stashRecovery: StashRecoveryPoint | null;
+  remoteHistoryChange: RemoteHistoryChange | null;
+};
+
 export type SyncBranchRequest = {
   repositoryPath: string;
   branchName: string;
@@ -1019,6 +1047,7 @@ export type SyncBranchResponse = {
   upstream: string | null;
   status: SyncCurrentBranchStatus;
   attempts: number;
+  message: string | null;
   conflict: ConflictEnteredEvent | null;
   stashRecovery: StashRecoveryPoint | null;
   remoteHistoryChange: RemoteHistoryChange | null;
@@ -1047,7 +1076,8 @@ export type SyncCurrentBranchStatus =
   | "pulledAndPushed"
   | "published"
   | "conflicts"
-  | "remoteHistoryChanged";
+  | "remoteHistoryChanged"
+  | "failed";
 
 export type SyncReviewModeResponse = {
   state: ReviewModeState;

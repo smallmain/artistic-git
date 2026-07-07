@@ -1,5 +1,6 @@
 import type {
   AppSettings,
+  AutoTrackingRule,
   GitUserSettings,
   LanguagePreference as BackendLanguagePreference,
   LargeFileCheckSettings,
@@ -60,6 +61,7 @@ export const defaultSidebarLayout: Required<SidebarLayoutSettings> = {
 export const defaultLocalChangesViewMode: LocalChangesViewMode = "flat";
 
 export type NormalizedProjectSettings = ProjectSettings & {
+  autoTrackingRules: AutoTrackingRule[];
   largeFileCheck: Required<LargeFileCheckSettings>;
   localChangesViewMode: LocalChangesViewMode;
   path: string;
@@ -128,6 +130,7 @@ export function normalizeProjectSettings(
   return {
     ...project,
     path: project?.path ?? "",
+    autoTrackingRules: project?.autoTrackingRules ?? [],
     sidebar: {
       ...defaultSidebarLayout,
       ...project?.sidebar,

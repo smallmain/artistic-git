@@ -24,6 +24,7 @@ import { SettingsModal } from "./SettingsModal";
 const commandMocks = vi.hoisted(() => ({
   deleteHttpsCredential: vi.fn(),
   generateSshKey: vi.fn(),
+  listBranches: vi.fn(),
   listHttpsCredentials: vi.fn(),
   loadGitignore: vi.fn(),
   loadProjectSettings: vi.fn(),
@@ -83,6 +84,13 @@ beforeEach(() => {
     originUrl: "https://example.test/repo.git",
     remoteMode: "origin",
     repositoryPath: "/repo/art",
+  });
+  commandMocks.listBranches.mockResolvedValue({
+    branches: [
+      branchSummary("main", "localAndRemote"),
+      branchSummary("release", "localAndRemote"),
+      branchSummary("design", "remoteOnly"),
+    ],
   });
   commandMocks.saveRemoteSettings.mockResolvedValue({
     originUrl: null,
@@ -162,6 +170,85 @@ describe("SettingsModal", () => {
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: ["repository", "/repo/art", "history"],
     });
+  });
+
+  it("validates automatic tracking rules before saving project settings", async () => {
+    commandMocks.loadProjectSettings.mockResolvedValue({
+      autoTrackingRules: [
+        { sourceBranch: "main", targetBranch: "release" },
+        { sourceBranch: "release", targetBranch: "main" },
+      ],
+      largeFileCheck: { enabled: true, thresholdMb: 50 },
+      path: "/repo/art",
+    });
+
+    render(
+      <TestProviders
+        initialWindowState={{
+          activeRepositoryPath: "/repo/art",
+          settingsSection: "project",
+        }}
+      >
+        <SettingsModal onOpenChange={vi.fn()} open />
+      </TestProviders>,
+    );
+
+    expect(
+      await screen.findAllByText(
+        "Automatic tracking rules cannot form a cycle.",
+      ),
+    ).toHaveLength(2);
+
+    const saveButtons = screen.getAllByRole("button", {
+      name: "Save project settings",
+    });
+    expect(saveButtons.at(-1)).toBeDisabled();
+  });
+
+  it("saves a valid automatic tracking rule with a remote-only target hint", async () => {
+    commandMocks.saveProjectSettings.mockImplementation((request) =>
+      Promise.resolve({
+        autoTrackingRules: request.autoTrackingRules,
+        largeFileCheck: request.largeFileCheck,
+        path: request.repositoryPath,
+      }),
+    );
+
+    render(
+      <TestProviders
+        initialWindowState={{
+          activeRepositoryPath: "/repo/art",
+          settingsSection: "project",
+        }}
+      >
+        <SettingsModal onOpenChange={vi.fn()} open />
+      </TestProviders>,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Add automatic tracking rule",
+      }),
+    );
+    fireEvent.change(screen.getByLabelText("Target origin branch"), {
+      target: { value: "design" },
+    });
+
+    expect(screen.getByText("design (remote only)")).toBeInTheDocument();
+
+    const saveButtons = screen.getAllByRole("button", {
+      name: "Save project settings",
+    });
+    fireEvent.click(saveButtons.at(-1)!);
+
+    await waitFor(() =>
+      expect(commandMocks.saveProjectSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          autoTrackingRules: [{ sourceBranch: "main", targetBranch: "design" }],
+          repositoryPath: "/repo/art",
+        }),
+      ),
+    );
   });
 
   it("lists and forgets saved HTTPS credentials with confirmation", async () => {
@@ -367,4 +454,24 @@ function TestProviders({
       </QueryClientProvider>
     </I18nextProvider>
   );
+}
+
+function branchSummary(
+  shortName: string,
+  existence: "localOnly" | "remoteOnly" | "localAndRemote",
+) {
+  return {
+    ahead: 0,
+    behind: 0,
+    current: shortName === "main",
+    existence,
+    headOid: `${shortName}abcdef`,
+    latestCommitUnixSeconds: "1760000000",
+    name:
+      existence === "remoteOnly"
+        ? `refs/remotes/origin/${shortName}`
+        : `refs/heads/${shortName}`,
+    shortName,
+    upstream: existence === "localAndRemote" ? `origin/${shortName}` : null,
+  };
 }

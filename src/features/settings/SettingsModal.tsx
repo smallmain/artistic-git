@@ -4,6 +4,7 @@ import {
   Cloud,
   Download,
   FolderCog,
+  GitBranch,
   Info,
   KeyRound,
   Palette,
@@ -21,6 +22,8 @@ import { DialogFrame } from "@/components/dialogs/DialogFrame";
 import { Button } from "@/components/ui/button";
 import type {
   AppSettings,
+  AutoTrackingRule,
+  BranchSummary,
   GitUserSettings,
   GitignoreFileResponse,
   HttpsCredentialEntry,
@@ -38,6 +41,7 @@ import {
   deleteHttpsCredential,
   generateSshKey,
   listHttpsCredentials,
+  listBranches,
   loadGitignore,
   loadProjectSettings,
   loadRemoteSettings,
@@ -111,9 +115,7 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
   const appSettings = useWindowStore((state) => state.appSettings);
   const appVersion = useWindowStore((state) => state.appVersion);
   const section = useWindowStore((state) => state.settingsSection);
-  const updateInstallGate = useWindowStore(
-    (state) => state.updateInstallGate,
-  );
+  const updateInstallGate = useWindowStore((state) => state.updateInstallGate);
   const updateStatus = useWindowStore((state) => state.updateStatus);
   const setSection = useWindowStore((state) => state.setSettingsSection);
   const setAppSettings = useWindowStore((state) => state.setAppSettings);
@@ -132,6 +134,7 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
     React.useState<GitignoreFileResponse | null>(null);
   const [remoteSettings, setRemoteSettings] =
     React.useState<RemoteSettingsResponse | null>(null);
+  const [branchOptions, setBranchOptions] = React.useState<BranchSummary[]>([]);
   const [httpsCredentials, setHttpsCredentials] =
     React.useState<HttpsCredentialListResponse | null>(null);
   const [gitignoreDraft, setGitignoreDraft] = React.useState("");
@@ -228,19 +231,28 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
       loadProjectSettings({ repositoryPath: activeRepositoryPath }),
       loadGitignore({ repositoryPath: activeRepositoryPath }),
       loadRemoteSettings({ repositoryPath: activeRepositoryPath }),
+      listBranches({ repositoryPath: activeRepositoryPath }),
     ])
-      .then(([loadedProject, loadedGitignore, loadedRemoteSettings]) => {
-        if (!active) {
-          return;
-        }
-        setProject(loadedProject);
-        setProjectSettings(activeRepositoryPath, loadedProject);
-        setGitignore(loadedGitignore);
-        setGitignoreDraft(loadedGitignore.content);
-        setRemoteSettings(loadedRemoteSettings);
-        setRemoteUrlDraft(loadedRemoteSettings.originUrl ?? "");
-        setRemoteRemoveArmed(false);
-      })
+      .then(
+        ([
+          loadedProject,
+          loadedGitignore,
+          loadedRemoteSettings,
+          loadedBranches,
+        ]) => {
+          if (!active) {
+            return;
+          }
+          setProject(loadedProject);
+          setProjectSettings(activeRepositoryPath, loadedProject);
+          setGitignore(loadedGitignore);
+          setGitignoreDraft(loadedGitignore.content);
+          setRemoteSettings(loadedRemoteSettings);
+          setRemoteUrlDraft(loadedRemoteSettings.originUrl ?? "");
+          setBranchOptions(loadedBranches.branches);
+          setRemoteRemoveArmed(false);
+        },
+      )
       .catch((error) => {
         window.dispatchEvent(
           new CustomEvent("artistic-git:error", { detail: error }),
@@ -373,6 +385,7 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
     setStatus(null);
     try {
       const saved = await saveProjectSettings({
+        autoTrackingRules: normalizedProject.autoTrackingRules,
         largeFileCheck,
         localChangesViewMode: null,
         repositoryPath: activeRepositoryPath,
@@ -630,6 +643,15 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
               gitignore={visibleGitignore}
               gitignoreDraft={visibleGitignoreDraft}
               largeFileCheck={largeFileCheck}
+              autoTrackingRules={normalizedProject.autoTrackingRules}
+              branchOptions={branchOptions}
+              onAutoTrackingRulesChange={(autoTrackingRules) => {
+                setProject((current) => ({
+                  ...normalizeProjectSettings(current),
+                  path: activeRepositoryPath ?? current?.path,
+                  autoTrackingRules,
+                }));
+              }}
               onGitignoreChange={setGitignoreDraft}
               onLargeFileChange={(next) => {
                 setProject((current) => ({
@@ -983,16 +1005,18 @@ function GeneralSettings({
           }}
         />
       </SettingsGroup>
-
     </section>
   );
 }
 
 function ProjectSettingsPanel({
   activeRepositoryPath,
+  autoTrackingRules,
+  branchOptions,
   gitignore,
   gitignoreDraft,
   largeFileCheck,
+  onAutoTrackingRulesChange,
   onGitignoreChange,
   onLargeFileChange,
   onRemoteChange,
@@ -1008,9 +1032,12 @@ function ProjectSettingsPanel({
   savingRemote,
 }: {
   activeRepositoryPath: string | null;
+  autoTrackingRules: AutoTrackingRule[];
+  branchOptions: BranchSummary[];
   gitignore: GitignoreFileResponse | null;
   gitignoreDraft: string;
   largeFileCheck: Required<{ enabled: boolean; thresholdMb: number }>;
+  onAutoTrackingRulesChange: (rules: AutoTrackingRule[]) => void;
   onGitignoreChange: (value: string) => void;
   onLargeFileChange: (
     value: Required<{ enabled: boolean; thresholdMb: number }>,
@@ -1028,6 +1055,17 @@ function ProjectSettingsPanel({
   savingRemote: boolean;
 }) {
   const { t } = useTranslation();
+  const autoTrackingValidation = validateAutoTrackingRules(autoTrackingRules);
+  const sourceOptions = branchOptions.filter(
+    (branch) =>
+      branch.existence === "localAndRemote" ||
+      (branch.existence !== "remoteOnly" && Boolean(branch.upstream)),
+  );
+  const targetOptions = branchOptions.filter(
+    (branch) =>
+      branch.existence === "localAndRemote" ||
+      branch.existence === "remoteOnly",
+  );
 
   if (!activeRepositoryPath) {
     return (
@@ -1155,8 +1193,185 @@ function ProjectSettingsPanel({
             : t("settings.project.saveRemote")}
         </Button>
       </SettingsGroup>
+
+      <SettingsGroup
+        icon={<GitBranch className="size-4" aria-hidden="true" />}
+        title={t("settings.project.autoTracking")}
+      >
+        <p className="text-sm text-muted-foreground">
+          {t("settings.project.autoTrackingHelp")}
+        </p>
+        <div className="space-y-2">
+          {autoTrackingRules.length === 0 ? (
+            <p className="rounded-md border border-dashed bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+              {t("settings.project.noAutoTrackingRules")}
+            </p>
+          ) : null}
+          {autoTrackingRules.map((rule, index) => {
+            const rowError = autoTrackingValidation.rowErrors[index];
+            return (
+              <div
+                className="grid gap-2 rounded-md border bg-background p-3"
+                key={index}
+              >
+                <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+                  <SelectField
+                    label={t("settings.project.autoTrackingSource")}
+                    onChange={(sourceBranch) => {
+                      onAutoTrackingRulesChange(
+                        autoTrackingRules.map((candidate, candidateIndex) =>
+                          candidateIndex === index
+                            ? { ...candidate, sourceBranch }
+                            : candidate,
+                        ),
+                      );
+                    }}
+                    options={sourceOptions.map((branch) => [
+                      branch.shortName,
+                      branch.shortName,
+                    ])}
+                    value={rule.sourceBranch}
+                  />
+                  <SelectField
+                    label={t("settings.project.autoTrackingTarget")}
+                    onChange={(targetBranch) => {
+                      onAutoTrackingRulesChange(
+                        autoTrackingRules.map((candidate, candidateIndex) =>
+                          candidateIndex === index
+                            ? { ...candidate, targetBranch }
+                            : candidate,
+                        ),
+                      );
+                    }}
+                    options={targetOptions.map((branch) => [
+                      branch.shortName,
+                      branch.existence === "remoteOnly"
+                        ? t("settings.project.remoteBranchOption", {
+                            branch: branch.shortName,
+                          })
+                        : branch.shortName,
+                    ])}
+                    value={rule.targetBranch}
+                  />
+                  <Button
+                    className="self-end gap-2"
+                    onClick={() => {
+                      onAutoTrackingRulesChange(
+                        autoTrackingRules.filter(
+                          (_, candidateIndex) => candidateIndex !== index,
+                        ),
+                      );
+                    }}
+                    type="button"
+                    variant="secondary"
+                  >
+                    <Trash2 className="size-4" aria-hidden="true" />
+                    {t("actions.remove")}
+                  </Button>
+                </div>
+                {rowError ? (
+                  <p className="text-sm text-destructive">{t(rowError)}</p>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            className="gap-2"
+            disabled={sourceOptions.length === 0 || targetOptions.length === 0}
+            onClick={() => {
+              onAutoTrackingRulesChange([
+                ...autoTrackingRules,
+                {
+                  sourceBranch: sourceOptions[0]?.shortName ?? "",
+                  targetBranch: targetOptions[0]?.shortName ?? "",
+                },
+              ]);
+            }}
+            type="button"
+            variant="secondary"
+          >
+            <GitBranch className="size-4" aria-hidden="true" />
+            {t("settings.project.addAutoTrackingRule")}
+          </Button>
+          <Button
+            className="gap-2"
+            disabled={savingProject || !autoTrackingValidation.valid}
+            onClick={onSaveProject}
+            type="button"
+          >
+            <Save className="size-4" aria-hidden="true" />
+            {t("settings.project.saveProject")}
+          </Button>
+        </div>
+        {!autoTrackingValidation.valid ? (
+          <p className="text-sm text-destructive">
+            {t("settings.project.autoTrackingInvalid")}
+          </p>
+        ) : null}
+      </SettingsGroup>
     </section>
   );
+}
+
+function validateAutoTrackingRules(rules: AutoTrackingRule[]): {
+  rowErrors: Array<string | null>;
+  valid: boolean;
+} {
+  const sourceCounts = new Map<string, number>();
+  for (const rule of rules) {
+    const source = rule.sourceBranch.trim();
+    sourceCounts.set(source, (sourceCounts.get(source) ?? 0) + 1);
+  }
+  const cyclicSources = cyclicAutoTrackingSources(rules);
+
+  const rowErrors = rules.map((rule) => {
+    const source = rule.sourceBranch.trim();
+    const target = rule.targetBranch.trim();
+    if (!source || !target) {
+      return "settings.project.autoTrackingMissing";
+    }
+    if (source === target) {
+      return "settings.project.autoTrackingSelf";
+    }
+    if ((sourceCounts.get(source) ?? 0) > 1) {
+      return "settings.project.autoTrackingDuplicateSource";
+    }
+    if (cyclicSources.has(source)) {
+      return "settings.project.autoTrackingCycle";
+    }
+    return null;
+  });
+
+  return {
+    rowErrors,
+    valid: rowErrors.every((error) => error === null),
+  };
+}
+
+function cyclicAutoTrackingSources(rules: AutoTrackingRule[]): Set<string> {
+  const graph = new Map(
+    rules.map((rule) => [rule.sourceBranch.trim(), rule.targetBranch.trim()]),
+  );
+  const cyclic = new Set<string>();
+
+  for (const source of graph.keys()) {
+    const seen = new Set<string>();
+    let cursor = source;
+    while (graph.has(cursor)) {
+      if (seen.has(cursor)) {
+        for (const branch of seen) {
+          cyclic.add(branch);
+        }
+        break;
+      }
+      seen.add(cursor);
+      cursor = graph.get(cursor) ?? "";
+    }
+  }
+
+  return cyclic;
 }
 
 function AboutSettings({

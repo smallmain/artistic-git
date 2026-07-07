@@ -43,6 +43,8 @@ pub struct ProjectSettingsRequest {
 pub struct SaveProjectSettingsRequest {
     pub repository_path: String,
     pub large_file_check: LargeFileCheckSettings,
+    #[serde(default)]
+    pub auto_tracking_rules: Vec<artistic_git_core::config::AutoTrackingRule>,
     pub sidebar: Option<SidebarLayoutSettings>,
     pub local_changes_view_mode: Option<LocalChangesViewMode>,
 }
@@ -221,9 +223,11 @@ pub fn save_project_settings(
     request: SaveProjectSettingsRequest,
 ) -> AppResult<ProjectSettings> {
     let config = require_config(config, "saveProjectSettings")?;
+    crate::sync::validate_auto_tracking_rules(&request.auto_tracking_rules)?;
     config
         .update_project(request.repository_path, |project| {
             project.large_file_check = request.large_file_check;
+            project.auto_tracking_rules = request.auto_tracking_rules;
             if let Some(sidebar) = request.sidebar {
                 project.sidebar = sidebar;
             }
