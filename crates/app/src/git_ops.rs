@@ -11,7 +11,7 @@ use std::{
 pub(crate) const DEFAULT_LARGE_FILE_THRESHOLD_MB: u32 = 50;
 
 thread_local! {
-    static AUTH_CONTEXT: RefCell<Vec<AuthCommandContext>> = RefCell::new(Vec::new());
+    static AUTH_CONTEXT: RefCell<Vec<AuthCommandContext>> = const { RefCell::new(Vec::new()) };
 }
 
 #[derive(Clone)]
