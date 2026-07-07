@@ -593,6 +593,11 @@ impl CommandEnvironmentPlan {
         self.variables.get(key).map(OsString::as_os_str)
     }
 
+    pub fn with_overrides(mut self, variables: BTreeMap<String, OsString>) -> Self {
+        self.variables.extend(variables);
+        self
+    }
+
     pub fn removes_variable(&self, key: &str) -> bool {
         self.clear_parent_environment && !self.variables.contains_key(key)
     }

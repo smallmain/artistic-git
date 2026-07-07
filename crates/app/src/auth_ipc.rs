@@ -1,13 +1,18 @@
 use artistic_git_contracts::{InvocationId, IpcToken, OperationId};
+use artistic_git_git_runner::GitCommandPlan;
 use artistic_git_helpers::{
-    AUTH_INVOCATION_ID_ENV, AUTH_OPERATION_ID_ENV, AUTH_SOCKET_ENV, AUTH_TOKEN_ENV,
+    HelperIpcEnvelope, HelperIpcPayload, HelperIpcResponse, AUTH_INVOCATION_ID_ENV,
+    AUTH_OPERATION_ID_ENV, AUTH_SOCKET_ENV, AUTH_TOKEN_ENV,
 };
 use std::{
     collections::{BTreeMap, HashMap},
     ffi::{OsStr, OsString},
     fmt,
+    io::{Read, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
+    sync::{Arc, Mutex},
+    thread,
 };
 
 static INVOCATION_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -65,6 +70,7 @@ pub enum AuthPromptDecision {
 pub struct AuthOperationSession {
     pub operation_id: OperationId,
     pub interaction_policy: InteractionPolicy,
+    pub repository_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +79,9 @@ pub struct AuthInvocation {
     pub invocation_id: InvocationId,
     pub token: IpcToken,
     pub interaction_policy: InteractionPolicy,
+    pub repository_path: Option<PathBuf>,
+    pub host: Option<String>,
+    pub path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,6 +89,37 @@ pub struct ValidatedAuthInvocation {
     pub operation_id: OperationId,
     pub invocation_id: InvocationId,
     pub interaction_policy: InteractionPolicy,
+    pub repository_path: Option<PathBuf>,
+    pub host: Option<String>,
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AuthInvocationContext {
+    pub repository_path: Option<PathBuf>,
+    pub host: Option<String>,
+    pub path: Option<String>,
+}
+
+impl AuthInvocationContext {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_repository_path(mut self, repository_path: impl Into<PathBuf>) -> Self {
+        self.repository_path = Some(repository_path.into());
+        self
+    }
+
+    pub fn with_host(mut self, host: impl Into<String>) -> Self {
+        self.host = Some(host.into());
+        self
+    }
+
+    pub fn with_path(mut self, path: impl Into<String>) -> Self {
+        self.path = Some(path.into());
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,6 +174,7 @@ impl std::error::Error for AuthIpcError {}
 #[derive(Debug, Clone)]
 struct OperationState {
     interaction_policy: InteractionPolicy,
+    repository_path: Option<PathBuf>,
     invocation_ids: Vec<InvocationId>,
 }
 
@@ -142,6 +183,7 @@ struct InvocationState {
     operation_id: OperationId,
     token: Option<IpcToken>,
     interaction_policy: InteractionPolicy,
+    context: AuthInvocationContext,
 }
 
 #[derive(Debug, Default)]
@@ -168,10 +210,20 @@ impl AuthIpcSessionManager {
         operation_id: OperationId,
         interaction_policy: InteractionPolicy,
     ) -> AuthOperationSession {
+        self.start_operation_with_context(operation_id, interaction_policy, None)
+    }
+
+    pub fn start_operation_with_context(
+        &mut self,
+        operation_id: OperationId,
+        interaction_policy: InteractionPolicy,
+        repository_path: Option<PathBuf>,
+    ) -> AuthOperationSession {
         self.operations.insert(
             operation_id.as_str().to_owned(),
             OperationState {
                 interaction_policy,
+                repository_path: repository_path.clone(),
                 invocation_ids: Vec::new(),
             },
         );
@@ -179,6 +231,7 @@ impl AuthIpcSessionManager {
         AuthOperationSession {
             operation_id,
             interaction_policy,
+            repository_path,
         }
     }
 
@@ -186,12 +239,23 @@ impl AuthIpcSessionManager {
         &mut self,
         operation_id: &OperationId,
     ) -> Result<AuthInvocation, AuthIpcError> {
+        self.issue_invocation_with_context(operation_id, AuthInvocationContext::new())
+    }
+
+    pub fn issue_invocation_with_context(
+        &mut self,
+        operation_id: &OperationId,
+        mut context: AuthInvocationContext,
+    ) -> Result<AuthInvocation, AuthIpcError> {
         let operation = self
             .operations
             .get_mut(operation_id.as_str())
             .ok_or_else(|| AuthIpcError::UnknownOperation(operation_id.clone()))?;
         let invocation_id = InvocationId::new(random_identifier("inv", &INVOCATION_COUNTER, 16)?);
         let token = IpcToken::new(random_token()?);
+        if context.repository_path.is_none() {
+            context.repository_path = operation.repository_path.clone();
+        }
 
         operation.invocation_ids.push(invocation_id.clone());
         self.invocations.insert(
@@ -200,6 +264,7 @@ impl AuthIpcSessionManager {
                 operation_id: operation_id.clone(),
                 token: Some(token.clone()),
                 interaction_policy: operation.interaction_policy,
+                context: context.clone(),
             },
         );
 
@@ -208,6 +273,9 @@ impl AuthIpcSessionManager {
             invocation_id,
             token,
             interaction_policy: operation.interaction_policy,
+            repository_path: context.repository_path,
+            host: context.host,
+            path: context.path,
         })
     }
 
@@ -228,6 +296,9 @@ impl AuthIpcSessionManager {
                     operation_id: state.operation_id.clone(),
                     invocation_id: invocation_id.clone(),
                     interaction_policy: state.interaction_policy,
+                    repository_path: state.context.repository_path.clone(),
+                    host: state.context.host.clone(),
+                    path: state.context.path.clone(),
                 })
             }
             Some(_) => Err(AuthIpcError::InvalidToken(invocation_id.clone())),
@@ -240,6 +311,119 @@ impl AuthIpcSessionManager {
             .get(operation_id.as_str())
             .map(|operation| operation.invocation_ids.clone())
             .unwrap_or_default()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthIpcRequestContext {
+    pub operation_id: OperationId,
+    pub invocation_id: InvocationId,
+    pub interaction_policy: InteractionPolicy,
+    pub prompt_decision: AuthPromptDecision,
+    pub repository_path: Option<PathBuf>,
+    pub host: Option<String>,
+    pub path: Option<String>,
+}
+
+impl AuthIpcRequestContext {
+    fn from_validated(
+        validated: ValidatedAuthInvocation,
+        payload: &HelperIpcPayload,
+    ) -> AuthIpcRequestContext {
+        let (payload_host, payload_path) = match payload {
+            HelperIpcPayload::Credential { credential } => {
+                (credential.host.clone(), credential.path.clone())
+            }
+            HelperIpcPayload::Askpass { .. } => (None, None),
+        };
+
+        AuthIpcRequestContext {
+            operation_id: validated.operation_id,
+            invocation_id: validated.invocation_id,
+            interaction_policy: validated.interaction_policy,
+            prompt_decision: validated.interaction_policy.prompt_decision(),
+            repository_path: validated.repository_path,
+            host: validated.host.or(payload_host),
+            path: validated.path.or(payload_path),
+        }
+    }
+}
+
+pub trait AuthIpcHandler: Send + Sync + 'static {
+    fn handle_auth_ipc_request(
+        &self,
+        context: AuthIpcRequestContext,
+        payload: HelperIpcPayload,
+    ) -> HelperIpcResponse;
+}
+
+impl<F> AuthIpcHandler for F
+where
+    F: Fn(AuthIpcRequestContext, HelperIpcPayload) -> HelperIpcResponse + Send + Sync + 'static,
+{
+    fn handle_auth_ipc_request(
+        &self,
+        context: AuthIpcRequestContext,
+        payload: HelperIpcPayload,
+    ) -> HelperIpcResponse {
+        self(context, payload)
+    }
+}
+
+#[derive(Debug)]
+pub struct StaticAuthIpcHandler {
+    askpass_secret: Option<String>,
+    credential: Option<artistic_git_helpers::GitCredentialResponse>,
+}
+
+impl StaticAuthIpcHandler {
+    pub fn empty() -> Self {
+        Self {
+            askpass_secret: None,
+            credential: None,
+        }
+    }
+
+    pub fn askpass(secret: impl Into<String>) -> Self {
+        Self {
+            askpass_secret: Some(secret.into()),
+            credential: None,
+        }
+    }
+
+    pub fn credential(credential: artistic_git_helpers::GitCredentialResponse) -> Self {
+        Self {
+            askpass_secret: None,
+            credential: Some(credential),
+        }
+    }
+}
+
+impl AuthIpcHandler for StaticAuthIpcHandler {
+    fn handle_auth_ipc_request(
+        &self,
+        context: AuthIpcRequestContext,
+        payload: HelperIpcPayload,
+    ) -> HelperIpcResponse {
+        if context.prompt_decision == AuthPromptDecision::FailImmediately {
+            return HelperIpcResponse::Error {
+                message: "authentication is required but this operation is non-interactive"
+                    .to_owned(),
+            };
+        }
+
+        match payload {
+            HelperIpcPayload::Askpass { .. } => self
+                .askpass_secret
+                .clone()
+                .map(|secret| HelperIpcResponse::Askpass { secret })
+                .unwrap_or(HelperIpcResponse::Empty),
+            HelperIpcPayload::Credential { .. } => self
+                .credential
+                .clone()
+                .map(|credential| HelperIpcResponse::Credential { credential })
+                .unwrap_or(HelperIpcResponse::Empty),
+        }
     }
 }
 
@@ -301,14 +485,14 @@ impl LocalIpcEndpoint {
 #[derive(Debug)]
 pub struct LocalIpcListener {
     endpoint: LocalIpcEndpoint,
-    #[cfg(unix)]
-    _listener: std::os::unix::net::UnixListener,
+    listener: interprocess::local_socket::Listener,
 }
 
 impl LocalIpcListener {
-    #[cfg(unix)]
     pub fn bind_unix_socket(path: impl Into<PathBuf>) -> std::io::Result<Self> {
+        use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
         use std::fs;
+        #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
 
         let path = path.into();
@@ -316,18 +500,211 @@ impl LocalIpcListener {
             fs::remove_file(&path)?;
         }
 
-        let listener = std::os::unix::net::UnixListener::bind(&path)?;
+        let name = path.clone().to_fs_name::<GenericFilePath>()?;
+        let listener = ListenerOptions::new().name(name).create_sync()?;
+        #[cfg(unix)]
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
 
         Ok(Self {
             endpoint: LocalIpcEndpoint::UnixSocket(path),
-            _listener: listener,
+            listener,
         })
+    }
+
+    #[cfg(windows)]
+    pub fn bind_windows_named_pipe(pipe_name: impl Into<String>) -> std::io::Result<Self> {
+        use interprocess::local_socket::{prelude::*, GenericNamespaced, ListenerOptions};
+
+        let pipe_name = pipe_name.into();
+        let name = pipe_name.as_str().to_ns_name::<GenericNamespaced>()?;
+        let listener = ListenerOptions::new().name(name).create_sync()?;
+
+        Ok(Self {
+            endpoint: LocalIpcEndpoint::WindowsNamedPipe(pipe_name),
+            listener,
+        })
+    }
+
+    pub fn bind_platform(path_or_name: impl Into<PathBuf>) -> std::io::Result<Self> {
+        let path_or_name = path_or_name.into();
+        #[cfg(windows)]
+        {
+            let name = path_or_name.to_string_lossy().into_owned();
+            Self::bind_windows_named_pipe(name)
+        }
+        #[cfg(not(windows))]
+        {
+            Self::bind_unix_socket(path_or_name)
+        }
     }
 
     pub fn endpoint(&self) -> &LocalIpcEndpoint {
         &self.endpoint
     }
+
+    pub fn accept(&self) -> std::io::Result<interprocess::local_socket::Stream> {
+        use interprocess::local_socket::traits::Listener as _;
+
+        self.listener.accept()
+    }
+}
+
+pub struct AuthIpcService {
+    listener: LocalIpcListener,
+    sessions: Arc<Mutex<AuthIpcSessionManager>>,
+    handler: Arc<dyn AuthIpcHandler>,
+}
+
+impl AuthIpcService {
+    pub fn new(
+        listener: LocalIpcListener,
+        sessions: Arc<Mutex<AuthIpcSessionManager>>,
+        handler: Arc<dyn AuthIpcHandler>,
+    ) -> Self {
+        Self {
+            listener,
+            sessions,
+            handler,
+        }
+    }
+
+    pub fn endpoint(&self) -> &LocalIpcEndpoint {
+        self.listener.endpoint()
+    }
+
+    pub fn serve_one(&self) -> std::io::Result<()> {
+        let stream = self.listener.accept()?;
+        handle_helper_stream(
+            stream,
+            Arc::clone(&self.sessions),
+            Arc::clone(&self.handler),
+        );
+        Ok(())
+    }
+
+    pub fn run_in_background(self) -> AuthIpcServiceHandle {
+        let endpoint = self.listener.endpoint().clone();
+        let thread = thread::spawn(move || loop {
+            match self.listener.accept() {
+                Ok(stream) => {
+                    let sessions = Arc::clone(&self.sessions);
+                    let handler = Arc::clone(&self.handler);
+                    thread::spawn(move || handle_helper_stream(stream, sessions, handler));
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, "auth IPC listener stopped accepting helper connections");
+                    break;
+                }
+            }
+        });
+
+        AuthIpcServiceHandle {
+            endpoint,
+            thread: Some(thread),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct AuthIpcServiceHandle {
+    endpoint: LocalIpcEndpoint,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+impl AuthIpcServiceHandle {
+    pub fn endpoint(&self) -> &LocalIpcEndpoint {
+        &self.endpoint
+    }
+
+    pub fn forget(mut self) {
+        self.thread.take();
+    }
+}
+
+fn handle_helper_stream(
+    mut stream: interprocess::local_socket::Stream,
+    sessions: Arc<Mutex<AuthIpcSessionManager>>,
+    handler: Arc<dyn AuthIpcHandler>,
+) {
+    let response = handle_helper_stream_request(&mut stream, sessions, handler);
+    if let Err(error) = write_helper_response(&mut stream, response) {
+        tracing::warn!(error = %error, "failed to write auth IPC helper response");
+    }
+}
+
+fn handle_helper_stream_request(
+    stream: &mut interprocess::local_socket::Stream,
+    sessions: Arc<Mutex<AuthIpcSessionManager>>,
+    handler: Arc<dyn AuthIpcHandler>,
+) -> HelperIpcResponse {
+    let mut request = Vec::new();
+    if let Err(error) = read_ipc_line(stream, &mut request) {
+        return HelperIpcResponse::Error {
+            message: format!("failed to read auth IPC request: {error}"),
+        };
+    }
+
+    let envelope = match serde_json::from_slice::<HelperIpcEnvelope>(&request) {
+        Ok(envelope) => envelope,
+        Err(error) => {
+            return HelperIpcResponse::Error {
+                message: format!("failed to decode auth IPC request: {error}"),
+            };
+        }
+    };
+
+    // Only token validation touches the session mutex. The prompt/credential handler
+    // runs after the lock is released, so helper IPC can continue while a git
+    // operation is holding the write permit and waiting for this callback.
+    let validated = {
+        let mut sessions = match sessions.lock() {
+            Ok(sessions) => sessions,
+            Err(error) => {
+                return HelperIpcResponse::Error {
+                    message: format!("auth IPC session table is poisoned: {error}"),
+                };
+            }
+        };
+        match sessions.validate_token(&envelope.invocation_id, &envelope.token) {
+            Ok(validated) => validated,
+            Err(error) => {
+                return HelperIpcResponse::Error {
+                    message: error.to_string(),
+                };
+            }
+        }
+    };
+
+    let context = AuthIpcRequestContext::from_validated(validated, &envelope.payload);
+    handler.handle_auth_ipc_request(context, envelope.payload)
+}
+
+fn write_helper_response(
+    stream: &mut interprocess::local_socket::Stream,
+    response: HelperIpcResponse,
+) -> std::io::Result<()> {
+    let mut body = serde_json::to_vec(&response)?;
+    body.push(b'\n');
+    stream.write_all(&body)?;
+    stream.flush()
+}
+
+fn read_ipc_line(
+    reader: &mut interprocess::local_socket::Stream,
+    output: &mut Vec<u8>,
+) -> std::io::Result<()> {
+    let mut byte = [0_u8; 1];
+    loop {
+        let read = reader.read(&mut byte)?;
+        if read == 0 {
+            break;
+        }
+        output.push(byte[0]);
+        if byte[0] == b'\n' {
+            break;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -467,6 +844,14 @@ impl AuthGitCommandInjectionPlan {
         }
         args
     }
+
+    pub fn apply_to_command_plan(&self, mut plan: GitCommandPlan) -> GitCommandPlan {
+        let mut args = self.git_config_args();
+        args.extend(plan.args);
+        plan.args = args;
+        plan.environment = plan.environment.with_overrides(self.environment.clone());
+        plan
+    }
 }
 
 #[cfg(test)]
@@ -533,6 +918,9 @@ mod tests {
             invocation_id: InvocationId::new("inv-1"),
             token: IpcToken::new("token-1"),
             interaction_policy: InteractionPolicy::interactive(),
+            repository_path: None,
+            host: None,
+            path: None,
         };
         let endpoint = LocalIpcEndpoint::UnixSocket(PathBuf::from("/tmp/artistic-git.sock"));
         let helpers = AuthHelperBinaries::new(
@@ -589,5 +977,104 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(permissions, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn helper_round_trip_validates_and_consumes_one_time_token() {
+        use artistic_git_helpers::{
+            invoke_helper_ipc_at, CredentialOperation, GitCredentialRequest, HelperInvocationEnv,
+            HelperIpcEnvelope,
+        };
+        use std::sync::mpsc;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join("auth.sock");
+        let listener = LocalIpcListener::bind_unix_socket(&socket).expect("bind unix socket");
+        let sessions = Arc::new(Mutex::new(AuthIpcSessionManager::new()));
+        let operation_id = OperationId::new("fetch-op");
+        let invocation = {
+            let mut sessions = sessions.lock().expect("sessions");
+            sessions.start_operation_with_context(
+                operation_id.clone(),
+                InteractionPolicy::interactive(),
+                Some(PathBuf::from("/repo")),
+            );
+            sessions
+                .issue_invocation_with_context(
+                    &operation_id,
+                    AuthInvocationContext::new().with_host("example.com"),
+                )
+                .expect("invocation")
+        };
+        let (tx, rx) = mpsc::channel();
+        let handler = move |context: AuthIpcRequestContext, payload: HelperIpcPayload| {
+            tx.send(context).expect("send context");
+            match payload {
+                HelperIpcPayload::Credential { .. } => HelperIpcResponse::Empty,
+                HelperIpcPayload::Askpass { .. } => HelperIpcResponse::Empty,
+            }
+        };
+        let service = AuthIpcService::new(listener, Arc::clone(&sessions), Arc::new(handler));
+        let server = thread::spawn(move || service.serve_one().expect("serve one"));
+
+        let env = HelperInvocationEnv {
+            socket_path: socket.clone(),
+            token: invocation.token.clone(),
+            invocation_id: invocation.invocation_id.clone(),
+            operation_id: Some(operation_id.clone()),
+        };
+        let envelope = HelperIpcEnvelope::credential(
+            &env,
+            GitCredentialRequest {
+                operation: CredentialOperation::Get,
+                protocol: Some("https".to_owned()),
+                host: Some("example.com".to_owned()),
+                path: Some("org/repo".to_owned()),
+                username: None,
+                password: None,
+                fields: Vec::new(),
+            },
+        );
+
+        let response = invoke_helper_ipc_at(&socket, &envelope).expect("ipc response");
+        assert_eq!(response, HelperIpcResponse::Empty);
+        server.join().expect("server thread");
+
+        let context = rx.recv().expect("context");
+        assert_eq!(context.operation_id, invocation.operation_id);
+        assert_eq!(context.invocation_id, invocation.invocation_id);
+        assert_eq!(context.prompt_decision, AuthPromptDecision::Prompt);
+        assert_eq!(context.repository_path, Some(PathBuf::from("/repo")));
+        assert_eq!(context.host.as_deref(), Some("example.com"));
+        assert_eq!(context.path.as_deref(), Some("org/repo"));
+
+        let error = sessions
+            .lock()
+            .expect("sessions")
+            .validate_token(&invocation.invocation_id, &invocation.token)
+            .expect_err("token was consumed by service");
+        assert!(matches!(error, AuthIpcError::TokenAlreadyUsed(_)));
+    }
+
+    #[test]
+    fn non_interactive_handler_returns_error_without_prompt() {
+        let handler = StaticAuthIpcHandler::askpass("secret");
+        let response = handler.handle_auth_ipc_request(
+            AuthIpcRequestContext {
+                operation_id: OperationId::new("op-1"),
+                invocation_id: InvocationId::new("inv-1"),
+                interaction_policy: InteractionPolicy::background_non_interactive(),
+                prompt_decision: AuthPromptDecision::FailImmediately,
+                repository_path: Some(PathBuf::from("/repo")),
+                host: Some("example.com".to_owned()),
+                path: Some("org/repo".to_owned()),
+            },
+            HelperIpcPayload::Askpass {
+                prompt: "Passphrase:".to_owned(),
+            },
+        );
+
+        assert!(matches!(response, HelperIpcResponse::Error { .. }));
     }
 }

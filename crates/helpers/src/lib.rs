@@ -351,24 +351,57 @@ pub fn invoke_helper_ipc_at(
     socket_path: &Path,
     envelope: &HelperIpcEnvelope,
 ) -> Result<HelperIpcResponse, HelperProtocolError> {
-    use std::os::unix::net::UnixStream;
+    use interprocess::local_socket::{prelude::*, GenericFilePath, Stream};
 
-    let mut stream = UnixStream::connect(socket_path)?;
+    let name = socket_path.to_fs_name::<GenericFilePath>()?;
+    let mut stream = Stream::connect(name)?;
     let request = encode_ipc_request(envelope)?;
     stream.write_all(&request)?;
-    stream.shutdown(std::net::Shutdown::Write)?;
+    stream.flush()?;
 
-    let mut response = Vec::new();
-    stream.read_to_end(&mut response)?;
+    let response = read_ipc_line(&mut stream)?;
     decode_ipc_response(&response)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+pub fn invoke_helper_ipc_at(
+    socket_path: &Path,
+    envelope: &HelperIpcEnvelope,
+) -> Result<HelperIpcResponse, HelperProtocolError> {
+    use interprocess::local_socket::{prelude::*, GenericFilePath, Stream};
+
+    let name = socket_path.to_fs_name::<GenericFilePath>()?;
+    let mut stream = Stream::connect(name)?;
+    let request = encode_ipc_request(envelope)?;
+    stream.write_all(&request)?;
+    stream.flush()?;
+
+    let response = read_ipc_line(&mut stream)?;
+    decode_ipc_response(&response)
+}
+
+#[cfg(not(any(unix, windows)))]
 pub fn invoke_helper_ipc_at(
     _socket_path: &Path,
     _envelope: &HelperIpcEnvelope,
 ) -> Result<HelperIpcResponse, HelperProtocolError> {
     Err(HelperProtocolError::UnsupportedPlatform)
+}
+
+fn read_ipc_line(reader: &mut impl Read) -> std::io::Result<Vec<u8>> {
+    let mut response = Vec::new();
+    let mut byte = [0_u8; 1];
+    loop {
+        let read = reader.read(&mut byte)?;
+        if read == 0 {
+            break;
+        }
+        response.push(byte[0]);
+        if byte[0] == b'\n' {
+            break;
+        }
+    }
+    Ok(response)
 }
 
 pub fn parse_credential_operation_from_args<I, S>(
