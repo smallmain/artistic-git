@@ -560,6 +560,7 @@ graph TD
 
 - [x] E2E 基建：`tauri-driver` + WebdriverIO，Linux + Windows CI（macOS 无 WebDriver 由 Rust 集成测试兜底）
 - [ ] E2E 全链路：克隆 → 修改 → 提交 → 同事推送 → 同步 → 冲突 → 解决 → 撤回（真实临时远程仓库）
+  - 进展备注：已补 Rust 后端 full-chain integration test，使用真实临时 bare remote + app clone/open/commit/sync/conflict resolution/revert API 串联覆盖完整 Git 操作链；WDIO/Tauri UI 自动化目前仍是 smoke，尚未关闭 UI 点击全链路。
 - [ ] 失败注入全矩阵复查：每个融合操作（同步/自动跟踪/提交/撤回/审查/切换/子模块提交）每一步注入失败，断言恢复到操作前状态 + 「工作区与 HEAD 干净可用」全局不变量
 - [ ] 性能验证：万级提交历史滚动/几万文件大树 status 时延（fsmonitor 生效断言）/巨型二进制 + LFS 仓库操作
 - [x] 「整仓库显示已修改」自愈提示条：检测本地更改数量异常巨大 → 列表顶部建议一键规范化（`git add --renormalize` 预览，不自动提交，默认不打扰）
