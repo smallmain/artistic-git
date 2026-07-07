@@ -76,6 +76,12 @@ import type {
 
 export interface AppCommandArgs {
   health: undefined;
+  window_context: undefined;
+  new_project_window: undefined;
+  open_repository_window: { request: OpenRepositoryWindowRequest };
+  register_window_repository: { request: OpenRepositoryWindowRequest };
+  save_window_geometry: { request: OpenRepositoryWindowRequest };
+  close_current_window: undefined;
   open_log_dir: undefined;
   open_repository: { request: OpenRepositoryRequest };
   clone_repository: { request: CloneRepositoryRequest };
@@ -123,6 +129,12 @@ export interface AppCommandArgs {
 
 export interface AppCommandResponses {
   health: HealthResponse;
+  window_context: WindowContextResponse;
+  new_project_window: NewWindowResponse;
+  open_repository_window: OpenRepositoryWindowResponse;
+  register_window_repository: WindowContextResponse;
+  save_window_geometry: ProjectSettings;
+  close_current_window: void;
   open_log_dir: OpenLogDirResponse;
   open_repository: OpenRepositoryResponse;
   clone_repository: CloneRepositoryResponse;
@@ -170,6 +182,30 @@ export interface AppCommandResponses {
 
 export type AppCommandName = keyof AppCommandResponses;
 
+export type OpenRepositoryWindowAction =
+  | "useCurrent"
+  | "focusedExisting"
+  | "created";
+
+export interface WindowContextResponse {
+  label: string;
+  repositoryPath: string | null;
+}
+
+export interface NewWindowResponse {
+  label: string;
+}
+
+export interface OpenRepositoryWindowRequest {
+  repositoryPath: string;
+}
+
+export interface OpenRepositoryWindowResponse {
+  action: OpenRepositoryWindowAction;
+  label: string;
+  repositoryPath: string;
+}
+
 export async function invokeCommand<TResponse>(
   command: string,
   args?: Record<string, unknown>,
@@ -195,6 +231,36 @@ export function invokeAppCommand<TName extends AppCommandName>(
 
 export function health(): Promise<HealthResponse> {
   return invokeAppCommand("health");
+}
+
+export function windowContext(): Promise<WindowContextResponse> {
+  return invokeAppCommand("window_context");
+}
+
+export function newProjectWindow(): Promise<NewWindowResponse> {
+  return invokeAppCommand("new_project_window");
+}
+
+export function openRepositoryWindow(
+  request: OpenRepositoryWindowRequest,
+): Promise<OpenRepositoryWindowResponse> {
+  return invokeAppCommand("open_repository_window", { request });
+}
+
+export function registerWindowRepository(
+  request: OpenRepositoryWindowRequest,
+): Promise<WindowContextResponse> {
+  return invokeAppCommand("register_window_repository", { request });
+}
+
+export function saveWindowGeometry(
+  request: OpenRepositoryWindowRequest,
+): Promise<ProjectSettings> {
+  return invokeAppCommand("save_window_geometry", { request });
+}
+
+export function closeCurrentWindow(): Promise<void> {
+  return invokeAppCommand("close_current_window");
 }
 
 export function openLogDir(): Promise<OpenLogDirResponse> {

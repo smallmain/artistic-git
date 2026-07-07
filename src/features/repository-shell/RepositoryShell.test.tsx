@@ -35,6 +35,7 @@ const commandMocks = vi.hoisted(() => ({
   restoreChanges: vi.fn(),
   restoreStash: vi.fn(),
   revertCommit: vi.fn(),
+  saveWindowGeometry: vi.fn(),
   saveConflictResolution: vi.fn(),
   selectConflictSide: vi.fn(),
   settingsSnapshot: vi.fn(),
@@ -60,6 +61,7 @@ function renderWithProviders(ui: ReactElement) {
 beforeEach(() => {
   window.localStorage.clear();
   vi.clearAllMocks();
+  commandMocks.saveWindowGeometry.mockResolvedValue({});
   commandMocks.repositorySummary.mockResolvedValue({
     currentBranch: "main",
     hasOrigin: true,

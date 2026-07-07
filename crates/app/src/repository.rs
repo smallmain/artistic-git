@@ -15,7 +15,9 @@ use artistic_git_contracts::{
     RestoreStashRequest, RestoreStashResponse, SaveRemoteSettingsRequest, StashDetailsRequest,
     StashDetailsResponse, StashEntry, StashListResponse,
 };
-use artistic_git_core::config::{AppSettings, ConfigActor, GitUserSettings, ProjectSettings};
+use artistic_git_core::config::{
+    AppSettings, ConfigActor, GitUserSettings, ProjectSettings, WindowGeometry,
+};
 use artistic_git_git_runner::{
     parse_git_progress_line, CancelToken, GitCommandPlan, GitRunner, OperationBusy,
 };
@@ -317,6 +319,18 @@ impl RepositoryBackend {
         request: crate::settings::SaveProjectSettingsRequest,
     ) -> AppResult<ProjectSettings> {
         crate::settings::save_project_settings(self.config.as_ref(), request)
+    }
+
+    pub fn save_project_window_geometry(
+        &self,
+        repository_path: String,
+        window_geometry: WindowGeometry,
+    ) -> AppResult<ProjectSettings> {
+        crate::settings::save_project_window_geometry(
+            self.config.as_ref(),
+            repository_path,
+            window_geometry,
+        )
     }
 
     pub fn validate_identity_for_write(

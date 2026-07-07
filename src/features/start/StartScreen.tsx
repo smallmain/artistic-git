@@ -19,6 +19,7 @@ import {
   cancelCloneRepository,
   cloneRepository,
   openRepository,
+  openRepositoryWindow,
   saveAppSettings,
 } from "@/lib/ipc/commands";
 import { listenAppEvent } from "@/lib/ipc/events";
@@ -86,6 +87,15 @@ export function StartScreen() {
     },
     [recentProjects, setActiveRepositoryPath, setRecentProjects],
   );
+  const routeRepository = React.useCallback(
+    async (repositoryPath: string) => {
+      const windowResponse = await openRepositoryWindow({ repositoryPath });
+      if (windowResponse.action === "useCurrent") {
+        activateRepository(windowResponse.repositoryPath);
+      }
+    },
+    [activateRepository],
+  );
   const rememberCloneParentDirectory = React.useCallback(
     (parentDirectory: string) => {
       const trimmed = parentDirectory.trim();
@@ -122,7 +132,7 @@ export function StartScreen() {
           path,
           toolIdentity: toolIdentityFromSettings(appSettings),
         });
-        activateRepository(response.repositoryPath);
+        await routeRepository(response.repositoryPath);
       } catch (error) {
         window.dispatchEvent(
           new CustomEvent("artistic-git:error", { detail: error }),
@@ -131,7 +141,7 @@ export function StartScreen() {
         setOpeningPath(null);
       }
     },
-    [activateRepository, appSettings],
+    [appSettings, routeRepository],
   );
   const handleCloneRepository = React.useCallback(async () => {
     const parentDirectory = cloneParentDirectory.trim();
@@ -156,7 +166,7 @@ export function StartScreen() {
         url: cloneUrl.trim(),
       });
       rememberCloneParentDirectory(parentDirectory);
-      activateRepository(response.repository.repositoryPath);
+      await routeRepository(response.repository.repositoryPath);
       setCloneDialogOpen(false);
       setCloneUrl("");
       setCloneDirectoryName("");
@@ -175,12 +185,12 @@ export function StartScreen() {
       cloneCancelRequestedRef.current = false;
     }
   }, [
-    activateRepository,
     appSettings,
     cloneDirectoryName,
     cloneParentDirectory,
     cloneUrl,
     rememberCloneParentDirectory,
+    routeRepository,
     t,
   ]);
   const handleChooseCloneParentDirectory = React.useCallback(async () => {
@@ -257,6 +267,27 @@ export function StartScreen() {
       unlistenProgress?.();
     };
   }, [cloneOperationId]);
+
+  React.useEffect(() => {
+    const openProject = () => {
+      fileInputRef.current?.click();
+    };
+    const cloneProject = () => {
+      setCloneParentDirectory((current) =>
+        current.trim() ? current : initialCloneParentDirectory(appSettings),
+      );
+      setCloneDialogOpen(true);
+      setCloneError(null);
+    };
+
+    window.addEventListener("artistic-git:open-project", openProject);
+    window.addEventListener("artistic-git:clone-project", cloneProject);
+
+    return () => {
+      window.removeEventListener("artistic-git:open-project", openProject);
+      window.removeEventListener("artistic-git:clone-project", cloneProject);
+    };
+  }, [appSettings]);
 
   return (
     <main className="flex min-h-screen bg-background text-foreground">

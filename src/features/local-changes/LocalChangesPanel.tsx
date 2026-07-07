@@ -154,6 +154,7 @@ export function LocalChangesPanel({
             <input
               aria-label={t("localChanges.search")}
               className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+              data-app-search="current"
               onChange={(event) => setSearchTerm(event.target.value)}
               placeholder={t("localChanges.search")}
               value={searchTerm}

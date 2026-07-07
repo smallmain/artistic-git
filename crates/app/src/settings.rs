@@ -1,7 +1,7 @@
 use artistic_git_contracts::{AppError, AppResult, OperationContext};
 use artistic_git_core::config::{
     normalize_project_path_key, AppSettings, ConfigActor, GitUserSettings, LargeFileCheckSettings,
-    ProjectSettings,
+    ProjectSettings, WindowGeometry,
 };
 use artistic_git_git_runner::{GitRunner, IdentityValidationHook, WriteOperationRequest};
 use serde::{Deserialize, Serialize};
@@ -224,6 +224,19 @@ pub fn save_project_settings(
             project.large_file_check = request.large_file_check;
         })
         .map_err(|source| config_error(source, "saveProjectSettings"))
+}
+
+pub fn save_project_window_geometry(
+    config: Option<&ConfigActor>,
+    repository_path: String,
+    window_geometry: WindowGeometry,
+) -> AppResult<ProjectSettings> {
+    let config = require_config(config, "saveWindowGeometry")?;
+    config
+        .update_project(repository_path, |project| {
+            project.window_geometry = Some(window_geometry);
+        })
+        .map_err(|source| config_error(source, "saveWindowGeometry"))
 }
 
 pub fn load_gitignore(request: GitignoreRequest) -> AppResult<GitignoreFileResponse> {
@@ -754,6 +767,39 @@ mod tests {
         assert!(!response.requires_identity);
         assert!(response.identity.complete);
         assert_eq!(response.identity.source, IdentitySource::Missing);
+    }
+
+    #[test]
+    fn window_menu_save_project_window_geometry_updates_only_geometry() {
+        let config_dir = TestTempDir::new("ag-settings-window-geometry").expect("temp config");
+        let config = ConfigActor::load(ConfigPaths::new(
+            config_dir.path().join("settings.json"),
+            config_dir.path().join("projects.json"),
+        ))
+        .expect("load config actor");
+
+        let geometry = WindowGeometry {
+            width: 1440,
+            height: 900,
+            x: Some(20),
+            y: Some(40),
+            maximized: true,
+        };
+        let saved =
+            save_project_window_geometry(Some(&config), "/repo/art".to_owned(), geometry.clone())
+                .expect("save window geometry");
+
+        assert_eq!(saved.window_geometry, Some(geometry.clone()));
+
+        let loaded = load_project_settings(
+            Some(&config),
+            ProjectSettingsRequest {
+                repository_path: "/repo/art".to_owned(),
+            },
+        )
+        .expect("load project settings");
+
+        assert_eq!(loaded.window_geometry, Some(geometry));
     }
 
     #[test]

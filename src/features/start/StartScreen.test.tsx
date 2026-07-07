@@ -23,6 +23,7 @@ const commandMocks = vi.hoisted(() => ({
   cancelCloneRepository: vi.fn(),
   cloneRepository: vi.fn(),
   openRepository: vi.fn(),
+  openRepositoryWindow: vi.fn(),
   saveAppSettings: vi.fn(),
 }));
 const dialogMocks = vi.hoisted(() => ({
@@ -72,6 +73,13 @@ beforeEach(() => {
   dialogMocks.open.mockResolvedValue("/projects");
   commandMocks.saveAppSettings.mockImplementation(
     async ({ settings }) => settings,
+  );
+  commandMocks.openRepositoryWindow.mockImplementation(
+    async ({ repositoryPath }) => ({
+      action: "useCurrent",
+      label: "main",
+      repositoryPath,
+    }),
   );
 });
 

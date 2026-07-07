@@ -198,6 +198,7 @@ export function HistoryWorkbench({
             <input
               aria-label={t("history.search.label")}
               className="h-9 w-full rounded-md border bg-background pl-9 pr-9 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              data-app-search="current"
               onChange={(event) => {
                 setQuery(event.target.value);
               }}

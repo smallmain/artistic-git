@@ -17,5 +17,6 @@ artistic-git-app.workspace = true
 artistic-git-contracts.workspace = true
 artistic-git-core.workspace = true
 artistic-git-git-runner.workspace = true
+serde.workspace = true
 tauri.workspace = true
 tauri-plugin-dialog = "2"

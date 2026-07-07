@@ -42,6 +42,7 @@ import {
   restoreChanges,
   restoreStash,
   repositorySummary,
+  saveWindowGeometry,
   saveConflictResolution,
   selectConflictSide,
   stashDetails,
@@ -252,6 +253,32 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     window.addEventListener("artistic-git:fetch-state", handleFetchState);
     return () => {
       window.removeEventListener("artistic-git:fetch-state", handleFetchState);
+    };
+  }, [repositoryPath]);
+
+  React.useEffect(() => {
+    const handleViewTab = (event: Event) => {
+      const tab = (event as CustomEvent<MainTab>).detail;
+      if (tab === "history" || tab === "localChanges") {
+        setActiveTab(tab);
+      }
+    };
+
+    window.addEventListener("artistic-git:view-tab", handleViewTab);
+    return () => {
+      window.removeEventListener("artistic-git:view-tab", handleViewTab);
+    };
+  }, []);
+
+  React.useEffect(() => {
+    const persistGeometry = () => {
+      void saveWindowGeometry({ repositoryPath }).catch(() => undefined);
+    };
+
+    window.addEventListener("beforeunload", persistGeometry);
+    return () => {
+      persistGeometry();
+      window.removeEventListener("beforeunload", persistGeometry);
     };
   }, [repositoryPath]);
 

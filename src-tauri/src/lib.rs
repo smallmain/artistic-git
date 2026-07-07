@@ -1,13 +1,228 @@
-use std::{env, fs, path::PathBuf, sync::Arc};
-use tauri::{Emitter, Manager, State};
+use std::{
+    collections::BTreeMap,
+    env, fs,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
+use tauri::{
+    menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu},
+    Emitter, Manager, PhysicalPosition, PhysicalSize, State, WebviewUrl,
+};
+
+const MENU_EVENT_NAME: &str = "app-menu";
+const APP_HOMEPAGE: &str = "https://github.com/smallmain/artistic-git";
+const APP_CHANGELOG: &str = "https://github.com/smallmain/artistic-git/releases";
+const START_WINDOW_LABEL_PREFIX: &str = "start-";
+const REPOSITORY_WINDOW_LABEL_PREFIX: &str = "repo-";
 
 struct LoggingState {
     _guard: artistic_git_core::logging::LoggingGuard,
 }
 
+#[derive(Default)]
+struct WindowRegistry {
+    inner: Mutex<WindowRegistryInner>,
+}
+
+#[derive(Default)]
+struct WindowRegistryInner {
+    label_to_repository: BTreeMap<String, String>,
+    repository_to_label: BTreeMap<String, String>,
+    next_window_id: u64,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenRepositoryWindowRequest {
+    repository_path: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WindowContextResponse {
+    label: String,
+    repository_path: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenRepositoryWindowResponse {
+    action: OpenRepositoryWindowAction,
+    label: String,
+    repository_path: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+enum OpenRepositoryWindowAction {
+    UseCurrent,
+    FocusedExisting,
+    Created,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NewWindowResponse {
+    label: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AppMenuEvent {
+    id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SecondInstanceForward {
+    args: Vec<String>,
+    repository_path: Option<String>,
+}
+
 #[tauri::command]
 fn health() -> artistic_git_contracts::AppResult<artistic_git_app::HealthResponse> {
     artistic_git_app::health()
+}
+
+#[tauri::command]
+fn window_context(
+    window: tauri::Window,
+    registry: State<'_, WindowRegistry>,
+) -> artistic_git_contracts::AppResult<WindowContextResponse> {
+    let label = window.label().to_owned();
+    let repository_path = registry
+        .inner
+        .lock()
+        .map_err(|_| window_command_error("window registry lock poisoned", "windowContext"))?
+        .label_to_repository
+        .get(&label)
+        .cloned();
+
+    Ok(WindowContextResponse {
+        label,
+        repository_path,
+    })
+}
+
+#[tauri::command]
+fn new_project_window(
+    app_handle: tauri::AppHandle,
+    registry: State<'_, WindowRegistry>,
+) -> artistic_git_contracts::AppResult<NewWindowResponse> {
+    create_start_window(&app_handle, &registry)
+}
+
+#[tauri::command]
+fn open_repository_window(
+    app_handle: tauri::AppHandle,
+    window: tauri::Window,
+    registry: State<'_, WindowRegistry>,
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: OpenRepositoryWindowRequest,
+) -> artistic_git_contracts::AppResult<OpenRepositoryWindowResponse> {
+    let project_settings =
+        backend.load_project_settings(artistic_git_app::ProjectSettingsRequest {
+            repository_path: request.repository_path,
+        })?;
+    let repository_path = project_settings.path;
+    let current_label = window.label().to_owned();
+
+    let decision = {
+        let mut inner = registry.inner.lock().map_err(|_| {
+            window_command_error("window registry lock poisoned", "openRepositoryWindow")
+        })?;
+
+        if let Some(existing_label) = inner.repository_to_label.get(&repository_path).cloned() {
+            if existing_label != current_label {
+                Some((OpenRepositoryWindowAction::FocusedExisting, existing_label))
+            } else {
+                Some((
+                    OpenRepositoryWindowAction::UseCurrent,
+                    current_label.clone(),
+                ))
+            }
+        } else if !inner.label_to_repository.contains_key(&current_label) {
+            inner
+                .label_to_repository
+                .insert(current_label.clone(), repository_path.clone());
+            inner
+                .repository_to_label
+                .insert(repository_path.clone(), current_label.clone());
+            Some((
+                OpenRepositoryWindowAction::UseCurrent,
+                current_label.clone(),
+            ))
+        } else {
+            None
+        }
+    };
+
+    if let Some((action, label)) = decision {
+        if matches!(action, OpenRepositoryWindowAction::FocusedExisting) {
+            focus_window(&app_handle, &label);
+        }
+        return Ok(OpenRepositoryWindowResponse {
+            action,
+            label,
+            repository_path,
+        });
+    }
+
+    let label = next_repository_window_label(&registry)?;
+    let window = build_repository_window(
+        &app_handle,
+        &label,
+        &repository_path,
+        project_settings.window_geometry,
+    )?;
+    registry_register(&registry, label.clone(), repository_path.clone())?;
+    let _ = window.set_focus();
+
+    Ok(OpenRepositoryWindowResponse {
+        action: OpenRepositoryWindowAction::Created,
+        label,
+        repository_path,
+    })
+}
+
+#[tauri::command]
+fn register_window_repository(
+    window: tauri::Window,
+    registry: State<'_, WindowRegistry>,
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: OpenRepositoryWindowRequest,
+) -> artistic_git_contracts::AppResult<WindowContextResponse> {
+    let project_settings =
+        backend.load_project_settings(artistic_git_app::ProjectSettingsRequest {
+            repository_path: request.repository_path,
+        })?;
+    let label = window.label().to_owned();
+    registry_register(&registry, label.clone(), project_settings.path.clone())?;
+
+    Ok(WindowContextResponse {
+        label,
+        repository_path: Some(project_settings.path),
+    })
+}
+
+#[tauri::command]
+fn save_window_geometry(
+    window: tauri::Window,
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: OpenRepositoryWindowRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_core::config::ProjectSettings> {
+    let geometry = current_window_geometry(&window)?;
+    backend.save_project_window_geometry(request.repository_path, geometry)
+}
+
+#[tauri::command]
+fn close_current_window(window: tauri::Window) -> artistic_git_contracts::AppResult<()> {
+    window.close().map_err(|error| {
+        window_command_error(
+            format!("failed to close current window: {error}"),
+            "closeCurrentWindow",
+        )
+    })
 }
 
 #[tauri::command]
@@ -541,6 +756,8 @@ fn validate_identity_for_write(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .menu(build_app_menu)
+        .on_menu_event(handle_menu_event)
         .setup(|app| {
             let log_dir = app.path().app_log_dir()?;
             let logging_config = artistic_git_core::logging::LoggingConfig::new(log_dir);
@@ -552,12 +769,20 @@ pub fn run() {
             app.manage(LoggingState {
                 _guard: logging_guard,
             });
+            app.manage(WindowRegistry::default());
             app.manage(repository_backend(app)?);
+            install_second_instance_forwarding_skeleton(app.handle());
 
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             health,
+            window_context,
+            new_project_window,
+            open_repository_window,
+            register_window_repository,
+            save_window_geometry,
+            close_current_window,
             open_log_dir,
             open_repository,
             clone_repository,
@@ -604,6 +829,383 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Artistic Git");
+}
+
+fn build_app_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let app_menu = Submenu::with_items(
+        app,
+        "Artistic Git",
+        true,
+        &[
+            &PredefinedMenuItem::about(
+                app,
+                Some("About Artistic Git"),
+                Some(AboutMetadata {
+                    name: Some("Artistic Git".to_owned()),
+                    version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+                    website: Some(APP_HOMEPAGE.to_owned()),
+                    website_label: Some("Project Homepage".to_owned()),
+                    ..AboutMetadata::default()
+                }),
+            )?,
+            &MenuItem::with_id(
+                app,
+                "check-updates",
+                "Check for Updates...",
+                true,
+                None::<&str>,
+            )?,
+            &PredefinedMenuItem::separator(app)?,
+            &MenuItem::with_id(
+                app,
+                "open-settings",
+                "Settings...",
+                true,
+                Some("CmdOrCtrl+,"),
+            )?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::quit(app, Some("Quit Artistic Git"))?,
+        ],
+    )?;
+    let file = Submenu::with_items(
+        app,
+        "File",
+        true,
+        &[
+            &MenuItem::with_id(app, "new-window", "New Window", true, Some("CmdOrCtrl+N"))?,
+            &MenuItem::with_id(
+                app,
+                "open-project",
+                "Open Project...",
+                true,
+                Some("CmdOrCtrl+O"),
+            )?,
+            &MenuItem::with_id(app, "clone-project", "Clone Project...", true, None::<&str>)?,
+            &PredefinedMenuItem::separator(app)?,
+            &MenuItem::with_id(
+                app,
+                "close-window",
+                "Close Window",
+                true,
+                Some("CmdOrCtrl+W"),
+            )?,
+        ],
+    )?;
+    let edit = Submenu::with_items(
+        app,
+        "Edit",
+        true,
+        &[
+            &PredefinedMenuItem::undo(app, Some("Undo"))?,
+            &PredefinedMenuItem::redo(app, Some("Redo"))?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::cut(app, Some("Cut"))?,
+            &PredefinedMenuItem::copy(app, Some("Copy"))?,
+            &PredefinedMenuItem::paste(app, Some("Paste"))?,
+            &PredefinedMenuItem::select_all(app, Some("Select All"))?,
+        ],
+    )?;
+    let view = Submenu::with_items(
+        app,
+        "View",
+        true,
+        &[
+            &MenuItem::with_id(app, "view-history", "History", true, None::<&str>)?,
+            &MenuItem::with_id(
+                app,
+                "view-local-changes",
+                "Local Changes",
+                true,
+                None::<&str>,
+            )?,
+            &PredefinedMenuItem::separator(app)?,
+            &MenuItem::with_id(app, "toggle-theme", "Toggle Theme", true, None::<&str>)?,
+            &MenuItem::with_id(
+                app,
+                "toggle-devtools",
+                "Toggle Developer Tools",
+                cfg!(debug_assertions),
+                None::<&str>,
+            )?,
+        ],
+    )?;
+    let help = Submenu::with_items(
+        app,
+        "Help",
+        true,
+        &[
+            &MenuItem::with_id(
+                app,
+                "open-log-dir",
+                "Open Log Directory",
+                true,
+                None::<&str>,
+            )?,
+            &MenuItem::with_id(app, "open-changelog", "View Changelog", true, None::<&str>)?,
+            &MenuItem::with_id(app, "open-homepage", "Project Homepage", true, None::<&str>)?,
+        ],
+    )?;
+
+    Menu::with_items(app, &[&app_menu, &file, &edit, &view, &help])
+}
+
+fn handle_menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
+    let id = event.id().0.as_str();
+    match id {
+        "new-window" => {
+            if let Some(registry) = app.try_state::<WindowRegistry>() {
+                let _ = create_start_window(app, &registry);
+            }
+        }
+        "close-window" => {
+            if let Some(window) = focused_webview_window(app) {
+                let _ = window.close();
+            }
+        }
+        "open-homepage" => {
+            open_url(APP_HOMEPAGE);
+        }
+        "open-changelog" => {
+            open_url(APP_CHANGELOG);
+        }
+        "toggle-devtools" => {
+            toggle_focused_devtools(app);
+        }
+        _ => emit_menu_event_to_focused_window(app, id),
+    }
+}
+
+fn emit_menu_event_to_focused_window(app: &tauri::AppHandle, id: &str) {
+    let event = AppMenuEvent { id: id.to_owned() };
+    if let Some(window) = focused_webview_window(app) {
+        let _ = window.emit(MENU_EVENT_NAME, event);
+    } else {
+        let _ = app.emit(MENU_EVENT_NAME, event);
+    }
+}
+
+fn focused_webview_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
+    app.webview_windows()
+        .into_values()
+        .find(|window| window.is_focused().unwrap_or(false))
+}
+
+fn toggle_focused_devtools(app: &tauri::AppHandle) {
+    #[cfg(not(debug_assertions))]
+    let _ = app;
+
+    #[cfg(debug_assertions)]
+    if let Some(window) = focused_webview_window(app) {
+        if window.is_devtools_open() {
+            window.close_devtools();
+        } else {
+            window.open_devtools();
+        }
+    }
+}
+
+fn create_start_window(
+    app: &tauri::AppHandle,
+    registry: &State<'_, WindowRegistry>,
+) -> artistic_git_contracts::AppResult<NewWindowResponse> {
+    let label = next_start_window_label(registry)?;
+    tauri::WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html".into()))
+        .title("Artistic Git")
+        .inner_size(
+            artistic_git_core::config::DEFAULT_WINDOW_WIDTH as f64,
+            artistic_git_core::config::DEFAULT_WINDOW_HEIGHT as f64,
+        )
+        .min_inner_size(960.0, 600.0)
+        .build()
+        .map_err(|error| {
+            window_command_error(
+                format!("failed to create start window: {error}"),
+                "newProjectWindow",
+            )
+        })?;
+
+    Ok(NewWindowResponse { label })
+}
+
+fn build_repository_window(
+    app: &tauri::AppHandle,
+    label: &str,
+    repository_path: &str,
+    geometry: Option<artistic_git_core::config::WindowGeometry>,
+) -> artistic_git_contracts::AppResult<tauri::WebviewWindow> {
+    let mut builder = tauri::WebviewWindowBuilder::new(
+        app,
+        label,
+        WebviewUrl::App(
+            format!(
+                "index.html?repository={}",
+                encode_url_component(repository_path)
+            )
+            .into(),
+        ),
+    )
+    .title("Artistic Git")
+    .min_inner_size(960.0, 600.0);
+
+    let geometry = geometry.unwrap_or_default();
+    builder = builder
+        .inner_size(geometry.width as f64, geometry.height as f64)
+        .maximized(geometry.maximized);
+    if let (Some(x), Some(y)) = (geometry.x, geometry.y) {
+        builder = builder.position(x as f64, y as f64);
+    }
+
+    builder.build().map_err(|error| {
+        window_command_error(
+            format!("failed to create repository window: {error}"),
+            "openRepositoryWindow",
+        )
+    })
+}
+
+fn next_start_window_label(
+    registry: &State<'_, WindowRegistry>,
+) -> artistic_git_contracts::AppResult<String> {
+    next_window_label(registry, START_WINDOW_LABEL_PREFIX, "newProjectWindow")
+}
+
+fn next_repository_window_label(
+    registry: &State<'_, WindowRegistry>,
+) -> artistic_git_contracts::AppResult<String> {
+    next_window_label(
+        registry,
+        REPOSITORY_WINDOW_LABEL_PREFIX,
+        "openRepositoryWindow",
+    )
+}
+
+fn next_window_label(
+    registry: &State<'_, WindowRegistry>,
+    prefix: &str,
+    operation: &'static str,
+) -> artistic_git_contracts::AppResult<String> {
+    next_window_label_inner(registry, prefix, operation)
+}
+
+fn next_window_label_inner(
+    registry: &WindowRegistry,
+    prefix: &str,
+    operation: &'static str,
+) -> artistic_git_contracts::AppResult<String> {
+    let mut inner = registry
+        .inner
+        .lock()
+        .map_err(|_| window_command_error("window registry lock poisoned", operation))?;
+    inner.next_window_id += 1;
+    Ok(format!("{prefix}{}", inner.next_window_id))
+}
+
+fn registry_register(
+    registry: &State<'_, WindowRegistry>,
+    label: String,
+    repository_path: String,
+) -> artistic_git_contracts::AppResult<()> {
+    let mut inner = registry.inner.lock().map_err(|_| {
+        window_command_error("window registry lock poisoned", "registerWindowRepository")
+    })?;
+
+    if let Some(previous_repository) = inner
+        .label_to_repository
+        .insert(label.clone(), repository_path.clone())
+    {
+        inner.repository_to_label.remove(&previous_repository);
+    }
+    inner.repository_to_label.insert(repository_path, label);
+    Ok(())
+}
+
+fn focus_window(app: &tauri::AppHandle, label: &str) {
+    if let Some(window) = app.get_webview_window(label) {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+fn current_window_geometry(
+    window: &tauri::Window,
+) -> artistic_git_contracts::AppResult<artistic_git_core::config::WindowGeometry> {
+    let size = window.outer_size().unwrap_or(PhysicalSize::new(
+        artistic_git_core::config::DEFAULT_WINDOW_WIDTH,
+        artistic_git_core::config::DEFAULT_WINDOW_HEIGHT,
+    ));
+    let position = window
+        .outer_position()
+        .unwrap_or(PhysicalPosition::new(0, 0));
+    let maximized = window.is_maximized().unwrap_or(false);
+
+    Ok(artistic_git_core::config::WindowGeometry {
+        width: size.width,
+        height: size.height,
+        x: Some(position.x),
+        y: Some(position.y),
+        maximized,
+    })
+}
+
+fn install_second_instance_forwarding_skeleton(app: &tauri::AppHandle) {
+    let args = env::args().collect::<Vec<_>>();
+    if let Some(repository_path) = repository_path_from_args(&args) {
+        let _ = app.emit(
+            "second-instance-forwarded",
+            SecondInstanceForward {
+                args,
+                repository_path: Some(repository_path),
+            },
+        );
+    }
+}
+
+fn repository_path_from_args(args: &[String]) -> Option<String> {
+    args.iter()
+        .skip(1)
+        .find(|arg| {
+            !arg.starts_with('-')
+                && fs::metadata(arg)
+                    .map(|metadata| metadata.is_dir())
+                    .unwrap_or(false)
+        })
+        .cloned()
+}
+
+fn encode_url_component(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char);
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
+
+fn open_url(url: &str) {
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("open");
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = std::process::Command::new("cmd");
+        command.arg("/C").arg("start").arg("");
+        command
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = std::process::Command::new("xdg-open");
+
+    let _ = command.arg(url).spawn();
+}
+
+fn window_command_error(
+    message: impl Into<String>,
+    operation: &'static str,
+) -> artistic_git_contracts::AppError {
+    artistic_git_app::unexpected_command_error(message.into(), operation)
 }
 
 fn repository_backend(
@@ -701,4 +1303,42 @@ fn emit_fetch_state(
     event: &artistic_git_contracts::FetchStateEvent,
 ) {
     let _ = app_handle.emit("fetch-state", event);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn window_menu_url_encoding_keeps_safe_path_characters() {
+        assert_eq!(
+            encode_url_component("/Users/artist/Project A"),
+            "%2FUsers%2Fartist%2FProject%20A"
+        );
+    }
+
+    #[test]
+    fn window_menu_second_instance_ignores_flags() {
+        let args = vec![
+            "artistic-git".to_owned(),
+            "--flag".to_owned(),
+            "/definitely/not/a/real/repo".to_owned(),
+        ];
+
+        assert_eq!(repository_path_from_args(&args), None);
+    }
+
+    #[test]
+    fn window_menu_registry_labels_are_monotonic() {
+        let registry = WindowRegistry::default();
+
+        assert_eq!(
+            next_window_label_inner(&registry, "repo-", "test").expect("first label"),
+            "repo-1"
+        );
+        assert_eq!(
+            next_window_label_inner(&registry, "repo-", "test").expect("second label"),
+            "repo-2"
+        );
+    }
 }

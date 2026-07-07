@@ -1,4 +1,5 @@
 import * as React from "react";
+import { listen } from "@tauri-apps/api/event";
 
 import { AppErrorBoundary } from "@/components/layout/AppErrorBoundary";
 import { CrashDetailsDialog } from "@/components/dialogs/CrashDetailsDialog";
@@ -7,16 +8,166 @@ import { OnboardingWizard } from "@/features/onboarding/OnboardingWizard";
 import { RepositoryShell } from "@/features/repository-shell/RepositoryShell";
 import { SettingsModal } from "@/features/settings/SettingsModal";
 import { StartScreen } from "@/features/start/StartScreen";
+import {
+  closeCurrentWindow,
+  newProjectWindow,
+  openLogDir,
+  registerWindowRepository,
+  windowContext,
+} from "@/lib/ipc/commands";
 import { useWindowStore } from "@/store/window-store";
+import { useTheme } from "@/theme/ThemeProvider";
 
 export function App() {
   return (
     <AppErrorBoundary>
       <AppRouter />
+      <WindowRuntimeBridge />
+      <AppMenuBridge />
       <GlobalSettingsModal />
       <GlobalErrorDialogs />
     </AppErrorBoundary>
   );
+}
+
+function WindowRuntimeBridge() {
+  const setActiveRepositoryPath = useWindowStore(
+    (state) => state.setActiveRepositoryPath,
+  );
+  const setWindowLabel = useWindowStore((state) => state.setWindowLabel);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    const initialRepositoryPath = repositoryPathFromLocation();
+
+    void windowContext()
+      .then((context) => {
+        if (cancelled) {
+          return;
+        }
+        setWindowLabel(context.label);
+        const repositoryPath = context.repositoryPath ?? initialRepositoryPath;
+        if (repositoryPath) {
+          setActiveRepositoryPath(repositoryPath);
+          void registerWindowRepository({ repositoryPath }).catch(
+            dispatchAppError,
+          );
+        }
+      })
+      .catch(() => {
+        if (initialRepositoryPath) {
+          setActiveRepositoryPath(initialRepositoryPath);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [setActiveRepositoryPath, setWindowLabel]);
+
+  return null;
+}
+
+function AppMenuBridge() {
+  const openSettings = useWindowStore((state) => state.openSettings);
+  const { resolvedTheme, setThemePreference } = useTheme();
+
+  React.useEffect(() => {
+    const handleMenuAction = (id: string) => {
+      switch (id) {
+        case "open-settings":
+          openSettings("general");
+          break;
+        case "open-project":
+          window.dispatchEvent(new CustomEvent("artistic-git:open-project"));
+          break;
+        case "clone-project":
+          window.dispatchEvent(new CustomEvent("artistic-git:clone-project"));
+          break;
+        case "view-history":
+          window.dispatchEvent(
+            new CustomEvent("artistic-git:view-tab", { detail: "history" }),
+          );
+          break;
+        case "view-local-changes":
+          window.dispatchEvent(
+            new CustomEvent("artistic-git:view-tab", {
+              detail: "localChanges",
+            }),
+          );
+          break;
+        case "toggle-theme":
+          setThemePreference(resolvedTheme === "dark" ? "light" : "dark");
+          break;
+        case "toggle-devtools":
+          window.dispatchEvent(new CustomEvent("artistic-git:toggle-devtools"));
+          break;
+        case "open-log-dir":
+          void openLogDir().catch(dispatchAppError);
+          break;
+        case "check-updates":
+          window.dispatchEvent(new CustomEvent("artistic-git:check-updates"));
+          break;
+      }
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey)) {
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+      if (key === "n") {
+        event.preventDefault();
+        void newProjectWindow().catch(dispatchAppError);
+      } else if (key === "o") {
+        event.preventDefault();
+        handleMenuAction("open-project");
+      } else if (key === "w") {
+        event.preventDefault();
+        void closeCurrentWindow().catch(dispatchAppError);
+      } else if (key === ",") {
+        event.preventDefault();
+        handleMenuAction("open-settings");
+      } else if (key === "f") {
+        event.preventDefault();
+        focusCurrentSearchInput();
+      }
+    };
+
+    let unlisten: (() => void) | undefined;
+    void listen<{ id: string }>("app-menu", (event) => {
+      handleMenuAction(event.payload.id);
+    }).then((resolvedUnlisten) => {
+      unlisten = resolvedUnlisten;
+    });
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      unlisten?.();
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [openSettings, resolvedTheme, setThemePreference]);
+
+  return null;
+}
+
+function repositoryPathFromLocation(): string | null {
+  const repositoryPath = new URLSearchParams(window.location.search).get(
+    "repository",
+  );
+  return repositoryPath && repositoryPath.trim() ? repositoryPath : null;
+}
+
+function focusCurrentSearchInput() {
+  const searchInput = document.querySelector<HTMLElement>(
+    '[data-app-search="current"]',
+  );
+  searchInput?.focus();
+}
+
+function dispatchAppError(error: unknown) {
+  window.dispatchEvent(new CustomEvent("artistic-git:error", { detail: error }));
 }
 
 function AppRouter() {

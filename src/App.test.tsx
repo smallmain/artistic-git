@@ -20,6 +20,26 @@ import { createAppQueryClient } from "./lib/query/client";
 import type { WindowStoreState } from "./store/window-store";
 import type { ThemePreference } from "./theme/ThemeProvider";
 
+const commandMocks = vi.hoisted(() => ({
+  closeCurrentWindow: vi.fn(),
+  newProjectWindow: vi.fn(),
+  openLogDir: vi.fn(),
+  registerWindowRepository: vi.fn(),
+  windowContext: vi.fn(),
+}));
+
+vi.mock("@/lib/ipc/commands", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/ipc/commands")>();
+  return {
+    ...actual,
+    closeCurrentWindow: commandMocks.closeCurrentWindow,
+    newProjectWindow: commandMocks.newProjectWindow,
+    openLogDir: commandMocks.openLogDir,
+    registerWindowRepository: commandMocks.registerWindowRepository,
+    windowContext: commandMocks.windowContext,
+  };
+});
+
 interface RenderOptions {
   initialLanguagePreference?: LanguagePreference;
   initialThemePreference?: ThemePreference;
@@ -52,6 +72,18 @@ beforeEach(() => {
   document.documentElement.classList.remove("dark");
   document.documentElement.removeAttribute("data-theme");
   document.documentElement.style.colorScheme = "";
+  vi.clearAllMocks();
+  commandMocks.closeCurrentWindow.mockResolvedValue(undefined);
+  commandMocks.newProjectWindow.mockResolvedValue({ label: "start-1" });
+  commandMocks.openLogDir.mockResolvedValue({ opened: false, path: "/logs" });
+  commandMocks.registerWindowRepository.mockResolvedValue({
+    label: "main",
+    repositoryPath: "/repo/art-project",
+  });
+  commandMocks.windowContext.mockResolvedValue({
+    label: "main",
+    repositoryPath: null,
+  });
 });
 
 afterEach(() => {
@@ -205,6 +237,23 @@ describe("App", () => {
     expect(
       screen.getAllByText("An operation is running").length,
     ).toBeGreaterThan(0);
+  });
+
+  it("dispatches window shortcuts and focuses the active search", async () => {
+    renderWithProviders(<App />, {
+      initialWindowState: {
+        activeRepositoryPath: "/repo/art-project",
+      },
+    });
+
+    fireEvent.keyDown(window, { key: "n", metaKey: true });
+    expect(commandMocks.newProjectWindow).toHaveBeenCalledTimes(1);
+
+    fireEvent.keyDown(window, { key: "w", ctrlKey: true });
+    expect(commandMocks.closeCurrentWindow).toHaveBeenCalledTimes(1);
+
+    fireEvent.keyDown(window, { key: "f", metaKey: true });
+    expect(screen.getByLabelText("Search history")).toHaveFocus();
   });
 
   it("opens global error and crash dialogs from window events", async () => {

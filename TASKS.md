@@ -489,23 +489,23 @@ graph TD
 
 ### 9A 多窗口核心 **\[P\]**（依赖：阶段 2）
 
-- [ ] 单进程多 WebviewWindow：每窗口独立承载一个项目（独立 React 根/store/query client 已备）；后端按 window label 路由事件复核
+- [x] 单进程多 WebviewWindow：每窗口独立承载一个项目（独立 React 根/store/query client 已备）；后端按 window label 路由事件复核
 - [ ] 应用单实例：second-instance 转发给已运行进程
-- [ ] 同项目去重：再次打开已打开项目 → 聚焦已有窗口，发起窗口保留不关闭（消除 index.lock 并发风险）
-- [ ] 打开新窗口唯一入口：File → New Window / `Cmd/Ctrl+N`，新窗口显示起始界面；界面内不提供入口
+- [x] 同项目去重：再次打开已打开项目 → 聚焦已有窗口，发起窗口保留不关闭（消除 index.lock 并发风险）
+- [x] 打开新窗口唯一入口：File → New Window / `Cmd/Ctrl+N`，新窗口显示起始界面；界面内不提供入口
 - [ ] 关闭最后窗口退出应用（Windows/Linux）；macOS Dock 保活遵循平台惯例
-- [ ] 窗口几何按项目存 projects.json 恢复；起始/新建窗口用全局默认几何
+- [x] 窗口几何按项目存 projects.json 恢复；起始/新建窗口用全局默认几何
 
 **验收**：集成/手动清单：双窗口双项目互不干扰；同项目去重聚焦；单实例转发；几何按项目恢复。
 
 ### 9B 应用菜单与快捷键 **\[P\]**（依赖：9A）
 
-- [ ] macOS App 菜单（Artistic Git）：关于/检查更新/设置 `Cmd+,`/退出 `Cmd+Q`；Windows/Linux 同套挂窗口内菜单栏（Ctrl）
-- [ ] File：新建窗口 `Cmd/Ctrl+N`/打开项目 `Cmd/Ctrl+O`/克隆项目/关闭窗口 `Cmd/Ctrl+W`
-- [ ] Edit：撤销/重做/剪切/复制/粘贴/全选标准项（确保 WebView 下输入框系统级编辑与快捷键正常）
-- [ ] View：历史/本地更改选项卡切换；切换主题；开发者工具（仅开发构建）
-- [ ] Help：打开日志目录/查看更新日志/项目主页
-- [ ] 最小快捷键集补齐：`Cmd/Ctrl+F` 聚焦当前视图搜索框/`Cmd/Ctrl+Enter` 提交确认/`Esc` 关闭 Modal 面板下拉
+- [x] macOS App 菜单（Artistic Git）：关于/检查更新/设置 `Cmd+,`/退出 `Cmd+Q`；Windows/Linux 同套挂窗口内菜单栏（Ctrl）
+- [x] File：新建窗口 `Cmd/Ctrl+N`/打开项目 `Cmd/Ctrl+O`/克隆项目/关闭窗口 `Cmd/Ctrl+W`
+- [x] Edit：撤销/重做/剪切/复制/粘贴/全选标准项（确保 WebView 下输入框系统级编辑与快捷键正常）
+- [x] View：历史/本地更改选项卡切换；切换主题；开发者工具（仅开发构建）
+- [x] Help：打开日志目录/查看更新日志/项目主页
+- [x] 最小快捷键集补齐：`Cmd/Ctrl+F` 聚焦当前视图搜索框/`Cmd/Ctrl+Enter` 提交确认/`Esc` 关闭 Modal 面板下拉
 
 **验收**：三平台手动清单 + 组件测试（快捷键分发）；输入框剪贴板操作三平台可用。
 
