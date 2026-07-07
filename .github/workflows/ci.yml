@@ -63,6 +63,9 @@ jobs:
       - name: Audit push safety
         run: pnpm git:push-safety:check
 
+      - name: Audit privacy network surface
+        run: pnpm privacy:audit
+
       - name: Test frontend
         run: pnpm test
 

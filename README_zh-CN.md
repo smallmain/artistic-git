@@ -24,6 +24,14 @@ pnpm tauri:dev
 `ARTISTIC_GIT_DIST_DIR` 或打包 resources 获取显式 Git 路径，禁止回退到系统
 Git。
 
+## 隐私基线
+
+Artistic Git 不包含遥测、分析 SDK、崩溃上报上传器，也不连接开发者自营服务。默认
+情况下，应用只会访问用户配置的 Git 远程仓库与 GitHub Releases 更新源。Gravatar
+头像 URL 只有在用户于设置中启用 Gravatar 后才会生成。CI 中的
+`pnpm privacy:audit` 会扫描运行时代码、发布脚本与文档，拦截未批准的 URL 字面量或
+浏览器网络 API。
+
 当钉死的分发产物可构建后，可用以下命令准备本地开发 resources：
 
 ```sh

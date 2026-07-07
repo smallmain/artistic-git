@@ -25,6 +25,15 @@ The project intentionally uses an embedded Git distribution for production Git
 operations. Core Git-flow tests must use `ARTISTIC_GIT_DIST_DIR` or packaged
 resources and must never fall back to the system Git executable.
 
+## Privacy Baseline
+
+Artistic Git has no telemetry, analytics SDKs, crash-report uploaders, or
+developer-operated network services. By default, the app only contacts user
+configured Git remotes and the GitHub Releases updater endpoint. Gravatar avatar
+URLs are generated only after the user enables Gravatar in settings. The CI
+`pnpm privacy:audit` check scans runtime code, release scripts, and docs for
+unapproved URL literals or browser network APIs.
+
 To prepare local development resources once the pinned distribution is
 buildable, run:
 
