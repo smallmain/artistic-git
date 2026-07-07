@@ -62,6 +62,7 @@ Useful commands:
 
 ```sh
 node scripts/fetch-git-dist.mjs --print-env --target=macos-universal
+node scripts/fetch-git-dist.mjs --dev-resources --target=macos-universal
 node scripts/fetch-git-dist.mjs --target=linux-x86_64 --download-only
 node scripts/fetch-git-dist.mjs --target=windows-x86_64
 ```
@@ -72,6 +73,8 @@ Current phase 1A behavior:
   structure without network or filesystem artifact work.
 - `--print-env` prints the `ARTISTIC_GIT_DIST_DIR` export line for the chosen
   output directory.
+- `--dev-resources` uses `src-tauri/resources/git-dist` as the output directory
+  so `pnpm tauri:dev` and local Rust tests can point at the same resource tree.
 - real fetch mode rejects placeholders before any download.
 - non-placeholder sources are downloaded, SHA-256 checked, and extracted into a
   staging directory.
@@ -90,6 +93,19 @@ Prepare a local development tree outside the normal Git repository, then point
 export ARTISTIC_GIT_DIST_DIR=/absolute/path/to/git-dist
 node scripts/check-git-dist.mjs
 ```
+
+For the repository-local development resources path, use:
+
+```sh
+pnpm fetch:git-dist -- --dev-resources --target=macos-universal
+export ARTISTIC_GIT_DIST_DIR="$PWD/src-tauri/resources/git-dist"
+pnpm git-dist:check
+```
+
+`src-tauri/resources/git-dist/README.md` is tracked as the mount point
+placeholder, but downloaded archives, extracted tools, and generated
+`manifest.json` are local build outputs and must not be committed to the normal
+Git repository.
 
 The checker requires `manifest.json` and every executable referenced by that
 manifest. It invokes only those explicit paths for version checks. If
@@ -169,23 +185,47 @@ embedded Git executables to be present under `src-tauri/resources/git-dist/`.
 
 ## CI Artifact And Cache Strategy
 
-`.github/workflows/git-dist.yml` currently runs contract checks and verifies
-that real-build mode rejects the documented placeholder. It uploads a contract
-note artifact only; it does not publish binaries yet.
+`.github/workflows/git-dist.yml` always runs contract checks on pull requests
+that touch the git-dist pipeline. Manual `workflow_dispatch` runs expose two
+modes:
 
-Future distribution jobs should use this policy:
+- `contract` validates config, source layout, SHA-256 fields, placeholder
+  rejection, and Tauri bundle resource mapping without downloading binaries.
+- `build` runs a target matrix and prepares reusable git-dist artifacts.
 
-- matrix targets: `windows-x86_64`, `macos-universal`, `linux-x86_64`
-- cache key includes target, `git-dist.toml`, fetch/build scripts, lockfiles,
-  and relevant container/toolchain versions
-- cache hit still runs `scripts/check-git-dist.mjs` against the restored
-  `ARTISTIC_GIT_DIST_DIR`
-- cache miss runs `scripts/fetch-git-dist.mjs --target=<target>` and the
-  platform build recipe from `git-dist.toml`
+Build mode uses this policy:
+
+- matrix targets: `windows-x86_64`, `macos-universal`, `linux-x86_64`, each on
+  its native GitHub runner image.
+- source archive cache key includes target, `git-dist.toml`, fetch/check
+  scripts, lockfiles, and a manual `GIT_DIST_CACHE_VERSION`.
+- assembled distribution cache key includes target, `git-dist.toml`, fetch/check
+  scripts, helper crate sources, lockfiles, and `GIT_DIST_CACHE_VERSION`.
+- cache hit still runs `scripts/check-git-dist.mjs --no-exec` against the
+  restored `ARTISTIC_GIT_DIST_DIR`.
+- cache miss runs `scripts/fetch-git-dist.mjs --target=<target>` with explicit
+  output, source-cache, and staging directories.
 - placeholder versions, placeholder URLs, non-stable sources, or zero SHA-256
   values fail before download/build/package
-- successful jobs upload `artistic-git-dist-<target>` artifacts for test and
-  packaging jobs to consume via `ARTISTIC_GIT_DIST_DIR`
+- successful jobs upload `artistic-git-dist-<target>` artifacts for later test
+  and packaging jobs to consume via `ARTISTIC_GIT_DIST_DIR`.
+
+Current limitation: Windows build mode intentionally fails while the
+Win32-OpenSSH entry remains `placeholder = true` / `stable = false`; macOS and
+Linux still require the documented source-build assembly step before a complete
+manifest can be uploaded.
+
+Downstream jobs should consume an artifact like this:
+
+```yaml
+- uses: actions/download-artifact@v4
+  with:
+    name: artistic-git-dist-linux-x86_64
+    path: src-tauri/resources/git-dist
+- run: node scripts/check-git-dist.mjs --target=linux-x86_64 --no-exec
+  env:
+    ARTISTIC_GIT_DIST_DIR: src-tauri/resources/git-dist
+```
 
 ## Upgrade Flow
 

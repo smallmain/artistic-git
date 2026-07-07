@@ -24,6 +24,18 @@ pnpm tauri:dev
 `ARTISTIC_GIT_DIST_DIR` 或打包 resources 获取显式 Git 路径，禁止回退到系统
 Git。
 
+当钉死的分发产物可构建后，可用以下命令准备本地开发 resources：
+
+```sh
+pnpm fetch:git-dist -- --dev-resources --target=macos-universal
+export ARTISTIC_GIT_DIST_DIR="$PWD/src-tauri/resources/git-dist"
+pnpm git-dist:check
+```
+
+下载的 Git、Git LFS、OpenSSH 与生成的 manifest 都是本机构建产物，不提交到普通
+Git 仓库。当前版本钉死、CI artifact/cache 策略与构建限制见
+[docs/git-dist.md](docs/git-dist.md)。
+
 ## 发布基线
 
 最低支持的发布目标：

@@ -1,4 +1,4 @@
-name: Git Distribution Contract
+name: Git Distribution
 
 on:
   pull_request:
@@ -7,22 +7,27 @@ on:
       - "scripts/fetch-git-dist.mjs"
       - "scripts/git-dist-lib.mjs"
       - "scripts/check-git-dist.mjs"
+      - "scripts/check-tauri-bundle-resources.mjs"
       - "docs/git-dist.md"
       - "src-tauri/resources/git-dist/**"
       - ".github/workflows/git-dist.yml"
   workflow_dispatch:
     inputs:
       mode:
-        description: "Contract validation today; build mode is reserved for the future artifact pipeline."
+        description: "contract validates config only; build prepares reusable target artifacts and rejects placeholder pins."
         type: choice
         options:
           - contract
           - build
         default: contract
 
+env:
+  NODE_VERSION: "24"
+  GIT_DIST_CACHE_VERSION: "v1"
+
 jobs:
   contract:
-    name: Validate git-dist contract
+    name: Validate contract
     runs-on: ubuntu-22.04
 
     steps:
@@ -32,9 +37,9 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: 24
+          node-version: ${{ env.NODE_VERSION }}
 
-      - name: Validate git-dist config contract
+      - name: Validate git-dist config
         run: node scripts/check-git-dist.mjs --schema-only
 
       - name: Validate fetch schema for all targets
@@ -53,26 +58,90 @@ jobs:
           status=$?
           cat real-build.log
           if [ "$status" -eq 0 ]; then
-            echo "Expected real-build validation to reject the current Win32-OpenSSH placeholder."
+            echo "Expected real-build validation to reject the current Win32-OpenSSH placeholder." >&2
             exit 1
           fi
 
-      - name: Create placeholder artifact note
+      - name: Validate bundle resource mapping
+        run: node scripts/check-tauri-bundle-resources.mjs
+
+  prepare:
+    name: Prepare ${{ matrix.target }}
+    needs: contract
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'build'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: windows-x86_64
+            os: windows-2022
+          - target: macos-universal
+            os: macos-14
+          - target: linux-x86_64
+            os: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
+
+    env:
+      ARTISTIC_GIT_DIST_DIR: ${{ github.workspace }}/.artifacts/git-dist/${{ matrix.target }}
+      ARTISTIC_GIT_DIST_CACHE_DIR: ${{ github.workspace }}/.cache/git-dist
+      ARTISTIC_GIT_DIST_STAGING_DIR: ${{ github.workspace }}/.staging/git-dist/${{ matrix.target }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Restore downloaded source cache
+        id: source-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.ARTISTIC_GIT_DIST_CACHE_DIR }}
+          key: git-dist-source-${{ env.GIT_DIST_CACHE_VERSION }}-${{ matrix.target }}-${{ hashFiles('git-dist.toml', 'scripts/fetch-git-dist.mjs', 'scripts/git-dist-lib.mjs', 'scripts/check-git-dist.mjs', 'pnpm-lock.yaml', 'Cargo.lock') }}
+          restore-keys: |
+            git-dist-source-${{ env.GIT_DIST_CACHE_VERSION }}-${{ matrix.target }}-
+
+      - name: Restore assembled git-dist cache
+        id: dist-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.ARTISTIC_GIT_DIST_DIR }}
+          key: git-dist-artifact-${{ env.GIT_DIST_CACHE_VERSION }}-${{ matrix.target }}-${{ hashFiles('git-dist.toml', 'scripts/fetch-git-dist.mjs', 'scripts/git-dist-lib.mjs', 'scripts/check-git-dist.mjs', 'crates/helpers/**', 'Cargo.lock') }}
+          restore-keys: |
+            git-dist-artifact-${{ env.GIT_DIST_CACHE_VERSION }}-${{ matrix.target }}-
+
+      - name: Validate restored assembled distribution
+        if: steps.dist-cache.outputs.cache-hit == 'true'
         shell: bash
         run: |
-          mkdir -p git-dist-artifact-note
-          cp git-dist.toml git-dist-artifact-note/git-dist.toml
-          cat > git-dist-artifact-note/README.txt <<'NOTE'
-          This is a phase 1A git-dist contract artifact.
-          The real workflow will upload artistic-git-dist-<target> archives
-          containing manifest.json, embedded Git, Git LFS, Windows OpenSSH, and
-          helper binaries. It must reject placeholder pins and non-stable
-          sources from git-dist.toml before download, build, cache, or package.
-          NOTE
+          set -euo pipefail
+          node scripts/check-git-dist.mjs --target="${{ matrix.target }}" --no-exec
 
-      - name: Upload contract artifact note
+      - name: Fetch, verify, and assemble distribution
+        if: steps.dist-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/fetch-git-dist.mjs \
+            --target="${{ matrix.target }}" \
+            --output="${ARTISTIC_GIT_DIST_DIR}" \
+            --cache-dir="${ARTISTIC_GIT_DIST_CACHE_DIR}" \
+            --staging-dir="${ARTISTIC_GIT_DIST_STAGING_DIR}"
+
+      - name: Validate assembled distribution
+        if: steps.dist-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/check-git-dist.mjs --target="${{ matrix.target }}" --no-exec
+
+      - name: Upload reusable git-dist artifact
         uses: actions/upload-artifact@v4
         with:
-          name: artistic-git-dist-contract
-          path: git-dist-artifact-note/
-          retention-days: 7
+          name: artistic-git-dist-${{ matrix.target }}
+          path: ${{ env.ARTISTIC_GIT_DIST_DIR }}/
+          if-no-files-found: error
+          retention-days: 14

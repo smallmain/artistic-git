@@ -25,6 +25,19 @@ The project intentionally uses an embedded Git distribution for production Git
 operations. Core Git-flow tests must use `ARTISTIC_GIT_DIST_DIR` or packaged
 resources and must never fall back to the system Git executable.
 
+To prepare local development resources once the pinned distribution is
+buildable, run:
+
+```sh
+pnpm fetch:git-dist -- --dev-resources --target=macos-universal
+export ARTISTIC_GIT_DIST_DIR="$PWD/src-tauri/resources/git-dist"
+pnpm git-dist:check
+```
+
+Downloaded Git, Git LFS, OpenSSH, and generated manifests are local build
+outputs; do not commit them. See [docs/git-dist.md](docs/git-dist.md) for the
+current pins, CI artifact/cache policy, and build limitations.
+
 ## Release Baseline
 
 Minimum supported release targets:

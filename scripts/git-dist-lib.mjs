@@ -300,6 +300,16 @@ function validateSource(config, ref, source, errors, warnings) {
     errors.push(`${ref}.stable must be true or false`);
   }
 
+  try {
+    assertRelativeResourcePath(source.resources_path, `${ref}.resources_path`);
+  } catch (error) {
+    errors.push(error.message);
+  }
+
+  if (!source.resources_path.endsWith("/")) {
+    errors.push(`${ref}.resources_path must end with "/"`);
+  }
+
   const versionKey = source.version_key;
   if (typeof versionKey !== "string" || !config.versions?.[versionKey]) {
     errors.push(`${ref}.version_key must point at a versions.* entry`);

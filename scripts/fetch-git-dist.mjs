@@ -22,10 +22,18 @@ import {
 
 const args = parseArgs(process.argv.slice(2));
 const targetName = normalizeTargetArg(args.target ?? getHostTarget());
+const devResourcesDir = path.join(
+  path.dirname(configPath),
+  "src-tauri",
+  "resources",
+  "git-dist",
+);
 const outputDir = path.resolve(
-  args.output ??
-    process.env.ARTISTIC_GIT_DIST_DIR ??
-    path.join(os.tmpdir(), "artistic-git-dist", targetName),
+  args.devResources
+    ? devResourcesDir
+    : (args.output ??
+        process.env.ARTISTIC_GIT_DIST_DIR ??
+        path.join(os.tmpdir(), "artistic-git-dist", targetName)),
 );
 const cacheDir = path.resolve(
   args.cacheDir ?? path.join(os.tmpdir(), "artistic-git-dist-cache"),
@@ -39,7 +47,10 @@ const usage = `Usage:
   node scripts/fetch-git-dist.mjs --schema-only [--target=${supportedTargets.join("|")}]
   node scripts/fetch-git-dist.mjs --print-env [--target=${supportedTargets.join("|")}] [--output=/path/to/git-dist]
   node scripts/fetch-git-dist.mjs [--target=${supportedTargets.join("|")}] [--output=/path/to/git-dist] [--cache-dir=/path] [--download-only] [--no-extract]
+  node scripts/fetch-git-dist.mjs --dev-resources [--target=${supportedTargets.join("|")}] [--download-only]
 
+Default output is $ARTISTIC_GIT_DIST_DIR when set, otherwise a temp directory.
+--dev-resources writes to src-tauri/resources/git-dist for local Tauri runs.
 The fetch pipeline never searches PATH for git and never falls back to a system Git.`;
 
 if (args.help) {
@@ -86,7 +97,7 @@ async function run() {
       allowPlaceholders: true,
       realBuild: false,
     });
-    console.log(`export ARTISTIC_GIT_DIST_DIR=${shellQuote(outputDir)}`);
+    printEnv(outputDir);
     return;
   }
 
@@ -107,6 +118,7 @@ async function run() {
   info(`cache: ${cacheDir}`);
   info(`staging: ${stagingDir}`);
   info(`output: ${outputDir}`);
+  printEnv(outputDir);
 
   for (const { ref, source } of sources) {
     const archivePath = await downloadSource(ref, source);
@@ -200,12 +212,12 @@ async function assembleTarget(config, target, sources) {
   if (sourceBuilds.length > 0) {
     const refs = sourceBuilds.map(({ ref }) => ref).join(", ");
     fail(
-      `source build stage is a CI recipe handoff for ${target.manifest_platform}; staged sources: ${refs}. No manifest was written and no system git fallback was attempted.`,
+      `source build stage is a CI recipe handoff for ${target.manifest_platform}; staged sources: ${refs}. Follow the build.${target.platform}.git recipe in git-dist.toml, assemble ${config.resources.layout.manifest}, then run ARTISTIC_GIT_DIST_DIR=${outputDir} node scripts/check-git-dist.mjs --target=${target.manifest_platform} --no-exec. No manifest was written and no system git fallback was attempted.`,
     );
   }
 
   fail(
-    `archive assembly for ${target.manifest_platform} is not complete in phase 1A. Staged files are in ${stagingDir}; future CI should assemble ${config.resources.layout.manifest} and then run scripts/check-git-dist.mjs.`,
+    `archive assembly for ${target.manifest_platform} is not complete in phase 1A. Staged files are in ${stagingDir}; assemble files under ${outputDir}, write ${config.resources.layout.manifest}, then run scripts/check-git-dist.mjs. No incomplete manifest was written.`,
   );
 }
 
@@ -256,6 +268,7 @@ function parseArgs(argv) {
     printEnv: false,
     downloadOnly: false,
     noExtract: false,
+    devResources: false,
     target: undefined,
     output: undefined,
     cacheDir: undefined,
@@ -263,7 +276,9 @@ function parseArgs(argv) {
   };
 
   for (const arg of argv) {
-    if (arg === "--help" || arg === "-h") {
+    if (arg === "--") {
+      continue;
+    } else if (arg === "--help" || arg === "-h") {
       parsed.help = true;
     } else if (arg === "--schema-only") {
       parsed.schemaOnly = true;
@@ -273,6 +288,8 @@ function parseArgs(argv) {
       parsed.downloadOnly = true;
     } else if (arg === "--no-extract") {
       parsed.noExtract = true;
+    } else if (arg === "--dev-resources") {
+      parsed.devResources = true;
     } else if (arg.startsWith("--target=")) {
       parsed.target = arg.slice("--target=".length);
     } else if (arg.startsWith("--output=")) {
@@ -302,6 +319,11 @@ function normalizeTargetArg(value) {
 
 function shellQuote(value) {
   return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function printEnv(dir) {
+  console.log(`# ARTISTIC_GIT_DIST_DIR for this target`);
+  console.log(`export ARTISTIC_GIT_DIST_DIR=${shellQuote(dir)}`);
 }
 
 try {
