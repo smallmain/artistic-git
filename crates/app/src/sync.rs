@@ -3623,7 +3623,11 @@ mod tests {
         .expect("sync conflict response");
 
         assert_eq!(response.status, SyncCurrentBranchStatus::Conflicts);
-        assert_eq!(response.repository_path, display_path(&fixture.local.path));
+        assert_eq!(
+            fs::canonicalize(PathBuf::from(&response.repository_path))
+                .expect("canonical response path"),
+            fs::canonicalize(&fixture.local.path).expect("canonical local path")
+        );
         let conflict = response.conflict.expect("conflict payload");
         assert_ne!(conflict.repository_path, display_path(&fixture.local.path));
         let conflict_worktree = PathBuf::from(&conflict.repository_path);
