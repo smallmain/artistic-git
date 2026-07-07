@@ -15,6 +15,7 @@ import {
   RepositorySidebar,
   type RepositorySummary,
   type StashListItem,
+  type SyncFeedback,
 } from "@/components/sidebar/RepositorySidebar";
 import { ConfirmDialog } from "@/components/dialogs/ConfirmDialog";
 import { DialogFrame } from "@/components/dialogs/DialogFrame";
@@ -178,6 +179,9 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   const [branchActionBusy, setBranchActionBusy] = React.useState(false);
   const [fetchBusy, setFetchBusy] = React.useState(false);
   const [syncBusy, setSyncBusy] = React.useState(false);
+  const [syncFeedback, setSyncFeedback] = React.useState<SyncFeedback | null>(
+    null,
+  );
   const [syncStatus, setSyncStatus] = React.useState<string | null>(null);
   const [historyWriteBusy, setHistoryWriteBusy] = React.useState(false);
   const [safetyBackupBusy, setSafetyBackupBusy] = React.useState(false);
@@ -635,6 +639,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
               invalid: invalidRules,
             }),
       );
+      setSyncFeedback(response.allUpToDate ? { kind: "all" } : null);
     },
     [setConflictEntered, t],
   );
@@ -647,6 +652,12 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       ) {
         setRemoteHistoryChange(response.remoteHistoryChange);
       }
+      if (response.status === "alreadyUpToDate") {
+        setSyncStatus(t("repository.syncBranchUpToDate"));
+        setSyncFeedback({ branchName: response.branchName, kind: "branch" });
+      } else {
+        setSyncFeedback(null);
+      }
       const { conflict, stashRecovery } = response;
       if (conflict) {
         if (stashRecovery) {
@@ -658,7 +669,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         setConflictEntered(conflict);
       }
     },
-    [setConflictEntered],
+    [setConflictEntered, t],
   );
 
   const runSyncAllBranches = React.useCallback(async () => {
@@ -667,6 +678,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     }
 
     setSyncBusy(true);
+    setSyncFeedback(null);
     setSyncStatus(null);
     try {
       const response = await syncAllBranches({
@@ -710,6 +722,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       }
 
       setSyncBusy(true);
+      setSyncFeedback(null);
       setSyncStatus(null);
       try {
         const response = await syncBranch({
@@ -999,6 +1012,20 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       window.removeEventListener("beforeunload", blockClose);
     };
   }, [closeGuardActive]);
+
+  React.useEffect(() => {
+    if (!syncFeedback) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      setSyncFeedback(null);
+    }, 1600);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [syncFeedback]);
 
   React.useEffect(() => {
     if (
@@ -1702,6 +1729,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         onSyncBranch={(branch) => void runSyncBranch(branch)}
         repository={repository}
         stashes={stashes}
+        syncFeedback={syncFeedback}
       />
       <section className="flex min-w-0 flex-1 flex-col">
         {activeOperation ? (

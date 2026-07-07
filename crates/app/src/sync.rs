@@ -115,6 +115,9 @@ where
     }
 
     ensure_local_branch(runner, &root, &branch_name)?;
+    if remote_branch_oid(runner, &root, &branch_name)?.is_none() {
+        return publish_non_current_branch(runner, &root, &branch_name);
+    }
     cleanup_sync_worktree_residue(runner, &root);
 
     match sync_branch_fast_path(runner, &root, &branch_name)? {
@@ -123,6 +126,25 @@ where
             sync_branch_via_worktree(runner, &root, &branch_name, &operation_id, &progress)
         }
     }
+}
+
+fn publish_non_current_branch(
+    runner: &GitRunner,
+    root: &Path,
+    branch_name: &str,
+) -> AppResult<SyncBranchResponse> {
+    push_with_retry(runner, root, ["push", "-u", "origin", branch_name])?;
+    Ok(SyncBranchResponse {
+        repository_path: display_path(root),
+        branch_name: branch_name.to_owned(),
+        upstream: Some(format!("origin/{branch_name}")),
+        status: SyncCurrentBranchStatus::Published,
+        attempts: 1,
+        message: None,
+        conflict: None,
+        stash_recovery: None,
+        remote_history_change: None,
+    })
 }
 
 pub fn sync_all_branches_with_progress<F>(
@@ -2305,6 +2327,66 @@ mod tests {
                 "refs/heads/feature/publish"
             ])
             .contains("refs/heads/feature/publish"));
+    }
+
+    #[test]
+    fn sync_branch_publishes_non_current_branch_without_touching_worktree() {
+        let Some((runner, _home)) = real_runner_or_skip() else {
+            return;
+        };
+        let fixture = DoubleClone::new(&runner);
+        fixture.local.git(["checkout", "-b", "feature/unpublished"]);
+        fixture.local.write("feature.txt", "feature\n");
+        fixture.local.git(["add", "feature.txt"]);
+        fixture.local.git(["commit", "-m", "feature"]);
+        fixture.local.git(["checkout", "main"]);
+        fixture
+            .local
+            .write("tracked.txt", "dirty current worktree\n");
+
+        let response = sync_branch(
+            &runner,
+            SyncBranchRequest {
+                repository_path: display_path(&fixture.local.path),
+                branch_name: "feature/unpublished".to_owned(),
+                operation_id: None,
+            },
+        )
+        .expect("publish non-current branch");
+
+        assert_eq!(response.status, SyncCurrentBranchStatus::Published);
+        assert_eq!(
+            fixture
+                .local
+                .git_output(["branch", "--show-current"])
+                .trim(),
+            "main"
+        );
+        assert_eq!(
+            fixture.local.read("tracked.txt"),
+            "dirty current worktree\n"
+        );
+        assert_eq!(
+            fixture
+                .local
+                .git_output([
+                    "rev-parse",
+                    "--abbrev-ref",
+                    "--symbolic-full-name",
+                    "feature/unpublished@{u}",
+                ])
+                .trim(),
+            "origin/feature/unpublished"
+        );
+        assert!(fixture
+            .remote
+            .git_output([
+                "for-each-ref",
+                "--format=%(refname)",
+                "refs/heads/feature/unpublished"
+            ])
+            .contains("refs/heads/feature/unpublished"));
+        assert_no_sync_worktrees(&fixture.local);
     }
 
     #[test]

@@ -1247,7 +1247,40 @@ describe("RepositoryShell branch flow", () => {
     ).toBeInTheDocument();
   });
 
+  it("flashes the project sync button when all branches are already up to date", async () => {
+    mockBranchList();
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    const syncButtons = await screen.findAllByRole("button", {
+      name: "Sync",
+    });
+    fireEvent.click(syncButtons[0]);
+
+    await waitFor(() =>
+      expect(commandMocks.syncAllBranches).toHaveBeenCalledWith({
+        operationId: null,
+        repositoryPath: "/repo/art",
+      }),
+    );
+    expect(
+      await screen.findByRole("button", {
+        name: "All syncable branches are up to date",
+      }),
+    ).toBeInTheDocument();
+  });
+
   it("syncs only the selected branch from a branch row action", async () => {
+    commandMocks.syncBranch.mockResolvedValueOnce({
+      attempts: 1,
+      branchName: "feature/lookdev",
+      conflict: null,
+      message: null,
+      remoteHistoryChange: null,
+      repositoryPath: "/repo/art",
+      status: "alreadyUpToDate",
+      stashRecovery: null,
+      upstream: "origin/feature/lookdev",
+    });
     commandMocks.listBranches.mockResolvedValue({
       branches: [
         branchSummary({
@@ -1280,7 +1313,60 @@ describe("RepositoryShell branch flow", () => {
         repositoryPath: "/repo/art",
       }),
     );
+    expect(await screen.findAllByText("Branch is up to date")).not.toHaveLength(
+      0,
+    );
+    expect(
+      within(branchRow as HTMLElement).getByRole("button", {
+        name: "Branch is up to date",
+      }),
+    ).toBeInTheDocument();
     expect(commandMocks.syncAllBranches).not.toHaveBeenCalled();
+  });
+
+  it("allows a local-only branch row sync to publish the branch", async () => {
+    commandMocks.syncBranch.mockResolvedValueOnce({
+      attempts: 1,
+      branchName: "feature/unpublished",
+      conflict: null,
+      message: null,
+      remoteHistoryChange: null,
+      repositoryPath: "/repo/art",
+      status: "published",
+      stashRecovery: null,
+      upstream: null,
+    });
+    commandMocks.listBranches.mockResolvedValue({
+      branches: [
+        branchSummary({
+          current: true,
+          existence: "localAndRemote",
+          headOid: "abc1234",
+          shortName: "main",
+        }),
+        branchSummary({
+          existence: "localOnly",
+          headOid: "def5678",
+          shortName: "feature/unpublished",
+        }),
+      ],
+    });
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    const branchLabel = await findSidebarText("feature/unpublished");
+    const branchRow = branchLabel.closest("li");
+    expect(branchRow).not.toBeNull();
+    fireEvent.click(
+      within(branchRow as HTMLElement).getByRole("button", { name: "Sync" }),
+    );
+
+    await waitFor(() =>
+      expect(commandMocks.syncBranch).toHaveBeenCalledWith({
+        branchName: "feature/unpublished",
+        operationId: null,
+        repositoryPath: "/repo/art",
+      }),
+    );
   });
 
   it("prompts before accepting rewritten remote history and resets through the dedicated command", async () => {

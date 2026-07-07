@@ -1,5 +1,6 @@
 import {
   Archive,
+  Check,
   ChevronDown,
   ChevronRight,
   Cloud,
@@ -52,6 +53,9 @@ export interface StashListItem {
   timeLabel: string;
 }
 
+export type SyncFeedback =
+  { kind: "all" } | { branchName: string; kind: "branch" };
+
 interface RepositorySidebarProps {
   branchActionsDisabledReason?: string;
   branches: BranchListItem[];
@@ -72,6 +76,7 @@ interface RepositorySidebarProps {
   onSyncBranch?: (branch: BranchListItem) => void;
   repository: RepositorySummary;
   stashes: StashListItem[];
+  syncFeedback?: SyncFeedback | null;
 }
 
 const minSidebarWidth = 260;
@@ -99,6 +104,7 @@ export function RepositorySidebar({
   onSyncBranch,
   repository,
   stashes,
+  syncFeedback,
 }: RepositorySidebarProps) {
   const { t } = useTranslation();
   const sidebarLayout = useWindowStore((state) => state.sidebarLayout);
@@ -131,6 +137,7 @@ export function RepositorySidebar({
       ),
     [branches, repository.hasRemote],
   );
+  const projectSyncComplete = syncFeedback?.kind === "all";
   const updateSidebarLayout = React.useCallback(
     (layout: Partial<SidebarLayoutSettings>) => {
       const nextLayout = {
@@ -234,15 +241,27 @@ export function RepositorySidebar({
                 hasPendingSync ? "text-warning hover:bg-warning/10" : undefined
               }
               disabled={busy || !onFetch}
-              label={t("repository.sync")}
+              label={
+                projectSyncComplete
+                  ? t("repository.syncAllUpToDate")
+                  : t("repository.sync")
+              }
               onClick={onFetch}
               tooltip={
-                busy ? t("repository.busyTooltip") : t("repository.sync")
+                busy
+                  ? t("repository.busyTooltip")
+                  : projectSyncComplete
+                    ? t("repository.syncAllUpToDate")
+                    : t("repository.sync")
               }
               type="button"
               variant="ghost"
             >
-              <RefreshCw className="size-4" aria-hidden="true" />
+              {projectSyncComplete ? (
+                <Check className="size-4" aria-hidden="true" />
+              ) : (
+                <RefreshCw className="size-4" aria-hidden="true" />
+              )}
             </IconButton>
           ) : null}
         </div>
@@ -313,6 +332,7 @@ export function RepositorySidebar({
                 onDelete={onDeleteBranch}
                 onFocus={onBranchFocus}
                 onSync={onSyncBranch}
+                syncFeedback={syncFeedback}
               />
             ))}
           </ul>
@@ -506,6 +526,7 @@ interface BranchRowProps {
   onDelete?: (branch: BranchListItem) => void;
   onFocus: (branch: BranchListItem) => void;
   onSync?: (branch: BranchListItem) => void;
+  syncFeedback?: SyncFeedback | null;
 }
 
 function BranchRow({
@@ -518,6 +539,7 @@ function BranchRow({
   onDelete,
   onFocus,
   onSync,
+  syncFeedback,
 }: BranchRowProps) {
   const { t } = useTranslation();
   const [menuOpen, setMenuOpen] = React.useState(false);
@@ -534,9 +556,10 @@ function BranchRow({
   const canSync =
     hasRemote &&
     !branch.remoteOnly &&
-    (branch.existence === "localAndRemote" || Boolean(branch.upstream)) &&
     !branchActionsDisabled &&
     Boolean(onSync);
+  const branchSyncComplete =
+    syncFeedback?.kind === "branch" && syncFeedback.branchName === branch.name;
 
   return (
     <li
@@ -587,10 +610,23 @@ function BranchRow({
           <OptionalActionButton
             busy={busy}
             disabledTooltip={
-              canSync ? undefined : t("repository.syncRequiresRemoteBranch")
+              branchActionsDisabledReason ??
+              (branch.remoteOnly
+                ? t("repository.syncRequiresLocalBranch")
+                : undefined)
             }
-            icon={<RefreshCw className="size-3.5" aria-hidden="true" />}
-            label={t("repository.sync")}
+            icon={
+              branchSyncComplete ? (
+                <Check className="size-3.5" aria-hidden="true" />
+              ) : (
+                <RefreshCw className="size-3.5" aria-hidden="true" />
+              )
+            }
+            label={
+              branchSyncComplete
+                ? t("repository.syncBranchUpToDate")
+                : t("repository.sync")
+            }
             onClick={canSync ? () => onSync?.(branch) : undefined}
           />
         ) : null}

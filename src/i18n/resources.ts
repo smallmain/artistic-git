@@ -183,9 +183,10 @@ export const resources = {
         syncBadge: "↑{{ahead}} to push ↓{{behind}} to pull",
         syncBatchSummary:
           "Synced {{branches}} branches and {{rules}} tracking rules ({{invalid}} skipped)",
+        syncBranchUpToDate: "Branch is up to date",
         syncCurrentOnly: "Only the current branch can be synced in this phase",
-        syncRequiresRemoteBranch:
-          "Only local branches with an origin branch are included",
+        syncRequiresLocalBranch:
+          "Check out this remote branch before syncing it",
         submodulesReady: "Submodules ready",
         tabs: "Repository tabs",
         untitledProject: "Untitled project",
@@ -806,8 +807,9 @@ export const resources = {
         syncBadge: "↑{{ahead}} 待推送 ↓{{behind}} 待拉取",
         syncBatchSummary:
           "已同步 {{branches}} 个分支和 {{rules}} 条跟踪规则（跳过 {{invalid}} 条）",
+        syncBranchUpToDate: "分支已是最新",
         syncCurrentOnly: "本阶段仅可同步当前分支",
-        syncRequiresRemoteBranch: "仅包含有对应 origin 分支的本地分支",
+        syncRequiresLocalBranch: "请先切换到该远程分支再同步",
         submodulesReady: "子模块已就绪",
         tabs: "仓库选项卡",
         untitledProject: "未命名项目",
