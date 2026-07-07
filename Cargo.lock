@@ -59,6 +59,8 @@ version = "0.1.0"
 dependencies = [
  "artistic-git-contracts",
  "artistic-git-core",
+ "artistic-git-git-runner",
+ "artistic-git-test-support",
  "serde",
  "specta",
  "specta-serde",
@@ -114,6 +116,7 @@ dependencies = [
  "artistic-git-app",
  "artistic-git-contracts",
  "artistic-git-core",
+ "artistic-git-git-runner",
  "tauri",
  "tauri-build",
 ]

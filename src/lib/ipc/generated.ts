@@ -47,6 +47,34 @@ export type AutoTrackingRule = {
 	targetBranch: string,
 };
 
+export type BranchExistence = "localOnly" | "remoteOnly" | "localAndRemote";
+
+export type BranchListResponse = {
+	branches: BranchSummary[],
+};
+
+export type BranchSummary = {
+	name: string,
+	shortName: string,
+	existence: BranchExistence,
+	current: boolean,
+	headOid: string | null,
+	upstream: string | null,
+	ahead: number,
+	behind: number,
+	latestCommitUnixSeconds: string | null,
+};
+
+export type CommitSummary = {
+	oid: string,
+	parents: string[],
+	authorName: string,
+	authorEmail: string,
+	authoredAtUnixSeconds: string,
+	subject: string,
+	refs: string[],
+};
+
 export type ConfigChangeEvent = { type: "settingsUpdated"; settings: AppSettings } | { type: "projectUpdated"; projectKey: string; project: ProjectSettings } | { type: "projectRemoved"; projectKey: string; project: ProjectSettings | null };
 
 export type ConflictEnteredEvent = {
@@ -133,6 +161,12 @@ export type HealthResponse = {
 	status: string,
 };
 
+export type IndexLockInfo = {
+	path: string,
+	ageSeconds: number,
+	warning: string,
+};
+
 export type LanguagePreference = "system" | "zhCn" | "enUs";
 
 export type LargeFileCheckSettings = {
@@ -145,9 +179,41 @@ export type LfsLockStatus = {
 	owner: string | null,
 };
 
+export type LocalChange = {
+	path: string,
+	oldPath: string | null,
+	changeKind: DiffChangeKind,
+	indexStatus: string,
+	worktreeStatus: string,
+};
+
+export type LocalChangesResponse = {
+	changes: LocalChange[],
+};
+
 export type LocalChangesViewMode = "flat" | "tree";
 
 export type LogLevelPreference = "error" | "warn" | "info" | "debug" | "trace";
+
+export type LogPageRequest = {
+	repositoryPath: string,
+	after: string | null,
+	limit: number | null,
+};
+
+export type LogPageResponse = {
+	commits: CommitSummary[],
+	nextAfter: string | null,
+};
+
+export type LogSearchRequest = {
+	repositoryPath: string,
+	grep: string | null,
+	author: string | null,
+	pickaxe: string | null,
+	after: string | null,
+	limit: number | null,
+};
 
 export type LoggingSettings = {
 	level?: LogLevelPreference,
@@ -161,6 +227,21 @@ export type OnboardingSettings = {
 export type OpenLogDirResponse = {
 	path: string,
 	opened: boolean,
+};
+
+export type OpenRepositoryRequest = {
+	path: string,
+	toolIdentity: ToolGitIdentity | null,
+};
+
+export type OpenRepositoryResponse = {
+	repositoryPath: string,
+	gitDir: string,
+	remoteMode: RepositoryRemoteMode,
+	remotes: RepositoryRemote[],
+	warnings: RepositoryOpenWarning[],
+	health: RepositoryHealth,
+	summary: RepositorySummary,
 };
 
 export type OperationContext = {
@@ -215,6 +296,53 @@ export type RepoChangedEvent = {
 
 export type RepoQueryKind = "summary" | "branches" | "stashes" | "localChanges" | "history";
 
+export type RepositoryHeadState = { kind: "branch"; name: string; oid: string | null } | { kind: "detached"; oid: string } | { kind: "unborn"; branch: string };
+
+export type RepositoryHealth = {
+	head: RepositoryHeadState,
+	middleStates: RepositoryMiddleState[],
+	indexLock: IndexLockInfo | null,
+};
+
+export type RepositoryMiddleState = {
+	kind: RepositoryMiddleStateKind,
+	path: string,
+	abortCommand: string[] | null,
+};
+
+export type RepositoryMiddleStateKind = "merge" | "rebase" | "cherryPick" | "revert" | "bisect";
+
+export type RepositoryOpenWarning = {
+	kind: RepositoryOpenWarningKind,
+	message: string,
+};
+
+export type RepositoryOpenWarningKind = "multipleRemotesOriginManaged" | "multipleRemotesNoOrigin" | "noRemote" | "detachedHead" | "unbornHead" | "operationInProgress" | "indexLockPresent";
+
+export type RepositoryPathRequest = {
+	repositoryPath: string,
+};
+
+export type RepositoryRemote = {
+	name: string,
+	url: string,
+	isOrigin: boolean,
+	managed: boolean,
+};
+
+export type RepositoryRemoteMode = "origin" | "noRemote";
+
+export type RepositorySummary = {
+	repositoryPath: string,
+	currentBranch: string | null,
+	headOid: string | null,
+	remoteMode: RepositoryRemoteMode,
+	hasOrigin: boolean,
+	isDetached: boolean,
+	isUnborn: boolean,
+	inProgress: boolean,
+};
+
 export type ReviewModeCrashMarker = {
 	autoStashRef?: string | null,
 	enteredAt?: string | null,
@@ -228,7 +356,27 @@ export type SidebarLayoutSettings = {
 	stashesCollapsed?: boolean,
 };
 
+export type StashEntry = {
+	index: number,
+	selector: string,
+	oid: string,
+	message: string,
+	branch: string | null,
+	createdAtUnixSeconds: string | null,
+	isAutoStash: boolean,
+	origin: string | null,
+};
+
+export type StashListResponse = {
+	stashes: StashEntry[],
+};
+
 export type ThemePreference = "system" | "light" | "dark";
+
+export type ToolGitIdentity = {
+	name: string | null,
+	email: string | null,
+};
 
 export type UpdateSettings = {
 	autoCheck?: boolean,

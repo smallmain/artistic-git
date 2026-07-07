@@ -12,6 +12,7 @@ import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
 import { TruncatedText } from "@/components/ui/truncated-text";
+import { openRepository } from "@/lib/ipc/commands";
 import { cn } from "@/lib/utils";
 import { useWindowStore } from "@/store/window-store";
 
@@ -24,6 +25,7 @@ export function StartScreen() {
   const setActiveRepositoryPath = useWindowStore(
     (state) => state.setActiveRepositoryPath,
   );
+  const setRecentProjects = useWindowStore((state) => state.setRecentProjects);
   const removeRecentProject = useWindowStore(
     (state) => state.removeRecentProject,
   );
@@ -33,6 +35,35 @@ export function StartScreen() {
   const setOnboarded = useWindowStore((state) => state.setOnboarded);
   const [missingProject, setMissingProject] = React.useState<string | null>(
     null,
+  );
+  const [openingPath, setOpeningPath] = React.useState<string | null>(null);
+  const handleOpenRepository = React.useCallback(
+    async (path: string) => {
+      setOpeningPath(path);
+      try {
+        const response = await openRepository({
+          path,
+          toolIdentity: null,
+        });
+        const repositoryPath = response.repositoryPath;
+        setActiveRepositoryPath(repositoryPath);
+        setRecentProjects([
+          {
+            displayName: displayNameFromPath(repositoryPath),
+            lastOpenedAt: new Date().toISOString(),
+            path: repositoryPath,
+          },
+          ...recentProjects.filter((project) => project.path !== repositoryPath),
+        ]);
+      } catch (error) {
+        window.dispatchEvent(
+          new CustomEvent("artistic-git:error", { detail: error }),
+        );
+      } finally {
+        setOpeningPath(null);
+      }
+    },
+    [recentProjects, setActiveRepositoryPath, setRecentProjects],
   );
 
   return (
@@ -50,7 +81,7 @@ export function StartScreen() {
               : "";
           const directoryName = relativePath.split("/")[0];
 
-          setActiveRepositoryPath(
+          void handleOpenRepository(
             directoryName ? `/selected/${directoryName}` : pickerFallbackPath,
           );
         }}
@@ -78,8 +109,8 @@ export function StartScreen() {
             <div className="flex flex-col gap-3">
               <Button
                 className="h-12 justify-start gap-3 px-4"
+                disabled={openingPath !== null}
                 onClick={() => {
-                  setActiveRepositoryPath(pickerFallbackPath);
                   fileInputRef.current?.click();
                 }}
                 size="lg"
@@ -162,8 +193,9 @@ export function StartScreen() {
                             return;
                           }
 
-                          setActiveRepositoryPath(project.path);
+                          void handleOpenRepository(project.path);
                         }}
+                        disabled={openingPath !== null}
                         type="button"
                       >
                         <FolderGit2
@@ -226,4 +258,8 @@ export function StartScreen() {
       </div>
     </main>
   );
+}
+
+function displayNameFromPath(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
 }

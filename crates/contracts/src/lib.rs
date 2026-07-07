@@ -279,6 +279,229 @@ pub struct LfsLockStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
+pub struct ToolGitIdentity {
+    pub name: Option<String>,
+    pub email: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenRepositoryRequest {
+    pub path: String,
+    pub tool_identity: Option<ToolGitIdentity>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenRepositoryResponse {
+    pub repository_path: String,
+    pub git_dir: String,
+    pub remote_mode: RepositoryRemoteMode,
+    pub remotes: Vec<RepositoryRemote>,
+    pub warnings: Vec<RepositoryOpenWarning>,
+    pub health: RepositoryHealth,
+    pub summary: RepositorySummary,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryRemote {
+    pub name: String,
+    pub url: String,
+    pub is_origin: bool,
+    pub managed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum RepositoryRemoteMode {
+    Origin,
+    NoRemote,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryOpenWarning {
+    pub kind: RepositoryOpenWarningKind,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum RepositoryOpenWarningKind {
+    MultipleRemotesOriginManaged,
+    MultipleRemotesNoOrigin,
+    NoRemote,
+    DetachedHead,
+    UnbornHead,
+    OperationInProgress,
+    IndexLockPresent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryHealth {
+    pub head: RepositoryHeadState,
+    pub middle_states: Vec<RepositoryMiddleState>,
+    pub index_lock: Option<IndexLockInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum RepositoryHeadState {
+    Branch { name: String, oid: Option<String> },
+    Detached { oid: String },
+    Unborn { branch: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryMiddleState {
+    pub kind: RepositoryMiddleStateKind,
+    pub path: String,
+    pub abort_command: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum RepositoryMiddleStateKind {
+    Merge,
+    Rebase,
+    CherryPick,
+    Revert,
+    Bisect,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexLockInfo {
+    pub path: String,
+    pub age_seconds: u32,
+    pub warning: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositorySummary {
+    pub repository_path: String,
+    pub current_branch: Option<String>,
+    pub head_oid: Option<String>,
+    pub remote_mode: RepositoryRemoteMode,
+    pub has_origin: bool,
+    pub is_detached: bool,
+    pub is_unborn: bool,
+    pub in_progress: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryPathRequest {
+    pub repository_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchListResponse {
+    pub branches: Vec<BranchSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchSummary {
+    pub name: String,
+    pub short_name: String,
+    pub existence: BranchExistence,
+    pub current: bool,
+    pub head_oid: Option<String>,
+    pub upstream: Option<String>,
+    pub ahead: u32,
+    pub behind: u32,
+    pub latest_commit_unix_seconds: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum BranchExistence {
+    LocalOnly,
+    RemoteOnly,
+    LocalAndRemote,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalChangesResponse {
+    pub changes: Vec<LocalChange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalChange {
+    pub path: String,
+    pub old_path: Option<String>,
+    pub change_kind: DiffChangeKind,
+    pub index_status: String,
+    pub worktree_status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct StashListResponse {
+    pub stashes: Vec<StashEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct StashEntry {
+    pub index: u32,
+    pub selector: String,
+    pub oid: String,
+    pub message: String,
+    pub branch: Option<String>,
+    pub created_at_unix_seconds: Option<String>,
+    pub is_auto_stash: bool,
+    pub origin: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LogPageRequest {
+    pub repository_path: String,
+    pub after: Option<String>,
+    pub limit: Option<u16>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LogSearchRequest {
+    pub repository_path: String,
+    pub grep: Option<String>,
+    pub author: Option<String>,
+    pub pickaxe: Option<String>,
+    pub after: Option<String>,
+    pub limit: Option<u16>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LogPageResponse {
+    pub commits: Vec<CommitSummary>,
+    pub next_after: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitSummary {
+    pub oid: String,
+    pub parents: Vec<String>,
+    pub author_name: String,
+    pub author_email: String,
+    pub authored_at_unix_seconds: String,
+    pub subject: String,
+    pub refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
 pub struct GitDistManifest {
     pub schema_version: u32,
     pub platform: String,

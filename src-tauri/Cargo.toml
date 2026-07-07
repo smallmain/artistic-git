@@ -16,4 +16,5 @@ tauri-build.workspace = true
 artistic-git-app.workspace = true
 artistic-git-contracts.workspace = true
 artistic-git-core.workspace = true
+artistic-git-git-runner.workspace = true
 tauri.workspace = true

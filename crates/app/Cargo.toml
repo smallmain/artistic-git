@@ -8,8 +8,12 @@ repository.workspace = true
 [dependencies]
 artistic-git-contracts.workspace = true
 artistic-git-core.workspace = true
+artistic-git-git-runner.workspace = true
 serde.workspace = true
 specta.workspace = true
 specta-serde.workspace = true
 specta-typescript.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+artistic-git-test-support.workspace = true

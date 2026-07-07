@@ -165,13 +165,13 @@ graph TD
 
 依赖：1B、1C。
 
-- [ ] 打开校验：非 Git 目录报错「不是有效的 Git 项目」（不提供 init）；子目录经 `git rev-parse --show-toplevel` 静默解析到仓库根；bare 仓库与 linked worktree 拒绝（「不是受支持的 Git 项目类型」）；存在多个 remote 时仅管理 `origin` 并给非阻塞提示，无 `origin` 即进入无远程模式
-- [ ] 打开流程：以工具身份写仓库级 `user.name/user.email`（**仅不同才写，只动 `.git/config`**，工具无身份则跳过）；存在 LFS 规则时自动 `git lfs install --local`（允许按需写仓库级 `filter.lfs.*`）；只清理工具创建的临时 worktree 残留；记录 projects.json 最近打开时间
-- [ ] 健康检查：游离 HEAD（提示 + 新建分支/切换引导）；外部残留 rebase/merge/cherry-pick 中间态（提示 + 放弃恢复 abort 按钮）；空仓库 unborn HEAD 语义（显示 unborn 分支名 + 历史空态 + 分支切换/删除/新建禁用）；`.git/index.lock` 残留**永不自动清除**，引导式提示（mtime 年龄 + 警示文案 + 用户显式确认后删除）；无法自动修复的归入致命错误
-- [ ] 分支列表查询：本地/远程合并显示、去 `origin/` 前缀、三种存在状态、当前分支置顶其余按最近提交时间降序、每分支 ahead/behind、仅远程分支无 Badge；`backup/*` 默认过滤（5D 提供查看入口）
-- [ ] 本地更改查询：`status --porcelain -z`、严格遵循 .gitignore、未跟踪未忽略显示为「新增」、rename detection（`--find-renames`，含二进制相似度）识别为「重命名」记录
-- [ ] 储藏列表查询（含 Auto Stash 识别与来历标注字段）；仓库概要查询（当前分支/远程有无 → 无远程模式标志/中间态标志）
-- [ ] `git log` 分页查询（批 200、topo、`--parents`）与搜索命令（`--grep` / `--author` / `-S` pickaxe，可中断）
+- [x] 打开校验：非 Git 目录报错「不是有效的 Git 项目」（不提供 init）；子目录经 `git rev-parse --show-toplevel` 静默解析到仓库根；bare 仓库与 linked worktree 拒绝（「不是受支持的 Git 项目类型」）；存在多个 remote 时仅管理 `origin` 并给非阻塞提示，无 `origin` 即进入无远程模式
+- [x] 打开流程：以工具身份写仓库级 `user.name/user.email`（**仅不同才写，只动 `.git/config`**，工具无身份则跳过）；存在 LFS 规则时自动 `git lfs install --local`（允许按需写仓库级 `filter.lfs.*`）；只清理工具创建的临时 worktree 残留；记录 projects.json 最近打开时间
+- [x] 健康检查：游离 HEAD（提示 + 新建分支/切换引导）；外部残留 rebase/merge/cherry-pick 中间态（提示 + 放弃恢复 abort 按钮）；空仓库 unborn HEAD 语义（显示 unborn 分支名 + 历史空态 + 分支切换/删除/新建禁用）；`.git/index.lock` 残留**永不自动清除**，引导式提示（mtime 年龄 + 警示文案 + 用户显式确认后删除）；无法自动修复的归入致命错误
+- [x] 分支列表查询：本地/远程合并显示、去 `origin/` 前缀、三种存在状态、当前分支置顶其余按最近提交时间降序、每分支 ahead/behind、仅远程分支无 Badge；`backup/*` 默认过滤（5D 提供查看入口）
+- [x] 本地更改查询：`status --porcelain -z`、严格遵循 .gitignore、未跟踪未忽略显示为「新增」、rename detection（`--find-renames`，含二进制相似度）识别为「重命名」记录
+- [x] 储藏列表查询（含 Auto Stash 识别与来历标注字段）；仓库概要查询（当前分支/远程有无 → 无远程模式标志/中间态标志）
+- [x] `git log` 分页查询（批 200、topo、`--parents`）与搜索命令（`--grep` / `--author` / `-S` pickaxe，可中断）
 
 **验收**：Rust 集成测试覆盖上述全部（真实仓库夹具：unborn/detached/中间态/index.lock/bare/worktree/子目录/LFS 仓库/多 remote 仓库）。
 

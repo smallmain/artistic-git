@@ -4,6 +4,12 @@ use serde::Serialize;
 use specta::Type;
 use std::path::{Path, PathBuf};
 
+pub mod repository;
+pub use repository::{
+    list_branches, list_local_changes, list_stashes, log_page_with_cancel, open_repository,
+    repository_summary, search_log_with_cancel, RepositoryBackend,
+};
+
 #[derive(Debug, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct HealthResponse {
