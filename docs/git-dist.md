@@ -71,9 +71,9 @@ Useful commands:
 
 ```sh
 node scripts/fetch-git-dist.mjs --print-env --target=macos-universal
-node scripts/fetch-git-dist.mjs --dev-resources --target=macos-universal
+node scripts/fetch-git-dist.mjs --dev-resources --target=macos-universal --helper-profile=release
 node scripts/fetch-git-dist.mjs --target=linux-x86_64 --download-only
-node scripts/fetch-git-dist.mjs --target=windows-x86_64
+node scripts/fetch-git-dist.mjs --target=windows-x86_64 --helper-dir=/path/to/helpers
 ```
 
 Current phase 1A behavior:
@@ -87,11 +87,22 @@ Current phase 1A behavior:
 - real fetch mode rejects placeholders before any download.
 - non-placeholder sources are downloaded, SHA-256 checked, and extracted into a
   staging directory.
-- source builds and final artifact assembly stop with an explicit handoff
-  message; no incomplete `manifest.json` is written.
+- archive-only targets can be assembled from staged archive contents into the
+  configured `git-dist/` layout. Assembly strips common single-directory archive
+  roots, copies helper binaries, writes `manifest.json`, and records SHA-256
+  values only after every required executable is present.
+- helper binaries may be supplied with `--helper-dir`, with explicit
+  `--credential-helper` and `--ssh-askpass` paths, or from
+  `target/release` / `target/debug` via `--helper-profile=release|debug|auto`.
+  If helper binaries have not been built, assembly fails with the missing
+  candidates and no incomplete `manifest.json` is written.
+- source builds still stop with an explicit handoff message; no incomplete
+  `manifest.json` is written.
 
 The source-build handoff is deliberate: macOS and Linux Git builds require the
-CI toolchains described in `git-dist.toml`.
+CI toolchains described in `git-dist.toml`. Windows real fetch remains blocked
+before download while the Win32-OpenSSH entry is a rejected placeholder, even
+though the archive assembly path is covered by fixture tests.
 
 ## Development Resources
 
@@ -103,13 +114,17 @@ export ARTISTIC_GIT_DIST_DIR=/absolute/path/to/git-dist
 node scripts/check-git-dist.mjs
 ```
 
-For the repository-local development resources path, use:
+The intended repository-local development resources flow is:
 
 ```sh
-pnpm fetch:git-dist -- --dev-resources --target=macos-universal
+cargo build -p artistic-git-helpers --bins --release
+pnpm fetch:git-dist -- --dev-resources --target=macos-universal --helper-profile=release
 export ARTISTIC_GIT_DIST_DIR="$PWD/src-tauri/resources/git-dist"
-pnpm git-dist:check
+node scripts/check-git-dist.mjs --target=macos-universal --no-exec
 ```
+
+In the current phase 1A state, the macOS and Linux commands still stop at the
+documented source-build handoff until the CI build recipe assembles `git/`.
 
 `src-tauri/resources/git-dist/README.md` is tracked as the mount point
 placeholder, but downloaded archives, extracted tools, and generated
@@ -206,14 +221,18 @@ Build mode uses this policy:
 
 - matrix targets: `windows-x86_64`, `macos-universal`, `linux-x86_64`, each on
   its native GitHub runner image.
+- every matrix job first runs target-scoped real-build policy validation, so
+  placeholder pins fail before cache restore, helper builds, download, or
+  package work.
 - source archive cache key includes target, `git-dist.toml`, fetch/check
   scripts, lockfiles, and a manual `GIT_DIST_CACHE_VERSION`.
 - assembled distribution cache key includes target, `git-dist.toml`, fetch/check
   scripts, helper crate sources, lockfiles, and `GIT_DIST_CACHE_VERSION`.
 - cache hit still runs `scripts/check-git-dist.mjs --no-exec` against the
   restored `ARTISTIC_GIT_DIST_DIR`.
-- cache miss runs `scripts/fetch-git-dist.mjs --target=<target>` with explicit
-  output, source-cache, and staging directories.
+- cache miss builds the helper binaries, then runs
+  `scripts/fetch-git-dist.mjs --target=<target>` with explicit output,
+  source-cache, and staging directories.
 - placeholder versions, placeholder URLs, non-stable sources, or zero SHA-256
   values fail before download/build/package
 - successful jobs upload `artistic-git-dist-<target>` artifacts for later test

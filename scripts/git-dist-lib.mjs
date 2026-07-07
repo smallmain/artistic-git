@@ -1,7 +1,18 @@
 /* global process */
 
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import {
+  access,
+  chmod,
+  cp,
+  mkdir,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -257,6 +268,444 @@ export function isPlaceholderChecksum(value) {
 export async function sha256File(filePath) {
   const buffer = await readFile(filePath);
   return createHash("sha256").update(buffer).digest("hex");
+}
+
+export function sourceStagingDirectory(stagingDir, sourceRef) {
+  return path.join(stagingDir, sourceRef.replaceAll(".", "__"));
+}
+
+export async function assembleGitDist({
+  config,
+  targetName,
+  stagingDir,
+  outputDir,
+  helperDir,
+  credentialHelperPath,
+  sshAskpassPath,
+  cargoTargetDir = process.env.CARGO_TARGET_DIR
+    ? path.resolve(process.env.CARGO_TARGET_DIR)
+    : path.join(repoRoot, "target"),
+  helperProfile = "auto",
+}) {
+  const target = getTarget(config, targetName);
+  const sources = getTargetSources(config, targetName);
+  const sourceBuilds = sources.filter(
+    ({ source }) => source.kind === "source-tarball",
+  );
+  if (sourceBuilds.length > 0) {
+    throw new GitDistConfigError(
+      `source build stage is a CI recipe handoff for ${target.manifest_platform}`,
+      [
+        `staged sources: ${sourceBuilds.map(({ ref }) => ref).join(", ")}`,
+        `follow the build.${target.platform}.git recipe in git-dist.toml`,
+        `assemble ${config.resources.layout.manifest} under ${outputDir}`,
+        `then run ARTISTIC_GIT_DIST_DIR=${outputDir} node scripts/check-git-dist.mjs --target=${target.manifest_platform} --no-exec`,
+        "no manifest was written and no system git fallback was attempted",
+      ],
+    );
+  }
+
+  const resolvedOutputDir = path.resolve(outputDir);
+  const tempOutputDir = path.join(
+    path.dirname(resolvedOutputDir),
+    `.${path.basename(resolvedOutputDir)}.assembly-${process.pid}-${Date.now()}`,
+  );
+
+  await rm(tempOutputDir, { recursive: true, force: true });
+  await mkdir(tempOutputDir, { recursive: true });
+
+  try {
+    for (const { ref, source } of sources) {
+      if (source.kind !== "archive") {
+        throw new GitDistConfigError("git-dist assembly failed", [
+          `${ref}.kind=${source.kind} is not supported by archive assembly`,
+        ]);
+      }
+      await copyArchiveSource({
+        config,
+        targetName,
+        stagingDir,
+        tempOutputDir,
+        ref,
+        source,
+      });
+    }
+
+    await copyGitDistHelpers({
+      config,
+      targetName,
+      tempOutputDir,
+      helperDir,
+      credentialHelperPath,
+      sshAskpassPath,
+      cargoTargetDir,
+      helperProfile,
+    });
+
+    const manifest = await createGitDistManifest({
+      config,
+      targetName,
+      distRoot: tempOutputDir,
+    });
+    await writeGitDistManifest(config, tempOutputDir, manifest);
+    await publishGitDistOutput(config, tempOutputDir, resolvedOutputDir);
+    return manifest;
+  } catch (error) {
+    await rm(tempOutputDir, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+export async function resolveGitDistHelperPaths({
+  config,
+  targetName,
+  helperDir,
+  credentialHelperPath,
+  sshAskpassPath,
+  cargoTargetDir = path.join(repoRoot, "target"),
+  helperProfile = "auto",
+}) {
+  const paths = expectedManifestPaths(config, targetName);
+  const helperBasenames = {
+    credentialHelper: path.basename(paths.credentialHelper),
+    sshAskpass: path.basename(paths.sshAskpass),
+  };
+  const explicitPaths = {
+    credentialHelper: credentialHelperPath,
+    sshAskpass: sshAskpassPath,
+  };
+  const profiles = helperProfiles(helperProfile);
+  const resolved = {};
+  const missing = [];
+
+  for (const [key, basename] of Object.entries(helperBasenames)) {
+    const candidates = helperCandidates({
+      explicitPath: explicitPaths[key],
+      helperDir,
+      cargoTargetDir,
+      profiles,
+      basename,
+    });
+    const existing = await firstExistingFile(candidates);
+    if (existing) {
+      resolved[key] = existing;
+    } else {
+      missing.push(`${key} (${candidates.join(", ")})`);
+    }
+  }
+
+  if (missing.length > 0) {
+    throw new GitDistConfigError("git-dist helper binaries are required", [
+      `missing: ${missing.join("; ")}`,
+      "build them with `cargo build -p artistic-git-helpers --bins --release`, pass --helper-dir, or pass both --credential-helper and --ssh-askpass",
+    ]);
+  }
+
+  return resolved;
+}
+
+async function copyArchiveSource({
+  config,
+  targetName,
+  stagingDir,
+  tempOutputDir,
+  ref,
+  source,
+}) {
+  const stagedSourceDir = sourceStagingDirectory(stagingDir, ref);
+  const stagedStat = await stat(stagedSourceDir).catch(() => null);
+  if (!stagedStat?.isDirectory()) {
+    throw new GitDistConfigError("git-dist assembly failed", [
+      `${ref} was not extracted under ${stagedSourceDir}`,
+      "run without --no-extract or restore the staged archive contents before assembly",
+    ]);
+  }
+
+  const expectedRelativePath = expectedComponentPathInSource(
+    config,
+    targetName,
+    source,
+  );
+  const sourceRoot = await findArchiveContentRoot(
+    stagedSourceDir,
+    expectedRelativePath,
+  );
+  const destination = path.join(
+    tempOutputDir,
+    normalizeResourcePath(source.resources_path),
+  );
+  await mkdir(path.dirname(destination), { recursive: true });
+  await cp(sourceRoot, destination, {
+    recursive: true,
+    force: true,
+    preserveTimestamps: true,
+  });
+}
+
+async function findArchiveContentRoot(stagedSourceDir, expectedRelativePath) {
+  if (!expectedRelativePath) {
+    return stagedSourceDir;
+  }
+
+  const candidates = await directoryCandidates(stagedSourceDir, 3);
+  for (const candidate of candidates) {
+    if (await pathExists(path.join(candidate, expectedRelativePath))) {
+      return candidate;
+    }
+  }
+
+  throw new GitDistConfigError("git-dist assembly failed", [
+    `staged archive ${stagedSourceDir} does not contain expected ${expectedRelativePath}`,
+  ]);
+}
+
+async function directoryCandidates(root, maxDepth) {
+  const candidates = [root];
+
+  async function walk(directory, depth) {
+    if (depth >= maxDepth) {
+      return;
+    }
+    const entries = await readdir(directory, { withFileTypes: true }).catch(
+      () => [],
+    );
+    for (const entry of entries.sort((left, right) =>
+      left.name.localeCompare(right.name),
+    )) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+      const child = path.join(directory, entry.name);
+      candidates.push(child);
+      await walk(child, depth + 1);
+    }
+  }
+
+  await walk(root, 0);
+  return candidates;
+}
+
+async function copyGitDistHelpers({
+  config,
+  targetName,
+  tempOutputDir,
+  helperDir,
+  credentialHelperPath,
+  sshAskpassPath,
+  cargoTargetDir,
+  helperProfile,
+}) {
+  const helperPaths = await resolveGitDistHelperPaths({
+    config,
+    targetName,
+    helperDir,
+    credentialHelperPath,
+    sshAskpassPath,
+    cargoTargetDir,
+    helperProfile,
+  });
+  const manifestPaths = expectedManifestPaths(config, targetName);
+  for (const [key, sourcePath] of Object.entries(helperPaths)) {
+    await copyFileIntoDist(
+      sourcePath,
+      path.join(tempOutputDir, manifestPaths[key]),
+    );
+  }
+}
+
+async function copyFileIntoDist(sourcePath, destination) {
+  await mkdir(path.dirname(destination), { recursive: true });
+  await cp(sourcePath, destination, { force: true, preserveTimestamps: true });
+  await chmod(destination, 0o755).catch(() => {});
+}
+
+async function createGitDistManifest({ config, targetName, distRoot }) {
+  const target = getTarget(config, targetName);
+  const paths = expectedManifestPaths(config, targetName);
+  await assertRequiredDistFiles(config, targetName, distRoot, paths);
+
+  const manifestPath = normalizeResourcePath(config.resources.layout.manifest);
+  const sha256 = {};
+  for (const relativePath of await regularFileResourcePaths(distRoot)) {
+    if (relativePath === manifestPath) {
+      continue;
+    }
+    sha256[relativePath] = await sha256File(path.join(distRoot, relativePath));
+  }
+
+  return {
+    schemaVersion: config.manifest.schema_version,
+    platform: target.manifest_platform,
+    gitVersion:
+      target.platform === "windows"
+        ? config.versions.git_for_windows
+        : config.versions.git,
+    gitLfsVersion: config.versions.git_lfs,
+    windowsOpenSshVersion:
+      target.platform === "windows" ? config.versions.win32_openssh : null,
+    helperVersion: config.versions.helper,
+    paths,
+    sha256,
+  };
+}
+
+async function assertRequiredDistFiles(config, targetName, distRoot, paths) {
+  const missing = [];
+  for (const key of requiredExecutableKeysForTarget(config, targetName)) {
+    const filePath = path.join(distRoot, paths[key]);
+    const fileStat = await stat(filePath).catch(() => null);
+    if (!fileStat?.isFile()) {
+      missing.push(`${key}: ${paths[key]}`);
+      continue;
+    }
+    await chmod(filePath, 0o755).catch(() => {});
+  }
+
+  if (missing.length > 0) {
+    throw new GitDistConfigError("git-dist assembly failed", [
+      `missing required executable files: ${missing.join(", ")}`,
+      "no manifest was written",
+    ]);
+  }
+}
+
+async function regularFileResourcePaths(root) {
+  const files = [];
+
+  async function walk(directory, relativeDirectory) {
+    const entries = await readdir(directory, { withFileTypes: true });
+    for (const entry of entries.sort((left, right) =>
+      left.name.localeCompare(right.name),
+    )) {
+      const relativePath = path.posix.join(relativeDirectory, entry.name);
+      const absolutePath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await walk(absolutePath, relativePath);
+      } else if (entry.isFile()) {
+        files.push(relativePath);
+      }
+    }
+  }
+
+  await walk(root, "");
+  return files;
+}
+
+async function writeGitDistManifest(config, distRoot, manifest) {
+  const manifestPath = path.join(distRoot, config.resources.layout.manifest);
+  await mkdir(path.dirname(manifestPath), { recursive: true });
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+}
+
+async function publishGitDistOutput(config, tempOutputDir, outputDir) {
+  await mkdir(outputDir, { recursive: true });
+  const manifestPath = normalizeResourcePath(config.resources.layout.manifest);
+  const entries = [
+    config.resources.layout.git,
+    config.resources.layout.git_lfs,
+    config.resources.layout.windows_openssh,
+    config.resources.layout.helpers,
+  ]
+    .map(normalizeResourcePath)
+    .filter(Boolean);
+
+  for (const relativePath of entries) {
+    const source = path.join(tempOutputDir, relativePath);
+    const destination = path.join(outputDir, relativePath);
+    await rm(destination, { recursive: true, force: true });
+    if (await pathExists(source)) {
+      await mkdir(path.dirname(destination), { recursive: true });
+      await rename(source, destination);
+    }
+  }
+
+  await rm(path.join(outputDir, manifestPath), { force: true });
+  await rename(
+    path.join(tempOutputDir, manifestPath),
+    path.join(outputDir, manifestPath),
+  );
+  await rm(tempOutputDir, { recursive: true, force: true });
+}
+
+function expectedComponentPathInSource(config, targetName, source) {
+  const expectedPaths = expectedManifestPaths(config, targetName);
+  const manifestKeyByComponent = {
+    git: "gitExecutable",
+    git_lfs: "gitLfsExecutable",
+    win32_openssh: "windowsSshExecutable",
+  };
+  const manifestKey = manifestKeyByComponent[source.component];
+  if (!manifestKey || !expectedPaths[manifestKey]) {
+    return null;
+  }
+
+  const resourcePath = resourcePathWithTrailingSlash(source.resources_path);
+  const expectedPath = normalizeResourcePath(expectedPaths[manifestKey]);
+  if (!expectedPath.startsWith(resourcePath)) {
+    return null;
+  }
+  return expectedPath.slice(resourcePath.length);
+}
+
+function helperProfiles(profile) {
+  if (profile === "auto") {
+    return ["release", "debug"];
+  }
+  if (profile === "release" || profile === "debug") {
+    return [profile];
+  }
+  throw new GitDistConfigError("git-dist helper profile is invalid", [
+    `--helper-profile must be auto, release, or debug; got ${profile}`,
+  ]);
+}
+
+function helperCandidates({
+  explicitPath,
+  helperDir,
+  cargoTargetDir,
+  profiles,
+  basename,
+}) {
+  if (explicitPath) {
+    return [path.resolve(explicitPath)];
+  }
+  if (helperDir) {
+    return [path.join(path.resolve(helperDir), basename)];
+  }
+  return profiles.map((profile) =>
+    path.join(path.resolve(cargoTargetDir), profile, basename),
+  );
+}
+
+async function firstExistingFile(candidates) {
+  for (const candidate of candidates) {
+    const candidateStat = await stat(candidate).catch(() => null);
+    if (candidateStat?.isFile()) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+async function pathExists(filePath) {
+  try {
+    await access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function normalizeResourcePath(value) {
+  return String(value ?? "")
+    .replaceAll("\\", "/")
+    .replace(/^\/+/, "")
+    .replace(/\/+$/, "");
+}
+
+function resourcePathWithTrailingSlash(value) {
+  const normalized = normalizeResourcePath(value);
+  return normalized ? `${normalized}/` : "";
 }
 
 function validateTarget(config, name, target, errors) {

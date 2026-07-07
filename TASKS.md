@@ -107,7 +107,9 @@ graph TD
 - [ ] git-lfs：全平台官方预编译包校验 SHA-256；macOS 合成 Universal
 - [x] 产出统一 Tauri `resources` 目录布局（git 发行目录 + lfs + Windows ssh + 后续 helper 二进制的挂载点）
 - [ ] 本地开发脚本（如 `pnpm fetch:git-dist`）：开发机一键下载/构建产物放入 dev resources，并导出/提示 `ARTISTIC_GIT_DIST_DIR`；二进制产物不提交普通 Git 仓库
+  - 进展（2026-07-08）：`fetch-git-dist` 已有 archive assembly 框架、helper 复制/缺失报错、fixture manifest/sha256 测试；但 macOS/Linux 源码构建与 Windows OpenSSH placeholder gate 仍使一键真实 dev resources 未完成。
 - [ ] CI cache/artifact 复用策略：git-dist 产物由 1A 生成并供后续测试/打包 job 复用；cache miss 时按 `git-dist.toml` 重新下载/构建并校验
+  - 进展（2026-07-08）：workflow 已在 cache hit 时校验 restored `ARTISTIC_GIT_DIST_DIR`，cache miss 前构建 helper，并将 assembly fixture 测试纳入 contract；但三平台真实 artifact 仍受源码构建 handoff 与 Windows placeholder 阻断，暂不能勾选。
 - [x] 版本升级流程文档化：升级 = 修改配置文件走 PR + 全量测试 + 记入更新日志
 
 **验收**：CI 三平台产出 artifact 且校验和匹配；本地脚本产物可执行 `git --version` / `git lfs version`；后续 job 可通过 `ARTISTIC_GIT_DIST_DIR` 复用产物；篡改校验和时构建失败。

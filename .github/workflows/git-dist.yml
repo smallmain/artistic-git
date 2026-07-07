@@ -5,6 +5,7 @@ on:
     paths:
       - "git-dist.toml"
       - "scripts/fetch-git-dist.mjs"
+      - "scripts/git-dist.node-tests.mjs"
       - "scripts/git-dist-lib.mjs"
       - "scripts/check-git-dist.mjs"
       - "scripts/check-tauri-bundle-resources.mjs"
@@ -38,6 +39,9 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
+
+      - name: Run git-dist node tests
+        run: node --test scripts/git-dist.node-tests.mjs
 
       - name: Validate git-dist config
         run: node scripts/check-git-dist.mjs --schema-only
@@ -89,6 +93,12 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
+      - name: Validate target real-build policy
+        run: node scripts/check-git-dist.mjs --schema-only --real-build --target="${{ matrix.target }}"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Restore downloaded source cache
         id: source-cache
         uses: actions/cache@v4
@@ -113,6 +123,13 @@ jobs:
         run: |
           set -euo pipefail
           node scripts/check-git-dist.mjs --target="${{ matrix.target }}" --no-exec
+
+      - name: Build helper binaries
+        if: steps.dist-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build -p artistic-git-helpers --bins --release
 
       - name: Fetch, verify, and assemble distribution
         if: steps.dist-cache.outputs.cache-hit != 'true'
