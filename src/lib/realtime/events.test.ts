@@ -8,6 +8,7 @@ import type {
   RepoChangedEvent,
 } from "@/lib/ipc/generated";
 import {
+  invalidateFetchStateQueries,
   installRealtimeEventBridge,
   invalidateRepoChangedQueries,
   repoChangedQueryKeys,
@@ -51,6 +52,47 @@ describe("realtime query invalidation", () => {
     expect(invalidateQueries).toHaveBeenNthCalledWith(2, {
       queryKey: ["repository", "/repo/art", "stashes"],
     });
+  });
+
+  it("invalidates repository summary, branches, and history when fetch recovers", async () => {
+    const queryClient = new QueryClient();
+    const invalidateQueries = vi
+      .spyOn(queryClient, "invalidateQueries")
+      .mockResolvedValue();
+
+    await invalidateFetchStateQueries(queryClient, {
+      lastSuccessAt: "1760000000",
+      message: null,
+      repositoryPath: "/repo/art",
+      state: "idle",
+    });
+
+    expect(invalidateQueries).toHaveBeenCalledTimes(3);
+    expect(invalidateQueries).toHaveBeenNthCalledWith(1, {
+      queryKey: ["repository", "/repo/art", "summary"],
+    });
+    expect(invalidateQueries).toHaveBeenNthCalledWith(2, {
+      queryKey: ["repository", "/repo/art", "branches"],
+    });
+    expect(invalidateQueries).toHaveBeenNthCalledWith(3, {
+      queryKey: ["repository", "/repo/art", "history"],
+    });
+  });
+
+  it("does not invalidate repository data for offline fetch-state events", async () => {
+    const queryClient = new QueryClient();
+    const invalidateQueries = vi
+      .spyOn(queryClient, "invalidateQueries")
+      .mockResolvedValue();
+
+    await invalidateFetchStateQueries(queryClient, {
+      lastSuccessAt: "1760000000",
+      message: "offline",
+      repositoryPath: "/repo/art",
+      state: "offline",
+    });
+
+    expect(invalidateQueries).not.toHaveBeenCalled();
   });
 
   it("subscribes to repo-changed, fetch-state, and conflict-entered events", async () => {

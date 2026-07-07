@@ -331,6 +331,55 @@ describe("RepositoryShell stash flow", () => {
 });
 
 describe("RepositoryShell branch flow", () => {
+  it("fetches when the repository opens and when the window regains focus", async () => {
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    await waitFor(() =>
+      expect(commandMocks.fetchRepository).toHaveBeenCalledTimes(1),
+    );
+
+    window.dispatchEvent(new Event("focus"));
+
+    await waitFor(() =>
+      expect(commandMocks.fetchRepository).toHaveBeenCalledTimes(2),
+    );
+  });
+
+  it("hides sync entrances and pending branch badges when the repository has no remote", async () => {
+    commandMocks.repositorySummary.mockResolvedValueOnce({
+      currentBranch: "main",
+      hasOrigin: false,
+      headOid: "abc1234",
+      inProgress: false,
+      isDetached: false,
+      isUnborn: false,
+      remoteMode: "noRemote",
+      repositoryPath: "/repo/art",
+    });
+    commandMocks.listBranches.mockResolvedValueOnce({
+      branches: [
+        branchSummary({
+          ahead: 2,
+          current: true,
+          existence: "localOnly",
+          headOid: "abc1234",
+          shortName: "main",
+        }),
+      ],
+    });
+
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    expect(
+      (await screen.findAllByText("No remote repository configured")).length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.queryByRole("button", { name: "Sync" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("↑2")).not.toBeInTheDocument();
+    expect(commandMocks.fetchRepository).not.toHaveBeenCalled();
+  });
+
   it("validates and creates a branch from the selected base without connecting remote creation", async () => {
     mockBranchList();
     commandMocks.validateBranchName.mockResolvedValueOnce({
@@ -392,7 +441,7 @@ describe("RepositoryShell branch flow", () => {
       inProgress: false,
       isDetached: false,
       isUnborn: false,
-      remoteMode: "none",
+      remoteMode: "noRemote",
       repositoryPath: "/repo/art",
     });
     mockBranchList();
@@ -633,7 +682,7 @@ describe("RepositoryShell commit flow", () => {
       inProgress: false,
       isDetached: false,
       isUnborn: false,
-      remoteMode: "none",
+      remoteMode: "noRemote",
       repositoryPath: "/repo/art",
     });
 
@@ -644,6 +693,50 @@ describe("RepositoryShell commit flow", () => {
     expect(
       within(dialog).queryByRole("checkbox", { name: "Push immediately" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("fetches before committing a branch with an upstream", async () => {
+    commandMocks.listBranches.mockResolvedValue({
+      branches: [
+        branchSummary({
+          current: true,
+          existence: "localAndRemote",
+          headOid: "abc1234",
+          shortName: "main",
+        }),
+      ],
+    });
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+    await waitFor(() =>
+      expect(commandMocks.fetchRepository).toHaveBeenCalled(),
+    );
+    commandMocks.fetchRepository.mockClear();
+
+    const dialog = await openCommitDialog();
+    fireEvent.change(within(dialog).getByLabelText("Commit message"), {
+      target: { value: "Update assets" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Commit" }));
+
+    await waitFor(() => expect(commandMocks.commitChanges).toHaveBeenCalled());
+    expect(commandMocks.fetchRepository).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips the pre-commit fetch when the current branch has no upstream", async () => {
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+    await waitFor(() =>
+      expect(commandMocks.fetchRepository).toHaveBeenCalled(),
+    );
+    commandMocks.fetchRepository.mockClear();
+
+    const dialog = await openCommitDialog();
+    fireEvent.change(within(dialog).getByLabelText("Commit message"), {
+      target: { value: "Update assets" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Commit" }));
+
+    await waitFor(() => expect(commandMocks.commitChanges).toHaveBeenCalled());
+    expect(commandMocks.fetchRepository).not.toHaveBeenCalled();
   });
 
   it("continues a large-file commit with LFS after the warning", async () => {

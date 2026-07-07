@@ -38,6 +38,7 @@ export interface BranchListItem {
   latestCommitId: string;
   name: string;
   remoteOnly?: boolean;
+  upstream?: string | null;
 }
 
 export interface StashListItem {
@@ -105,6 +106,12 @@ export function RepositorySidebar({
         stash.name.toLowerCase().includes(stashQuery.toLowerCase()),
       ),
     [stashQuery, stashes],
+  );
+  const hasPendingSync = React.useMemo(
+    () =>
+      repository.hasRemote &&
+      branches.some((branch) => branch.ahead > 0 || branch.behind > 0),
+    [branches, repository.hasRemote],
   );
 
   const startSidebarResize = React.useCallback(
@@ -192,22 +199,23 @@ export function RepositorySidebar({
             fetchState={fetchState}
             hasRemote={repository.hasRemote}
           />
-          <IconButton
-            disabled={busy || !repository.hasRemote || !onFetch}
-            label={t("repository.sync")}
-            onClick={onFetch}
-            tooltip={
-              busy
-                ? t("repository.busyTooltip")
-                : repository.hasRemote
-                  ? t("repository.sync")
-                  : t("repository.noRemote")
-            }
-            type="button"
-            variant="ghost"
-          >
-            <RefreshCw className="size-4" aria-hidden="true" />
-          </IconButton>
+          {repository.hasRemote ? (
+            <IconButton
+              className={
+                hasPendingSync ? "text-warning hover:bg-warning/10" : undefined
+              }
+              disabled={busy || !onFetch}
+              label={t("repository.sync")}
+              onClick={onFetch}
+              tooltip={
+                busy ? t("repository.busyTooltip") : t("repository.sync")
+              }
+              type="button"
+              variant="ghost"
+            >
+              <RefreshCw className="size-4" aria-hidden="true" />
+            </IconButton>
+          ) : null}
         </div>
       </section>
 
@@ -253,6 +261,7 @@ export function RepositorySidebar({
                 branch={branch}
                 branchActionsDisabledReason={branchActionsDisabledReason}
                 busy={busy}
+                hasRemote={repository.hasRemote}
                 key={branch.name}
                 onCheckout={onCheckoutBranch}
                 onCreateFromBase={onCreateBranchFromBase}
@@ -445,6 +454,7 @@ interface BranchRowProps {
   branch: BranchListItem;
   branchActionsDisabledReason?: string;
   busy: boolean;
+  hasRemote: boolean;
   onCheckout?: (branch: BranchListItem) => void;
   onCreateFromBase?: (branch: BranchListItem) => void;
   onDelete?: (branch: BranchListItem) => void;
@@ -455,6 +465,7 @@ function BranchRow({
   branch,
   branchActionsDisabledReason,
   busy,
+  hasRemote,
   onCheckout,
   onCreateFromBase,
   onDelete,
@@ -503,7 +514,7 @@ function BranchRow({
           />
         )}
         <span className="min-w-0 truncate">{branch.name}</span>
-        {branch.ahead > 0 || branch.behind > 0 ? (
+        {hasRemote && (branch.ahead > 0 || branch.behind > 0) ? (
           <Tooltip content={syncLabel}>
             {({ describedBy }) => (
               <span
@@ -518,11 +529,13 @@ function BranchRow({
         ) : null}
       </button>
       <div className="absolute right-1 top-1 hidden items-center gap-0.5 rounded bg-card group-hover:flex group-focus-within:flex">
-        <DisabledActionButton
-          busy={busy}
-          icon={<RefreshCw className="size-3.5" aria-hidden="true" />}
-          label={t("repository.sync")}
-        />
+        {hasRemote ? (
+          <DisabledActionButton
+            busy={busy}
+            icon={<RefreshCw className="size-3.5" aria-hidden="true" />}
+            label={t("repository.sync")}
+          />
+        ) : null}
         <OptionalActionButton
           busy={busy}
           icon={<UploadCloud className="size-3.5" aria-hidden="true" />}
@@ -548,7 +561,9 @@ function BranchRow({
           className="absolute left-8 top-8 z-30 w-56 rounded-md border bg-card p-1 text-sm shadow-floating"
           role="menu"
         >
-          <MenuButton disabled label={t("repository.sync")} />
+          {hasRemote ? (
+            <MenuButton disabled label={t("repository.sync")} />
+          ) : null}
           <MenuButton
             disabled={!canCheckout || busy}
             label={t("repository.checkout")}

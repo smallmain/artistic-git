@@ -6,7 +6,7 @@ import type {
   FetchStateEvent,
   RepoChangedEvent,
 } from "@/lib/ipc/generated";
-import { repoChangedQueryKeys } from "@/lib/realtime/query-keys";
+import { repoChangedQueryKeys, repoQueryKeys } from "@/lib/realtime/query-keys";
 
 type AppEventListener = typeof listenAppEvent;
 type RealtimeUnsubscribe = () => void;
@@ -27,6 +27,23 @@ export function invalidateRepoChangedQueries(
     repoChangedQueryKeys(event).map((queryKey) =>
       queryClient.invalidateQueries({ queryKey }),
     ),
+  );
+}
+
+export function invalidateFetchStateQueries(
+  queryClient: QueryClient,
+  event: FetchStateEvent,
+): Promise<unknown[]> {
+  if (event.state !== "idle") {
+    return Promise.resolve([]);
+  }
+
+  return Promise.all(
+    [
+      repoQueryKeys.summary(event.repositoryPath),
+      repoQueryKeys.branches(event.repositoryPath),
+      repoQueryKeys.history(event.repositoryPath),
+    ].map((queryKey) => queryClient.invalidateQueries({ queryKey })),
   );
 }
 
@@ -52,6 +69,7 @@ export async function installRealtimeEventBridge({
     const payload = event.payload as AppEventPayloads["fetch-state"];
 
     onFetchState?.(payload);
+    void invalidateFetchStateQueries(queryClient, payload);
     window.dispatchEvent(
       new CustomEvent("artistic-git:fetch-state", { detail: payload }),
     );

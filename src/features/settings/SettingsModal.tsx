@@ -13,6 +13,7 @@ import {
   UserRound,
 } from "lucide-react";
 import * as React from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 
 import { DialogFrame } from "@/components/dialogs/DialogFrame";
@@ -38,6 +39,7 @@ import {
   settingsSnapshot,
 } from "@/lib/ipc/commands";
 import { cn } from "@/lib/utils";
+import { repoQueryKeys } from "@/lib/realtime/query-keys";
 import { useWindowStore, type SettingsSection } from "@/store/window-store";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { useTheme } from "@/theme/ThemeProvider";
@@ -89,6 +91,7 @@ const sections: Array<{
 
 export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
   const { setLanguagePreference } = useLanguage();
   const { setThemePreference } = useTheme();
   const activeRepositoryPath = useWindowStore(
@@ -398,6 +401,17 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
           ? t("settings.status.remoteSaved")
           : t("settings.status.originRemoved"),
       );
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: repoQueryKeys.summary(activeRepositoryPath),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: repoQueryKeys.branches(activeRepositoryPath),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: repoQueryKeys.history(activeRepositoryPath),
+        }),
+      ]);
     } catch (error) {
       window.dispatchEvent(
         new CustomEvent("artistic-git:error", { detail: error }),

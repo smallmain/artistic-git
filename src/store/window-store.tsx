@@ -231,12 +231,19 @@ export function WindowStoreProvider({
     },
     [storeApi],
   );
+  const setFetchState = React.useCallback(
+    (event: FetchStateEvent) => {
+      storeApi.getState().setFetchState(event);
+    },
+    [storeApi],
+  );
 
   return (
     <WindowStoreContext.Provider value={storeApi}>
       {enableRealtimeEvents ? (
         <RealtimeEventBridge
           onConflictEntered={setConflictEntered}
+          onFetchState={setFetchState}
           onRepoChanged={setRepoChanged}
         />
       ) : null}

@@ -158,11 +158,27 @@ describe("RepositorySidebar", () => {
       }),
     ).toBeInTheDocument();
   });
+
+  it("hides sync entrances and pending badges when there is no remote", () => {
+    renderSidebar({ hasRemote: false });
+
+    expect(
+      screen.queryByRole("button", { name: "Sync" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("↑1")).not.toBeInTheDocument();
+
+    fireEvent.contextMenu(screen.getByText("feature/lookdev"));
+
+    expect(
+      screen.queryByRole("menuitem", { name: "Sync" }),
+    ).not.toBeInTheDocument();
+  });
 });
 
 function renderSidebar({
   branchActionsDisabledReason,
   fetchState,
+  hasRemote = true,
   onApplyStash,
   onCheckoutBranch,
   onCreateBranchFromBase,
@@ -172,6 +188,7 @@ function renderSidebar({
 }: {
   branchActionsDisabledReason?: string;
   fetchState?: ComponentProps<typeof RepositorySidebar>["fetchState"];
+  hasRemote?: boolean;
   onApplyStash?: (stash: StashListItem) => void;
   onCheckoutBranch?: (branch: BranchListItem) => void;
   onCreateBranchFromBase?: (branch: BranchListItem) => void;
@@ -194,7 +211,7 @@ function renderSidebar({
       onShowStashDetails={onShowStashDetails}
       repository={{
         branchName: "main",
-        hasRemote: true,
+        hasRemote,
         path: "/repo/art",
         projectName: "art",
       }}

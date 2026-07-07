@@ -57,6 +57,7 @@ interface HistoryWorkbenchProps {
   branches?: HistoryBranch[];
   gravatarEnabled?: boolean;
   now?: string;
+  onBeforeRevert?: () => Promise<void> | void;
   rows?: HistoryRow[];
   searchSource?: HistorySearchSource;
 }
@@ -70,6 +71,7 @@ export function HistoryWorkbench({
   branches = mockHistoryBranches,
   gravatarEnabled = false,
   now = "2026-07-07T06:30:00Z",
+  onBeforeRevert,
   rows = mockHistoryRows,
   searchSource,
 }: HistoryWorkbenchProps) {
@@ -267,6 +269,7 @@ export function HistoryWorkbench({
         commit={selectedCommit}
         gravatarEnabled={gravatarEnabled}
         now={now}
+        onBeforeRevert={onBeforeRevert}
         onOpenChange={(open) => {
           if (!open) {
             setSelectedCommitId(null);
@@ -574,6 +577,7 @@ function CommitDetailPanel({
   commit,
   gravatarEnabled,
   now,
+  onBeforeRevert,
   onOpenChange,
   repositoryPath,
   setConflictEntered,
@@ -581,6 +585,7 @@ function CommitDetailPanel({
   commit: HistoryCommit | null;
   gravatarEnabled: boolean;
   now: string;
+  onBeforeRevert?: () => Promise<void> | void;
   onOpenChange: (open: boolean) => void;
   repositoryPath: string | null;
   setConflictEntered: (event: ConflictEnteredEvent) => void;
@@ -621,6 +626,8 @@ function CommitDetailPanel({
     setRevertStatus(null);
 
     try {
+      await onBeforeRevert?.();
+
       const response = await revertCommit({
         oid: activeRevertTarget.id,
         repositoryPath,
@@ -654,7 +661,14 @@ function CommitDetailPanel({
     } finally {
       setRevertBusy(false);
     }
-  }, [activeRevertTarget, onOpenChange, repositoryPath, setConflictEntered, t]);
+  }, [
+    activeRevertTarget,
+    onBeforeRevert,
+    onOpenChange,
+    repositoryPath,
+    setConflictEntered,
+    t,
+  ]);
 
   if (!commit) {
     return null;

@@ -6,6 +6,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { I18nextProvider } from "react-i18next";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LanguageProvider } from "@/i18n/LanguageProvider";
 import { createI18n } from "@/i18n/i18n";
 import { createAppQueryClient } from "@/lib/query/client";
+import type { WindowStoreState } from "@/store/window-store";
 import { WindowStoreProvider } from "@/store/window-store";
 import { ThemeProvider } from "@/theme/ThemeProvider";
 
@@ -50,6 +52,26 @@ beforeEach(() => {
       publicKeyPath: null,
     },
   });
+  commandMocks.loadProjectSettings.mockResolvedValue({
+    largeFileCheck: { enabled: true, thresholdMb: 50 },
+    path: "/repo/art",
+  });
+  commandMocks.loadGitignore.mockResolvedValue({
+    content: "",
+    exists: true,
+    path: "/repo/art/.gitignore",
+    repositoryPath: "/repo/art",
+  });
+  commandMocks.loadRemoteSettings.mockResolvedValue({
+    originUrl: "https://example.test/repo.git",
+    remoteMode: "origin",
+    repositoryPath: "/repo/art",
+  });
+  commandMocks.saveRemoteSettings.mockResolvedValue({
+    originUrl: null,
+    remoteMode: "noRemote",
+    repositoryPath: "/repo/art",
+  });
 });
 
 afterEach(() => {
@@ -78,17 +100,73 @@ describe("SettingsModal", () => {
       screen.getByRole("button", { name: "Save fetch settings" }),
     ).toBeDisabled();
   });
+
+  it("invalidates repository queries after origin is removed", async () => {
+    const queryClient = createAppQueryClient();
+    const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
+
+    render(
+      <TestProviders
+        initialWindowState={{
+          activeRepositoryPath: "/repo/art",
+          settingsSection: "project",
+        }}
+        queryClient={queryClient}
+      >
+        <SettingsModal onOpenChange={vi.fn()} open />
+      </TestProviders>,
+    );
+
+    const originInput = await screen.findByLabelText("Origin URL");
+    fireEvent.change(originInput, { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save remote" }));
+
+    expect(
+      await screen.findByText(
+        "Save again to remove origin from this repository.",
+      ),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove origin" }));
+
+    await waitFor(() =>
+      expect(commandMocks.saveRemoteSettings).toHaveBeenCalledWith({
+        originUrl: null,
+        removeOrigin: true,
+        repositoryPath: "/repo/art",
+      }),
+    );
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["repository", "/repo/art", "summary"],
+    });
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["repository", "/repo/art", "branches"],
+    });
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["repository", "/repo/art", "history"],
+    });
+  });
 });
 
-function TestProviders({ children }: { children: ReactNode }) {
+function TestProviders({
+  children,
+  initialWindowState,
+  queryClient,
+}: {
+  children: ReactNode;
+  initialWindowState?: Partial<WindowStoreState>;
+  queryClient?: QueryClient;
+}) {
   const i18n = createI18n("en");
 
   return (
     <I18nextProvider i18n={i18n}>
-      <QueryClientProvider client={createAppQueryClient()}>
+      <QueryClientProvider client={queryClient ?? createAppQueryClient()}>
         <LanguageProvider i18n={i18n} initialPreference="en">
           <ThemeProvider initialPreference="light">
-            <WindowStoreProvider>{children}</WindowStoreProvider>
+            <WindowStoreProvider initialState={initialWindowState}>
+              {children}
+            </WindowStoreProvider>
           </ThemeProvider>
         </LanguageProvider>
       </QueryClientProvider>

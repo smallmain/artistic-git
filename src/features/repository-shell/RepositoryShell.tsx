@@ -141,6 +141,8 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   const [fetchBusy, setFetchBusy] = React.useState(false);
   const [liveFetchState, setLiveFetchState] =
     React.useState<FetchStateEvent | null>(null);
+  const fetchInFlightRef = React.useRef(false);
+  const initialFetchRepositoryRef = React.useRef<string | null>(null);
   const [branchToCheckout, setBranchToCheckout] =
     React.useState<BranchListItem | null>(null);
   const [checkoutMode, setCheckoutMode] =
@@ -345,6 +347,8 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     () => pathsForChangeIds(stashIds ?? [], localChanges),
     [stashIds, localChanges],
   );
+  const shouldFetchBeforeCurrentBranchWrite =
+    repository.hasRemote && Boolean(currentBranch?.upstream);
   const defaultStashMessage = React.useCallback(
     () =>
       t("localChanges.defaultStashName", {
@@ -362,10 +366,11 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   );
 
   const runFetch = React.useCallback(async () => {
-    if (fetchBusy || !repository.hasRemote) {
+    if (fetchInFlightRef.current || !repository.hasRemote) {
       return;
     }
 
+    fetchInFlightRef.current = true;
     setFetchBusy(true);
     try {
       const response = await fetchRepository({ repositoryPath });
@@ -388,9 +393,37 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         new CustomEvent("artistic-git:error", { detail: error }),
       );
     } finally {
+      fetchInFlightRef.current = false;
       setFetchBusy(false);
     }
-  }, [fetchBusy, queryClient, repository.hasRemote, repositoryPath]);
+  }, [queryClient, repository.hasRemote, repositoryPath]);
+
+  React.useEffect(() => {
+    if (
+      repository.hasRemote &&
+      initialFetchRepositoryRef.current !== repositoryPath
+    ) {
+      initialFetchRepositoryRef.current = repositoryPath;
+      void runFetch();
+    }
+  }, [repository.hasRemote, repositoryPath, runFetch]);
+
+  React.useEffect(() => {
+    const triggerFocusedFetch = () => {
+      if (document.visibilityState === "hidden") {
+        return;
+      }
+      void runFetch();
+    };
+
+    window.addEventListener("focus", triggerFocusedFetch);
+    document.addEventListener("visibilitychange", triggerFocusedFetch);
+
+    return () => {
+      window.removeEventListener("focus", triggerFocusedFetch);
+      document.removeEventListener("visibilitychange", triggerFocusedFetch);
+    };
+  }, [runFetch]);
 
   React.useEffect(() => {
     if (
@@ -620,6 +653,10 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       setGpgFailure(null);
       setLargeFileWarning(null);
       try {
+        if (shouldFetchBeforeCurrentBranchWrite) {
+          await runFetch();
+        }
+
         const response = await commitChanges({
           disableRepositoryGpgsign,
           largeFileDecision,
@@ -655,8 +692,22 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         setCommitBusy(false);
       }
     },
-    [commitIds, commitMessage, repositoryPath, selectedCommitPaths, t],
+    [
+      commitIds,
+      commitMessage,
+      repositoryPath,
+      runFetch,
+      selectedCommitPaths,
+      shouldFetchBeforeCurrentBranchWrite,
+      t,
+    ],
   );
+
+  const fetchBeforeCurrentBranchWrite = React.useCallback(async () => {
+    if (shouldFetchBeforeCurrentBranchWrite) {
+      await runFetch();
+    }
+  }, [runFetch, shouldFetchBeforeCurrentBranchWrite]);
 
   const runRestore = React.useCallback(async () => {
     if (!restoreIds || selectedRestorePaths.length === 0) {
@@ -934,7 +985,9 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
                 })}
               </div>
               <div className="min-h-0 flex-1 overflow-auto">
-                <HistoryWorkbench />
+                <HistoryWorkbench
+                  onBeforeRevert={fetchBeforeCurrentBranchWrite}
+                />
               </div>
             </div>
           ) : (
@@ -1104,6 +1157,7 @@ function mapBranchSummaryToItem(branch: BranchSummary): BranchListItem {
     latestCommitId: branch.headOid?.slice(0, 7) ?? "",
     name: branch.shortName || branch.name,
     remoteOnly: branch.existence === "remoteOnly",
+    upstream: branch.upstream,
   };
 }
 
