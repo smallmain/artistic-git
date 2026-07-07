@@ -1076,7 +1076,7 @@ fn prefix_submodule_path(submodule_path: &str, path: &str) -> String {
     }
 }
 
-fn repository_relative_display_path(root: &Path, path: &Path) -> Option<String> {
+pub(crate) fn repository_relative_display_path(root: &Path, path: &Path) -> Option<String> {
     let relative = path.strip_prefix(root).ok()?;
     let parts = relative
         .components()
@@ -1721,7 +1721,7 @@ where
     Ok(())
 }
 
-fn initialized_submodule_paths(
+pub(crate) fn initialized_submodule_paths(
     runner: &GitRunner,
     root: &Path,
     operation_name: &str,
