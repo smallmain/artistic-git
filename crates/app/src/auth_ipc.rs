@@ -952,6 +952,103 @@ mod tests {
     }
 
     #[test]
+    fn git_auth_injection_plan_applies_to_runner_command_plan() {
+        use artistic_git_git_runner::{GitDistribution, GitRunner};
+        use artistic_git_test_support::{git_dist_manifest_fixture, write_executable_file};
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manifest = git_dist_manifest_fixture();
+        write_manifest_executables(temp.path(), &manifest);
+        let distribution =
+            GitDistribution::from_manifest(temp.path(), manifest).expect("distribution");
+        let runner = GitRunner::from_distribution(distribution, temp.path().join("home"));
+        let invocation = AuthInvocation {
+            operation_id: OperationId::new("op-1"),
+            invocation_id: InvocationId::new("inv-1"),
+            token: IpcToken::new("token-1"),
+            interaction_policy: InteractionPolicy::interactive(),
+            repository_path: Some(PathBuf::from("/repo")),
+            host: Some("example.com".to_owned()),
+            path: Some("org/repo".to_owned()),
+        };
+        let socket_path = temp.path().join("auth.sock");
+        let credential_helper_path = temp.path().join("helpers/artistic-git-credential-helper");
+        let askpass_path = temp.path().join("helpers/artistic-git-ssh-askpass");
+        let endpoint = LocalIpcEndpoint::UnixSocket(socket_path.clone());
+        let core_ssh_command =
+            "ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/home/me/.ssh/known_hosts";
+        let helpers = AuthHelperBinaries::new(
+            credential_helper_path.clone(),
+            askpass_path.clone(),
+            core_ssh_command,
+        );
+
+        let base_plan = runner
+            .git_command_builder()
+            .args(["fetch", "origin"])
+            .with_progress()
+            .build();
+        let plan = AuthGitCommandInjectionPlan::new(&endpoint, &invocation, &helpers)
+            .apply_to_command_plan(base_plan);
+
+        assert_eq!(
+            plan.environment.variable(AUTH_SOCKET_ENV),
+            Some(socket_path.as_os_str())
+        );
+        assert_eq!(
+            plan.environment.variable(AUTH_INVOCATION_ID_ENV),
+            Some(OsStr::new("inv-1"))
+        );
+        assert_eq!(
+            plan.environment.variable("GIT_ASKPASS"),
+            Some(askpass_path.as_os_str())
+        );
+        assert_eq!(
+            plan.environment.variable("SSH_ASKPASS_REQUIRE"),
+            Some(OsStr::new("force"))
+        );
+        assert_eq!(
+            plan.environment.variable("GIT_CONFIG_NOSYSTEM"),
+            Some(OsStr::new("1"))
+        );
+
+        let args = plan
+            .args
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let expected_auth_args = vec![
+            "-c".to_owned(),
+            format!(
+                "credential.helper={}",
+                credential_helper_path.to_string_lossy()
+            ),
+            "-c".to_owned(),
+            "credential.useHttpPath=true".to_owned(),
+            "-c".to_owned(),
+            format!("core.sshCommand={core_ssh_command}"),
+        ];
+        assert_eq!(&args[..6], expected_auth_args.as_slice());
+        let expected_tail_args = ["fetch", "origin", "--progress"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        assert_eq!(&args[6..], expected_tail_args.as_slice());
+        assert!(!endpoint.uses_network_transport());
+
+        fn write_manifest_executables(
+            root: &Path,
+            manifest: &artistic_git_contracts::GitDistManifest,
+        ) {
+            write_executable_file(&root.join(&manifest.paths.git_executable)).expect("git");
+            write_executable_file(&root.join(&manifest.paths.git_lfs_executable)).expect("git-lfs");
+            write_executable_file(&root.join(&manifest.paths.credential_helper))
+                .expect("credential helper");
+            write_executable_file(&root.join(&manifest.paths.ssh_askpass)).expect("ssh askpass");
+        }
+    }
+
+    #[test]
     fn local_ipc_endpoint_declares_non_network_transport() {
         let endpoint = LocalIpcEndpoint::UnixSocket(PathBuf::from("/tmp/artistic-git.sock"));
 
@@ -1055,6 +1152,60 @@ mod tests {
             .validate_token(&invocation.invocation_id, &invocation.token)
             .expect_err("token was consumed by service");
         assert!(matches!(error, AuthIpcError::TokenAlreadyUsed(_)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn helper_ipc_serves_callback_while_repo_write_permit_is_held() {
+        use artistic_git_git_runner::OperationConcurrency;
+        use artistic_git_helpers::{invoke_helper_ipc_at, HelperInvocationEnv, HelperIpcEnvelope};
+
+        let concurrency = OperationConcurrency::default();
+        let _write = concurrency.try_begin_write().expect("write permit");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join("auth.sock");
+        let listener = LocalIpcListener::bind_unix_socket(&socket).expect("bind unix socket");
+        let sessions = Arc::new(Mutex::new(AuthIpcSessionManager::new()));
+        let operation_id = OperationId::new("write-op");
+        let invocation = {
+            let mut sessions = sessions.lock().expect("sessions");
+            sessions.start_operation_with_context(
+                operation_id.clone(),
+                InteractionPolicy::interactive(),
+                Some(PathBuf::from("/repo")),
+            );
+            sessions
+                .issue_invocation(&operation_id)
+                .expect("invocation")
+        };
+        let handler = |context: AuthIpcRequestContext, payload: HelperIpcPayload| {
+            assert_eq!(context.prompt_decision, AuthPromptDecision::Prompt);
+            assert!(matches!(payload, HelperIpcPayload::Askpass { .. }));
+            HelperIpcResponse::Askpass {
+                secret: "passphrase".to_owned(),
+            }
+        };
+        let service = AuthIpcService::new(listener, Arc::clone(&sessions), Arc::new(handler));
+        let server = thread::spawn(move || service.serve_one().expect("serve one"));
+
+        // The helper service only uses the auth session mutex and never requests the
+        // repo write permit, so an in-flight git operation can wait for this callback.
+        let env = HelperInvocationEnv {
+            socket_path: socket.clone(),
+            token: invocation.token.clone(),
+            invocation_id: invocation.invocation_id.clone(),
+            operation_id: Some(operation_id),
+        };
+        let envelope = HelperIpcEnvelope::askpass(&env, "Enter passphrase:");
+        let response = invoke_helper_ipc_at(&socket, &envelope).expect("ipc response");
+        assert_eq!(
+            response,
+            HelperIpcResponse::Askpass {
+                secret: "passphrase".to_owned(),
+            }
+        );
+        server.join().expect("server thread");
     }
 
     #[test]

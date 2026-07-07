@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
@@ -6,7 +7,7 @@ use thiserror::Error;
 
 pub type KeyringResult<T> = Result<T, KeyringError>;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct HttpsCredentialKey {
     pub protocol: String,
     pub host: String,
@@ -58,7 +59,7 @@ impl HttpsCredentialKey {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HttpsCredential {
     pub username: String,
     pub token: String,
@@ -86,13 +87,13 @@ pub struct HttpsCredentialLookup {
     pub source: HttpsCredentialSource,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HttpsCredentialRecord {
     pub key: HttpsCredentialKey,
     pub username: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct SshPassphraseKey {
     pub key_id: String,
 }
@@ -191,6 +192,212 @@ impl KeyringVault {
     }
 }
 
+#[derive(Clone)]
+pub struct SystemCredentialStore {
+    service_prefix: String,
+    backend: Arc<dyn SecretStoreBackend>,
+}
+
+impl SystemCredentialStore {
+    pub const DEFAULT_SERVICE_PREFIX: &'static str = "artistic-git";
+
+    pub fn new() -> Self {
+        Self::with_service_prefix(Self::DEFAULT_SERVICE_PREFIX)
+    }
+
+    pub fn with_service_prefix(service_prefix: impl Into<String>) -> Self {
+        Self {
+            service_prefix: service_prefix.into(),
+            backend: Arc::new(OsSecretStoreBackend),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_backend(
+        service_prefix: impl Into<String>,
+        backend: Arc<dyn SecretStoreBackend>,
+    ) -> Self {
+        Self {
+            service_prefix: service_prefix.into(),
+            backend,
+        }
+    }
+
+    fn service(&self, kind: &str) -> String {
+        format!("{}:{kind}", self.service_prefix)
+    }
+
+    fn https_credential_account(key: &HttpsCredentialKey) -> String {
+        key.service_name()
+    }
+
+    fn ssh_passphrase_account(key: &SshPassphraseKey) -> String {
+        key.key_id.clone()
+    }
+
+    fn read_https_index(&self) -> KeyringResult<Vec<HttpsCredentialRecord>> {
+        let Some(raw) = self
+            .backend
+            .get_password(&self.service("https-index"), SYSTEM_HTTPS_INDEX_ACCOUNT)?
+        else {
+            return Ok(Vec::new());
+        };
+
+        serde_json::from_str::<Vec<HttpsCredentialRecord>>(&raw)
+            .map_err(|source| KeyringError::MalformedData(source.to_string()))
+    }
+
+    fn write_https_index(&self, mut records: Vec<HttpsCredentialRecord>) -> KeyringResult<()> {
+        records.sort_by(|left, right| left.key.cmp(&right.key));
+        let service = self.service("https-index");
+        if records.is_empty() {
+            return self
+                .backend
+                .delete_password(&service, SYSTEM_HTTPS_INDEX_ACCOUNT);
+        }
+
+        let value = serde_json::to_string(&records)
+            .map_err(|source| KeyringError::MalformedData(source.to_string()))?;
+        self.backend
+            .set_password(&service, SYSTEM_HTTPS_INDEX_ACCOUNT, &value)
+    }
+
+    fn upsert_https_index(
+        &self,
+        key: &HttpsCredentialKey,
+        username: impl Into<String>,
+    ) -> KeyringResult<()> {
+        let username = username.into();
+        let mut records = self.read_https_index()?;
+        if let Some(record) = records.iter_mut().find(|record| record.key == *key) {
+            record.username = username;
+        } else {
+            records.push(HttpsCredentialRecord {
+                key: key.clone(),
+                username,
+            });
+        }
+        self.write_https_index(records)
+    }
+
+    fn remove_https_index(&self, key: &HttpsCredentialKey) -> KeyringResult<()> {
+        let mut records = self.read_https_index()?;
+        records.retain(|record| record.key != *key);
+        self.write_https_index(records)
+    }
+}
+
+impl Default for SystemCredentialStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CredentialStore for SystemCredentialStore {
+    fn get_https_credential(
+        &self,
+        key: &HttpsCredentialKey,
+    ) -> KeyringResult<Option<HttpsCredential>> {
+        let Some(raw) = self
+            .backend
+            .get_password(&self.service("https"), &Self::https_credential_account(key))?
+        else {
+            return Ok(None);
+        };
+
+        serde_json::from_str::<HttpsCredential>(&raw)
+            .map(Some)
+            .map_err(|source| KeyringError::MalformedData(source.to_string()))
+    }
+
+    fn set_https_credential(
+        &self,
+        key: &HttpsCredentialKey,
+        credential: HttpsCredential,
+    ) -> KeyringResult<()> {
+        let value = serde_json::to_string(&credential)
+            .map_err(|source| KeyringError::MalformedData(source.to_string()))?;
+        self.backend.set_password(
+            &self.service("https"),
+            &Self::https_credential_account(key),
+            &value,
+        )?;
+        self.upsert_https_index(key, credential.username)
+    }
+
+    fn delete_https_credential(&self, key: &HttpsCredentialKey) -> KeyringResult<()> {
+        self.backend
+            .delete_password(&self.service("https"), &Self::https_credential_account(key))?;
+        self.remove_https_index(key)
+    }
+
+    fn list_https_credentials(&self) -> KeyringResult<Vec<HttpsCredentialRecord>> {
+        self.read_https_index()
+    }
+
+    fn get_ssh_passphrase(&self, key: &SshPassphraseKey) -> KeyringResult<Option<String>> {
+        self.backend
+            .get_password(&self.service("ssh"), &Self::ssh_passphrase_account(key))
+    }
+
+    fn set_ssh_passphrase(&self, key: &SshPassphraseKey, passphrase: String) -> KeyringResult<()> {
+        self.backend.set_password(
+            &self.service("ssh"),
+            &Self::ssh_passphrase_account(key),
+            &passphrase,
+        )
+    }
+
+    fn delete_ssh_passphrase(&self, key: &SshPassphraseKey) -> KeyringResult<()> {
+        self.backend
+            .delete_password(&self.service("ssh"), &Self::ssh_passphrase_account(key))
+    }
+}
+
+const SYSTEM_HTTPS_INDEX_ACCOUNT: &str = "__artistic_git_https_credentials_v1";
+
+trait SecretStoreBackend: Send + Sync {
+    fn get_password(&self, service: &str, account: &str) -> KeyringResult<Option<String>>;
+    fn set_password(&self, service: &str, account: &str, password: &str) -> KeyringResult<()>;
+    fn delete_password(&self, service: &str, account: &str) -> KeyringResult<()>;
+}
+
+#[derive(Debug)]
+struct OsSecretStoreBackend;
+
+impl SecretStoreBackend for OsSecretStoreBackend {
+    fn get_password(&self, service: &str, account: &str) -> KeyringResult<Option<String>> {
+        let entry = system_entry(service, account)?;
+        match entry.get_password() {
+            Ok(password) => Ok(Some(password)),
+            Err(::keyring::Error::NoEntry) => Ok(None),
+            Err(error) => Err(map_system_keyring_error(error)),
+        }
+    }
+
+    fn set_password(&self, service: &str, account: &str, password: &str) -> KeyringResult<()> {
+        system_entry(service, account)?
+            .set_password(password)
+            .map_err(map_system_keyring_error)
+    }
+
+    fn delete_password(&self, service: &str, account: &str) -> KeyringResult<()> {
+        let entry = system_entry(service, account)?;
+        match entry.delete_credential() {
+            Ok(()) | Err(::keyring::Error::NoEntry) => Ok(()),
+            Err(error) => Err(map_system_keyring_error(error)),
+        }
+    }
+}
+
+fn system_entry(service: &str, account: &str) -> KeyringResult<::keyring::Entry> {
+    ::keyring::Entry::new(service, account).map_err(map_system_keyring_error)
+}
+
+fn map_system_keyring_error(error: ::keyring::Error) -> KeyringError {
+    KeyringError::System(error.to_string())
+}
+
 #[derive(Debug, Default)]
 pub struct InMemoryCredentialStore {
     https: Mutex<BTreeMap<HttpsCredentialKey, HttpsCredential>>,
@@ -273,6 +480,10 @@ impl CredentialStore for InMemoryCredentialStore {
 pub enum KeyringError {
     #[error("keyring store lock poisoned")]
     LockPoisoned,
+    #[error("system keyring failed: {0}")]
+    System(String),
+    #[error("keyring data is malformed: {0}")]
+    MalformedData(String),
     #[error("system keyring support is not wired yet")]
     Unavailable,
 }
@@ -303,6 +514,51 @@ fn normalize_path(value: Option<String>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug, Default)]
+    struct FakeSecretStoreBackend {
+        values: Mutex<BTreeMap<(String, String), String>>,
+    }
+
+    impl FakeSecretStoreBackend {
+        fn contains_secret(&self, secret: &str) -> bool {
+            self.values
+                .lock()
+                .expect("fake store")
+                .values()
+                .any(|value| value.contains(secret))
+        }
+    }
+
+    impl SecretStoreBackend for FakeSecretStoreBackend {
+        fn get_password(&self, service: &str, account: &str) -> KeyringResult<Option<String>> {
+            Ok(self
+                .values
+                .lock()
+                .map_err(|_| KeyringError::LockPoisoned)?
+                .get(&(service.to_owned(), account.to_owned()))
+                .cloned())
+        }
+
+        fn set_password(&self, service: &str, account: &str, password: &str) -> KeyringResult<()> {
+            self.values
+                .lock()
+                .map_err(|_| KeyringError::LockPoisoned)?
+                .insert(
+                    (service.to_owned(), account.to_owned()),
+                    password.to_owned(),
+                );
+            Ok(())
+        }
+
+        fn delete_password(&self, service: &str, account: &str) -> KeyringResult<()> {
+            self.values
+                .lock()
+                .map_err(|_| KeyringError::LockPoisoned)?
+                .remove(&(service.to_owned(), account.to_owned()));
+            Ok(())
+        }
+    }
 
     #[test]
     fn https_credentials_support_host_shared_and_path_override_keys() {
@@ -403,6 +659,90 @@ mod tests {
             .expect("delete passphrase");
         assert_eq!(
             vault.get_ssh_passphrase(&key).expect("get passphrase"),
+            None
+        );
+    }
+
+    #[test]
+    fn system_keyring_store_round_trips_https_credentials_and_index() {
+        let backend = Arc::new(FakeSecretStoreBackend::default());
+        let store = SystemCredentialStore::with_backend("ag-test", backend.clone());
+        let key = HttpsCredentialKey::path_override("HTTPS", "GitHub.com/", "/org/repo/");
+
+        store
+            .set_https_credential(&key, HttpsCredential::new("alice", "secret-token"))
+            .expect("set https credential");
+
+        assert_eq!(
+            store
+                .get_https_credential(&key)
+                .expect("get https credential"),
+            Some(HttpsCredential::new("alice", "secret-token"))
+        );
+        assert_eq!(
+            store.list_https_credentials().expect("list credentials"),
+            vec![HttpsCredentialRecord {
+                key: key.clone(),
+                username: "alice".to_owned(),
+            }]
+        );
+
+        let index_service = store.service("https-index");
+        let index = backend
+            .get_password(&index_service, SYSTEM_HTTPS_INDEX_ACCOUNT)
+            .expect("read index")
+            .expect("index");
+        assert!(index.contains("alice"));
+        assert!(!index.contains("secret-token"));
+        assert!(backend.contains_secret("secret-token"));
+    }
+
+    #[test]
+    fn system_keyring_store_deletes_https_credentials_and_index_entry() {
+        let backend = Arc::new(FakeSecretStoreBackend::default());
+        let store = SystemCredentialStore::with_backend("ag-test", backend);
+        let key = HttpsCredentialKey::shared_host("https", "example.com");
+
+        store
+            .set_https_credential(&key, HttpsCredential::new("alice", "token"))
+            .expect("set credential");
+        store
+            .delete_https_credential(&key)
+            .expect("delete credential");
+
+        assert_eq!(
+            store
+                .get_https_credential(&key)
+                .expect("get deleted credential"),
+            None
+        );
+        assert_eq!(
+            store.list_https_credentials().expect("list credentials"),
+            Vec::<HttpsCredentialRecord>::new()
+        );
+    }
+
+    #[test]
+    fn system_keyring_store_round_trips_ssh_passphrase() {
+        let backend = Arc::new(FakeSecretStoreBackend::default());
+        let store = SystemCredentialStore::with_backend("ag-test", backend);
+        let key = SshPassphraseKey::new("/Users/me/.ssh/id_ed25519");
+
+        store
+            .set_ssh_passphrase(&key, "ssh-secret".to_owned())
+            .expect("set passphrase");
+        assert_eq!(
+            store.get_ssh_passphrase(&key).expect("get passphrase"),
+            Some("ssh-secret".to_owned())
+        );
+
+        store
+            .delete_ssh_passphrase(&key)
+            .expect("delete passphrase");
+        assert_eq!(
+            store
+                .get_ssh_passphrase(&key)
+                .expect("get deleted passphrase"),
             None
         );
     }

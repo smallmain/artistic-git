@@ -331,6 +331,8 @@ graph TD
 
 **验收**：集成测试：operation-id 串联多命令流程、token 校验/一次性失效/socket 权限；真实 git 命令回调 helper 全链路（配合本地 `git http-backend`）；忙碌态弹窗与取消恢复。
 
+进展备注：已补系统 keyring store（HTTPS/SSH，索引不存 token）与 fake backend 测试；已覆盖 auth IPC 一次性 token、Unix socket owner-only、runner 认证注入（`credential.helper`/`credential.useHttpPath`/`core.sshCommand`/`SSH_ASKPASS`）和 helper 回调不持仓库写锁的死锁规避测试。Windows named pipe ACL、真实 `git http-backend` 全链路、忙碌态认证弹窗与取消恢复仍未关闭。
+
 ### 4B HTTPS 凭据流 **\[P\]**
 
 依赖：4A、1B（keyring）。
