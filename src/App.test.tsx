@@ -298,6 +298,15 @@ describe("App", () => {
     expect(screen.getByRole("dialog")).toHaveTextContent("Renderer crashed");
   });
 
+  it("registers global auth prompt listeners", async () => {
+    renderWithProviders(<App />);
+
+    await waitFor(() =>
+      expect(tauriEventListeners.has("https-credential-prompt")).toBe(true),
+    );
+    expect(tauriEventListeners.has("ssh-passphrase-prompt")).toBe(true);
+  });
+
   it("opens the crash dialog from Rust panic reports emitted by Tauri", async () => {
     renderWithProviders(<App />);
 

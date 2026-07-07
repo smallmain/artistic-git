@@ -86,6 +86,7 @@ import type {
   SafetyBackupListResponse,
   SettingsSnapshot,
   SshKeyStatus,
+  SshPassphrasePromptRequest,
   StashDetailsRequest,
   StashDetailsResponse,
   StashListResponse,
@@ -179,6 +180,9 @@ export interface AppCommandArgs {
   submit_https_credential_prompt: {
     request: SubmitHttpsCredentialPromptRequest;
   };
+  submit_ssh_passphrase_prompt: {
+    request: SubmitSshPassphrasePromptRequest;
+  };
   check_for_updates: { request: UpdateCheckRequest };
   update_install_gate: undefined;
   install_ready_update: undefined;
@@ -256,6 +260,7 @@ export interface AppCommandResponses {
   save_https_credential: HttpsCredentialEntry;
   delete_https_credential: void;
   submit_https_credential_prompt: void;
+  submit_ssh_passphrase_prompt: void;
   check_for_updates: UpdateStatusEvent;
   update_install_gate: UpdateInstallGateResponse;
   install_ready_update: void;
@@ -298,6 +303,18 @@ export interface SubmitHttpsCredentialPromptRequest {
   username?: string | null;
   token?: string | null;
   scope?: HttpsCredentialScope | null;
+  cancelled: boolean;
+}
+
+export interface SshPassphrasePromptEvent {
+  promptId: string;
+  request: SshPassphrasePromptRequest;
+}
+
+export interface SubmitSshPassphrasePromptRequest {
+  promptId: string;
+  passphrase?: string | null;
+  remember: boolean;
   cancelled: boolean;
 }
 
@@ -733,6 +750,12 @@ export function submitHttpsCredentialPrompt(
   request: SubmitHttpsCredentialPromptRequest,
 ): Promise<void> {
   return invokeAppCommand("submit_https_credential_prompt", { request });
+}
+
+export function submitSshPassphrasePrompt(
+  request: SubmitSshPassphrasePromptRequest,
+): Promise<void> {
+  return invokeAppCommand("submit_ssh_passphrase_prompt", { request });
 }
 
 export function checkForUpdates(
