@@ -5,9 +5,14 @@ use specta::Type;
 use std::path::{Path, PathBuf};
 
 pub mod repository;
+pub mod stash;
 pub use repository::{
     list_branches, list_local_changes, list_stashes, log_page_with_cancel, open_repository,
     repository_summary, search_log_with_cancel, RepositoryBackend,
+};
+pub use stash::{
+    cancel_stash_restore, create_auto_stash, create_stash, delete_stash, restore_stash,
+    stash_details,
 };
 
 #[derive(Debug, Serialize, Type)]

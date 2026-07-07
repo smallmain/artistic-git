@@ -16,7 +16,9 @@ export type AppEvent = {
 	type: "fetchState",
 } & FetchStateEvent | {
 	type: "conflictEntered",
-} & ConflictEnteredEvent;
+} & ConflictEnteredEvent | {
+	type: "stashRestoreState",
+} & StashRestoreStateEvent;
 
 export type AppInfo = {
 	productName: string,
@@ -65,6 +67,16 @@ export type BranchSummary = {
 	latestCommitUnixSeconds: string | null,
 };
 
+export type CancelStashRestoreRequest = {
+	repositoryPath: string,
+	recovery: StashRecoveryPoint,
+};
+
+export type CancelStashRestoreResponse = {
+	restored: boolean,
+	droppedRecoveryStash: boolean,
+};
+
 export type CommitSummary = {
 	oid: string,
 	parents: string[],
@@ -91,6 +103,36 @@ export type ConflictFile = {
 };
 
 export type ConflictResolutionStatus = "unresolved" | "resolved";
+
+export type CreateAutoStashRequest = {
+	repositoryPath: string,
+	reason: string,
+	includeUntracked: boolean,
+	paths: string[],
+};
+
+export type CreateStashRequest = {
+	repositoryPath: string,
+	message: string,
+	includeUntracked: boolean,
+	paths: string[],
+};
+
+export type CreateStashResponse = {
+	created: boolean,
+	stash: StashEntry | null,
+	stdout: string,
+};
+
+export type DeleteStashRequest = {
+	repositoryPath: string,
+	selector: string,
+};
+
+export type DeleteStashResponse = {
+	deletedSelector: string,
+	stdout: string,
+};
 
 export type DiffChangeKind = "added" | "modified" | "deleted" | "renamed" | "copied";
 
@@ -343,6 +385,20 @@ export type RepositorySummary = {
 	inProgress: boolean,
 };
 
+export type RestoreStashRequest = {
+	repositoryPath: string,
+	selector: string,
+	dropOnSuccess: boolean,
+	operationName: string | null,
+};
+
+export type RestoreStashResponse = {
+	selector: string,
+	oid: string,
+	recovery: StashRecoveryPoint,
+	outcome: StashRestoreOutcome,
+};
+
 export type ReviewModeCrashMarker = {
 	autoStashRef?: string | null,
 	enteredAt?: string | null,
@@ -354,6 +410,25 @@ export type SidebarLayoutSettings = {
 	branchSectionRatioPercent?: number,
 	branchesCollapsed?: boolean,
 	stashesCollapsed?: boolean,
+};
+
+export type StashDetailsRequest = {
+	repositoryPath: string,
+	selector: string,
+};
+
+export type StashDetailsResponse = {
+	entry: StashEntry,
+	files: StashDiffFile[],
+	rawDiff: string,
+};
+
+export type StashDiffFile = {
+	path: string,
+	oldPath: string | null,
+	changeKind: DiffChangeKind,
+	fileKind: DiffFileKind,
+	patch: string,
 };
 
 export type StashEntry = {
@@ -370,6 +445,24 @@ export type StashEntry = {
 export type StashListResponse = {
 	stashes: StashEntry[],
 };
+
+export type StashRecoveryPoint = {
+	id: string,
+	headOid: string | null,
+	stashOid: string | null,
+	stashSelector: string | null,
+};
+
+export type StashRestoreOutcome = { status: "applied"; dropped: boolean } | { status: "conflicts"; conflict: ConflictEnteredEvent };
+
+export type StashRestoreStateEvent = {
+	repositoryPath: string,
+	selector: string,
+	recovery: StashRecoveryPoint,
+	status: StashRestoreStatus,
+};
+
+export type StashRestoreStatus = "applying" | "applied" | "conflicted" | "cancelled";
 
 export type ThemePreference = "system" | "light" | "dark";
 

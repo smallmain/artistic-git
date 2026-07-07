@@ -3,6 +3,13 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AppError,
   BranchListResponse,
+  CancelStashRestoreRequest,
+  CancelStashRestoreResponse,
+  CreateAutoStashRequest,
+  CreateStashRequest,
+  CreateStashResponse,
+  DeleteStashRequest,
+  DeleteStashResponse,
   HealthResponse,
   LocalChangesResponse,
   LogPageRequest,
@@ -13,6 +20,10 @@ import type {
   OpenRepositoryResponse,
   RepositoryPathRequest,
   RepositorySummary,
+  RestoreStashRequest,
+  RestoreStashResponse,
+  StashDetailsRequest,
+  StashDetailsResponse,
   StashListResponse,
 } from "./generated";
 
@@ -24,6 +35,12 @@ export interface AppCommandArgs {
   list_branches: { request: RepositoryPathRequest };
   list_local_changes: { request: RepositoryPathRequest };
   list_stashes: { request: RepositoryPathRequest };
+  create_stash: { request: CreateStashRequest };
+  create_auto_stash: { request: CreateAutoStashRequest };
+  stash_details: { request: StashDetailsRequest };
+  restore_stash: { request: RestoreStashRequest };
+  cancel_stash_restore: { request: CancelStashRestoreRequest };
+  delete_stash: { request: DeleteStashRequest };
   log_page: { request: LogPageRequest };
   search_log: { request: LogSearchRequest };
 }
@@ -36,6 +53,12 @@ export interface AppCommandResponses {
   list_branches: BranchListResponse;
   list_local_changes: LocalChangesResponse;
   list_stashes: StashListResponse;
+  create_stash: CreateStashResponse;
+  create_auto_stash: CreateStashResponse;
+  stash_details: StashDetailsResponse;
+  restore_stash: RestoreStashResponse;
+  cancel_stash_restore: CancelStashRestoreResponse;
+  delete_stash: DeleteStashResponse;
   log_page: LogPageResponse;
   search_log: LogPageResponse;
 }
@@ -101,6 +124,42 @@ export function listStashes(
   request: RepositoryPathRequest,
 ): Promise<StashListResponse> {
   return invokeAppCommand("list_stashes", { request });
+}
+
+export function createStash(
+  request: CreateStashRequest,
+): Promise<CreateStashResponse> {
+  return invokeAppCommand("create_stash", { request });
+}
+
+export function createAutoStash(
+  request: CreateAutoStashRequest,
+): Promise<CreateStashResponse> {
+  return invokeAppCommand("create_auto_stash", { request });
+}
+
+export function stashDetails(
+  request: StashDetailsRequest,
+): Promise<StashDetailsResponse> {
+  return invokeAppCommand("stash_details", { request });
+}
+
+export function restoreStash(
+  request: RestoreStashRequest,
+): Promise<RestoreStashResponse> {
+  return invokeAppCommand("restore_stash", { request });
+}
+
+export function cancelStashRestore(
+  request: CancelStashRestoreRequest,
+): Promise<CancelStashRestoreResponse> {
+  return invokeAppCommand("cancel_stash_restore", { request });
+}
+
+export function deleteStash(
+  request: DeleteStashRequest,
+): Promise<DeleteStashResponse> {
+  return invokeAppCommand("delete_stash", { request });
 }
 
 export function logPage(request: LogPageRequest): Promise<LogPageResponse> {

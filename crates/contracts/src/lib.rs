@@ -151,6 +151,7 @@ pub enum AppEvent {
     OperationProgress(OperationProgressEvent),
     FetchState(FetchStateEvent),
     ConflictEntered(ConflictEnteredEvent),
+    StashRestoreState(StashRestoreStateEvent),
 }
 
 impl AppEvent {
@@ -160,6 +161,7 @@ impl AppEvent {
             Self::OperationProgress(_) => "operation-progress",
             Self::FetchState(_) => "fetch-state",
             Self::ConflictEntered(_) => "conflict-entered",
+            Self::StashRestoreState(_) => "stash-restore-state",
         }
     }
 }
@@ -230,6 +232,15 @@ pub struct ConflictFile {
     pub path: String,
     pub status: ConflictResolutionStatus,
     pub file_kind: DiffFileKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct StashRestoreStateEvent {
+    pub repository_path: String,
+    pub selector: String,
+    pub recovery: StashRecoveryPoint,
+    pub status: StashRestoreStatus,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -460,6 +471,128 @@ pub struct StashEntry {
     pub created_at_unix_seconds: Option<String>,
     pub is_auto_stash: bool,
     pub origin: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateStashRequest {
+    pub repository_path: String,
+    pub message: String,
+    pub include_untracked: bool,
+    pub paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateAutoStashRequest {
+    pub repository_path: String,
+    pub reason: String,
+    pub include_untracked: bool,
+    pub paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateStashResponse {
+    pub created: bool,
+    pub stash: Option<StashEntry>,
+    pub stdout: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteStashRequest {
+    pub repository_path: String,
+    pub selector: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteStashResponse {
+    pub deleted_selector: String,
+    pub stdout: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct StashDetailsRequest {
+    pub repository_path: String,
+    pub selector: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct StashDetailsResponse {
+    pub entry: StashEntry,
+    pub files: Vec<StashDiffFile>,
+    pub raw_diff: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct StashDiffFile {
+    pub path: String,
+    pub old_path: Option<String>,
+    pub change_kind: DiffChangeKind,
+    pub file_kind: DiffFileKind,
+    pub patch: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreStashRequest {
+    pub repository_path: String,
+    pub selector: String,
+    pub drop_on_success: bool,
+    pub operation_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreStashResponse {
+    pub selector: String,
+    pub oid: String,
+    pub recovery: StashRecoveryPoint,
+    pub outcome: StashRestoreOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub enum StashRestoreOutcome {
+    Applied { dropped: bool },
+    Conflicts { conflict: ConflictEnteredEvent },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelStashRestoreRequest {
+    pub repository_path: String,
+    pub recovery: StashRecoveryPoint,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelStashRestoreResponse {
+    pub restored: bool,
+    pub dropped_recovery_stash: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct StashRecoveryPoint {
+    pub id: String,
+    pub head_oid: Option<String>,
+    pub stash_oid: Option<String>,
+    pub stash_selector: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum StashRestoreStatus {
+    Applying,
+    Applied,
+    Conflicted,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]

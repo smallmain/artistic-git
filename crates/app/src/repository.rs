@@ -1,11 +1,14 @@
 use artistic_git_contracts::{
     AppError, AppErrorCategory, AppResult, BranchExistence, BranchListResponse, BranchSummary,
-    CommitSummary, DiffChangeKind, GitCommandError, IndexLockInfo, LocalChange,
-    LocalChangesResponse, LogPageRequest, LogPageResponse, LogSearchRequest, OpenRepositoryRequest,
+    CancelStashRestoreRequest, CancelStashRestoreResponse, CommitSummary, CreateAutoStashRequest,
+    CreateStashRequest, CreateStashResponse, DeleteStashRequest, DeleteStashResponse,
+    DiffChangeKind, GitCommandError, IndexLockInfo, LocalChange, LocalChangesResponse,
+    LogPageRequest, LogPageResponse, LogSearchRequest, OpenRepositoryRequest,
     OpenRepositoryResponse, RepositoryHeadState, RepositoryHealth, RepositoryMiddleState,
     RepositoryMiddleStateKind, RepositoryOpenWarning, RepositoryOpenWarningKind,
-    RepositoryPathRequest, RepositoryRemote, RepositoryRemoteMode, RepositorySummary, StashEntry,
-    StashListResponse,
+    RepositoryPathRequest, RepositoryRemote, RepositoryRemoteMode, RepositorySummary,
+    RestoreStashRequest, RestoreStashResponse, StashDetailsRequest, StashDetailsResponse,
+    StashEntry, StashListResponse,
 };
 use artistic_git_core::config::ConfigActor;
 use artistic_git_git_runner::{CancelToken, GitCommandPlan, GitRunner};
@@ -64,7 +67,37 @@ impl RepositoryBackend {
     }
 
     pub fn list_stashes(&self, request: RepositoryPathRequest) -> AppResult<StashListResponse> {
-        list_stashes(&self.runner, request)
+        crate::stash::list_stashes(&self.runner, request)
+    }
+
+    pub fn create_stash(&self, request: CreateStashRequest) -> AppResult<CreateStashResponse> {
+        crate::stash::create_stash(&self.runner, request)
+    }
+
+    pub fn create_auto_stash(
+        &self,
+        request: CreateAutoStashRequest,
+    ) -> AppResult<CreateStashResponse> {
+        crate::stash::create_auto_stash(&self.runner, request)
+    }
+
+    pub fn stash_details(&self, request: StashDetailsRequest) -> AppResult<StashDetailsResponse> {
+        crate::stash::stash_details(&self.runner, request)
+    }
+
+    pub fn restore_stash(&self, request: RestoreStashRequest) -> AppResult<RestoreStashResponse> {
+        crate::stash::restore_stash(&self.runner, request)
+    }
+
+    pub fn cancel_stash_restore(
+        &self,
+        request: CancelStashRestoreRequest,
+    ) -> AppResult<CancelStashRestoreResponse> {
+        crate::stash::cancel_stash_restore(&self.runner, request)
+    }
+
+    pub fn delete_stash(&self, request: DeleteStashRequest) -> AppResult<DeleteStashResponse> {
+        crate::stash::delete_stash(&self.runner, request)
     }
 
     pub fn log_page(&self, request: LogPageRequest) -> AppResult<LogPageResponse> {

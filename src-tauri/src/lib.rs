@@ -65,6 +65,54 @@ fn list_stashes(
 }
 
 #[tauri::command]
+fn create_stash(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::CreateStashRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::CreateStashResponse> {
+    backend.create_stash(request)
+}
+
+#[tauri::command]
+fn create_auto_stash(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::CreateAutoStashRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::CreateStashResponse> {
+    backend.create_auto_stash(request)
+}
+
+#[tauri::command]
+fn stash_details(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::StashDetailsRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::StashDetailsResponse> {
+    backend.stash_details(request)
+}
+
+#[tauri::command]
+fn restore_stash(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::RestoreStashRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::RestoreStashResponse> {
+    backend.restore_stash(request)
+}
+
+#[tauri::command]
+fn cancel_stash_restore(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::CancelStashRestoreRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::CancelStashRestoreResponse> {
+    backend.cancel_stash_restore(request)
+}
+
+#[tauri::command]
+fn delete_stash(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::DeleteStashRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::DeleteStashResponse> {
+    backend.delete_stash(request)
+}
+
+#[tauri::command]
 fn log_page(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::LogPageRequest,
@@ -105,6 +153,12 @@ pub fn run() {
             list_branches,
             list_local_changes,
             list_stashes,
+            create_stash,
+            create_auto_stash,
+            stash_details,
+            restore_stash,
+            cancel_stash_restore,
+            delete_stash,
             log_page,
             search_log
         ])
