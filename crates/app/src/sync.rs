@@ -1094,7 +1094,14 @@ fn apply_current_auto_tracking_rule(
             source_branch: source.to_owned(),
             target_branch: target.to_owned(),
             status: AutoTrackingRuleStatus::Failed,
-            message: Some(command_failure(&plan, output, "自动跟踪无法快进合并。").summary),
+            message: Some(
+                command_failure(
+                    &plan,
+                    output,
+                    auto_tracking_divergence_message(source, target),
+                )
+                .summary,
+            ),
             conflict: None,
             stash_recovery: None,
         });
@@ -1211,7 +1218,7 @@ fn apply_non_current_auto_tracking_rule(
             source_branch: source.to_owned(),
             target_branch: target.to_owned(),
             status: AutoTrackingRuleStatus::Failed,
-            message: Some("自动跟踪无法快进合并。".to_owned()),
+            message: Some(auto_tracking_divergence_message(source, target)),
             conflict: None,
             stash_recovery: None,
         });
@@ -1246,6 +1253,10 @@ fn apply_non_current_auto_tracking_rule(
         }),
         PushOutcome::Failed(error) => Err(error),
     }
+}
+
+fn auto_tracking_divergence_message(source: &str, target: &str) -> String {
+    format!("无法自动将 {target} 合并到 {source}，存在分歧提交")
 }
 
 fn fetch_remote_tracking_branch(
@@ -2877,7 +2888,134 @@ mod tests {
         fixture.peer.git(["pull", "--ff-only"]);
         assert_eq!(fixture.peer.read("release.txt"), "release\n");
         assert_eq!(fixture.local.read("tracked.txt"), "dirty current\n");
+        assert!(fixture
+            .local
+            .git_output(["status", "--porcelain=v1"])
+            .contains(" M tracked.txt"));
+        assert!(fixture
+            .local
+            .git_output(["stash", "list"])
+            .trim()
+            .is_empty());
+    }
+
+    #[test]
+    fn auto_tracking_current_source_fast_forwards_pushes_and_restores_dirty_worktree() {
+        let Some((runner, _home)) = real_runner_or_skip() else {
+            return;
+        };
+        let fixture = DoubleClone::new(&runner);
+        fixture.create_tracking_branch("stable");
+        fixture.create_tracking_branch("release");
+
+        fixture.peer.git(["checkout", "release"]);
+        fixture.peer.write("release-current.txt", "release\n");
+        fixture.peer.git(["add", "release-current.txt"]);
+        fixture
+            .peer
+            .git(["commit", "-m", "release update for current source"]);
+        fixture.peer.git(["push"]);
+
+        fixture.local.git(["checkout", "stable"]);
+        fixture.local.write("tracked.txt", "dirty stable\n");
+        fixture.local.write("scratch.txt", "scratch\n");
+
+        let results = apply_auto_tracking_rules(
+            &runner,
+            &fixture.local.path,
+            &OperationId("auto-tracking-current-test".to_owned()),
+            &[AutoTrackingRule {
+                source_branch: "stable".to_owned(),
+                target_branch: "release".to_owned(),
+            }],
+            &|_| {},
+        )
+        .expect("apply auto tracking");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].status, AutoTrackingRuleStatus::Applied);
+        assert_eq!(
+            fixture.local.git_output(["rev-parse", "stable"]),
+            fixture.local.git_output(["rev-parse", "origin/release"])
+        );
+        fixture.peer.git(["checkout", "stable"]);
+        fixture.peer.git(["pull", "--ff-only"]);
+        assert_eq!(fixture.peer.read("release-current.txt"), "release\n");
+        assert_eq!(fixture.local.read("tracked.txt"), "dirty stable\n");
+        assert_eq!(fixture.local.read("scratch.txt"), "scratch\n");
+        let status = fixture.local.git_output(["status", "--porcelain=v1"]);
+        assert!(status.contains(" M tracked.txt"));
+        assert!(status.contains("?? scratch.txt"));
+        assert!(!status.contains("UU "));
+        assert!(fixture
+            .local
+            .git_output(["stash", "list"])
+            .trim()
+            .is_empty());
+    }
+
+    #[test]
+    fn auto_tracking_diverged_source_and_target_fails_without_rebase() {
+        let Some((runner, _home)) = real_runner_or_skip() else {
+            return;
+        };
+        let fixture = DoubleClone::new(&runner);
+        fixture.create_tracking_branch("stable");
+        fixture.create_tracking_branch("release");
+
+        fixture.local.git(["checkout", "stable"]);
+        fixture.local.write("stable-only.txt", "stable\n");
+        fixture.local.git(["add", "stable-only.txt"]);
+        fixture.local.git(["commit", "-m", "stable update"]);
+        fixture.local.git(["push"]);
+        let stable_head = fixture.local.git_output(["rev-parse", "stable"]);
+        let remote_stable_head = fixture.remote.git_output(["rev-parse", "stable"]);
+
+        fixture.peer.git(["checkout", "release"]);
+        fixture.peer.write("release-only.txt", "release\n");
+        fixture.peer.git(["add", "release-only.txt"]);
+        fixture.peer.git(["commit", "-m", "release update"]);
+        fixture.peer.git(["push"]);
+
+        let results = apply_auto_tracking_rules(
+            &runner,
+            &fixture.local.path,
+            &OperationId("auto-tracking-diverged-test".to_owned()),
+            &[AutoTrackingRule {
+                source_branch: "stable".to_owned(),
+                target_branch: "release".to_owned(),
+            }],
+            &|_| {},
+        )
+        .expect("apply auto tracking");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].status, AutoTrackingRuleStatus::Failed);
+        assert_eq!(
+            results[0].message.as_deref(),
+            Some("无法自动将 release 合并到 stable，存在分歧提交")
+        );
+        assert_eq!(
+            fixture.local.git_output(["rev-parse", "stable"]),
+            stable_head
+        );
+        assert_eq!(
+            fixture.remote.git_output(["rev-parse", "stable"]),
+            remote_stable_head
+        );
         assert!(fixture.local.status_clean());
+        assert!(!fixture
+            .local
+            .path
+            .join(".git")
+            .join("rebase-merge")
+            .exists());
+        assert!(!fixture
+            .local
+            .path
+            .join(".git")
+            .join("rebase-apply")
+            .exists());
     }
 
     #[test]
