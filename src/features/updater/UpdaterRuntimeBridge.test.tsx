@@ -1,9 +1,18 @@
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import type { EventCallback } from "@tauri-apps/api/event";
 import type { ReactNode } from "react";
+import { I18nextProvider } from "react-i18next";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AppEventPayloads } from "@/lib/ipc/events";
+import { createI18n } from "@/i18n/i18n";
 import type { UpdateStatusEvent } from "@/lib/ipc/update-types";
 import {
   WindowStoreProvider,
@@ -104,6 +113,171 @@ describe("UpdaterRuntimeBridge", () => {
     });
   });
 
+  it("keeps automatic discovery and download progress silent until ready", async () => {
+    render(
+      <TestProviders>
+        <UpdaterRuntimeBridge />
+        <UpdateProbe />
+      </TestProviders>,
+    );
+
+    await waitFor(() => expect(updateStatusHandler).not.toBeNull());
+
+    await emitUpdateStatus({
+      requestId: "auto-1",
+      source: "automatic",
+      targetWindowLabel: "main",
+      status: {
+        notes: "Release notes",
+        state: "available",
+        version: "0.2.0",
+      },
+    });
+    await emitUpdateStatus({
+      requestId: "auto-1",
+      source: "automatic",
+      targetWindowLabel: "main",
+      status: {
+        downloadedBytes: 50,
+        notes: "Release notes",
+        progress: 0.5,
+        state: "downloading",
+        totalBytes: 100,
+        version: "0.2.0",
+      },
+    });
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByText("none")).toBeInTheDocument();
+  });
+
+  it("opens the update prompt when an automatic download is ready", async () => {
+    render(
+      <TestProviders>
+        <UpdaterRuntimeBridge />
+      </TestProviders>,
+    );
+
+    await waitFor(() => expect(updateStatusHandler).not.toBeNull());
+
+    await emitUpdateStatus({
+      requestId: "auto-ready-1",
+      source: "automatic",
+      targetWindowLabel: "main",
+      status: {
+        notes: "Fixed update flow",
+        state: "ready",
+        version: "0.2.0",
+      },
+    });
+
+    expect(
+      await screen.findByRole("dialog", { name: "Update ready to install" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Version 0.2.0 is available.")).toBeInTheDocument();
+    expect(screen.getByText("Fixed update flow")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Restart and install" }),
+    ).toBeEnabled();
+  });
+
+  it("opens a manual update prompt with download progress", async () => {
+    render(
+      <TestProviders>
+        <UpdaterRuntimeBridge />
+      </TestProviders>,
+    );
+
+    await waitFor(() => expect(updateStatusHandler).not.toBeNull());
+
+    await emitUpdateStatus({
+      requestId: "manual-progress-1",
+      source: "manual",
+      targetWindowLabel: "main",
+      status: {
+        notes: "Manual release notes",
+        state: "available",
+        version: "0.2.0",
+      },
+    });
+
+    expect(
+      await screen.findByRole("dialog", { name: "Update available" }),
+    ).toBeInTheDocument();
+
+    await emitUpdateStatus({
+      requestId: "manual-progress-1",
+      source: "manual",
+      targetWindowLabel: "main",
+      status: {
+        downloadedBytes: 25,
+        notes: "Manual release notes",
+        progress: 0.25,
+        state: "downloading",
+        totalBytes: 100,
+        version: "0.2.0",
+      },
+    });
+
+    expect(screen.getByText("Downloading update (25%).")).toBeInTheDocument();
+    expect(
+      screen.getByRole("progressbar", { name: "Update download progress" }),
+    ).toHaveAttribute("aria-valuenow", "25");
+  });
+
+  it("shows manual check failures in the update prompt", async () => {
+    bridgeMocks.checkForUpdates.mockRejectedValue(new Error("offline"));
+
+    render(
+      <TestProviders>
+        <UpdaterRuntimeBridge />
+      </TestProviders>,
+    );
+
+    window.dispatchEvent(new CustomEvent("artistic-git:check-updates"));
+
+    expect(
+      await screen.findByRole("dialog", { name: "Check failed" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Check failed: offline")).toBeInTheDocument();
+  });
+
+  it("does not reopen a dismissed prompt for the same update request", async () => {
+    render(
+      <TestProviders>
+        <UpdaterRuntimeBridge />
+      </TestProviders>,
+    );
+
+    await waitFor(() => expect(updateStatusHandler).not.toBeNull());
+
+    await emitUpdateStatus({
+      requestId: "manual-dismiss-1",
+      source: "manual",
+      targetWindowLabel: "main",
+      status: {
+        notes: "Release notes",
+        state: "available",
+        version: "0.2.0",
+      },
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Later" }));
+
+    await emitUpdateStatus({
+      requestId: "manual-dismiss-1",
+      source: "manual",
+      targetWindowLabel: "main",
+      status: {
+        notes: "Release notes",
+        state: "ready",
+        version: "0.2.0",
+      },
+    });
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
   it("does not schedule automatic checks when disabled in settings", async () => {
     vi.useFakeTimers();
 
@@ -149,7 +323,9 @@ describe("UpdaterRuntimeBridge", () => {
     });
 
     expect(await screen.findByText("ready")).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByText("allowed")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByText("allowed")).toBeInTheDocument(),
+    );
     expect(bridgeMocks.updateInstallGate).toHaveBeenCalled();
   });
 
@@ -250,15 +426,19 @@ function TestProviders({
   children: ReactNode;
   initialWindowState?: Partial<WindowStoreState>;
 }) {
+  const i18n = createI18n("en");
+
   return (
-    <WindowStoreProvider
-      initialState={{
-        appSettings: defaultAppSettings,
-        windowLabel: "main",
-        ...initialWindowState,
-      }}
-    >
-      {children}
-    </WindowStoreProvider>
+    <I18nextProvider i18n={i18n}>
+      <WindowStoreProvider
+        initialState={{
+          appSettings: defaultAppSettings,
+          windowLabel: "main",
+          ...initialWindowState,
+        }}
+      >
+        {children}
+      </WindowStoreProvider>
+    </I18nextProvider>
   );
 }

@@ -292,6 +292,55 @@ describe("SettingsModal", () => {
       expect.objectContaining({ type: "artistic-git:check-updates" }),
     );
   });
+
+  it("shows ready update details in about and respects install gate state", async () => {
+    const dispatchEvent = vi.spyOn(window, "dispatchEvent");
+
+    render(
+      <TestProviders
+        initialWindowState={{
+          settingsSection: "about",
+          updateInstallGate: {
+            blocked: true,
+            message: "finish conflict resolution before installing an update",
+            reason: "conflict",
+          },
+          updateStatus: {
+            requestId: "manual-ready-1",
+            source: "manual",
+            targetWindowLabel: "main",
+            status: {
+              notes: "Ready release notes",
+              state: "ready",
+              version: "0.2.0",
+            },
+          },
+        }}
+      >
+        <SettingsModal onOpenChange={vi.fn()} open />
+      </TestProviders>,
+    );
+
+    expect(
+      await screen.findByText("Version 0.2.0 is ready to install."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Ready release notes")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Resolve active conflicts before restarting to install the update.",
+      ),
+    ).toBeInTheDocument();
+
+    const installButton = screen.getByRole("button", {
+      name: "Restart and install",
+    });
+    expect(installButton).toBeDisabled();
+
+    fireEvent.click(installButton);
+    expect(dispatchEvent).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "artistic-git:install-update" }),
+    );
+  });
 });
 
 function TestProviders({

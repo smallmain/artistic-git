@@ -41,6 +41,8 @@ export interface WindowStoreState {
   settingsSection: SettingsSection;
   sidebarLayout: Required<SidebarLayoutSettings>;
   updateInstallGate: UpdateInstallGateResponse;
+  updatePromptDismissedRequestId: string | null;
+  updatePromptOpen: boolean;
   updateStatus: UpdateStatusEvent | null;
   windowLabel: string | null;
 }
@@ -67,6 +69,8 @@ export interface WindowStoreActions {
   setSettingsSection: (section: SettingsSection) => void;
   setSidebarLayout: (sidebarLayout: Partial<SidebarLayoutSettings>) => void;
   setUpdateInstallGate: (gate: UpdateInstallGateResponse) => void;
+  setUpdatePromptDismissedRequestId: (requestId: string | null) => void;
+  setUpdatePromptOpen: (open: boolean) => void;
   setUpdateStatus: (event: UpdateStatusEvent | null) => void;
   setWindowLabel: (windowLabel: string | null) => void;
 }
@@ -100,6 +104,8 @@ const initialWindowStoreState: WindowStoreState = {
     message: "no downloaded update is ready to install",
     reason: "noReadyUpdate",
   },
+  updatePromptDismissedRequestId: null,
+  updatePromptOpen: false,
   updateStatus: null,
   windowLabel: null,
 };
@@ -220,6 +226,12 @@ export function createWindowStore(
     },
     setUpdateInstallGate: (gate) => {
       set({ updateInstallGate: gate });
+    },
+    setUpdatePromptDismissedRequestId: (requestId) => {
+      set({ updatePromptDismissedRequestId: requestId });
+    },
+    setUpdatePromptOpen: (open) => {
+      set({ updatePromptOpen: open });
     },
     setUpdateStatus: (event) => {
       set({ updateStatus: event });

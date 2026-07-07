@@ -12,6 +12,8 @@ import type {
 } from "@/lib/ipc/update-types";
 import { useWindowStore } from "@/store/window-store";
 
+import { UpdaterPromptDialog } from "./UpdaterPromptDialog";
+
 export const AUTO_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 export const AUTO_UPDATE_INITIAL_DELAY_MS = 1000;
 const INSTALL_GATE_REFRESH_INTERVAL_MS = 5000;
@@ -31,50 +33,68 @@ export function UpdaterRuntimeBridge() {
     (state) => state.projectSettingsByRepository,
   );
   const updateStatus = useWindowStore((state) => state.updateStatus);
+  const updatePromptDismissedRequestId = useWindowStore(
+    (state) => state.updatePromptDismissedRequestId,
+  );
   const windowLabel = useWindowStore((state) => state.windowLabel);
   const setUpdateInstallGate = useWindowStore(
     (state) => state.setUpdateInstallGate,
+  );
+  const setUpdatePromptDismissedRequestId = useWindowStore(
+    (state) => state.setUpdatePromptDismissedRequestId,
+  );
+  const setUpdatePromptOpen = useWindowStore(
+    (state) => state.setUpdatePromptOpen,
   );
   const setUpdateStatus = useWindowStore((state) => state.setUpdateStatus);
   const blockersRef = React.useRef({
     conflictsByRepository,
     projectSettingsByRepository,
   });
+  const dismissedPromptRequestIdRef = React.useRef(
+    updatePromptDismissedRequestId,
+  );
   const windowLabelRef = React.useRef(windowLabel);
 
   React.useEffect(() => {
-    blockersRef.current = { conflictsByRepository, projectSettingsByRepository };
+    blockersRef.current = {
+      conflictsByRepository,
+      projectSettingsByRepository,
+    };
   }, [conflictsByRepository, projectSettingsByRepository]);
 
   React.useEffect(() => {
     windowLabelRef.current = windowLabel;
   }, [windowLabel]);
 
-  const frontendInstallGate = React.useCallback(():
-    | UpdateInstallGateResponse
-    | null => {
-    const blockers = blockersRef.current;
-    if (Object.keys(blockers.conflictsByRepository).length > 0) {
-      return {
-        blocked: true,
-        message: "finish conflict resolution before installing an update",
-        reason: "conflict",
-      };
-    }
+  React.useEffect(() => {
+    dismissedPromptRequestIdRef.current = updatePromptDismissedRequestId;
+  }, [updatePromptDismissedRequestId]);
 
-    const reviewModeActive = Object.values(
-      blockers.projectSettingsByRepository,
-    ).some((project) => Boolean(project.reviewModeCrash));
-    if (reviewModeActive) {
-      return {
-        blocked: true,
-        message: "finish review mode before installing an update",
-        reason: "reviewMode",
-      };
-    }
+  const frontendInstallGate =
+    React.useCallback((): UpdateInstallGateResponse | null => {
+      const blockers = blockersRef.current;
+      if (Object.keys(blockers.conflictsByRepository).length > 0) {
+        return {
+          blocked: true,
+          message: "finish conflict resolution before installing an update",
+          reason: "conflict",
+        };
+      }
 
-    return null;
-  }, []);
+      const reviewModeActive = Object.values(
+        blockers.projectSettingsByRepository,
+      ).some((project) => Boolean(project.reviewModeCrash));
+      if (reviewModeActive) {
+        return {
+          blocked: true,
+          message: "finish review mode before installing an update",
+          reason: "reviewMode",
+        };
+      }
+
+      return null;
+    }, []);
 
   const refreshInstallGate = React.useCallback(async () => {
     const frontendGate = frontendInstallGate();
@@ -107,6 +127,11 @@ export function UpdaterRuntimeBridge() {
       }
 
       setUpdateStatus(payload);
+      if (
+        shouldOpenUpdatePrompt(payload, dismissedPromptRequestIdRef.current)
+      ) {
+        setUpdatePromptOpen(true);
+      }
       if (payload.status.state === "ready") {
         void refreshInstallGate();
       } else if (payload.status.state === "notAvailable") {
@@ -128,12 +153,20 @@ export function UpdaterRuntimeBridge() {
       active = false;
       unlisten?.();
     };
-  }, [refreshInstallGate, setUpdateInstallGate, setUpdateStatus]);
+  }, [
+    refreshInstallGate,
+    setUpdateInstallGate,
+    setUpdatePromptOpen,
+    setUpdateStatus,
+  ]);
 
   React.useEffect(() => {
     const handleManualCheck = () => {
       void checkForUpdates({ source: "manual" }).catch((error) => {
-        setUpdateStatus(failedManualStatus(error, windowLabelRef.current));
+        const status = failedManualStatus(error, windowLabelRef.current);
+        setUpdateStatus(status);
+        setUpdatePromptDismissedRequestId(null);
+        setUpdatePromptOpen(true);
       });
     };
     const handleInstall = () => {
@@ -146,7 +179,10 @@ export function UpdaterRuntimeBridge() {
           return installReadyUpdate();
         })
         .catch((error) => {
-          setUpdateStatus(failedManualStatus(error, windowLabelRef.current));
+          const status = failedManualStatus(error, windowLabelRef.current);
+          setUpdateStatus(status);
+          setUpdatePromptDismissedRequestId(null);
+          setUpdatePromptOpen(true);
         });
     };
 
@@ -159,7 +195,12 @@ export function UpdaterRuntimeBridge() {
       );
       window.removeEventListener("artistic-git:install-update", handleInstall);
     };
-  }, [refreshInstallGate, setUpdateStatus]);
+  }, [
+    refreshInstallGate,
+    setUpdatePromptDismissedRequestId,
+    setUpdatePromptOpen,
+    setUpdateStatus,
+  ]);
 
   React.useEffect(() => {
     if (appSettings === null || appSettings.updates?.autoCheck === false) {
@@ -201,7 +242,7 @@ export function UpdaterRuntimeBridge() {
     };
   }, [refreshInstallGate, updateStatus]);
 
-  return null;
+  return <UpdaterPromptDialog />;
 }
 
 function isStatusForCurrentWindow(
@@ -220,7 +261,27 @@ function shouldExposeStatus(event: UpdateStatusEvent): boolean {
     return true;
   }
 
-  return event.status.state === "available" || event.status.state === "ready";
+  return event.status.state === "ready";
+}
+
+function shouldOpenUpdatePrompt(
+  event: UpdateStatusEvent,
+  dismissedRequestId: string | null,
+): boolean {
+  if (event.requestId === dismissedRequestId) {
+    return false;
+  }
+
+  if (event.source === "automatic") {
+    return event.status.state === "ready";
+  }
+
+  return (
+    event.status.state === "available" ||
+    event.status.state === "downloading" ||
+    event.status.state === "ready" ||
+    (event.status.state === "failed" && event.status.visible)
+  );
 }
 
 function failedManualStatus(

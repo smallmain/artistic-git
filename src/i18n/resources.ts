@@ -27,6 +27,27 @@ export const resources = {
         openSettings: "Open settings",
         restartApp: "Restart app",
       },
+      updaterPrompt: {
+        availableDescription:
+          "Version {{version}} is downloading in the background.",
+        availableTitle: "Update available",
+        downloadProgress: "Update download progress",
+        downloadingProgress: "Downloading update ({{percent}}%).",
+        downloadingUnknown: "Downloading update...",
+        failedDescription: "The manual update check did not complete.",
+        failedMessage: "Check failed: {{message}}",
+        failedTitle: "Check failed",
+        later: "Later",
+        noReleaseNotes: "No release notes were provided for this version.",
+        readyDescription:
+          "Version {{version}} is downloaded. Restart Artistic Git to install it.",
+        readyStatus: "The update is ready to install.",
+        readyTitle: "Update ready to install",
+        releaseNotes: "Release notes",
+        restartNow: "Restart and install",
+        unknownVersion: "the latest version",
+        versionAvailable: "Version {{version}} is available.",
+      },
       onboarding: {
         addKeyHelp:
           "Copy the public key and add it to your Git hosting account before using SSH remotes.",
@@ -184,8 +205,7 @@ export const resources = {
           unknown: "Unknown",
           updateAvailable: "Version {{version}} is available. Downloading...",
           updateChecking: "Checking for updates...",
-          updateDownloading:
-            "Downloading version {{version}} ({{percent}}%).",
+          updateDownloading: "Downloading version {{version}} ({{percent}}%).",
           updateFailed: "Check failed: {{message}}",
           updateIdle: "No update check has run in this window yet.",
           updateNotAvailable: "Artistic Git is up to date.",
@@ -564,6 +584,26 @@ export const resources = {
         openProject: "打开项目",
         openSettings: "打开设置",
         restartApp: "重启应用",
+      },
+      updaterPrompt: {
+        availableDescription: "版本 {{version}} 正在后台下载。",
+        availableTitle: "发现新版本",
+        downloadProgress: "更新下载进度",
+        downloadingProgress: "正在下载更新（{{percent}}%）。",
+        downloadingUnknown: "正在下载更新...",
+        failedDescription: "手动检查更新未完成。",
+        failedMessage: "检查失败：{{message}}",
+        failedTitle: "检查失败",
+        later: "稍后",
+        noReleaseNotes: "此版本未提供更新日志。",
+        readyDescription:
+          "版本 {{version}} 已下载，重启 Artistic Git 即可安装。",
+        readyStatus: "更新已准备好安装。",
+        readyTitle: "更新已准备好安装",
+        releaseNotes: "更新日志",
+        restartNow: "立即重启更新",
+        unknownVersion: "最新版本",
+        versionAvailable: "发现版本 {{version}}。",
       },
       onboarding: {
         addKeyHelp:
