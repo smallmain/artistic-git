@@ -341,7 +341,7 @@ fn backup_and_discard_local_changes(
     )?;
 
     if !changes.changes.is_empty() {
-        let backup_root = trash_backup_root(runner, root, operation_name)?;
+        let backup_root = trash_backup_root(root);
         fs::create_dir_all(&backup_root).map_err(|source| {
             unexpected_repo_error(
                 format!("failed to create local changes backup: {source}"),
@@ -400,24 +400,32 @@ fn backup_change_path(root: &Path, backup_root: &Path, relative: &str) -> AppRes
     Ok(())
 }
 
-fn trash_backup_root(runner: &GitRunner, root: &Path, operation_name: &str) -> AppResult<PathBuf> {
-    let git_common_dir = crate::repository::git_stdout(
-        runner,
-        Some(root),
-        ["rev-parse", "--git-common-dir"],
-        operation_name,
-    )?;
-    let git_common_dir = PathBuf::from(git_common_dir.trim());
-    let git_common_dir = if git_common_dir.is_absolute() {
-        git_common_dir
-    } else {
-        root.join(git_common_dir)
-    };
-    Ok(git_common_dir.join("artistic-git-trash").join(format!(
-        "{}-{}",
+fn trash_backup_root(root: &Path) -> PathBuf {
+    let repo_name = root
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("repository");
+
+    trash_base_dir().join(format!(
+        "Artistic Git Discarded Changes {repo_name}-{}-{}",
         crate::repository::unix_now_seconds(),
         std::process::id()
-    )))
+    ))
+}
+
+fn trash_base_dir() -> PathBuf {
+    if let Some(path) = std::env::var_os("ARTISTIC_GIT_TRASH_DIR") {
+        return PathBuf::from(path);
+    }
+
+    if let Some(home) = std::env::var_os("HOME") {
+        let candidate = PathBuf::from(home).join(".Trash");
+        if fs::create_dir_all(&candidate).is_ok() {
+            return candidate;
+        }
+    }
+
+    std::env::temp_dir()
 }
 
 fn conflict_files(
@@ -831,6 +839,8 @@ mod tests {
             return;
         };
         let repo = TestRepo::new(&runner);
+        let trash = TestTempDir::new("ag-branch-trash").expect("trash");
+        std::env::set_var("ARTISTIC_GIT_TRASH_DIR", trash.path());
         repo.init_with_commit();
         repo.git(["branch", "feature/clean"]);
         repo.write("tracked.txt", "discard me\n");
@@ -852,7 +862,22 @@ mod tests {
             "one\n"
         );
         assert!(!repo.path.join("untracked.txt").exists());
-        assert!(repo.path.join(".git/artistic-git-trash").exists());
+        let backup_roots = fs::read_dir(trash.path())
+            .expect("trash entries")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("read trash entries");
+        assert_eq!(backup_roots.len(), 1);
+        let backup_root = backup_roots[0].path();
+        assert_eq!(
+            fs::read_to_string(backup_root.join("tracked.txt")).expect("tracked backup"),
+            "discard me\n"
+        );
+        assert_eq!(
+            fs::read_to_string(backup_root.join("untracked.txt")).expect("untracked backup"),
+            "backup me\n"
+        );
+
+        std::env::remove_var("ARTISTIC_GIT_TRASH_DIR");
     }
 
     #[test]
@@ -929,6 +954,53 @@ mod tests {
             .git_output(["branch", "-r"])
             .lines()
             .all(|line| !line.contains("origin/feature/remote")));
+    }
+
+    #[test]
+    fn branch_write_operations_reject_unborn_head() {
+        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
+            return;
+        };
+        let repo = TestRepo::new(&runner);
+        repo.git(["init", "-b", "main"]);
+
+        let create = create_branch(
+            &runner,
+            CreateBranchRequest {
+                repository_path: display_path(&repo.path),
+                name: "feature/new".to_owned(),
+                base_branch: "main".to_owned(),
+                checkout_immediately: true,
+                create_remote: false,
+                local_changes_mode: CheckoutLocalChangesMode::RequireClean,
+                operation_id: None,
+            },
+        )
+        .expect_err("create branch should reject unborn head");
+        let checkout = checkout_branch(
+            &runner,
+            CheckoutBranchRequest {
+                repository_path: display_path(&repo.path),
+                branch_name: "main".to_owned(),
+                local_changes_mode: CheckoutLocalChangesMode::RequireClean,
+                operation_id: None,
+            },
+        )
+        .expect_err("checkout branch should reject unborn head");
+        let delete = delete_branch(
+            &runner,
+            DeleteBranchRequest {
+                repository_path: display_path(&repo.path),
+                branch_name: "main".to_owned(),
+                delete_remote: false,
+                force_remote_only: false,
+            },
+        )
+        .expect_err("delete branch should reject unborn head");
+
+        assert_eq!(create.summary, "当前仓库还没有提交，分支操作暂不可用。");
+        assert_eq!(checkout.summary, "当前仓库还没有提交，分支操作暂不可用。");
+        assert_eq!(delete.summary, "当前仓库还没有提交，分支操作暂不可用。");
     }
 
     fn real_runner_or_skip() -> Option<(GitRunner, TestTempDir)> {

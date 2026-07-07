@@ -103,10 +103,21 @@ beforeEach(() => {
     ],
   });
   commandMocks.listStashes.mockResolvedValue({ stashes: [] });
+  commandMocks.commitChanges.mockResolvedValue({
+    committedPaths: ["src/app.ts"],
+    lfsTrackedPaths: [],
+    oid: "abc123456789",
+    status: "committed",
+  });
   commandMocks.createStash.mockResolvedValue({
     created: true,
     stash: null,
     stdout: "",
+  });
+  commandMocks.restoreChanges.mockResolvedValue({
+    backedUpPaths: ["assets/texture.png"],
+    backupRoot: "/trash/backup",
+    restoredPaths: ["assets/texture.png"],
   });
   commandMocks.settingsSnapshot.mockRejectedValue(new Error("No Tauri"));
 });
@@ -165,6 +176,172 @@ describe("RepositoryShell stash flow", () => {
   });
 });
 
+describe("RepositoryShell commit flow", () => {
+  it.each([
+    ["Cmd+Enter", "metaKey"],
+    ["Ctrl+Enter", "ctrlKey"],
+  ] as const)(
+    "shows the push state and commits checked files with %s",
+    async (_label, modifier) => {
+      renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+      const dialog = await openCommitDialog();
+
+      expect(
+        within(dialog).getByText("2 files will be committed."),
+      ).toBeInTheDocument();
+      const pushCheckbox = within(dialog).getByRole("checkbox", {
+        name: "Push immediately",
+      });
+      expect(pushCheckbox).toBeChecked();
+
+      fireEvent.click(pushCheckbox);
+      expect(pushCheckbox).not.toBeChecked();
+
+      const messageInput = within(dialog).getByLabelText(
+        "Commit message",
+      ) as HTMLTextAreaElement;
+      fireEvent.change(messageInput, {
+        target: { value: "Update assets" },
+      });
+      fireEvent.keyDown(messageInput, {
+        key: "Enter",
+        ...(modifier === "metaKey" ? { metaKey: true } : { ctrlKey: true }),
+      });
+
+      await waitFor(() =>
+        expect(commandMocks.commitChanges).toHaveBeenCalled(),
+      );
+      expect(commandMocks.commitChanges).toHaveBeenCalledWith({
+        disableRepositoryGpgsign: false,
+        largeFileDecision: "prompt",
+        largeFileThresholdMb: null,
+        message: "Update assets",
+        paths: ["src/app.ts", "assets/texture.png"],
+        repositoryPath: "/repo/art",
+      });
+    },
+  );
+
+  it("hides the push checkbox when the repository has no remote", async () => {
+    commandMocks.repositorySummary.mockResolvedValueOnce({
+      currentBranch: "main",
+      hasOrigin: false,
+      headOid: "abc1234",
+      inProgress: false,
+      isDetached: false,
+      isUnborn: false,
+      remoteMode: "none",
+      repositoryPath: "/repo/art",
+    });
+
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    const dialog = await openCommitDialog();
+
+    expect(
+      within(dialog).queryByRole("checkbox", { name: "Push immediately" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("continues a large-file commit with LFS after the warning", async () => {
+    commandMocks.commitChanges.mockResolvedValueOnce({
+      largeFiles: [{ path: "assets/texture.png", sizeBytes: "52428801" }],
+      status: "largeFilesNeedDecision",
+      thresholdMb: 50,
+    });
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    const dialog = await openCommitDialog();
+    fireEvent.change(within(dialog).getByLabelText("Commit message"), {
+      target: { value: "Add texture" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Commit" }));
+
+    expect(
+      await within(dialog).findByText(
+        "Files over 50 MB are not covered by LFS rules.",
+      ),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      within(dialog).getByRole("button", {
+        name: "Track with LFS and continue",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(commandMocks.commitChanges).toHaveBeenCalledTimes(2),
+    );
+    expect(commandMocks.commitChanges).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        largeFileDecision: "trackWithLfs",
+        paths: ["src/app.ts", "assets/texture.png"],
+      }),
+    );
+  });
+
+  it("offers to disable repository signing after a GPG failure", async () => {
+    commandMocks.commitChanges.mockResolvedValueOnce({
+      status: "gpgSignFailed",
+      stderr: "gpg failed to sign the data",
+      summary: "commit signing failed",
+    });
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    const dialog = await openCommitDialog();
+    fireEvent.change(within(dialog).getByLabelText("Commit message"), {
+      target: { value: "Signed change" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Commit" }));
+
+    expect(
+      await within(dialog).findByText("commit signing failed"),
+    ).toBeVisible();
+    fireEvent.click(
+      within(dialog).getByRole("button", {
+        name: "Disable signing for this repository and retry",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(commandMocks.commitChanges).toHaveBeenCalledTimes(2),
+    );
+    expect(commandMocks.commitChanges).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        disableRepositoryGpgsign: true,
+        largeFileDecision: "prompt",
+      }),
+    );
+  });
+});
+
+describe("RepositoryShell restore flow", () => {
+  it("warns that restore is irreversible before restoring an untracked file", async () => {
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    const dialog = await openRestoreDialog("assets/texture.png");
+
+    expect(within(dialog).getByRole("alert")).toHaveTextContent(
+      "This action cannot be undone.",
+    );
+    expect(
+      within(dialog).getAllByText(
+        "1 selected files will be restored after their current versions are moved to the system trash.",
+      ).length,
+    ).toBeGreaterThan(0);
+
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Restore changes" }),
+    );
+
+    await waitFor(() => expect(commandMocks.restoreChanges).toHaveBeenCalled());
+    expect(commandMocks.restoreChanges).toHaveBeenCalledWith({
+      paths: ["assets/texture.png"],
+      repositoryPath: "/repo/art",
+    });
+  });
+});
+
 async function openStashDialog() {
   fireEvent.click(await screen.findByRole("button", { name: /Local Changes/ }));
   await screen.findAllByText("src/app.ts");
@@ -173,4 +350,23 @@ async function openStashDialog() {
   fireEvent.click(screen.getByRole("button", { name: "Stash selected (1)" }));
 
   return screen.getByRole("dialog", { name: "Create stash" });
+}
+
+async function openCommitDialog() {
+  fireEvent.click(await screen.findByRole("button", { name: /Local Changes/ }));
+  await screen.findAllByText("src/app.ts");
+  fireEvent.click(screen.getByLabelText("Select all"));
+  fireEvent.click(screen.getByRole("button", { name: "Commit" }));
+
+  return screen.getByRole("dialog", { name: "Commit changes" });
+}
+
+async function openRestoreDialog(path: string) {
+  fireEvent.click(await screen.findByRole("button", { name: /Local Changes/ }));
+  await screen.findAllByText(path);
+
+  fireEvent.contextMenu(screen.getAllByText(path)[0]);
+  fireEvent.click(screen.getByRole("button", { name: "Restore selected (1)" }));
+
+  return screen.getByRole("dialog", { name: "Restore selected changes?" });
 }

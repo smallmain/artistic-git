@@ -7,6 +7,7 @@ use artistic_git_git_runner::{GitRunner, IdentityValidationHook, WriteOperationR
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::{
+    collections::BTreeSet,
     env, fs, io,
     path::{Path, PathBuf},
     process::Command,
@@ -161,7 +162,12 @@ pub fn save_app_settings(
     let config = require_config(config, "saveAppSettings")?;
     let mut next_settings = request.settings;
     next_settings.git.user = clean_identity(next_settings.git.user);
-    if request.validate_identity {
+    let previous_settings = config
+        .settings()
+        .map_err(|source| config_error(source, "saveAppSettings"))?;
+    let identity_changed = previous_settings.git.user != next_settings.git.user;
+    let should_apply_identity = request.validate_identity || identity_changed;
+    if should_apply_identity {
         validate_identity_for_settings(&next_settings.git.user, "saveAppSettings")?;
     }
 
@@ -171,14 +177,18 @@ pub fn save_app_settings(
         })
         .map_err(|source| config_error(source, "saveAppSettings"))?;
 
-    for repository_path in request.open_repository_paths {
-        if !repository_path.trim().is_empty() {
-            crate::repository::apply_git_user_settings_to_repository(
-                runner,
-                &repository_path,
-                &settings.git.user,
-                "saveAppSettings",
-            )?;
+    if should_apply_identity {
+        let mut seen_paths = BTreeSet::new();
+        for repository_path in request.open_repository_paths {
+            let repository_path = repository_path.trim();
+            if !repository_path.is_empty() && seen_paths.insert(repository_path.to_owned()) {
+                crate::repository::apply_git_user_settings_to_repository(
+                    runner,
+                    repository_path,
+                    &settings.git.user,
+                    "saveAppSettings",
+                )?;
+            }
         }
     }
 

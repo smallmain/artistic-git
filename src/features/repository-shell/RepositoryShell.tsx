@@ -115,6 +115,8 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   const [activeTab, setActiveTab] = React.useState<MainTab>("history");
   const [commitIds, setCommitIds] = React.useState<string[] | null>(null);
   const [commitMessage, setCommitMessage] = React.useState("");
+  const [commitPushImmediately, setCommitPushImmediately] =
+    React.useState(true);
   const [commitBusy, setCommitBusy] = React.useState(false);
   const [commitStatus, setCommitStatus] = React.useState<string | null>(null);
   const [gpgFailure, setGpgFailure] = React.useState<{
@@ -483,6 +485,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     }
     setCommitIds(null);
     setCommitMessage("");
+    setCommitPushImmediately(true);
     setCommitStatus(null);
     setGpgFailure(null);
     setLargeFileWarning(null);
@@ -516,6 +519,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
           setCommitStatus(t("localChanges.commitCommitted"));
           setCommitIds(null);
           setCommitMessage("");
+          setCommitPushImmediately(true);
         } else if (response.status === "largeFilesNeedDecision") {
           setLargeFileWarning({
             files: response.largeFiles,
@@ -892,6 +896,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         busy={commitBusy}
         fileCount={selectedCommitPaths.length}
         gpgFailure={gpgFailure}
+        hasRemote={repository.hasRemote}
         largeFileWarning={largeFileWarning}
         message={commitMessage}
         onCommit={() => void runCommit()}
@@ -903,15 +908,15 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
             closeCommitDialog();
           }
         }}
+        onPushImmediatelyChange={setCommitPushImmediately}
         onTrackWithLfs={() => void runCommit("trackWithLfs")}
         open={commitIds !== null}
+        pushImmediately={commitPushImmediately}
         status={commitStatus}
       />
-      <ConfirmDialog
-        confirmLabel={t("localChanges.restoreConfirm")}
-        description={t("localChanges.restoreDescription", {
-          count: selectedRestorePaths.length,
-        })}
+      <RestoreChangesDialog
+        busy={restoreBusy}
+        count={selectedRestorePaths.length}
         onConfirm={() => void runRestore()}
         onOpenChange={(open) => {
           if (!open && !restoreBusy) {
@@ -919,8 +924,6 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
           }
         }}
         open={restoreIds !== null}
-        title={t("localChanges.restoreTitle")}
-        variant="danger"
       />
       <ConfirmDialog
         confirmLabel={t("repository.deleteStash")}
@@ -1263,6 +1266,7 @@ function CommitChangesDialog({
   busy,
   fileCount,
   gpgFailure,
+  hasRemote,
   largeFileWarning,
   message,
   onCommit,
@@ -1270,13 +1274,16 @@ function CommitChangesDialog({
   onDisableSigningAndRetry,
   onMessageChange,
   onOpenChange,
+  onPushImmediatelyChange,
   onTrackWithLfs,
   open,
+  pushImmediately,
   status,
 }: {
   busy: boolean;
   fileCount: number;
   gpgFailure: { stderr: string; summary: string } | null;
+  hasRemote: boolean;
   largeFileWarning: { files: LargeFileWarning[]; thresholdMb: number } | null;
   message: string;
   onCommit: () => void;
@@ -1284,8 +1291,10 @@ function CommitChangesDialog({
   onDisableSigningAndRetry: () => void;
   onMessageChange: (message: string) => void;
   onOpenChange: (open: boolean) => void;
+  onPushImmediatelyChange: (pushImmediately: boolean) => void;
   onTrackWithLfs: () => void;
   open: boolean;
+  pushImmediately: boolean;
   status: string | null;
 }) {
   const { t } = useTranslation();
@@ -1340,6 +1349,19 @@ function CommitChangesDialog({
         />
       </label>
 
+      {hasRemote ? (
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            checked={pushImmediately}
+            className="size-4"
+            disabled={busy}
+            onChange={(event) => onPushImmediatelyChange(event.target.checked)}
+            type="checkbox"
+          />
+          <span>{t("localChanges.pushImmediately")}</span>
+        </label>
+      ) : null}
+
       {largeFileWarning ? (
         <div className="space-y-3 rounded-md border bg-warning/10 p-3 text-sm">
           <p className="font-medium">
@@ -1384,6 +1406,69 @@ function CommitChangesDialog({
           </Button>
         </div>
       ) : null}
+    </DialogFrame>
+  );
+}
+
+function RestoreChangesDialog({
+  busy,
+  count,
+  onConfirm,
+  onOpenChange,
+  open,
+}: {
+  busy: boolean;
+  count: number;
+  onConfirm: () => void;
+  onOpenChange: (open: boolean) => void;
+  open: boolean;
+}) {
+  const { t } = useTranslation();
+
+  if (!open) {
+    return null;
+  }
+
+  const description = t("localChanges.restoreDescription", { count });
+
+  return (
+    <DialogFrame
+      description={description}
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button
+            disabled={busy}
+            onClick={() => onOpenChange(false)}
+            type="button"
+            variant="ghost"
+          >
+            {t("actions.cancel")}
+          </Button>
+          <Button
+            disabled={busy}
+            onClick={onConfirm}
+            type="button"
+            variant="destructive"
+          >
+            {t("localChanges.restoreConfirm")}
+          </Button>
+        </div>
+      }
+      onOpenChange={onOpenChange}
+      title={t("localChanges.restoreTitle")}
+    >
+      <div
+        className="flex gap-3 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive"
+        role="alert"
+      >
+        <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+        <p className="font-medium">
+          {t("localChanges.restoreIrreversibleWarning")}
+        </p>
+      </div>
+      <p className="rounded-md border bg-background p-3 text-sm text-muted-foreground">
+        {description}
+      </p>
     </DialogFrame>
   );
 }
