@@ -866,28 +866,35 @@ mod tests {
             temp_dir.path().join("projects.json"),
         );
         let store = ConfigStore::load(paths.clone()).expect("load store");
+        let repo_one = temp_dir.path().join("repo").join("one");
+        let repo_two = temp_dir.path().join("repo").join("two");
+        let repo_one_key = normalize_project_path_key(&repo_one).expect("normalize first repo");
+        let repo_two_key = normalize_project_path_key(&repo_two).expect("normalize second repo");
 
         store
-            .update_project("/repo/one", |project| {
+            .update_project(repo_one_key.clone(), |project| {
                 project.display_name = Some("One".to_owned());
                 project.pinned = true;
             })
             .expect("insert first project");
         store
-            .update_project("/repo/two", |project| {
+            .update_project(repo_two_key.clone(), |project| {
                 project.display_name = Some("Two".to_owned());
             })
             .expect("insert second project");
         store
-            .update_project("/repo/one", |project| {
+            .update_project(repo_one_key.clone(), |project| {
                 project.last_branch = Some("main".to_owned());
             })
             .expect("update first project");
 
         let reloaded = ConfigStore::load(paths).expect("reload store");
         let projects = reloaded.projects().expect("read projects");
-        let one = projects.projects.get("/repo/one").expect("first project");
-        let two = projects.projects.get("/repo/two").expect("second project");
+        let one = projects.projects.get(&repo_one_key).expect("first project");
+        let two = projects
+            .projects
+            .get(&repo_two_key)
+            .expect("second project");
 
         assert_eq!(projects.projects.len(), 2);
         assert_eq!(one.display_name.as_deref(), Some("One"));
