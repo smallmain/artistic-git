@@ -330,12 +330,12 @@ export const resources = {
           autoTrackingDuplicateSource:
             "Each source branch can appear in only one automatic tracking rule.",
           autoTrackingHelp:
-            "After branch sync, fast-forward a local source branch to a selected origin branch and push the source branch.",
+            "After branch sync, fast-forward a source branch to a selected origin branch and push the source branch. Remote-only choices create local tracking branches first.",
           autoTrackingInvalid:
             "Fix automatic tracking rule errors before saving project settings.",
           autoTrackingMissing: "Select both branches for this rule.",
           autoTrackingSelf: "A branch cannot automatically track itself.",
-          autoTrackingSource: "Source local branch",
+          autoTrackingSource: "Source origin branch",
           autoTrackingTarget: "Target origin branch",
           autoTrackingTargetDeleted: "Target branch was deleted.",
           gitignore: ".gitignore",
@@ -957,11 +957,11 @@ export const resources = {
           autoTrackingDuplicateSource:
             "每个源分支只能出现在一条自动跟踪规则中。",
           autoTrackingHelp:
-            "分支同步后，将本地源分支快进到选定的 origin 分支并推送源分支。",
+            "分支同步后，将源分支快进到选定的 origin 分支并推送源分支。仅远程选项会先创建本地跟踪分支。",
           autoTrackingInvalid: "修正自动跟踪规则错误后再保存项目设置。",
           autoTrackingMissing: "请为此规则选择两个分支。",
           autoTrackingSelf: "分支不能自动跟踪自身。",
-          autoTrackingSource: "源本地分支",
+          autoTrackingSource: "源 origin 分支",
           autoTrackingTarget: "目标 origin 分支",
           autoTrackingTargetDeleted: "目标分支已删除。",
           gitignore: ".gitignore",

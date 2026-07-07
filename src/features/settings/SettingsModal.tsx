@@ -1058,7 +1058,8 @@ function ProjectSettingsPanel({
   const sourceOptions = branchOptions.filter(
     (branch) =>
       branch.existence === "localAndRemote" ||
-      (branch.existence !== "remoteOnly" && Boolean(branch.upstream)),
+      branch.existence === "remoteOnly" ||
+      Boolean(branch.upstream),
   );
   const targetOptions = branchOptions.filter(
     (branch) =>
@@ -1232,7 +1233,11 @@ function ProjectSettingsPanel({
                     }}
                     options={sourceOptions.map((branch) => [
                       branch.shortName,
-                      branch.shortName,
+                      branch.existence === "remoteOnly"
+                        ? t("settings.project.remoteBranchOption", {
+                            branch: branch.shortName,
+                          })
+                        : branch.shortName,
                     ])}
                     value={rule.sourceBranch}
                   />

@@ -232,7 +232,7 @@ describe("SettingsModal", () => {
     expect(saveButtons.at(-1)).toBeEnabled();
   });
 
-  it("saves a valid automatic tracking rule with a remote-only target hint", async () => {
+  it("saves a valid automatic tracking rule with remote-only branch hints", async () => {
     commandMocks.saveProjectSettings.mockImplementation((request) =>
       Promise.resolve({
         autoTrackingRules: request.autoTrackingRules,
@@ -257,11 +257,14 @@ describe("SettingsModal", () => {
         name: "Add automatic tracking rule",
       }),
     );
-    fireEvent.change(screen.getByLabelText("Target origin branch"), {
+    fireEvent.change(screen.getByLabelText("Source origin branch"), {
       target: { value: "design" },
     });
+    fireEvent.change(screen.getByLabelText("Target origin branch"), {
+      target: { value: "release" },
+    });
 
-    expect(screen.getByText("design (remote only)")).toBeInTheDocument();
+    expect(screen.getAllByText("design (remote only)")).toHaveLength(2);
 
     const saveButtons = screen.getAllByRole("button", {
       name: "Save project settings",
@@ -271,7 +274,9 @@ describe("SettingsModal", () => {
     await waitFor(() =>
       expect(commandMocks.saveProjectSettings).toHaveBeenCalledWith(
         expect.objectContaining({
-          autoTrackingRules: [{ sourceBranch: "main", targetBranch: "design" }],
+          autoTrackingRules: [
+            { sourceBranch: "design", targetBranch: "release" },
+          ],
           repositoryPath: "/repo/art",
         }),
       ),
