@@ -60,6 +60,9 @@ jobs:
       - name: Typecheck frontend
         run: pnpm typecheck
 
+      - name: Audit push safety
+        run: pnpm git:push-safety:check
+
       - name: Test frontend
         run: pnpm test
 
