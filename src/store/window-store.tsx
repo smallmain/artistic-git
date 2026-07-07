@@ -3,8 +3,11 @@ import { useStore } from "zustand";
 import { createStore, type StoreApi } from "zustand/vanilla";
 
 import type {
+  AppSettings,
+  ConflictEnteredEvent,
   FetchStateEvent,
   OperationProgressEvent,
+  ProjectSettings,
   RepoChangedEvent,
   SidebarLayoutSettings,
 } from "@/lib/ipc/generated";
@@ -17,26 +20,45 @@ export interface RecentProject {
   path: string;
 }
 
+export type SettingsSection = "general" | "project" | "about";
+
 export interface WindowStoreState {
   activeRepositoryPath: string | null;
+  appSettings: AppSettings | null;
+  appVersion: string | null;
+  conflictsByRepository: Record<string, ConflictEnteredEvent>;
   fetchStatesByRepository: Record<string, FetchStateEvent>;
   onboarded: boolean;
   operationsById: Record<string, OperationProgressEvent>;
+  projectSettingsByRepository: Record<string, ProjectSettings>;
   recentProjects: RecentProject[];
   repoChangesByRepository: Record<string, RepoChangedEvent>;
+  settingsModalOpen: boolean;
+  settingsSection: SettingsSection;
   sidebarLayout: Required<SidebarLayoutSettings>;
   windowLabel: string | null;
 }
 
 export interface WindowStoreActions {
   clearRecentProjects: () => void;
+  closeSettings: () => void;
+  clearConflict: (repositoryPath: string) => void;
+  openSettings: (section?: SettingsSection) => void;
   removeRecentProject: (path: string) => void;
   setActiveRepositoryPath: (repositoryPath: string | null) => void;
+  setAppSettings: (appSettings: AppSettings | null) => void;
+  setAppVersion: (appVersion: string | null) => void;
+  setConflictEntered: (event: ConflictEnteredEvent) => void;
   setFetchState: (event: FetchStateEvent) => void;
   setOnboarded: (onboarded: boolean) => void;
   setOperationProgress: (event: OperationProgressEvent) => void;
+  setProjectSettings: (
+    repositoryPath: string,
+    project: ProjectSettings,
+  ) => void;
   setRecentProjects: (recentProjects: RecentProject[]) => void;
   setRepoChanged: (event: RepoChangedEvent) => void;
+  setSettingsSection: (section: SettingsSection) => void;
   setSidebarLayout: (sidebarLayout: Partial<SidebarLayoutSettings>) => void;
   setWindowLabel: (windowLabel: string | null) => void;
 }
@@ -48,11 +70,17 @@ const sidebarLayoutStorageKey = "artistic-git:sidebar-layout";
 
 const initialWindowStoreState: WindowStoreState = {
   activeRepositoryPath: null,
+  appSettings: null,
+  appVersion: null,
+  conflictsByRepository: {},
   fetchStatesByRepository: {},
   onboarded: true,
   operationsById: {},
+  projectSettingsByRepository: {},
   recentProjects: [],
   repoChangesByRepository: {},
+  settingsModalOpen: false,
+  settingsSection: "general",
   sidebarLayout: {
     branchSectionRatioPercent: 64,
     branchesCollapsed: false,
@@ -83,6 +111,20 @@ export function createWindowStore(
     clearRecentProjects: () => {
       set({ recentProjects: [] });
     },
+    closeSettings: () => {
+      set({ settingsModalOpen: false });
+    },
+    clearConflict: (repositoryPath) => {
+      set((state) => {
+        const conflictsByRepository = { ...state.conflictsByRepository };
+        delete conflictsByRepository[repositoryPath];
+
+        return { conflictsByRepository };
+      });
+    },
+    openSettings: (section = "general") => {
+      set({ settingsModalOpen: true, settingsSection: section });
+    },
     removeRecentProject: (path) => {
       set((state) => ({
         recentProjects: state.recentProjects.filter(
@@ -92,6 +134,20 @@ export function createWindowStore(
     },
     setActiveRepositoryPath: (repositoryPath) => {
       set({ activeRepositoryPath: repositoryPath });
+    },
+    setAppSettings: (appSettings) => {
+      set({ appSettings });
+    },
+    setAppVersion: (appVersion) => {
+      set({ appVersion });
+    },
+    setConflictEntered: (event) => {
+      set((state) => ({
+        conflictsByRepository: {
+          ...state.conflictsByRepository,
+          [event.repositoryPath]: event,
+        },
+      }));
     },
     setFetchState: (event) => {
       set((state) => ({
@@ -112,6 +168,14 @@ export function createWindowStore(
         },
       }));
     },
+    setProjectSettings: (repositoryPath, project) => {
+      set((state) => ({
+        projectSettingsByRepository: {
+          ...state.projectSettingsByRepository,
+          [repositoryPath]: project,
+        },
+      }));
+    },
     setRecentProjects: (recentProjects) => {
       set({ recentProjects });
     },
@@ -122,6 +186,9 @@ export function createWindowStore(
           [event.repositoryPath]: event,
         },
       }));
+    },
+    setSettingsSection: (section) => {
+      set({ settingsSection: section });
     },
     setSidebarLayout: (sidebarLayout) => {
       set((state) => {
@@ -158,11 +225,20 @@ export function WindowStoreProvider({
     },
     [storeApi],
   );
+  const setConflictEntered = React.useCallback(
+    (event: ConflictEnteredEvent) => {
+      storeApi.getState().setConflictEntered(event);
+    },
+    [storeApi],
+  );
 
   return (
     <WindowStoreContext.Provider value={storeApi}>
       {enableRealtimeEvents ? (
-        <RealtimeEventBridge onRepoChanged={setRepoChanged} />
+        <RealtimeEventBridge
+          onConflictEntered={setConflictEntered}
+          onRepoChanged={setRepoChanged}
+        />
       ) : null}
       {children}
     </WindowStoreContext.Provider>
@@ -205,9 +281,17 @@ function createInitialWindowStoreState(
       ...initialWindowStoreState.fetchStatesByRepository,
       ...initialState?.fetchStatesByRepository,
     },
+    conflictsByRepository: {
+      ...initialWindowStoreState.conflictsByRepository,
+      ...initialState?.conflictsByRepository,
+    },
     operationsById: {
       ...initialWindowStoreState.operationsById,
       ...initialState?.operationsById,
+    },
+    projectSettingsByRepository: {
+      ...initialWindowStoreState.projectSettingsByRepository,
+      ...initialState?.projectSettingsByRepository,
     },
     recentProjects: [
       ...(initialState?.recentProjects ??

@@ -1,4 +1,10 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -8,7 +14,11 @@ import { createAppQueryClient } from "@/lib/query/client";
 import type { DiffPayload } from "@/lib/ipc/generated";
 
 import { LocalChangesPanel } from "./LocalChangesPanel";
-import { filterChanges, formatChangePath, getCheckState } from "./local-change-utils";
+import {
+  filterChanges,
+  formatChangePath,
+  getCheckState,
+} from "./local-change-utils";
 import type { LocalChangeItem } from "./types";
 
 function renderWithProviders(ui: ReactElement) {
@@ -68,13 +78,18 @@ describe("LocalChangesPanel", () => {
       target: { value: "roughness" },
     });
 
-    expect(screen.getAllByText("assets/textures/material.bin").length).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText("assets/textures/material.bin").length,
+    ).toBeGreaterThan(0);
     expect(screen.queryByText("src/main.ts")).not.toBeInTheDocument();
   });
 
   it("switches to tree mode, persists it, and supports folder tri-state checks", () => {
     renderWithProviders(
-      <LocalChangesPanel changes={createChanges()} storageKey="test-view-mode" />,
+      <LocalChangesPanel
+        changes={createChanges()}
+        storageKey="test-view-mode"
+      />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Tree view" }));
@@ -92,7 +107,9 @@ describe("LocalChangesPanel", () => {
 
     fireEvent.contextMenu(screen.getAllByText("src/main.ts")[0]);
 
-    const menu = screen.getByText("Revert changes (coming later)").closest("div");
+    const menu = screen
+      .getByText("Revert changes (coming later)")
+      .closest("div");
     expect(menu).not.toBeNull();
     expect(
       within(menu as HTMLElement).getByText("Check selected (1)"),

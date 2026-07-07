@@ -2,7 +2,10 @@ import { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
 
 import type { AppEventName } from "@/lib/ipc/events";
-import type { RepoChangedEvent } from "@/lib/ipc/generated";
+import type {
+  ConflictEnteredEvent,
+  RepoChangedEvent,
+} from "@/lib/ipc/generated";
 import {
   installRealtimeEventBridge,
   invalidateRepoChangedQueries,
@@ -49,12 +52,13 @@ describe("realtime query invalidation", () => {
     });
   });
 
-  it("subscribes to repo-changed and forwards payloads to the store sink", async () => {
+  it("subscribes to repo-changed and conflict-entered events", async () => {
     const queryClient = new QueryClient();
     const invalidateQueries = vi
       .spyOn(queryClient, "invalidateQueries")
       .mockResolvedValue();
     const onRepoChanged = vi.fn();
+    const onConflictEntered = vi.fn();
     const unlisten = vi.fn();
     const handlers = new Map<
       AppEventName,
@@ -68,23 +72,36 @@ describe("realtime query invalidation", () => {
       changedQueries: ["summary"],
       repositoryPath: "/repo/art",
     };
+    const conflictPayload: ConflictEnteredEvent = {
+      files: [],
+      operationId: "op-1",
+      operationName: "Rebase",
+      repositoryPath: "/repo/art",
+    };
 
     const unsubscribe = await installRealtimeEventBridge({
       listen,
+      onConflictEntered,
       onRepoChanged,
       queryClient,
     });
 
     handlers.get("repo-changed")?.({ payload });
+    handlers.get("conflict-entered")?.({ payload: conflictPayload });
 
     expect(listen).toHaveBeenCalledWith("repo-changed", expect.any(Function));
+    expect(listen).toHaveBeenCalledWith(
+      "conflict-entered",
+      expect.any(Function),
+    );
     expect(onRepoChanged).toHaveBeenCalledWith(payload);
+    expect(onConflictEntered).toHaveBeenCalledWith(conflictPayload);
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: ["repository", "/repo/art", "summary"],
     });
 
     unsubscribe();
 
-    expect(unlisten).toHaveBeenCalledTimes(1);
+    expect(unlisten).toHaveBeenCalledTimes(2);
   });
 });

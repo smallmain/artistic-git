@@ -252,6 +252,160 @@ pub enum ConflictResolutionStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
+pub struct ConflictListRequest {
+    pub repository_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictListResponse {
+    pub operation: Option<ConflictOperation>,
+    pub files: Vec<ConflictFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictOperation {
+    pub kind: ConflictOperationKind,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ConflictOperationKind {
+    Merge,
+    Rebase,
+    CherryPick,
+    Revert,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictPathRequest {
+    pub repository_path: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictDetailResponse {
+    pub file: ConflictFile,
+    pub detail: ConflictFileDetail,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum ConflictFileDetail {
+    Text {
+        current_text: String,
+        own_text: String,
+        other_text: String,
+        hunks: Vec<ConflictHunk>,
+        language: Option<String>,
+    },
+    Binary {
+        own: Option<ConflictSideFile>,
+        other: Option<ConflictSideFile>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictHunk {
+    pub id: u32,
+    pub start_line: u32,
+    pub end_line: u32,
+    pub start_offset: u32,
+    pub end_offset: u32,
+    pub own_text: String,
+    pub other_text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictSideFile {
+    pub side: ConflictSide,
+    pub oid: Option<String>,
+    pub size_bytes: Option<u32>,
+    pub mime_type: Option<String>,
+    pub preview: Option<ConflictImagePreview>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictImagePreview {
+    pub data_url: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ConflictSide {
+    Own,
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictSelectSideRequest {
+    pub repository_path: String,
+    pub paths: Vec<String>,
+    pub side: ConflictSide,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictSelectSideResponse {
+    pub files: Vec<ConflictFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictSaveResolutionRequest {
+    pub repository_path: String,
+    pub path: String,
+    pub content: String,
+    pub pending_hunks: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictSaveResolutionResponse {
+    pub file: ConflictFile,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictCompleteRequest {
+    pub repository_path: String,
+    pub operation_id: OperationId,
+    pub paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictCompleteResponse {
+    pub continuation: ConflictOperationKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictCancelRequest {
+    pub repository_path: String,
+    pub operation_id: OperationId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictCancelResponse {
+    pub aborted: ConflictOperationKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
 pub struct DiffPayload {
     pub old_path: Option<String>,
     pub new_path: String,
@@ -471,7 +625,11 @@ pub struct DeleteBranchRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
-#[serde(tag = "status", rename_all = "camelCase")]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum BranchOperationResponse {
     Completed {
         repository_path: String,
@@ -510,6 +668,119 @@ pub enum BranchExistence {
 #[serde(rename_all = "camelCase")]
 pub struct LocalChangesResponse {
     pub changes: Vec<LocalChange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitRequest {
+    pub repository_path: String,
+    pub paths: Vec<String>,
+    pub message: String,
+    pub large_file_threshold_mb: Option<u32>,
+    pub large_file_decision: LargeFileDecision,
+    pub disable_repository_gpgsign: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum LargeFileDecision {
+    Prompt,
+    TrackWithLfs,
+    CommitNormally,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum CommitResponse {
+    Committed {
+        oid: String,
+        committed_paths: Vec<String>,
+        lfs_tracked_paths: Vec<String>,
+    },
+    LargeFilesNeedDecision {
+        large_files: Vec<LargeFileWarning>,
+        threshold_mb: u32,
+    },
+    GpgSignFailed {
+        summary: String,
+        stderr: String,
+    },
+    NothingToCommit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LargeFileWarning {
+    pub path: String,
+    pub size_bytes: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreChangesRequest {
+    pub repository_path: String,
+    pub paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreChangesResponse {
+    pub restored_paths: Vec<String>,
+    pub backup_root: Option<String>,
+    pub backed_up_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RevertCommitRequest {
+    pub repository_path: String,
+    pub oid: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum RevertCommitResponse {
+    Reverted {
+        oid: String,
+        message: String,
+    },
+    Disabled {
+        reason: RevertDisabledReason,
+    },
+    Conflicted {
+        operation_id: OperationId,
+        files: Vec<ConflictFile>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum RevertDisabledReason {
+    MergeCommit,
+    NotOnCurrentBranch,
+    DetachedHead,
+    UnbornHead,
+    OperationInProgress,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AbortRevertRequest {
+    pub repository_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AbortRevertResponse {
+    pub aborted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -625,7 +896,11 @@ pub struct RestoreStashResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
-#[serde(tag = "status", rename_all = "camelCase")]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum StashRestoreOutcome {
     Applied { dropped: bool },
     Conflicts { conflict: ConflictEnteredEvent },

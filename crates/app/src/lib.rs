@@ -5,12 +5,29 @@ use specta::Type;
 use std::path::{Path, PathBuf};
 
 pub mod branches;
+pub mod commit;
+pub mod conflicts;
+pub(crate) mod git_ops;
 pub mod repository;
+pub mod restore;
+pub mod revert;
+pub mod settings;
 pub mod stash;
 pub use branches::{checkout_branch, create_branch, delete_branch, validate_branch_name};
+pub use commit::commit_changes;
 pub use repository::{
     list_branches, list_local_changes, list_stashes, log_page_with_cancel, open_repository,
     repository_summary, search_log_with_cancel, RepositoryBackend,
+};
+pub use restore::restore_changes;
+pub use revert::{abort_revert, revert_commit};
+pub use settings::{
+    generate_ssh_key, identity_sources, load_app_settings, load_gitignore, load_project_settings,
+    save_app_settings, save_gitignore, save_project_settings, settings_snapshot, ssh_key_status,
+    validate_identity_for_write, GenerateSshKeyRequest, GitignoreFileResponse, GitignoreRequest,
+    IdentitySourcesResponse, IdentityValidationRequest, IdentityValidationResponse,
+    ProjectSettingsRequest, SaveAppSettingsRequest, SaveGitignoreRequest,
+    SaveProjectSettingsRequest, SettingsSnapshot, SshKeyStatus,
 };
 pub use stash::{
     cancel_stash_restore, create_auto_stash, create_stash, delete_stash, restore_stash,

@@ -1,6 +1,7 @@
 import { AlertTriangle, FileText, History } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
+import { useQuery } from "@tanstack/react-query";
 
 import {
   type BranchListItem,
@@ -8,12 +9,43 @@ import {
   type RepositorySummary,
   type StashListItem,
 } from "@/components/sidebar/RepositorySidebar";
+import { ConfirmDialog } from "@/components/dialogs/ConfirmDialog";
+import { DialogFrame } from "@/components/dialogs/DialogFrame";
 import { Button } from "@/components/ui/button";
+import { ConflictResolutionOverlay } from "@/features/conflicts";
 import { HistoryWorkbench } from "@/features/history/HistoryWorkbench";
 import {
   demoLocalChanges,
   LocalChangesPanel,
+  type LocalChangeItem,
 } from "@/features/local-changes";
+import { useLocalizedFormatters } from "@/i18n/format";
+import {
+  checkoutBranch,
+  commitChanges,
+  createBranch,
+  createStash,
+  deleteBranch,
+  deleteStash,
+  listBranches,
+  listLocalChanges,
+  listStashes,
+  restoreChanges,
+  restoreStash,
+  repositorySummary,
+  stashDetails,
+  validateBranchName,
+} from "@/lib/ipc/commands";
+import type {
+  BranchNameValidationResponse,
+  BranchSummary,
+  CheckoutLocalChangesMode,
+  LargeFileWarning,
+  LocalChange,
+  StashEntry,
+  StashDetailsResponse,
+} from "@/lib/ipc/generated";
+import { repoQueryKeys } from "@/lib/realtime/query-keys";
 import { cn } from "@/lib/utils";
 import { useWindowStore } from "@/store/window-store";
 
@@ -43,7 +75,7 @@ const demoBranches: BranchListItem[] = [
     ahead: 0,
     behind: 2,
     latestCommitId: "893ab14",
-    name: "origin/concept-pass",
+    name: "concept-pass",
     remoteOnly: true,
   },
 ];
@@ -67,43 +99,542 @@ interface RepositoryShellProps {
 
 export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   const { t } = useTranslation();
+  const formatters = useLocalizedFormatters();
   const [activeTab, setActiveTab] = React.useState<MainTab>("history");
+  const [commitIds, setCommitIds] = React.useState<string[] | null>(null);
+  const [commitMessage, setCommitMessage] = React.useState("");
+  const [commitBusy, setCommitBusy] = React.useState(false);
+  const [commitStatus, setCommitStatus] = React.useState<string | null>(null);
+  const [gpgFailure, setGpgFailure] = React.useState<{
+    stderr: string;
+    summary: string;
+  } | null>(null);
+  const [largeFileWarning, setLargeFileWarning] = React.useState<{
+    files: LargeFileWarning[];
+    thresholdMb: number;
+  } | null>(null);
+  const [restoreIds, setRestoreIds] = React.useState<string[] | null>(null);
+  const [restoreBusy, setRestoreBusy] = React.useState(false);
+  const [branchActionBusy, setBranchActionBusy] = React.useState(false);
+  const [branchToCheckout, setBranchToCheckout] =
+    React.useState<BranchListItem | null>(null);
+  const [checkoutMode, setCheckoutMode] =
+    React.useState<CheckoutLocalChangesMode>("autoStash");
+  const [branchCreateBase, setBranchCreateBase] =
+    React.useState<BranchListItem | null>(null);
+  const [newBranchName, setNewBranchName] = React.useState("");
+  const [newBranchCheckout, setNewBranchCheckout] = React.useState(true);
+  const [branchNameValidation, setBranchNameValidation] =
+    React.useState<BranchNameValidationResponse | null>(null);
+  const [branchToDelete, setBranchToDelete] =
+    React.useState<BranchListItem | null>(null);
+  const [stashActionBusy, setStashActionBusy] = React.useState(false);
+  const [stashIds, setStashIds] = React.useState<string[] | null>(null);
+  const [stashMessage, setStashMessage] = React.useState("");
+  const [stashToDelete, setStashToDelete] =
+    React.useState<StashListItem | null>(null);
+  const [stashDetail, setStashDetail] =
+    React.useState<StashDetailsResponse | null>(null);
   const [focusedBranch, setFocusedBranch] = React.useState<BranchListItem>(
     demoBranches[0],
   );
+  const summaryQuery = useQuery({
+    queryFn: () => repositorySummary({ repositoryPath }),
+    queryKey: repoQueryKeys.summary(repositoryPath),
+    retry: false,
+  });
+  const branchesQuery = useQuery({
+    queryFn: () => listBranches({ repositoryPath }),
+    queryKey: repoQueryKeys.branches(repositoryPath),
+    retry: false,
+  });
+  const stashesQuery = useQuery({
+    queryFn: () => listStashes({ repositoryPath }),
+    queryKey: repoQueryKeys.stashes(repositoryPath),
+    retry: false,
+  });
+  const localChangesQuery = useQuery({
+    queryFn: () => listLocalChanges({ repositoryPath }),
+    queryKey: repoQueryKeys.localChanges(repositoryPath),
+    retry: false,
+  });
+  const branches = React.useMemo(
+    () =>
+      branchesQuery.data?.branches.map(mapBranchSummaryToItem) ?? demoBranches,
+    [branchesQuery.data],
+  );
+  const stashes = React.useMemo(
+    () =>
+      stashesQuery.data?.stashes.map((stash) =>
+        mapStashEntryToItem(stash, formatters.formatRelativeTime),
+      ) ?? demoStashes,
+    [formatters.formatRelativeTime, stashesQuery.data],
+  );
+  const localChanges = React.useMemo(
+    () =>
+      localChangesQuery.data?.changes.map(mapLocalChangeToItem) ??
+      demoLocalChanges,
+    [localChangesQuery.data],
+  );
+  const currentBranch = React.useMemo(
+    () => branches.find((branch) => branch.current) ?? branches[0],
+    [branches],
+  );
+  const effectiveFocusedBranch = React.useMemo(
+    () =>
+      branches.some((branch) => branch.name === focusedBranch.name)
+        ? focusedBranch
+        : (currentBranch ?? focusedBranch),
+    [branches, currentBranch, focusedBranch],
+  );
   const operations = useWindowStore((state) => state.operationsById);
+  const openSettings = useWindowStore((state) => state.openSettings);
+  const conflict = useWindowStore(
+    (state) => state.conflictsByRepository[repositoryPath] ?? null,
+  );
+  const clearConflict = useWindowStore((state) => state.clearConflict);
+  const setConflictEntered = useWindowStore(
+    (state) => state.setConflictEntered,
+  );
   const activeOperation = React.useMemo(
     () => Object.values(operations).at(-1) ?? null,
     [operations],
   );
+
+  React.useEffect(() => {
+    const name = newBranchName.trim();
+
+    if (!branchCreateBase || name.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+    const timeoutId = window.setTimeout(() => {
+      void validateBranchName({ name, repositoryPath })
+        .then((validation) => {
+          if (!cancelled) {
+            setBranchNameValidation(validation);
+          }
+        })
+        .catch((error) => {
+          if (!cancelled) {
+            setBranchNameValidation({
+              exists: false,
+              message:
+                error instanceof Error
+                  ? error.message
+                  : t("repository.branchNameInvalid"),
+              name,
+              valid: false,
+            });
+          }
+        });
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [branchCreateBase, newBranchName, repositoryPath, t]);
+
   const repository = React.useMemo<RepositorySummary>(
     () => ({
-      branchName: focusedBranch.name,
-      hasRemote: false,
+      branchName:
+        summaryQuery.data?.currentBranch ??
+        currentBranch?.name ??
+        effectiveFocusedBranch.name,
+      hasRemote: summaryQuery.data?.hasOrigin ?? false,
       path: repositoryPath,
       projectName:
         repositoryPath.split(/[\\/]/).filter(Boolean).at(-1) ??
         t("repository.untitledProject"),
     }),
-    [focusedBranch.name, repositoryPath, t],
+    [
+      currentBranch?.name,
+      effectiveFocusedBranch.name,
+      repositoryPath,
+      summaryQuery.data,
+      t,
+    ],
   );
-  const localChangeCount = demoLocalChanges.length;
-  const busy = activeOperation !== null;
+  const localChangeCount = localChanges.length;
+  const busy =
+    activeOperation !== null ||
+    commitBusy ||
+    restoreBusy ||
+    branchActionBusy ||
+    stashActionBusy;
+  const busyLabel = activeOperation
+    ? activeOperation.label
+    : commitBusy
+      ? t("localChanges.commitBusy")
+      : restoreBusy
+        ? t("localChanges.restoreBusy")
+        : branchActionBusy
+          ? t("repository.branchBusy")
+          : stashActionBusy
+            ? t("repository.stashBusy")
+            : t("repository.ready");
+  const selectedCommitPaths = React.useMemo(
+    () => pathsForChangeIds(commitIds ?? [], localChanges),
+    [commitIds, localChanges],
+  );
+  const selectedRestorePaths = React.useMemo(
+    () => pathsForChangeIds(restoreIds ?? [], localChanges),
+    [restoreIds, localChanges],
+  );
+  const selectedStashPaths = React.useMemo(
+    () => pathsForChangeIds(stashIds ?? [], localChanges),
+    [stashIds, localChanges],
+  );
+
+  const handleBranchCompleted = React.useCallback(
+    (branchName: string) => {
+      const branch =
+        branches.find((candidate) => candidate.name === branchName) ??
+        branches.find((candidate) => candidate.name.endsWith(`/${branchName}`));
+
+      if (branch) {
+        setFocusedBranch(branch);
+      }
+      setActiveTab("history");
+    },
+    [branches],
+  );
+
+  const openCreateBranchDialog = React.useCallback((base: BranchListItem) => {
+    setBranchCreateBase(base);
+    setNewBranchName("");
+    setNewBranchCheckout(true);
+    setBranchNameValidation(null);
+    setCheckoutMode("autoStash");
+  }, []);
+
+  const updateNewBranchName = React.useCallback((name: string) => {
+    setNewBranchName(name);
+    setBranchNameValidation(null);
+  }, []);
+
+  const runCheckoutBranch = React.useCallback(async () => {
+    if (!branchToCheckout) {
+      return;
+    }
+
+    setBranchActionBusy(true);
+    try {
+      const response = await checkoutBranch({
+        branchName: branchToCheckout.name,
+        localChangesMode: checkoutMode,
+        operationId: null,
+        repositoryPath,
+      });
+
+      if (response.status === "conflicts") {
+        setConflictEntered(response.conflict);
+      } else {
+        handleBranchCompleted(response.branchName);
+      }
+      setBranchToCheckout(null);
+    } catch (error) {
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:error", { detail: error }),
+      );
+    } finally {
+      setBranchActionBusy(false);
+    }
+  }, [
+    branchToCheckout,
+    checkoutMode,
+    handleBranchCompleted,
+    repositoryPath,
+    setConflictEntered,
+  ]);
+
+  const runCreateBranch = React.useCallback(async () => {
+    const name = newBranchName.trim();
+
+    if (
+      !branchCreateBase ||
+      name.length === 0 ||
+      branchNameValidation?.valid !== true
+    ) {
+      return;
+    }
+
+    setBranchActionBusy(true);
+    try {
+      const response = await createBranch({
+        baseBranch: branchCreateBase.name,
+        checkoutImmediately: newBranchCheckout,
+        createRemote: false,
+        localChangesMode: checkoutMode,
+        name,
+        operationId: null,
+        repositoryPath,
+      });
+
+      if (response.status === "conflicts") {
+        setConflictEntered(response.conflict);
+      } else {
+        handleBranchCompleted(response.branchName);
+      }
+      setBranchCreateBase(null);
+      setNewBranchName("");
+      setBranchNameValidation(null);
+    } catch (error) {
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:error", { detail: error }),
+      );
+    } finally {
+      setBranchActionBusy(false);
+    }
+  }, [
+    branchCreateBase,
+    branchNameValidation?.valid,
+    checkoutMode,
+    handleBranchCompleted,
+    newBranchCheckout,
+    newBranchName,
+    repositoryPath,
+    setConflictEntered,
+  ]);
+
+  const runDeleteBranch = React.useCallback(async () => {
+    if (!branchToDelete || branchToDelete.current) {
+      return;
+    }
+
+    setBranchActionBusy(true);
+    try {
+      const response = await deleteBranch({
+        branchName: branchToDelete.name,
+        deleteRemote: false,
+        forceRemoteOnly: Boolean(branchToDelete.remoteOnly),
+        repositoryPath,
+      });
+
+      if (response.status === "conflicts") {
+        setConflictEntered(response.conflict);
+      } else {
+        handleBranchCompleted(response.branchName);
+      }
+      setBranchToDelete(null);
+    } catch (error) {
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:error", { detail: error }),
+      );
+    } finally {
+      setBranchActionBusy(false);
+    }
+  }, [
+    branchToDelete,
+    handleBranchCompleted,
+    repositoryPath,
+    setConflictEntered,
+  ]);
+
+  const closeCommitDialog = React.useCallback(() => {
+    if (commitBusy) {
+      return;
+    }
+    setCommitIds(null);
+    setCommitMessage("");
+    setCommitStatus(null);
+    setGpgFailure(null);
+    setLargeFileWarning(null);
+  }, [commitBusy]);
+
+  const runCommit = React.useCallback(
+    async (
+      largeFileDecision:
+        "prompt" | "trackWithLfs" | "commitNormally" = "prompt",
+      disableRepositoryGpgsign = false,
+    ) => {
+      if (!commitIds || selectedCommitPaths.length === 0) {
+        return;
+      }
+
+      setCommitBusy(true);
+      setCommitStatus(null);
+      setGpgFailure(null);
+      setLargeFileWarning(null);
+      try {
+        const response = await commitChanges({
+          disableRepositoryGpgsign,
+          largeFileDecision,
+          largeFileThresholdMb: null,
+          message: commitMessage,
+          paths: selectedCommitPaths,
+          repositoryPath,
+        });
+
+        if (response.status === "committed") {
+          setCommitStatus(t("localChanges.commitCommitted"));
+          setCommitIds(null);
+          setCommitMessage("");
+        } else if (response.status === "largeFilesNeedDecision") {
+          setLargeFileWarning({
+            files: response.largeFiles,
+            thresholdMb: response.thresholdMb,
+          });
+        } else if (response.status === "gpgSignFailed") {
+          setGpgFailure({
+            stderr: response.stderr,
+            summary: response.summary,
+          });
+        } else {
+          setCommitStatus(t("localChanges.nothingToCommit"));
+        }
+      } catch (error) {
+        window.dispatchEvent(
+          new CustomEvent("artistic-git:error", { detail: error }),
+        );
+      } finally {
+        setCommitBusy(false);
+      }
+    },
+    [commitIds, commitMessage, repositoryPath, selectedCommitPaths, t],
+  );
+
+  const runRestore = React.useCallback(async () => {
+    if (!restoreIds || selectedRestorePaths.length === 0) {
+      return;
+    }
+
+    setRestoreBusy(true);
+    try {
+      await restoreChanges({
+        paths: selectedRestorePaths,
+        repositoryPath,
+      });
+      setRestoreIds(null);
+    } catch (error) {
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:error", { detail: error }),
+      );
+    } finally {
+      setRestoreBusy(false);
+    }
+  }, [repositoryPath, restoreIds, selectedRestorePaths]);
+
+  const applyStash = React.useCallback(
+    async (stash: StashListItem) => {
+      setStashActionBusy(true);
+      try {
+        const response = await restoreStash({
+          dropOnSuccess: false,
+          operationName: null,
+          repositoryPath,
+          selector: stash.id,
+        });
+        if (response.outcome.status === "conflicts") {
+          setConflictEntered(response.outcome.conflict);
+        }
+      } catch (error) {
+        window.dispatchEvent(
+          new CustomEvent("artistic-git:error", { detail: error }),
+        );
+      } finally {
+        setStashActionBusy(false);
+      }
+    },
+    [repositoryPath, setConflictEntered],
+  );
+
+  const createSelectedStash = React.useCallback(async () => {
+    if (!stashIds || selectedStashPaths.length === 0) {
+      return;
+    }
+
+    setStashActionBusy(true);
+    try {
+      await createStash({
+        includeUntracked: true,
+        message:
+          stashMessage.trim() ||
+          t("localChanges.defaultStashName", {
+            date: new Date().toLocaleString(),
+          }),
+        paths: selectedStashPaths,
+        repositoryPath,
+      });
+      setStashIds(null);
+      setStashMessage("");
+    } catch (error) {
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:error", { detail: error }),
+      );
+    } finally {
+      setStashActionBusy(false);
+    }
+  }, [repositoryPath, selectedStashPaths, stashIds, stashMessage, t]);
+
+  const confirmDeleteStash = React.useCallback(async () => {
+    if (!stashToDelete) {
+      return;
+    }
+    setStashActionBusy(true);
+    try {
+      await deleteStash({
+        repositoryPath,
+        selector: stashToDelete.id,
+      });
+      setStashToDelete(null);
+    } catch (error) {
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:error", { detail: error }),
+      );
+    } finally {
+      setStashActionBusy(false);
+    }
+  }, [repositoryPath, stashToDelete]);
+
+  const showStashDetails = React.useCallback(
+    async (stash: StashListItem) => {
+      setStashActionBusy(true);
+      try {
+        const response = await stashDetails({
+          repositoryPath,
+          selector: stash.id,
+        });
+        setStashDetail(response);
+      } catch (error) {
+        window.dispatchEvent(
+          new CustomEvent("artistic-git:error", { detail: error }),
+        );
+      } finally {
+        setStashActionBusy(false);
+      }
+    },
+    [repositoryPath],
+  );
 
   return (
     <main className="flex h-screen min-h-0 bg-background text-foreground">
       <RepositorySidebar
-        branches={demoBranches}
+        branches={branches}
         busy={busy}
+        onApplyStash={(stash) => void applyStash(stash)}
         onBranchFocus={(branch) => {
           setFocusedBranch(branch);
           setActiveTab("history");
         }}
+        onCheckoutBranch={(branch) => {
+          setCheckoutMode("autoStash");
+          setBranchToCheckout(branch);
+        }}
+        onCreateBranchFromBase={openCreateBranchDialog}
+        onDeleteBranch={(branch) => {
+          setBranchToDelete(branch);
+        }}
+        onDeleteStash={setStashToDelete}
+        onOpenSettings={() => openSettings("general")}
+        onShowStashDetails={(stash) => void showStashDetails(stash)}
         repository={repository}
-        stashes={demoStashes}
+        stashes={stashes}
       />
       <section className="flex min-w-0 flex-1 flex-col">
-        {busy ? (
+        {activeOperation ? (
           <div className="h-1 shrink-0 bg-secondary">
             <div
               className="h-full bg-primary transition-[width]"
@@ -142,7 +673,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
             />
           </nav>
           <div className="min-w-0 text-numeric text-sm text-muted-foreground">
-            {busy ? activeOperation.label : t("repository.ready")}
+            {busyLabel}
           </div>
         </header>
 
@@ -152,7 +683,12 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
               <AlertTriangle className="size-4 shrink-0" aria-hidden="true" />
               <span className="truncate">{t("repository.noRemote")}</span>
             </span>
-            <Button size="default" type="button" variant="ghost">
+            <Button
+              onClick={() => openSettings("project")}
+              size="default"
+              type="button"
+              variant="ghost"
+            >
               {t("repository.openProjectSettings")}
             </Button>
           </div>
@@ -163,8 +699,8 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
             <div className="flex h-full min-h-0 flex-col gap-3">
               <div className="shrink-0 rounded-md border bg-card px-3 py-2 text-sm text-muted-foreground">
                 {t("repository.focusedBranch", {
-                  branch: focusedBranch.name,
-                  commit: focusedBranch.latestCommitId,
+                  branch: effectiveFocusedBranch.name,
+                  commit: effectiveFocusedBranch.latestCommitId,
                 })}
               </div>
               <div className="min-h-0 flex-1 overflow-auto">
@@ -172,11 +708,656 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
               </div>
             </div>
           ) : (
-            <LocalChangesPanel changes={demoLocalChanges} />
+            <LocalChangesPanel
+              busy={busy}
+              changes={localChanges}
+              onCommit={setCommitIds}
+              onRestore={setRestoreIds}
+              onStash={setStashIds}
+            />
           )}
         </div>
       </section>
+      {conflict ? (
+        <ConflictResolutionOverlay event={conflict} onClose={clearConflict} />
+      ) : null}
+      <CreateBranchDialog
+        baseBranch={branchCreateBase}
+        busy={branchActionBusy}
+        checkoutImmediately={newBranchCheckout}
+        localChangesMode={checkoutMode}
+        name={newBranchName}
+        onCheckoutImmediatelyChange={setNewBranchCheckout}
+        onCreate={() => void runCreateBranch()}
+        onLocalChangesModeChange={setCheckoutMode}
+        onNameChange={updateNewBranchName}
+        onOpenChange={(open) => {
+          if (!open && !branchActionBusy) {
+            setBranchCreateBase(null);
+            setNewBranchName("");
+            setBranchNameValidation(null);
+          }
+        }}
+        validation={branchNameValidation}
+      />
+      <CheckoutBranchDialog
+        branch={branchToCheckout}
+        busy={branchActionBusy}
+        localChangesMode={checkoutMode}
+        onConfirm={() => void runCheckoutBranch()}
+        onLocalChangesModeChange={setCheckoutMode}
+        onOpenChange={(open) => {
+          if (!open && !branchActionBusy) {
+            setBranchToCheckout(null);
+          }
+        }}
+      />
+      <ConfirmDialog
+        confirmLabel={t("repository.deleteBranch")}
+        description={t("repository.deleteBranchDescription", {
+          name: branchToDelete?.name ?? "",
+        })}
+        onConfirm={() => void runDeleteBranch()}
+        onOpenChange={(open) => {
+          if (!open && !branchActionBusy) {
+            setBranchToDelete(null);
+          }
+        }}
+        open={branchToDelete !== null}
+        title={t("repository.deleteBranchTitle")}
+        variant="danger"
+      />
+      <CommitChangesDialog
+        busy={commitBusy}
+        fileCount={selectedCommitPaths.length}
+        gpgFailure={gpgFailure}
+        largeFileWarning={largeFileWarning}
+        message={commitMessage}
+        onCommit={() => void runCommit()}
+        onCommitNormally={() => void runCommit("commitNormally")}
+        onDisableSigningAndRetry={() => void runCommit("prompt", true)}
+        onMessageChange={setCommitMessage}
+        onOpenChange={(open) => {
+          if (!open) {
+            closeCommitDialog();
+          }
+        }}
+        onTrackWithLfs={() => void runCommit("trackWithLfs")}
+        open={commitIds !== null}
+        status={commitStatus}
+      />
+      <ConfirmDialog
+        confirmLabel={t("localChanges.restoreConfirm")}
+        description={t("localChanges.restoreDescription", {
+          count: selectedRestorePaths.length,
+        })}
+        onConfirm={() => void runRestore()}
+        onOpenChange={(open) => {
+          if (!open && !restoreBusy) {
+            setRestoreIds(null);
+          }
+        }}
+        open={restoreIds !== null}
+        title={t("localChanges.restoreTitle")}
+        variant="danger"
+      />
+      <ConfirmDialog
+        confirmLabel={t("repository.deleteStash")}
+        description={t("repository.deleteStashDescription", {
+          name: stashToDelete?.name ?? "",
+        })}
+        onConfirm={() => void confirmDeleteStash()}
+        onOpenChange={(open) => {
+          if (!open && !stashActionBusy) {
+            setStashToDelete(null);
+          }
+        }}
+        open={stashToDelete !== null}
+        title={t("repository.deleteStashTitle")}
+        variant="danger"
+      />
+      <CreateStashDialog
+        busy={stashActionBusy}
+        fileCount={selectedStashPaths.length}
+        message={stashMessage}
+        onCreate={() => void createSelectedStash()}
+        onMessageChange={setStashMessage}
+        onOpenChange={(open) => {
+          if (!open && !stashActionBusy) {
+            setStashIds(null);
+            setStashMessage("");
+          }
+        }}
+        open={stashIds !== null}
+      />
+      <StashDetailsDialog
+        details={stashDetail}
+        onOpenChange={(open) => {
+          if (!open) {
+            setStashDetail(null);
+          }
+        }}
+      />
     </main>
+  );
+}
+
+function pathsForChangeIds(
+  ids: string[],
+  changes: LocalChangeItem[],
+): string[] {
+  const byId = new Map(changes.map((change) => [change.id, change]));
+  return ids
+    .map((id) => byId.get(id)?.payload.newPath)
+    .filter((path): path is string => Boolean(path));
+}
+
+function mapBranchSummaryToItem(branch: BranchSummary): BranchListItem {
+  return {
+    ahead: branch.ahead,
+    behind: branch.behind,
+    current: branch.current,
+    latestCommitId: branch.headOid?.slice(0, 7) ?? "",
+    name: branch.shortName || branch.name,
+    remoteOnly: branch.existence === "remoteOnly",
+  };
+}
+
+function mapStashEntryToItem(
+  stash: StashEntry,
+  formatRelativeTime: (value: Date | number | string) => string,
+): StashListItem {
+  return {
+    id: stash.selector,
+    name: stash.message,
+    timeLabel: stash.createdAtUnixSeconds
+      ? formatRelativeTime(Number(stash.createdAtUnixSeconds) * 1000)
+      : "",
+  };
+}
+
+function mapLocalChangeToItem(change: LocalChange): LocalChangeItem {
+  const path = change.path;
+  const oldPath = change.oldPath;
+
+  return {
+    id: `${path}:${oldPath ?? ""}:${change.indexStatus}:${change.worktreeStatus}`,
+    payload: {
+      changeKind: change.changeKind,
+      fileKind: "text",
+      lfsLock: null,
+      metadata: {
+        indexStatus: change.indexStatus,
+        worktreeStatus: change.worktreeStatus,
+      },
+      newPath: path,
+      oldPath,
+    },
+    searchableText: [path, oldPath, change.indexStatus, change.worktreeStatus]
+      .filter(Boolean)
+      .join(" "),
+  };
+}
+
+function CreateBranchDialog({
+  baseBranch,
+  busy,
+  checkoutImmediately,
+  localChangesMode,
+  name,
+  onCheckoutImmediatelyChange,
+  onCreate,
+  onLocalChangesModeChange,
+  onNameChange,
+  onOpenChange,
+  validation,
+}: {
+  baseBranch: BranchListItem | null;
+  busy: boolean;
+  checkoutImmediately: boolean;
+  localChangesMode: CheckoutLocalChangesMode;
+  name: string;
+  onCheckoutImmediatelyChange: (checkoutImmediately: boolean) => void;
+  onCreate: () => void;
+  onLocalChangesModeChange: (mode: CheckoutLocalChangesMode) => void;
+  onNameChange: (name: string) => void;
+  onOpenChange: (open: boolean) => void;
+  validation: BranchNameValidationResponse | null;
+}) {
+  const { t } = useTranslation();
+
+  if (!baseBranch) {
+    return null;
+  }
+
+  const trimmedName = name.trim();
+  const validationMessage =
+    validation?.message ??
+    (validation?.exists ? t("repository.branchNameExists") : null);
+  const canCreate =
+    trimmedName.length > 0 && validation?.valid === true && !busy;
+
+  return (
+    <DialogFrame
+      description={t("repository.createBranchDescription", {
+        branch: baseBranch.name,
+      })}
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button
+            disabled={busy}
+            onClick={() => onOpenChange(false)}
+            type="button"
+            variant="ghost"
+          >
+            {t("actions.cancel")}
+          </Button>
+          <Button disabled={!canCreate} onClick={onCreate} type="button">
+            {t("repository.createBranch")}
+          </Button>
+        </div>
+      }
+      onOpenChange={onOpenChange}
+      title={t("repository.createBranchTitle")}
+    >
+      <label className="grid gap-2 text-sm">
+        <span className="font-medium">{t("repository.branchName")}</span>
+        <input
+          autoFocus
+          className="h-9 rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          onChange={(event) => onNameChange(event.target.value)}
+          placeholder={t("repository.branchNamePlaceholder")}
+          value={name}
+        />
+      </label>
+
+      {trimmedName.length > 0 ? (
+        <p
+          className={cn(
+            "text-sm",
+            validation?.valid ? "text-muted-foreground" : "text-destructive",
+          )}
+        >
+          {validation?.valid
+            ? t("repository.branchNameAvailable")
+            : (validationMessage ?? t("repository.branchNameInvalid"))}
+        </p>
+      ) : null}
+
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          checked={checkoutImmediately}
+          className="size-4"
+          onChange={(event) =>
+            onCheckoutImmediatelyChange(event.target.checked)
+          }
+          type="checkbox"
+        />
+        <span>{t("repository.checkoutImmediately")}</span>
+      </label>
+
+      {checkoutImmediately ? (
+        <LocalChangesModePicker
+          disabled={busy}
+          mode={localChangesMode}
+          onModeChange={onLocalChangesModeChange}
+        />
+      ) : null}
+    </DialogFrame>
+  );
+}
+
+function CheckoutBranchDialog({
+  branch,
+  busy,
+  localChangesMode,
+  onConfirm,
+  onLocalChangesModeChange,
+  onOpenChange,
+}: {
+  branch: BranchListItem | null;
+  busy: boolean;
+  localChangesMode: CheckoutLocalChangesMode;
+  onConfirm: () => void;
+  onLocalChangesModeChange: (mode: CheckoutLocalChangesMode) => void;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const { t } = useTranslation();
+
+  if (!branch) {
+    return null;
+  }
+
+  return (
+    <DialogFrame
+      description={t("repository.checkoutBranchDescription", {
+        branch: branch.name,
+      })}
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button
+            disabled={busy}
+            onClick={() => onOpenChange(false)}
+            type="button"
+            variant="ghost"
+          >
+            {t("actions.cancel")}
+          </Button>
+          <Button disabled={busy} onClick={onConfirm} type="button">
+            {t("repository.checkout")}
+          </Button>
+        </div>
+      }
+      onOpenChange={onOpenChange}
+      title={t("repository.checkoutBranchTitle")}
+    >
+      <LocalChangesModePicker
+        disabled={busy}
+        mode={localChangesMode}
+        onModeChange={onLocalChangesModeChange}
+      />
+    </DialogFrame>
+  );
+}
+
+function LocalChangesModePicker({
+  disabled,
+  mode,
+  onModeChange,
+}: {
+  disabled: boolean;
+  mode: CheckoutLocalChangesMode;
+  onModeChange: (mode: CheckoutLocalChangesMode) => void;
+}) {
+  const { t } = useTranslation();
+  const options: Array<{
+    description: string;
+    label: string;
+    value: CheckoutLocalChangesMode;
+  }> = [
+    {
+      description: t("repository.checkoutAutoStashDescription"),
+      label: t("repository.checkoutAutoStash"),
+      value: "autoStash",
+    },
+    {
+      description: t("repository.checkoutDiscardDescription"),
+      label: t("repository.checkoutDiscard"),
+      value: "discard",
+    },
+  ];
+
+  return (
+    <fieldset className="grid gap-2 text-sm">
+      <legend className="font-medium">
+        {t("repository.checkoutLocalChangesMode")}
+      </legend>
+      {options.map((option) => (
+        <label
+          className="flex items-start gap-2 rounded-md border bg-background p-3"
+          key={option.value}
+        >
+          <input
+            checked={mode === option.value}
+            className="mt-0.5 size-4"
+            disabled={disabled}
+            onChange={() => onModeChange(option.value)}
+            type="radio"
+          />
+          <span className="grid gap-1">
+            <span className="font-medium">{option.label}</span>
+            <span className="text-muted-foreground">{option.description}</span>
+          </span>
+        </label>
+      ))}
+    </fieldset>
+  );
+}
+
+function CommitChangesDialog({
+  busy,
+  fileCount,
+  gpgFailure,
+  largeFileWarning,
+  message,
+  onCommit,
+  onCommitNormally,
+  onDisableSigningAndRetry,
+  onMessageChange,
+  onOpenChange,
+  onTrackWithLfs,
+  open,
+  status,
+}: {
+  busy: boolean;
+  fileCount: number;
+  gpgFailure: { stderr: string; summary: string } | null;
+  largeFileWarning: { files: LargeFileWarning[]; thresholdMb: number } | null;
+  message: string;
+  onCommit: () => void;
+  onCommitNormally: () => void;
+  onDisableSigningAndRetry: () => void;
+  onMessageChange: (message: string) => void;
+  onOpenChange: (open: boolean) => void;
+  onTrackWithLfs: () => void;
+  open: boolean;
+  status: string | null;
+}) {
+  const { t } = useTranslation();
+
+  if (!open) {
+    return null;
+  }
+
+  const canCommit = message.trim().length > 0 && fileCount > 0 && !busy;
+
+  return (
+    <DialogFrame
+      description={t("localChanges.commitDescription", { count: fileCount })}
+      footer={
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <span className="min-w-0 text-sm text-muted-foreground">
+            {busy ? t("localChanges.commitBusy") : status}
+          </span>
+          <div className="flex items-center gap-2">
+            <Button
+              disabled={busy}
+              onClick={() => onOpenChange(false)}
+              type="button"
+              variant="ghost"
+            >
+              {t("actions.cancel")}
+            </Button>
+            <Button disabled={!canCommit} onClick={onCommit} type="button">
+              {t("localChanges.commit")}
+            </Button>
+          </div>
+        </div>
+      }
+      onOpenChange={onOpenChange}
+      title={t("localChanges.commitTitle")}
+    >
+      <label className="grid gap-2 text-sm">
+        <span className="font-medium">{t("localChanges.commitMessage")}</span>
+        <textarea
+          className="min-h-28 resize-y rounded-md border bg-background p-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          onChange={(event) => onMessageChange(event.target.value)}
+          onKeyDown={(event) => {
+            if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+              event.preventDefault();
+              if (canCommit) {
+                onCommit();
+              }
+            }
+          }}
+          placeholder={t("localChanges.commitPlaceholder")}
+          value={message}
+        />
+      </label>
+
+      {largeFileWarning ? (
+        <div className="space-y-3 rounded-md border bg-warning/10 p-3 text-sm">
+          <p className="font-medium">
+            {t("localChanges.largeFilesTitle", {
+              threshold: largeFileWarning.thresholdMb,
+            })}
+          </p>
+          <ul className="max-h-32 overflow-auto text-muted-foreground">
+            {largeFileWarning.files.map((file) => (
+              <li className="truncate" key={file.path}>
+                {file.path}
+              </li>
+            ))}
+          </ul>
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={onTrackWithLfs} type="button" variant="secondary">
+              {t("localChanges.trackWithLfs")}
+            </Button>
+            <Button
+              onClick={onCommitNormally}
+              type="button"
+              variant="secondary"
+            >
+              {t("localChanges.commitNormally")}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      {gpgFailure ? (
+        <div className="space-y-3 rounded-md border bg-destructive/10 p-3 text-sm">
+          <p className="font-medium">{gpgFailure.summary}</p>
+          <pre className="max-h-28 overflow-auto whitespace-pre-wrap text-xs text-muted-foreground">
+            {gpgFailure.stderr}
+          </pre>
+          <Button
+            onClick={onDisableSigningAndRetry}
+            type="button"
+            variant="secondary"
+          >
+            {t("localChanges.disableSigningAndRetry")}
+          </Button>
+        </div>
+      ) : null}
+    </DialogFrame>
+  );
+}
+
+function StashDetailsDialog({
+  details,
+  onOpenChange,
+}: {
+  details: StashDetailsResponse | null;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const { t } = useTranslation();
+
+  if (!details) {
+    return null;
+  }
+
+  return (
+    <DialogFrame
+      className="max-w-4xl"
+      description={details.entry.selector}
+      footer={
+        <div className="flex justify-end">
+          <Button
+            onClick={() => onOpenChange(false)}
+            type="button"
+            variant="secondary"
+          >
+            {t("actions.close")}
+          </Button>
+        </div>
+      }
+      onOpenChange={onOpenChange}
+      title={details.entry.message}
+    >
+      <div className="grid min-h-0 gap-4 md:grid-cols-[260px_minmax(0,1fr)]">
+        <div className="min-h-0 rounded-md border bg-background">
+          <div className="border-b px-3 py-2 text-sm font-medium">
+            {t("repository.stashFiles", { count: details.files.length })}
+          </div>
+          <ul className="max-h-80 overflow-auto p-1 text-sm">
+            {details.files.map((file) => (
+              <li className="rounded px-2 py-1" key={file.path}>
+                <span className="block truncate">{file.path}</span>
+                <span className="text-xs text-muted-foreground">
+                  {t(`diff.changeKind.${file.changeKind}`)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+        <pre className="max-h-80 overflow-auto rounded-md border bg-background p-3 text-xs">
+          {details.rawDiff || t("repository.stashNoDiff")}
+        </pre>
+      </div>
+    </DialogFrame>
+  );
+}
+
+function CreateStashDialog({
+  busy,
+  fileCount,
+  message,
+  onCreate,
+  onMessageChange,
+  onOpenChange,
+  open,
+}: {
+  busy: boolean;
+  fileCount: number;
+  message: string;
+  onCreate: () => void;
+  onMessageChange: (message: string) => void;
+  onOpenChange: (open: boolean) => void;
+  open: boolean;
+}) {
+  const { t } = useTranslation();
+
+  if (!open) {
+    return null;
+  }
+
+  return (
+    <DialogFrame
+      description={t("localChanges.stashDescription", { count: fileCount })}
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button
+            disabled={busy}
+            onClick={() => onOpenChange(false)}
+            type="button"
+            variant="ghost"
+          >
+            {t("actions.cancel")}
+          </Button>
+          <Button
+            disabled={busy || fileCount === 0}
+            onClick={onCreate}
+            type="button"
+          >
+            {t("localChanges.createStash")}
+          </Button>
+        </div>
+      }
+      onOpenChange={onOpenChange}
+      title={t("localChanges.createStashTitle")}
+    >
+      <label className="grid gap-2 text-sm">
+        <span className="font-medium">{t("localChanges.stashName")}</span>
+        <input
+          className="h-9 rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          onChange={(event) => onMessageChange(event.target.value)}
+          placeholder={t("localChanges.defaultStashName", {
+            date: new Date().toLocaleString(),
+          })}
+          value={message}
+        />
+      </label>
+    </DialogFrame>
   );
 }
 

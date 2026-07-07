@@ -34,7 +34,10 @@ function splitLines(text: string): string[] {
   return text.replace(/\n$/, "").split("\n");
 }
 
-function buildFallbackRows(oldLines: string[], newLines: string[]): LineDiffRow[] {
+function buildFallbackRows(
+  oldLines: string[],
+  newLines: string[],
+): LineDiffRow[] {
   const rows: LineDiffRow[] = [];
   const maxLength = Math.max(oldLines.length, newLines.length);
 
@@ -76,7 +79,10 @@ function buildFallbackRows(oldLines: string[], newLines: string[]): LineDiffRow[
   return rows;
 }
 
-function buildOperations(oldLines: string[], newLines: string[]): DiffOperation[] {
+function buildOperations(
+  oldLines: string[],
+  newLines: string[],
+): DiffOperation[] {
   const width = newLines.length + 1;
   const table = new Uint32Array((oldLines.length + 1) * width);
 
@@ -148,7 +154,10 @@ function pairOperations(operations: DiffOperation[]): LineDiffRow[] {
       continue;
     }
 
-    if (operation.type === "removed" && operations[index + 1]?.type === "added") {
+    if (
+      operation.type === "removed" &&
+      operations[index + 1]?.type === "added"
+    ) {
       const nextOperation = operations[index + 1];
       rows.push({
         newLineNumber,

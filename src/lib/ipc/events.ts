@@ -6,6 +6,7 @@ import {
 
 import type {
   ConflictEnteredEvent,
+  ConfigChangeEvent,
   FetchStateEvent,
   OperationProgressEvent,
   RepoChangedEvent,
@@ -15,13 +16,15 @@ export type AppEventName =
   | "repo-changed"
   | "operation-progress"
   | "fetch-state"
-  | "conflict-entered";
+  | "conflict-entered"
+  | "config-change";
 
 export interface AppEventPayloads {
   "repo-changed": RepoChangedEvent;
   "operation-progress": OperationProgressEvent;
   "fetch-state": FetchStateEvent;
   "conflict-entered": ConflictEnteredEvent;
+  "config-change": ConfigChangeEvent;
 }
 
 export function listenAppEvent<TName extends AppEventName>(

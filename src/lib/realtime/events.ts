@@ -1,7 +1,10 @@
 import type { QueryClient } from "@tanstack/react-query";
 
 import { listenAppEvent, type AppEventPayloads } from "@/lib/ipc/events";
-import type { RepoChangedEvent } from "@/lib/ipc/generated";
+import type {
+  ConflictEnteredEvent,
+  RepoChangedEvent,
+} from "@/lib/ipc/generated";
 import { repoChangedQueryKeys } from "@/lib/realtime/query-keys";
 
 type AppEventListener = typeof listenAppEvent;
@@ -9,6 +12,7 @@ type RealtimeUnsubscribe = () => void;
 
 export interface RealtimeEventBridgeOptions {
   listen?: AppEventListener;
+  onConflictEntered?: (event: ConflictEnteredEvent) => void;
   onRepoChanged?: (event: RepoChangedEvent) => void;
   queryClient: QueryClient;
 }
@@ -26,6 +30,7 @@ export function invalidateRepoChangedQueries(
 
 export async function installRealtimeEventBridge({
   listen = listenAppEvent,
+  onConflictEntered,
   onRepoChanged,
   queryClient,
 }: RealtimeEventBridgeOptions): Promise<RealtimeUnsubscribe> {
@@ -35,8 +40,14 @@ export async function installRealtimeEventBridge({
     onRepoChanged?.(payload);
     void invalidateRepoChangedQueries(queryClient, payload);
   });
+  const unlistenConflictEntered = await listen("conflict-entered", (event) => {
+    const payload = event.payload as AppEventPayloads["conflict-entered"];
+
+    onConflictEntered?.(payload);
+  });
 
   return () => {
     unlistenRepoChanged();
+    unlistenConflictEntered();
   };
 }

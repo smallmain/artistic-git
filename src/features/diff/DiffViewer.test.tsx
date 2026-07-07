@@ -118,7 +118,9 @@ describe("DiffViewer", () => {
       />,
     );
 
-    expect(screen.getByText("File moved with no content changes")).toBeInTheDocument();
+    expect(
+      screen.getByText("File moved with no content changes"),
+    ).toBeInTheDocument();
 
     rerender(
       <AppProviders

@@ -4,6 +4,7 @@ import { I18nextProvider } from "react-i18next";
 import { type i18n as I18nInstance } from "i18next";
 
 import { appI18n } from "@/i18n/i18n";
+import { SettingsRuntimeBridge } from "@/features/settings/SettingsRuntimeBridge";
 import { LanguageProvider } from "@/i18n/LanguageProvider";
 import type { LanguagePreference } from "@/i18n/resources";
 import { createAppQueryClient } from "@/lib/query/client";
@@ -49,6 +50,7 @@ export function AppProviders({
               initialState={initialWindowState}
               store={windowStore}
             >
+              <SettingsRuntimeBridge />
               {children}
             </WindowStoreProvider>
           </ThemeProvider>

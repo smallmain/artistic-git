@@ -1,12 +1,11 @@
-import { GraduationCap } from "lucide-react";
 import * as React from "react";
-import { useTranslation } from "react-i18next";
 
 import { AppErrorBoundary } from "@/components/layout/AppErrorBoundary";
-import { Button } from "@/components/ui/button";
 import { CrashDetailsDialog } from "@/components/dialogs/CrashDetailsDialog";
 import { ErrorDetailsDialog } from "@/components/dialogs/ErrorDetailsDialog";
+import { OnboardingWizard } from "@/features/onboarding/OnboardingWizard";
 import { RepositoryShell } from "@/features/repository-shell/RepositoryShell";
+import { SettingsModal } from "@/features/settings/SettingsModal";
 import { StartScreen } from "@/features/start/StartScreen";
 import { useWindowStore } from "@/store/window-store";
 
@@ -14,6 +13,7 @@ export function App() {
   return (
     <AppErrorBoundary>
       <AppRouter />
+      <GlobalSettingsModal />
       <GlobalErrorDialogs />
     </AppErrorBoundary>
   );
@@ -26,7 +26,7 @@ function AppRouter() {
   );
 
   if (!onboarded) {
-    return <OnboardingPlaceholder />;
+    return <OnboardingWizard />;
   }
 
   if (activeRepositoryPath) {
@@ -36,44 +36,19 @@ function AppRouter() {
   return <StartScreen />;
 }
 
-function OnboardingPlaceholder() {
-  const { t } = useTranslation();
-  const setOnboarded = useWindowStore((state) => state.setOnboarded);
+function GlobalSettingsModal() {
+  const open = useWindowStore((state) => state.settingsModalOpen);
+  const closeSettings = useWindowStore((state) => state.closeSettings);
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-background px-8 text-foreground">
-      <section className="flex max-w-md flex-col items-center gap-4 text-center">
-        <div className="flex size-12 items-center justify-center rounded-md border bg-card">
-          <GraduationCap className="size-6" aria-hidden="true" />
-        </div>
-        <div>
-          <h1 className="text-xl font-semibold">{t("onboarding.title")}</h1>
-          <p className="mt-2 text-sm text-muted-foreground">
-            {t("onboarding.placeholder")}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button
-            onClick={() => {
-              setOnboarded(true);
-            }}
-            type="button"
-          >
-            {t("onboarding.finish")}
-          </Button>
-          <Button
-            onClick={() => {
-              setOnboarded(true);
-            }}
-            type="button"
-            variant="ghost"
-          >
-            {t("onboarding.skip")}
-          </Button>
-        </div>
-      </section>
-    </main>
+    <SettingsModal onOpenChange={closeSettingsFromOpenChange} open={open} />
   );
+
+  function closeSettingsFromOpenChange(nextOpen: boolean) {
+    if (!nextOpen) {
+      closeSettings();
+    }
+  }
 }
 
 function GlobalErrorDialogs() {

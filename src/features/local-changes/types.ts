@@ -12,11 +12,16 @@ export interface LocalChangeItem {
 }
 
 export interface LocalChangesPanelProps {
+  busy?: boolean;
   changes: LocalChangeItem[];
   initialCheckedIds?: string[];
   onCheckedChange?: (checkedIds: string[]) => void;
   onCommit?: (checkedIds: string[]) => void;
+  onOperationComplete?: () => void;
+  onRestore?: (checkedIds: string[]) => void;
   onSelectedChange?: (change: LocalChangeItem | null) => void;
+  onStash?: (checkedIds: string[]) => void;
+  repositoryPath?: string;
   selectedId?: string | null;
   storageKey?: string;
 }

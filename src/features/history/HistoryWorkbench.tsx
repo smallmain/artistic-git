@@ -1,4 +1,5 @@
 import {
+  AlertTriangle,
   Check,
   ChevronDown,
   Copy,
@@ -14,13 +15,21 @@ import {
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { DialogFrame } from "@/components/dialogs/DialogFrame";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
+import { Tooltip } from "@/components/ui/tooltip";
 import { TruncatedText } from "@/components/ui/truncated-text";
 import { DiffViewer } from "@/features/diff";
 import { useLocalizedFormatters } from "@/i18n/format";
-import type { DiffPayload } from "@/lib/ipc/generated";
+import { revertCommit } from "@/lib/ipc/commands";
+import type {
+  ConflictEnteredEvent,
+  DiffPayload,
+  RevertDisabledReason,
+} from "@/lib/ipc/generated";
 import { cn } from "@/lib/utils";
+import { useWindowStore } from "@/store/window-store";
 
 import { resolveAvatarPresentation } from "./avatar";
 import {
@@ -42,6 +51,7 @@ const rowHeight = 72;
 const viewportHeight = 504;
 const graphLaneWidth = 18;
 const graphLeftPadding = 14;
+type RevertUnavailableReason = RevertDisabledReason | "missingRepository";
 
 interface HistoryWorkbenchProps {
   branches?: HistoryBranch[];
@@ -70,11 +80,17 @@ export function HistoryWorkbench({
   );
   const [query, setQuery] = React.useState("");
   const trimmedQuery = query.trim();
-  const [searchingQuery, setSearchingQuery] = React.useState<string | null>(null);
+  const [searchingQuery, setSearchingQuery] = React.useState<string | null>(
+    null,
+  );
   const [searchResults, setSearchResults] =
     React.useState<SearchResultSnapshot | null>(null);
   const [selectedCommitId, setSelectedCommitId] = React.useState<string | null>(
     null,
+  );
+  const repositoryPath = useWindowStore((state) => state.activeRepositoryPath);
+  const setConflictEntered = useWindowStore(
+    (state) => state.setConflictEntered,
   );
   const source = React.useMemo(
     () =>
@@ -256,6 +272,8 @@ export function HistoryWorkbench({
             setSelectedCommitId(null);
           }
         }}
+        repositoryPath={repositoryPath}
+        setConflictEntered={setConflictEntered}
       />
     </section>
   );
@@ -557,11 +575,15 @@ function CommitDetailPanel({
   gravatarEnabled,
   now,
   onOpenChange,
+  repositoryPath,
+  setConflictEntered,
 }: {
   commit: HistoryCommit | null;
   gravatarEnabled: boolean;
   now: string;
   onOpenChange: (open: boolean) => void;
+  repositoryPath: string | null;
+  setConflictEntered: (event: ConflictEnteredEvent) => void;
 }) {
   const { t } = useTranslation();
   const formatters = useLocalizedFormatters();
@@ -569,6 +591,70 @@ function CommitDetailPanel({
     commitId: string;
     path: string | null;
   } | null>(null);
+  const [revertTarget, setRevertTarget] = React.useState<HistoryCommit | null>(
+    null,
+  );
+  const [revertBusy, setRevertBusy] = React.useState(false);
+  const [revertError, setRevertError] = React.useState<string | null>(null);
+  const [revertStatus, setRevertStatus] = React.useState<string | null>(null);
+  const activeRevertTarget =
+    revertTarget && revertTarget.id === commit?.id ? revertTarget : null;
+
+  const closeRevertDialog = React.useCallback(
+    (open: boolean) => {
+      if (!open && !revertBusy) {
+        setRevertTarget(null);
+        setRevertError(null);
+        setRevertStatus(null);
+      }
+    },
+    [revertBusy],
+  );
+
+  const runRevert = React.useCallback(async () => {
+    if (!activeRevertTarget || !repositoryPath) {
+      return;
+    }
+
+    setRevertBusy(true);
+    setRevertError(null);
+    setRevertStatus(null);
+
+    try {
+      const response = await revertCommit({
+        oid: activeRevertTarget.id,
+        repositoryPath,
+      });
+
+      if (response.status === "reverted") {
+        setRevertStatus(
+          t("history.revert.reverted", {
+            message: response.message,
+            shortId: response.oid.slice(0, 7),
+          }),
+        );
+        return;
+      }
+
+      if (response.status === "disabled") {
+        setRevertError(t(`history.revert.disabled.${response.reason}`));
+        return;
+      }
+
+      setConflictEntered({
+        files: response.files,
+        operationId: response.operationId,
+        operationName: "revertCommit",
+        repositoryPath,
+      });
+      setRevertTarget(null);
+      onOpenChange(false);
+    } catch (error) {
+      setRevertError(getErrorSummary(error));
+    } finally {
+      setRevertBusy(false);
+    }
+  }, [activeRevertTarget, onOpenChange, repositoryPath, setConflictEntered, t]);
 
   if (!commit) {
     return null;
@@ -621,9 +707,16 @@ function CommitDetailPanel({
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              <Button className="gap-2" disabled variant="secondary">
-                {t("history.details.revert")}
-              </Button>
+              <RevertActionButton
+                busy={revertBusy}
+                commit={commit}
+                onClick={() => {
+                  setRevertTarget(commit);
+                  setRevertError(null);
+                  setRevertStatus(null);
+                }}
+                repositoryPath={repositoryPath}
+              />
               <Button
                 className="gap-2"
                 onClick={() => void navigator.clipboard?.writeText(commit.id)}
@@ -692,11 +785,143 @@ function CommitDetailPanel({
           </div>
         </div>
       </aside>
+      <RevertCommitDialog
+        busy={revertBusy}
+        commit={activeRevertTarget}
+        error={activeRevertTarget ? revertError : null}
+        onConfirm={() => void runRevert()}
+        onOpenChange={closeRevertDialog}
+        status={activeRevertTarget ? revertStatus : null}
+      />
     </div>
   );
 }
 
-function createCommitDiffPayload(file: HistoryCommit["changedFiles"][number]): DiffPayload {
+function RevertActionButton({
+  busy,
+  commit,
+  onClick,
+  repositoryPath,
+}: {
+  busy: boolean;
+  commit: HistoryCommit;
+  onClick: () => void;
+  repositoryPath: string | null;
+}) {
+  const { t } = useTranslation();
+  const reason = getRevertUnavailableReason(commit, repositoryPath);
+  const button = (describedBy?: string) => (
+    <Button
+      aria-describedby={describedBy}
+      className="gap-2"
+      disabled={busy || reason !== null}
+      onClick={onClick}
+      type="button"
+      variant="secondary"
+    >
+      {busy ? <Loader2 className="size-4 animate-spin" /> : null}
+      {t("history.details.revert")}
+    </Button>
+  );
+
+  if (!reason) {
+    return button();
+  }
+
+  return (
+    <Tooltip content={t(`history.revert.disabled.${reason}`)}>
+      {({ describedBy }) => button(describedBy)}
+    </Tooltip>
+  );
+}
+
+function RevertCommitDialog({
+  busy,
+  commit,
+  error,
+  onConfirm,
+  onOpenChange,
+  status,
+}: {
+  busy: boolean;
+  commit: HistoryCommit | null;
+  error: string | null;
+  onConfirm: () => void;
+  onOpenChange: (open: boolean) => void;
+  status: string | null;
+}) {
+  const { t } = useTranslation();
+
+  if (!commit) {
+    return null;
+  }
+
+  return (
+    <DialogFrame
+      description={t("history.revert.description", {
+        message: commit.message,
+        shortId: commit.shortId,
+      })}
+      footer={
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <span className="min-w-0 text-sm text-muted-foreground">
+            {busy ? t("history.revert.busy") : status}
+          </span>
+          <div className="flex items-center gap-2">
+            <Button
+              disabled={busy}
+              onClick={() => onOpenChange(false)}
+              type="button"
+              variant="ghost"
+            >
+              {status ? t("actions.close") : t("actions.cancel")}
+            </Button>
+            <Button
+              className="gap-2"
+              disabled={busy || status !== null}
+              onClick={onConfirm}
+              type="button"
+            >
+              {busy ? <Loader2 className="size-4 animate-spin" /> : null}
+              {t("history.revert.confirm")}
+            </Button>
+          </div>
+        </div>
+      }
+      onOpenChange={onOpenChange}
+      title={t("history.revert.title")}
+    >
+      <div className="flex gap-3 rounded-md border bg-background p-3 text-sm">
+        <AlertTriangle
+          className="mt-0.5 size-4 shrink-0 text-warning"
+          aria-hidden="true"
+        />
+        <div className="min-w-0 space-y-2">
+          <p>
+            {t("history.revert.generatedMessage", {
+              message: `Revert: ${commit.message}`,
+            })}
+          </p>
+          <p className="text-muted-foreground">
+            {t("history.revert.noRewrite")}
+          </p>
+        </div>
+      </div>
+      {error ? (
+        <div
+          className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive"
+          role="alert"
+        >
+          {error}
+        </div>
+      ) : null}
+    </DialogFrame>
+  );
+}
+
+function createCommitDiffPayload(
+  file: HistoryCommit["changedFiles"][number],
+): DiffPayload {
   return {
     changeKind: file.changeKind,
     fileKind: "text",
@@ -705,13 +930,51 @@ function createCommitDiffPayload(file: HistoryCommit["changedFiles"][number]): D
       additions: String(file.additions),
       deletions: String(file.deletions),
       contentChanged:
-        file.changeKind === "renamed" && file.additions === 0 && file.deletions === 0
+        file.changeKind === "renamed" &&
+        file.additions === 0 &&
+        file.deletions === 0
           ? "false"
           : "true",
     },
     newPath: file.path,
     oldPath: file.oldPath ?? null,
   };
+}
+
+function getRevertUnavailableReason(
+  commit: HistoryCommit,
+  repositoryPath: string | null,
+): RevertUnavailableReason | null {
+  if (!repositoryPath) {
+    return "missingRepository";
+  }
+
+  if (commit.parents.length > 1) {
+    return "mergeCommit";
+  }
+
+  return null;
+}
+
+function getErrorSummary(error: unknown): string {
+  if (typeof error === "string") {
+    return error;
+  }
+
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "summary" in error &&
+    typeof error.summary === "string"
+  ) {
+    return error.summary;
+  }
+
+  return "Unknown error";
 }
 
 function matchesBranchFilter(

@@ -266,7 +266,11 @@ function createCodeMirrorExtensions(language?: string): Extension[] {
   return extensions;
 }
 
-function ImageDiff({ content }: { content: Extract<DiffViewerContent, { kind: "image" }> }) {
+function ImageDiff({
+  content,
+}: {
+  content: Extract<DiffViewerContent, { kind: "image" }>;
+}) {
   const { t } = useTranslation();
   const [zoom, setZoom] = React.useState(100);
 
@@ -286,8 +290,16 @@ function ImageDiff({ content }: { content: Extract<DiffViewerContent, { kind: "i
         <span className="w-10 text-right text-numeric">{zoom}%</span>
       </div>
       <div className="grid min-h-0 flex-1 grid-cols-1 md:grid-cols-2">
-        <ImagePane asset={content.oldImage} label={t("diff.oldImage")} zoom={zoom} />
-        <ImagePane asset={content.newImage} label={t("diff.newImage")} zoom={zoom} />
+        <ImagePane
+          asset={content.oldImage}
+          label={t("diff.oldImage")}
+          zoom={zoom}
+        />
+        <ImagePane
+          asset={content.newImage}
+          label={t("diff.newImage")}
+          zoom={zoom}
+        />
       </div>
     </div>
   );
@@ -324,7 +336,9 @@ function ImagePane({
             style={{ width: `${zoom}%` }}
           />
         ) : (
-          <div className="text-sm text-muted-foreground">{t("diff.imageMissing")}</div>
+          <div className="text-sm text-muted-foreground">
+            {t("diff.imageMissing")}
+          </div>
         )}
       </div>
     </section>
@@ -335,7 +349,10 @@ function FileDiffCard({
   content,
   payload,
 }: {
-  content: Extract<DiffViewerContent, { kind: "binary" | "oversizedText" | "lfsPointer" | "moved" }>;
+  content: Extract<
+    DiffViewerContent,
+    { kind: "binary" | "oversizedText" | "lfsPointer" | "moved" }
+  >;
   payload: DiffViewerProps["payload"];
 }) {
   const { t } = useTranslation();
@@ -435,8 +452,11 @@ function formatImageMeta(
   formatFileSize: (bytes: number) => string,
 ): string {
   const dimensions =
-    asset.width && asset.height ? `${asset.width} x ${asset.height}` : undefined;
-  const size = asset.sizeBytes === undefined ? undefined : formatFileSize(asset.sizeBytes);
+    asset.width && asset.height
+      ? `${asset.width} x ${asset.height}`
+      : undefined;
+  const size =
+    asset.sizeBytes === undefined ? undefined : formatFileSize(asset.sizeBytes);
 
   return [dimensions, size].filter(Boolean).join(" · ");
 }

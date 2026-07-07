@@ -36,11 +36,14 @@ import type {
 const defaultStorageKey = "artistic-git.local-changes.view-mode";
 
 export function LocalChangesPanel({
+  busy = false,
   changes,
   initialCheckedIds = [],
   onCheckedChange,
   onCommit,
   onSelectedChange,
+  onRestore,
+  onStash,
   selectedId,
   storageKey = defaultStorageKey,
 }: LocalChangesPanelProps) {
@@ -48,9 +51,9 @@ export function LocalChangesPanel({
   const [checkedIds, setCheckedIds] = React.useState<Set<string>>(
     () => new Set(initialCheckedIds),
   );
-  const [internalSelectedId, setInternalSelectedId] = React.useState<string | null>(
-    selectedId ?? changes[0]?.id ?? null,
-  );
+  const [internalSelectedId, setInternalSelectedId] = React.useState<
+    string | null
+  >(selectedId ?? changes[0]?.id ?? null);
   const [searchTerm, setSearchTerm] = React.useState("");
   const [viewMode, setViewMode] = React.useState<LocalChangesViewMode>(() =>
     readViewMode(storageKey),
@@ -102,10 +105,7 @@ export function LocalChangesPanel({
     });
   };
 
-  const openContextMenu = (
-    event: React.MouseEvent,
-    fallbackIds: string[],
-  ) => {
+  const openContextMenu = (event: React.MouseEvent, fallbackIds: string[]) => {
     event.preventDefault();
     const selectedIds = Array.from(checkedIds);
     setContextMenu({
@@ -147,7 +147,10 @@ export function LocalChangesPanel({
             </div>
           </div>
           <label className="flex h-9 items-center gap-2 rounded-md border bg-background px-3 text-sm">
-            <Search className="size-4 text-muted-foreground" aria-hidden="true" />
+            <Search
+              className="size-4 text-muted-foreground"
+              aria-hidden="true"
+            />
             <input
               aria-label={t("localChanges.search")}
               className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
@@ -190,7 +193,7 @@ export function LocalChangesPanel({
           </span>
           <Button
             className="gap-2"
-            disabled={checkedIds.size === 0}
+            disabled={busy || checkedIds.size === 0}
             onClick={() => onCommit?.(Array.from(checkedIds))}
           >
             <GitCommit className="size-4" aria-hidden="true" />
@@ -208,7 +211,9 @@ export function LocalChangesPanel({
           />
         ) : selectedChange ? (
           <DiffViewer
-            content={{ kind: mapFileKindToCard(selectedChange.payload.fileKind) }}
+            content={{
+              kind: mapFileKindToCard(selectedChange.payload.fileKind),
+            }}
             payload={selectedChange.payload}
             source="localChanges"
           />
@@ -223,6 +228,8 @@ export function LocalChangesPanel({
         <ContextMenu
           ids={contextMenu.ids}
           onClose={() => setContextMenu(null)}
+          onRestore={onRestore}
+          onStash={onStash}
           onToggle={(checked) => toggleIds(contextMenu.ids, checked)}
           x={contextMenu.x}
           y={contextMenu.y}
@@ -347,7 +354,10 @@ function TreeNodeRow({
           type="button"
         >
           <ChevronRight
-            className={cn("size-4 transition-transform", expanded ? "rotate-90" : "")}
+            className={cn(
+              "size-4 transition-transform",
+              expanded ? "rotate-90" : "",
+            )}
             aria-hidden="true"
           />
         </button>
@@ -512,12 +522,16 @@ function TriStateCheckbox({
 function ContextMenu({
   ids,
   onClose,
+  onRestore,
+  onStash,
   onToggle,
   x,
   y,
 }: {
   ids: string[];
   onClose: () => void;
+  onRestore?: (ids: string[]) => void;
+  onStash?: (ids: string[]) => void;
   onToggle: (checked: boolean) => void;
   x: number;
   y: number;
@@ -557,12 +571,38 @@ function ContextMenu({
         {t("localChanges.uncheckSelected", { count: ids.length })}
       </button>
       <button
-        className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-muted-foreground"
-        disabled
+        className={cn(
+          "flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left hover:bg-accent",
+          !onStash && "text-muted-foreground",
+        )}
+        disabled={!onStash}
+        onClick={() => {
+          onStash?.(ids);
+          onClose();
+        }}
+        type="button"
+      >
+        <GitCommit className="size-4" aria-hidden="true" />
+        {onStash
+          ? t("localChanges.stashSelected", { count: ids.length })
+          : t("localChanges.stashPlaceholder")}
+      </button>
+      <button
+        className={cn(
+          "flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left hover:bg-accent",
+          !onRestore && "text-muted-foreground",
+        )}
+        disabled={!onRestore}
+        onClick={() => {
+          onRestore?.(ids);
+          onClose();
+        }}
         type="button"
       >
         <Undo2 className="size-4" aria-hidden="true" />
-        {t("localChanges.revertPlaceholder")}
+        {onRestore
+          ? t("localChanges.restoreSelected", { count: ids.length })
+          : t("localChanges.revertPlaceholder")}
       </button>
     </div>
   );

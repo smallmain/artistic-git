@@ -47,7 +47,14 @@ export interface StashListItem {
 interface RepositorySidebarProps {
   branches: BranchListItem[];
   busy: boolean;
+  onApplyStash?: (stash: StashListItem) => void;
   onBranchFocus: (branch: BranchListItem) => void;
+  onCheckoutBranch?: (branch: BranchListItem) => void;
+  onCreateBranchFromBase?: (branch: BranchListItem) => void;
+  onDeleteBranch?: (branch: BranchListItem) => void;
+  onDeleteStash?: (stash: StashListItem) => void;
+  onOpenSettings?: () => void;
+  onShowStashDetails?: (stash: StashListItem) => void;
   repository: RepositorySummary;
   stashes: StashListItem[];
 }
@@ -60,7 +67,14 @@ const maxBranchRatio = 78;
 export function RepositorySidebar({
   branches,
   busy,
+  onApplyStash,
   onBranchFocus,
+  onCheckoutBranch,
+  onCreateBranchFromBase,
+  onDeleteBranch,
+  onDeleteStash,
+  onOpenSettings,
+  onShowStashDetails,
   repository,
   stashes,
 }: RepositorySidebarProps) {
@@ -184,6 +198,7 @@ export function RepositorySidebar({
         </button>
         <IconButton
           label={t("actions.openSettings")}
+          onClick={onOpenSettings}
           tooltip={t("repository.moreActions")}
           type="button"
           variant="ghost"
@@ -213,6 +228,9 @@ export function RepositorySidebar({
                 branch={branch}
                 busy={busy}
                 key={branch.name}
+                onCheckout={onCheckoutBranch}
+                onCreateFromBase={onCreateBranchFromBase}
+                onDelete={onDeleteBranch}
                 onFocus={onBranchFocus}
               />
             ))}
@@ -242,7 +260,14 @@ export function RepositorySidebar({
         >
           <ul className="space-y-1">
             {filteredStashes.map((stash) => (
-              <StashRow busy={busy} key={stash.id} stash={stash} />
+              <StashRow
+                busy={busy}
+                key={stash.id}
+                onApply={onApplyStash}
+                onDelete={onDeleteStash}
+                onDetails={onShowStashDetails}
+                stash={stash}
+              />
             ))}
           </ul>
         </SidebarSection>
@@ -336,16 +361,28 @@ function SidebarSection({
 interface BranchRowProps {
   branch: BranchListItem;
   busy: boolean;
+  onCheckout?: (branch: BranchListItem) => void;
+  onCreateFromBase?: (branch: BranchListItem) => void;
+  onDelete?: (branch: BranchListItem) => void;
   onFocus: (branch: BranchListItem) => void;
 }
 
-function BranchRow({ branch, busy, onFocus }: BranchRowProps) {
+function BranchRow({
+  branch,
+  busy,
+  onCheckout,
+  onCreateFromBase,
+  onDelete,
+  onFocus,
+}: BranchRowProps) {
   const { t } = useTranslation();
   const [menuOpen, setMenuOpen] = React.useState(false);
   const syncLabel = t("repository.syncBadge", {
     ahead: branch.ahead,
     behind: branch.behind,
   });
+  const canCheckout = !branch.current && Boolean(onCheckout);
+  const canDelete = !branch.current && !branch.remoteOnly && Boolean(onDelete);
 
   return (
     <li
@@ -397,15 +434,24 @@ function BranchRow({ branch, busy, onFocus }: BranchRowProps) {
           icon={<RefreshCw className="size-3.5" aria-hidden="true" />}
           label={t("repository.sync")}
         />
-        <DisabledActionButton
+        <OptionalActionButton
           busy={busy}
           icon={<UploadCloud className="size-3.5" aria-hidden="true" />}
           label={t("repository.checkout")}
+          onClick={canCheckout ? () => onCheckout?.(branch) : undefined}
         />
-        <DisabledActionButton
+        <OptionalActionButton
           busy={busy}
+          disabledTooltip={
+            branch.current
+              ? t("repository.deleteCurrentBranchDisabled")
+              : branch.remoteOnly
+                ? t("repository.deleteRemoteOnlyBranchDisabled")
+                : undefined
+          }
           icon={<Trash2 className="size-3.5" aria-hidden="true" />}
           label={t("repository.deleteBranch")}
+          onClick={canDelete ? () => onDelete?.(branch) : undefined}
         />
       </div>
       {menuOpen ? (
@@ -413,22 +459,31 @@ function BranchRow({ branch, busy, onFocus }: BranchRowProps) {
           className="absolute left-8 top-8 z-30 w-56 rounded-md border bg-card p-1 text-sm shadow-floating"
           role="menu"
         >
-          {[
-            t("repository.sync"),
-            t("repository.checkout"),
-            t("repository.createFromBase"),
-            t("repository.deleteBranch"),
-          ].map((label) => (
-            <button
-              className="block h-8 w-full rounded px-2 text-left text-muted-foreground hover:bg-accent"
-              disabled
-              key={label}
-              role="menuitem"
-              type="button"
-            >
-              {label}
-            </button>
-          ))}
+          <MenuButton disabled label={t("repository.sync")} />
+          <MenuButton
+            disabled={!canCheckout || busy}
+            label={t("repository.checkout")}
+            onClick={() => {
+              setMenuOpen(false);
+              onCheckout?.(branch);
+            }}
+          />
+          <MenuButton
+            disabled={!onCreateFromBase || busy}
+            label={t("repository.createFromBase")}
+            onClick={() => {
+              setMenuOpen(false);
+              onCreateFromBase?.(branch);
+            }}
+          />
+          <MenuButton
+            disabled={!canDelete || busy}
+            label={t("repository.deleteBranch")}
+            onClick={() => {
+              setMenuOpen(false);
+              onDelete?.(branch);
+            }}
+          />
           <button
             className="mt-1 block h-8 w-full rounded px-2 text-left hover:bg-accent"
             onClick={() => {
@@ -444,7 +499,41 @@ function BranchRow({ branch, busy, onFocus }: BranchRowProps) {
   );
 }
 
-function StashRow({ busy, stash }: { busy: boolean; stash: StashListItem }) {
+function MenuButton({
+  disabled,
+  label,
+  onClick,
+}: {
+  disabled?: boolean;
+  label: string;
+  onClick?: () => void;
+}) {
+  return (
+    <button
+      className="block h-8 w-full rounded px-2 text-left text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+      disabled={disabled}
+      onClick={onClick}
+      role="menuitem"
+      type="button"
+    >
+      {label}
+    </button>
+  );
+}
+
+function StashRow({
+  busy,
+  onApply,
+  onDelete,
+  onDetails,
+  stash,
+}: {
+  busy: boolean;
+  onApply?: (stash: StashListItem) => void;
+  onDelete?: (stash: StashListItem) => void;
+  onDetails?: (stash: StashListItem) => void;
+  stash: StashListItem;
+}) {
   const { t } = useTranslation();
 
   return (
@@ -458,23 +547,61 @@ function StashRow({ busy, stash }: { busy: boolean; stash: StashListItem }) {
         <span className="text-xs text-muted-foreground">{stash.timeLabel}</span>
       </button>
       <div className="absolute right-1 top-1 hidden items-center gap-0.5 rounded bg-card group-hover:flex group-focus-within:flex">
-        <DisabledActionButton
+        <OptionalActionButton
           busy={busy}
           icon={<UploadCloud className="size-3.5" aria-hidden="true" />}
           label={t("repository.applyStash")}
+          onClick={onApply ? () => onApply(stash) : undefined}
         />
-        <DisabledActionButton
+        <OptionalActionButton
           busy={busy}
           icon={<Trash2 className="size-3.5" aria-hidden="true" />}
           label={t("repository.deleteStash")}
+          onClick={onDelete ? () => onDelete(stash) : undefined}
         />
-        <DisabledActionButton
+        <OptionalActionButton
           busy={busy}
           icon={<MoreHorizontal className="size-3.5" aria-hidden="true" />}
           label={t("repository.stashDetails")}
+          onClick={onDetails ? () => onDetails(stash) : undefined}
         />
       </div>
     </li>
+  );
+}
+
+function OptionalActionButton({
+  busy,
+  disabledTooltip,
+  icon,
+  label,
+  onClick,
+}: {
+  busy: boolean;
+  disabledTooltip?: string;
+  icon: React.ReactNode;
+  label: string;
+  onClick?: () => void;
+}) {
+  const { t } = useTranslation();
+
+  return (
+    <IconButton
+      disabled={busy || !onClick}
+      label={label}
+      onClick={onClick}
+      tooltip={
+        busy
+          ? t("repository.busyTooltip")
+          : onClick
+            ? label
+            : (disabledTooltip ?? t("repository.disabledWrite"))
+      }
+      type="button"
+      variant="ghost"
+    >
+      {icon}
+    </IconButton>
   );
 }
 

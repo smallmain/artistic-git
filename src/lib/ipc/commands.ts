@@ -2,21 +2,43 @@ import { invoke } from "@tauri-apps/api/core";
 
 import type {
   AppError,
+  AppSettings,
+  AbortRevertRequest,
+  AbortRevertResponse,
+  BranchListResponse,
   BranchNameValidationRequest,
   BranchNameValidationResponse,
-  BranchListResponse,
   BranchOperationResponse,
   CancelStashRestoreRequest,
   CancelStashRestoreResponse,
   CheckoutBranchRequest,
-  CreateBranchRequest,
+  CommitRequest,
+  CommitResponse,
+  ConflictCancelRequest,
+  ConflictCancelResponse,
+  ConflictCompleteRequest,
+  ConflictCompleteResponse,
+  ConflictDetailResponse,
+  ConflictListRequest,
+  ConflictListResponse,
+  ConflictPathRequest,
+  ConflictSaveResolutionRequest,
+  ConflictSaveResolutionResponse,
+  ConflictSelectSideRequest,
+  ConflictSelectSideResponse,
   CreateAutoStashRequest,
+  CreateBranchRequest,
   CreateStashRequest,
   CreateStashResponse,
   DeleteBranchRequest,
   DeleteStashRequest,
   DeleteStashResponse,
+  GenerateSshKeyRequest,
+  GitignoreFileResponse,
+  GitignoreRequest,
   HealthResponse,
+  IdentityValidationRequest,
+  IdentityValidationResponse,
   LocalChangesResponse,
   LogPageRequest,
   LogPageResponse,
@@ -24,10 +46,21 @@ import type {
   OpenLogDirResponse,
   OpenRepositoryRequest,
   OpenRepositoryResponse,
+  ProjectSettings,
+  ProjectSettingsRequest,
   RepositoryPathRequest,
   RepositorySummary,
+  RestoreChangesRequest,
+  RestoreChangesResponse,
   RestoreStashRequest,
   RestoreStashResponse,
+  RevertCommitRequest,
+  RevertCommitResponse,
+  SaveAppSettingsRequest,
+  SaveGitignoreRequest,
+  SaveProjectSettingsRequest,
+  SettingsSnapshot,
+  SshKeyStatus,
   StashDetailsRequest,
   StashDetailsResponse,
   StashListResponse,
@@ -53,6 +86,26 @@ export interface AppCommandArgs {
   delete_stash: { request: DeleteStashRequest };
   log_page: { request: LogPageRequest };
   search_log: { request: LogSearchRequest };
+  list_conflicts: { request: ConflictListRequest };
+  conflict_detail: { request: ConflictPathRequest };
+  select_conflict_side: { request: ConflictSelectSideRequest };
+  save_conflict_resolution: { request: ConflictSaveResolutionRequest };
+  complete_conflict_resolution: { request: ConflictCompleteRequest };
+  cancel_conflict_resolution: { request: ConflictCancelRequest };
+  commit_changes: { request: CommitRequest };
+  restore_changes: { request: RestoreChangesRequest };
+  revert_commit: { request: RevertCommitRequest };
+  abort_revert: { request: AbortRevertRequest };
+  settings_snapshot: undefined;
+  load_app_settings: undefined;
+  save_app_settings: { request: SaveAppSettingsRequest };
+  load_project_settings: { request: ProjectSettingsRequest };
+  save_project_settings: { request: SaveProjectSettingsRequest };
+  load_gitignore: { request: GitignoreRequest };
+  save_gitignore: { request: SaveGitignoreRequest };
+  ssh_key_status: undefined;
+  generate_ssh_key: { request: GenerateSshKeyRequest };
+  validate_identity_for_write: { request: IdentityValidationRequest };
 }
 
 export interface AppCommandResponses {
@@ -75,6 +128,26 @@ export interface AppCommandResponses {
   delete_stash: DeleteStashResponse;
   log_page: LogPageResponse;
   search_log: LogPageResponse;
+  list_conflicts: ConflictListResponse;
+  conflict_detail: ConflictDetailResponse;
+  select_conflict_side: ConflictSelectSideResponse;
+  save_conflict_resolution: ConflictSaveResolutionResponse;
+  complete_conflict_resolution: ConflictCompleteResponse;
+  cancel_conflict_resolution: ConflictCancelResponse;
+  commit_changes: CommitResponse;
+  restore_changes: RestoreChangesResponse;
+  revert_commit: RevertCommitResponse;
+  abort_revert: AbortRevertResponse;
+  settings_snapshot: SettingsSnapshot;
+  load_app_settings: AppSettings;
+  save_app_settings: AppSettings;
+  load_project_settings: ProjectSettings;
+  save_project_settings: ProjectSettings;
+  load_gitignore: GitignoreFileResponse;
+  save_gitignore: GitignoreFileResponse;
+  ssh_key_status: SshKeyStatus;
+  generate_ssh_key: SshKeyStatus;
+  validate_identity_for_write: IdentityValidationResponse;
 }
 
 export type AppCommandName = keyof AppCommandResponses;
@@ -206,6 +279,118 @@ export function logPage(request: LogPageRequest): Promise<LogPageResponse> {
 
 export function searchLog(request: LogSearchRequest): Promise<LogPageResponse> {
   return invokeAppCommand("search_log", { request });
+}
+
+export function listConflicts(
+  request: ConflictListRequest,
+): Promise<ConflictListResponse> {
+  return invokeAppCommand("list_conflicts", { request });
+}
+
+export function conflictDetail(
+  request: ConflictPathRequest,
+): Promise<ConflictDetailResponse> {
+  return invokeAppCommand("conflict_detail", { request });
+}
+
+export function selectConflictSide(
+  request: ConflictSelectSideRequest,
+): Promise<ConflictSelectSideResponse> {
+  return invokeAppCommand("select_conflict_side", { request });
+}
+
+export function saveConflictResolution(
+  request: ConflictSaveResolutionRequest,
+): Promise<ConflictSaveResolutionResponse> {
+  return invokeAppCommand("save_conflict_resolution", { request });
+}
+
+export function completeConflictResolution(
+  request: ConflictCompleteRequest,
+): Promise<ConflictCompleteResponse> {
+  return invokeAppCommand("complete_conflict_resolution", { request });
+}
+
+export function cancelConflictResolution(
+  request: ConflictCancelRequest,
+): Promise<ConflictCancelResponse> {
+  return invokeAppCommand("cancel_conflict_resolution", { request });
+}
+
+export function commitChanges(request: CommitRequest): Promise<CommitResponse> {
+  return invokeAppCommand("commit_changes", { request });
+}
+
+export function restoreChanges(
+  request: RestoreChangesRequest,
+): Promise<RestoreChangesResponse> {
+  return invokeAppCommand("restore_changes", { request });
+}
+
+export function revertCommit(
+  request: RevertCommitRequest,
+): Promise<RevertCommitResponse> {
+  return invokeAppCommand("revert_commit", { request });
+}
+
+export function abortRevert(
+  request: AbortRevertRequest,
+): Promise<AbortRevertResponse> {
+  return invokeAppCommand("abort_revert", { request });
+}
+
+export function settingsSnapshot(): Promise<SettingsSnapshot> {
+  return invokeAppCommand("settings_snapshot");
+}
+
+export function loadAppSettings(): Promise<AppSettings> {
+  return invokeAppCommand("load_app_settings");
+}
+
+export function saveAppSettings(
+  request: SaveAppSettingsRequest,
+): Promise<AppSettings> {
+  return invokeAppCommand("save_app_settings", { request });
+}
+
+export function loadProjectSettings(
+  request: ProjectSettingsRequest,
+): Promise<ProjectSettings> {
+  return invokeAppCommand("load_project_settings", { request });
+}
+
+export function saveProjectSettings(
+  request: SaveProjectSettingsRequest,
+): Promise<ProjectSettings> {
+  return invokeAppCommand("save_project_settings", { request });
+}
+
+export function loadGitignore(
+  request: GitignoreRequest,
+): Promise<GitignoreFileResponse> {
+  return invokeAppCommand("load_gitignore", { request });
+}
+
+export function saveGitignore(
+  request: SaveGitignoreRequest,
+): Promise<GitignoreFileResponse> {
+  return invokeAppCommand("save_gitignore", { request });
+}
+
+export function sshKeyStatus(): Promise<SshKeyStatus> {
+  return invokeAppCommand("ssh_key_status");
+}
+
+export function generateSshKey(
+  request: GenerateSshKeyRequest,
+): Promise<SshKeyStatus> {
+  return invokeAppCommand("generate_ssh_key", { request });
+}
+
+export function validateIdentityForWrite(
+  request: IdentityValidationRequest,
+): Promise<IdentityValidationResponse> {
+  return invokeAppCommand("validate_identity_for_write", { request });
 }
 
 function normalizeIpcError(error: unknown): AppError | Error {

@@ -1,13 +1,24 @@
-use artistic_git_app::{HealthResponse, OpenLogDirResponse};
+use artistic_git_app::{
+    GenerateSshKeyRequest, GitignoreFileResponse, GitignoreRequest, HealthResponse,
+    IdentitySourcesResponse, IdentityValidationRequest, IdentityValidationResponse,
+    OpenLogDirResponse, ProjectSettingsRequest, SaveAppSettingsRequest, SaveGitignoreRequest,
+    SaveProjectSettingsRequest, SettingsSnapshot, SshKeyStatus,
+};
 use artistic_git_contracts::{
-    AppError, AppEvent, BranchListResponse, BranchNameValidationRequest,
-    BranchNameValidationResponse, BranchOperationResponse, CancelStashRestoreRequest,
-    CancelStashRestoreResponse, CheckoutBranchRequest, ConflictFile, CreateAutoStashRequest,
-    CreateBranchRequest, CreateStashRequest, CreateStashResponse, DeleteBranchRequest,
-    DeleteStashRequest, DeleteStashResponse, DiffPayload, GitDistManifest, LocalChangesResponse,
-    LogPageRequest, LogPageResponse, LogSearchRequest, OpenRepositoryRequest,
-    OpenRepositoryResponse, RepositoryPathRequest, RepositorySummary, RestoreStashRequest,
-    RestoreStashResponse, StashDetailsRequest, StashDetailsResponse, StashListResponse,
+    AbortRevertRequest, AbortRevertResponse, AppError, AppEvent, BranchListResponse,
+    BranchNameValidationRequest, BranchNameValidationResponse, BranchOperationResponse,
+    CancelStashRestoreRequest, CancelStashRestoreResponse, CheckoutBranchRequest, CommitRequest,
+    CommitResponse, ConflictCancelRequest, ConflictCancelResponse, ConflictCompleteRequest,
+    ConflictCompleteResponse, ConflictDetailResponse, ConflictFile, ConflictListRequest,
+    ConflictListResponse, ConflictPathRequest, ConflictSaveResolutionRequest,
+    ConflictSaveResolutionResponse, ConflictSelectSideRequest, ConflictSelectSideResponse,
+    CreateAutoStashRequest, CreateBranchRequest, CreateStashRequest, CreateStashResponse,
+    DeleteBranchRequest, DeleteStashRequest, DeleteStashResponse, DiffPayload, GitDistManifest,
+    LargeFileWarning, LocalChangesResponse, LogPageRequest, LogPageResponse, LogSearchRequest,
+    OpenRepositoryRequest, OpenRepositoryResponse, RepositoryPathRequest, RepositorySummary,
+    RestoreChangesRequest, RestoreChangesResponse, RestoreStashRequest, RestoreStashResponse,
+    RevertCommitRequest, RevertCommitResponse, StashDetailsRequest, StashDetailsResponse,
+    StashListResponse,
 };
 use artistic_git_core::config::{
     AppSettings, ConfigChangeEvent, ProjectSettings, ProjectsDocument,
@@ -43,9 +54,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register::<CancelStashRestoreResponse>()
         .register::<DeleteStashRequest>()
         .register::<DeleteStashResponse>()
+        .register::<ConflictListRequest>()
+        .register::<ConflictListResponse>()
+        .register::<ConflictPathRequest>()
+        .register::<ConflictDetailResponse>()
+        .register::<ConflictSelectSideRequest>()
+        .register::<ConflictSelectSideResponse>()
+        .register::<ConflictSaveResolutionRequest>()
+        .register::<ConflictSaveResolutionResponse>()
+        .register::<ConflictCompleteRequest>()
+        .register::<ConflictCompleteResponse>()
+        .register::<ConflictCancelRequest>()
+        .register::<ConflictCancelResponse>()
+        .register::<CommitRequest>()
+        .register::<CommitResponse>()
+        .register::<LargeFileWarning>()
+        .register::<RestoreChangesRequest>()
+        .register::<RestoreChangesResponse>()
+        .register::<RevertCommitRequest>()
+        .register::<RevertCommitResponse>()
+        .register::<AbortRevertRequest>()
+        .register::<AbortRevertResponse>()
         .register::<LogPageRequest>()
         .register::<LogSearchRequest>()
         .register::<LogPageResponse>()
+        .register::<SettingsSnapshot>()
+        .register::<SaveAppSettingsRequest>()
+        .register::<ProjectSettingsRequest>()
+        .register::<SaveProjectSettingsRequest>()
+        .register::<GitignoreRequest>()
+        .register::<SaveGitignoreRequest>()
+        .register::<GitignoreFileResponse>()
+        .register::<IdentitySourcesResponse>()
+        .register::<IdentityValidationRequest>()
+        .register::<IdentityValidationResponse>()
+        .register::<SshKeyStatus>()
+        .register::<GenerateSshKeyRequest>()
         .register::<AppError>()
         .register::<AppEvent>()
         .register::<AppSettings>()

@@ -47,14 +47,12 @@ export function buildChangeTree(changes: LocalChangeItem[]): TreeNode {
     parts.forEach((part, index) => {
       const path = parts.slice(0, index + 1).join("/");
       const existing = node.children.get(part);
-      const next =
-        existing ??
-        {
-          children: new Map(),
-          id: path,
-          name: part,
-          path,
-        };
+      const next = existing ?? {
+        children: new Map(),
+        id: path,
+        name: part,
+        path,
+      };
 
       node.children.set(part, next);
       node = next;
@@ -75,7 +73,10 @@ export function collectTreeItemIds(node: TreeNode): string[] {
   return Array.from(node.children.values()).flatMap(collectTreeItemIds);
 }
 
-export function getCheckState(ids: string[], checkedIds: Set<string>): CheckState {
+export function getCheckState(
+  ids: string[],
+  checkedIds: Set<string>,
+): CheckState {
   if (ids.length === 0) {
     return "unchecked";
   }

@@ -14,6 +14,7 @@ import { IconButton } from "@/components/ui/icon-button";
 import { TruncatedText } from "@/components/ui/truncated-text";
 import { openRepository } from "@/lib/ipc/commands";
 import { cn } from "@/lib/utils";
+import { toolIdentityFromSettings } from "@/features/settings/settings-model";
 import { useWindowStore } from "@/store/window-store";
 
 const pickerFallbackPath = "/Users/artist/Projects/Environment Art";
@@ -22,6 +23,8 @@ export function StartScreen() {
   const { t } = useTranslation();
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
   const recentProjects = useWindowStore((state) => state.recentProjects);
+  const appSettings = useWindowStore((state) => state.appSettings);
+  const openSettings = useWindowStore((state) => state.openSettings);
   const setActiveRepositoryPath = useWindowStore(
     (state) => state.setActiveRepositoryPath,
   );
@@ -43,7 +46,7 @@ export function StartScreen() {
       try {
         const response = await openRepository({
           path,
-          toolIdentity: null,
+          toolIdentity: toolIdentityFromSettings(appSettings),
         });
         const repositoryPath = response.repositoryPath;
         setActiveRepositoryPath(repositoryPath);
@@ -53,7 +56,9 @@ export function StartScreen() {
             lastOpenedAt: new Date().toISOString(),
             path: repositoryPath,
           },
-          ...recentProjects.filter((project) => project.path !== repositoryPath),
+          ...recentProjects.filter(
+            (project) => project.path !== repositoryPath,
+          ),
         ]);
       } catch (error) {
         window.dispatchEvent(
@@ -63,7 +68,7 @@ export function StartScreen() {
         setOpeningPath(null);
       }
     },
-    [recentProjects, setActiveRepositoryPath, setRecentProjects],
+    [appSettings, recentProjects, setActiveRepositoryPath, setRecentProjects],
   );
 
   return (
@@ -147,7 +152,10 @@ export function StartScreen() {
             </IconButton>
             <IconButton
               label={t("actions.openSettings")}
-              tooltip={t("start.settingsPlaceholder")}
+              onClick={() => {
+                openSettings("general");
+              }}
+              tooltip={t("actions.openSettings")}
               type="button"
               variant="ghost"
             >

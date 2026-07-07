@@ -1,4 +1,4 @@
-use std::{env, fs, path::PathBuf};
+use std::{env, fs, path::PathBuf, sync::Arc};
 use tauri::{Emitter, Manager, State};
 
 struct LoggingState {
@@ -107,18 +107,40 @@ fn list_stashes(
 
 #[tauri::command]
 fn create_stash(
+    app_handle: tauri::AppHandle,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::CreateStashRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::CreateStashResponse> {
-    backend.create_stash(request)
+    let repository_path = request.repository_path.clone();
+    let response = backend.create_stash(request)?;
+    emit_repo_changed(
+        &app_handle,
+        repository_path,
+        vec![
+            artistic_git_contracts::RepoQueryKind::LocalChanges,
+            artistic_git_contracts::RepoQueryKind::Stashes,
+        ],
+    );
+    Ok(response)
 }
 
 #[tauri::command]
 fn create_auto_stash(
+    app_handle: tauri::AppHandle,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::CreateAutoStashRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::CreateStashResponse> {
-    backend.create_auto_stash(request)
+    let repository_path = request.repository_path.clone();
+    let response = backend.create_auto_stash(request)?;
+    emit_repo_changed(
+        &app_handle,
+        repository_path,
+        vec![
+            artistic_git_contracts::RepoQueryKind::LocalChanges,
+            artistic_git_contracts::RepoQueryKind::Stashes,
+        ],
+    );
+    Ok(response)
 }
 
 #[tauri::command]
@@ -131,26 +153,59 @@ fn stash_details(
 
 #[tauri::command]
 fn restore_stash(
+    app_handle: tauri::AppHandle,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::RestoreStashRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::RestoreStashResponse> {
-    backend.restore_stash(request)
+    let repository_path = request.repository_path.clone();
+    let response = backend.restore_stash(request)?;
+    if let artistic_git_contracts::StashRestoreOutcome::Conflicts { conflict } = &response.outcome {
+        let _ = app_handle.emit("conflict-entered", conflict);
+    }
+    emit_repo_changed(
+        &app_handle,
+        repository_path,
+        vec![
+            artistic_git_contracts::RepoQueryKind::LocalChanges,
+            artistic_git_contracts::RepoQueryKind::Stashes,
+        ],
+    );
+    Ok(response)
 }
 
 #[tauri::command]
 fn cancel_stash_restore(
+    app_handle: tauri::AppHandle,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::CancelStashRestoreRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::CancelStashRestoreResponse> {
-    backend.cancel_stash_restore(request)
+    let repository_path = request.repository_path.clone();
+    let response = backend.cancel_stash_restore(request)?;
+    emit_repo_changed(
+        &app_handle,
+        repository_path,
+        vec![
+            artistic_git_contracts::RepoQueryKind::LocalChanges,
+            artistic_git_contracts::RepoQueryKind::Stashes,
+        ],
+    );
+    Ok(response)
 }
 
 #[tauri::command]
 fn delete_stash(
+    app_handle: tauri::AppHandle,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::DeleteStashRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::DeleteStashResponse> {
-    backend.delete_stash(request)
+    let repository_path = request.repository_path.clone();
+    let response = backend.delete_stash(request)?;
+    emit_repo_changed(
+        &app_handle,
+        repository_path,
+        vec![artistic_git_contracts::RepoQueryKind::Stashes],
+    );
+    Ok(response)
 }
 
 #[tauri::command]
@@ -167,6 +222,243 @@ fn search_log(
     request: artistic_git_contracts::LogSearchRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::LogPageResponse> {
     backend.search_log(request)
+}
+
+#[tauri::command]
+fn list_conflicts(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::ConflictListRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::ConflictListResponse> {
+    backend.list_conflicts(request)
+}
+
+#[tauri::command]
+fn conflict_detail(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::ConflictPathRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::ConflictDetailResponse> {
+    backend.conflict_detail(request)
+}
+
+#[tauri::command]
+fn select_conflict_side(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::ConflictSelectSideRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::ConflictSelectSideResponse> {
+    backend.select_conflict_side(request)
+}
+
+#[tauri::command]
+fn save_conflict_resolution(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::ConflictSaveResolutionRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::ConflictSaveResolutionResponse> {
+    backend.save_conflict_resolution(request)
+}
+
+#[tauri::command]
+fn complete_conflict_resolution(
+    app_handle: tauri::AppHandle,
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::ConflictCompleteRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::ConflictCompleteResponse> {
+    let repository_path = request.repository_path.clone();
+    let response = backend.complete_conflict_resolution(request)?;
+    emit_repo_changed(
+        &app_handle,
+        repository_path,
+        vec![artistic_git_contracts::RepoQueryKind::LocalChanges],
+    );
+    Ok(response)
+}
+
+#[tauri::command]
+fn cancel_conflict_resolution(
+    app_handle: tauri::AppHandle,
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::ConflictCancelRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::ConflictCancelResponse> {
+    let repository_path = request.repository_path.clone();
+    let response = backend.cancel_conflict_resolution(request)?;
+    emit_repo_changed(
+        &app_handle,
+        repository_path,
+        vec![artistic_git_contracts::RepoQueryKind::LocalChanges],
+    );
+    Ok(response)
+}
+
+#[tauri::command]
+fn commit_changes(
+    app_handle: tauri::AppHandle,
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::CommitRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::CommitResponse> {
+    let repository_path = request.repository_path.clone();
+    let response = backend.commit_changes(request)?;
+    if matches!(
+        response,
+        artistic_git_contracts::CommitResponse::Committed { .. }
+    ) {
+        emit_repo_changed(
+            &app_handle,
+            repository_path,
+            vec![
+                artistic_git_contracts::RepoQueryKind::LocalChanges,
+                artistic_git_contracts::RepoQueryKind::History,
+                artistic_git_contracts::RepoQueryKind::Summary,
+            ],
+        );
+    }
+    Ok(response)
+}
+
+#[tauri::command]
+fn restore_changes(
+    app_handle: tauri::AppHandle,
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::RestoreChangesRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::RestoreChangesResponse> {
+    let repository_path = request.repository_path.clone();
+    let response = backend.restore_changes(request)?;
+    emit_repo_changed(
+        &app_handle,
+        repository_path,
+        vec![artistic_git_contracts::RepoQueryKind::LocalChanges],
+    );
+    Ok(response)
+}
+
+#[tauri::command]
+fn revert_commit(
+    app_handle: tauri::AppHandle,
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::RevertCommitRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::RevertCommitResponse> {
+    let repository_path = request.repository_path.clone();
+    let response = backend.revert_commit(request)?;
+    match &response {
+        artistic_git_contracts::RevertCommitResponse::Reverted { .. } => {
+            emit_repo_changed(
+                &app_handle,
+                repository_path,
+                vec![
+                    artistic_git_contracts::RepoQueryKind::LocalChanges,
+                    artistic_git_contracts::RepoQueryKind::History,
+                    artistic_git_contracts::RepoQueryKind::Summary,
+                ],
+            );
+        }
+        artistic_git_contracts::RevertCommitResponse::Conflicted {
+            operation_id,
+            files,
+        } => {
+            let conflict = artistic_git_contracts::ConflictEnteredEvent {
+                operation_id: operation_id.clone(),
+                repository_path: repository_path.clone(),
+                operation_name: "revertCommit".to_owned(),
+                files: files.clone(),
+            };
+            let _ = app_handle.emit("conflict-entered", &conflict);
+            emit_repo_changed(
+                &app_handle,
+                repository_path,
+                vec![artistic_git_contracts::RepoQueryKind::LocalChanges],
+            );
+        }
+        artistic_git_contracts::RevertCommitResponse::Disabled { .. } => {}
+    }
+    Ok(response)
+}
+
+#[tauri::command]
+fn abort_revert(
+    app_handle: tauri::AppHandle,
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::AbortRevertRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::AbortRevertResponse> {
+    let repository_path = request.repository_path.clone();
+    let response = backend.abort_revert(request)?;
+    if response.aborted {
+        emit_repo_changed(
+            &app_handle,
+            repository_path,
+            vec![artistic_git_contracts::RepoQueryKind::LocalChanges],
+        );
+    }
+    Ok(response)
+}
+
+#[tauri::command]
+fn settings_snapshot(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+) -> artistic_git_contracts::AppResult<artistic_git_app::SettingsSnapshot> {
+    backend.settings_snapshot()
+}
+
+#[tauri::command]
+fn load_app_settings(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+) -> artistic_git_contracts::AppResult<artistic_git_core::config::AppSettings> {
+    backend.load_app_settings()
+}
+
+#[tauri::command]
+fn save_app_settings(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_app::SaveAppSettingsRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_core::config::AppSettings> {
+    backend.save_app_settings(request)
+}
+
+#[tauri::command]
+fn load_project_settings(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_app::ProjectSettingsRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_core::config::ProjectSettings> {
+    backend.load_project_settings(request)
+}
+
+#[tauri::command]
+fn save_project_settings(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_app::SaveProjectSettingsRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_core::config::ProjectSettings> {
+    backend.save_project_settings(request)
+}
+
+#[tauri::command]
+fn load_gitignore(
+    request: artistic_git_app::GitignoreRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_app::GitignoreFileResponse> {
+    artistic_git_app::load_gitignore(request)
+}
+
+#[tauri::command]
+fn save_gitignore(
+    request: artistic_git_app::SaveGitignoreRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_app::GitignoreFileResponse> {
+    artistic_git_app::save_gitignore(request)
+}
+
+#[tauri::command]
+fn ssh_key_status() -> artistic_git_contracts::AppResult<artistic_git_app::SshKeyStatus> {
+    artistic_git_app::ssh_key_status()
+}
+
+#[tauri::command]
+fn generate_ssh_key(
+    request: artistic_git_app::GenerateSshKeyRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_app::SshKeyStatus> {
+    artistic_git_app::generate_ssh_key(request)
+}
+
+#[tauri::command]
+fn validate_identity_for_write(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_app::IdentityValidationRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_app::IdentityValidationResponse> {
+    backend.validate_identity_for_write(request)
 }
 
 pub fn run() {
@@ -205,7 +497,27 @@ pub fn run() {
             cancel_stash_restore,
             delete_stash,
             log_page,
-            search_log
+            search_log,
+            list_conflicts,
+            conflict_detail,
+            select_conflict_side,
+            save_conflict_resolution,
+            complete_conflict_resolution,
+            cancel_conflict_resolution,
+            commit_changes,
+            restore_changes,
+            revert_commit,
+            abort_revert,
+            settings_snapshot,
+            load_app_settings,
+            save_app_settings,
+            load_project_settings,
+            save_project_settings,
+            load_gitignore,
+            save_gitignore,
+            ssh_key_status,
+            generate_ssh_key,
+            validate_identity_for_write
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Artistic Git");
@@ -233,6 +545,10 @@ fn repository_backend(
             app_config_dir.join("settings.json"),
             app_data_dir.join("projects.json"),
         ))?;
+    let app_handle = app.handle().clone();
+    config.subscribe(Arc::new(move |event| {
+        let _ = app_handle.emit("config-change", &event);
+    }))?;
 
     Ok(artistic_git_app::RepositoryBackend::new(
         runner,
@@ -270,17 +586,29 @@ fn emit_branch_operation_events(
         }
     };
 
+    emit_repo_changed(
+        app_handle,
+        repository_path.clone(),
+        vec![
+            artistic_git_contracts::RepoQueryKind::Summary,
+            artistic_git_contracts::RepoQueryKind::Branches,
+            artistic_git_contracts::RepoQueryKind::LocalChanges,
+            artistic_git_contracts::RepoQueryKind::Stashes,
+            artistic_git_contracts::RepoQueryKind::History,
+        ],
+    );
+}
+
+fn emit_repo_changed(
+    app_handle: &tauri::AppHandle,
+    repository_path: String,
+    changed_queries: Vec<artistic_git_contracts::RepoQueryKind>,
+) {
     let _ = app_handle.emit(
         "repo-changed",
         artistic_git_contracts::RepoChangedEvent {
-            repository_path: repository_path.clone(),
-            changed_queries: vec![
-                artistic_git_contracts::RepoQueryKind::Summary,
-                artistic_git_contracts::RepoQueryKind::Branches,
-                artistic_git_contracts::RepoQueryKind::LocalChanges,
-                artistic_git_contracts::RepoQueryKind::Stashes,
-                artistic_git_contracts::RepoQueryKind::History,
-            ],
+            repository_path,
+            changed_queries,
         },
     );
 }

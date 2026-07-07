@@ -8,9 +8,7 @@ import type {
 } from "@/lib/ipc/generated";
 
 export type DiffViewerSource =
-  | "localChanges"
-  | "commitDetails"
-  | "conflictResolution";
+  "localChanges" | "commitDetails" | "conflictResolution";
 
 export type TextDiffMode = "split" | "inline";
 
@@ -42,9 +40,7 @@ export interface FileCardDiffContent {
 }
 
 export type DiffViewerContent =
-  | TextDiffContent
-  | ImageDiffContent
-  | FileCardDiffContent;
+  TextDiffContent | ImageDiffContent | FileCardDiffContent;
 
 export interface TextDiffAdapterProps {
   content: TextDiffContent;

@@ -12,7 +12,7 @@ use artistic_git_contracts::{
     RestoreStashRequest, RestoreStashResponse, StashDetailsRequest, StashDetailsResponse,
     StashEntry, StashListResponse,
 };
-use artistic_git_core::config::ConfigActor;
+use artistic_git_core::config::{AppSettings, ConfigActor, GitUserSettings, ProjectSettings};
 use artistic_git_git_runner::{CancelToken, GitCommandPlan, GitRunner};
 use std::{
     collections::BTreeMap,
@@ -137,6 +137,70 @@ impl RepositoryBackend {
     pub fn search_log(&self, request: LogSearchRequest) -> AppResult<LogPageResponse> {
         search_log_with_cancel(&self.runner, request, &CancelToken::new())
     }
+
+    pub fn commit_changes(
+        &self,
+        request: artistic_git_contracts::CommitRequest,
+    ) -> AppResult<artistic_git_contracts::CommitResponse> {
+        crate::commit_changes(&self.runner, request)
+    }
+
+    pub fn restore_changes(
+        &self,
+        request: artistic_git_contracts::RestoreChangesRequest,
+    ) -> AppResult<artistic_git_contracts::RestoreChangesResponse> {
+        crate::restore_changes(&self.runner, request)
+    }
+
+    pub fn revert_commit(
+        &self,
+        request: artistic_git_contracts::RevertCommitRequest,
+    ) -> AppResult<artistic_git_contracts::RevertCommitResponse> {
+        crate::revert_commit(&self.runner, request)
+    }
+
+    pub fn abort_revert(
+        &self,
+        request: artistic_git_contracts::AbortRevertRequest,
+    ) -> AppResult<artistic_git_contracts::AbortRevertResponse> {
+        crate::abort_revert(&self.runner, request)
+    }
+
+    pub fn settings_snapshot(&self) -> AppResult<crate::settings::SettingsSnapshot> {
+        crate::settings::settings_snapshot(self.config.as_ref(), &self.runner)
+    }
+
+    pub fn load_app_settings(&self) -> AppResult<AppSettings> {
+        crate::settings::load_app_settings(self.config.as_ref())
+    }
+
+    pub fn save_app_settings(
+        &self,
+        request: crate::settings::SaveAppSettingsRequest,
+    ) -> AppResult<AppSettings> {
+        crate::settings::save_app_settings(&self.runner, self.config.as_ref(), request)
+    }
+
+    pub fn load_project_settings(
+        &self,
+        request: crate::settings::ProjectSettingsRequest,
+    ) -> AppResult<ProjectSettings> {
+        crate::settings::load_project_settings(self.config.as_ref(), request)
+    }
+
+    pub fn save_project_settings(
+        &self,
+        request: crate::settings::SaveProjectSettingsRequest,
+    ) -> AppResult<ProjectSettings> {
+        crate::settings::save_project_settings(self.config.as_ref(), request)
+    }
+
+    pub fn validate_identity_for_write(
+        &self,
+        request: crate::settings::IdentityValidationRequest,
+    ) -> AppResult<crate::settings::IdentityValidationResponse> {
+        crate::settings::validate_identity_for_write(&self.runner, request)
+    }
 }
 
 pub fn open_repository(
@@ -163,7 +227,12 @@ pub fn open_repository(
     reject_unsupported_repository_type(runner, &root, &git_dir, &git_common_dir)?;
 
     clean_tool_worktree_residue(&git_common_dir);
-    apply_tool_identity(runner, &root, request.tool_identity.as_ref())?;
+    apply_tool_identity(
+        runner,
+        &root,
+        request.tool_identity.as_ref(),
+        "openRepository",
+    )?;
     install_lfs_if_needed(runner, &root)?;
 
     let remotes = list_remotes(runner, &root)?;
@@ -494,19 +563,74 @@ fn apply_tool_identity(
     runner: &GitRunner,
     root: &Path,
     identity: Option<&artistic_git_contracts::ToolGitIdentity>,
+    operation_name: &str,
 ) -> AppResult<()> {
     let Some(identity) = identity else {
         return Ok(());
     };
 
     if let Some(name) = identity.name.as_deref().filter(|value| !value.is_empty()) {
-        write_local_config_if_changed(runner, root, "user.name", name)?;
+        write_local_config_if_changed(runner, root, "user.name", name, operation_name)?;
     }
     if let Some(email) = identity.email.as_deref().filter(|value| !value.is_empty()) {
-        write_local_config_if_changed(runner, root, "user.email", email)?;
+        write_local_config_if_changed(runner, root, "user.email", email, operation_name)?;
     }
 
     Ok(())
+}
+
+pub fn apply_git_user_settings_to_repository(
+    runner: &GitRunner,
+    repository_path: &str,
+    identity: &GitUserSettings,
+    operation_name: &str,
+) -> AppResult<()> {
+    let root = canonical_repository_path(repository_path, operation_name)?;
+    if let Some(name) = identity
+        .name
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        write_local_config_if_changed(runner, &root, "user.name", name.trim(), operation_name)?;
+    }
+    if let Some(email) = identity
+        .email
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        write_local_config_if_changed(runner, &root, "user.email", email.trim(), operation_name)?;
+    }
+
+    Ok(())
+}
+
+pub fn read_local_git_identity(
+    runner: &GitRunner,
+    repository_path: &str,
+    operation_name: &str,
+) -> AppResult<GitUserSettings> {
+    let root = canonical_repository_path(repository_path, operation_name)?;
+    Ok(GitUserSettings {
+        name: read_local_config(runner, &root, "user.name", operation_name),
+        email: read_local_config(runner, &root, "user.email", operation_name),
+    })
+}
+
+fn read_local_config(
+    runner: &GitRunner,
+    root: &Path,
+    key: &str,
+    operation_name: &str,
+) -> Option<String> {
+    git_stdout(
+        runner,
+        Some(root),
+        ["config", "--local", "--get", key],
+        operation_name,
+    )
+    .ok()
+    .map(|value| value.trim().to_owned())
+    .filter(|value| !value.is_empty())
 }
 
 fn write_local_config_if_changed(
@@ -514,12 +638,13 @@ fn write_local_config_if_changed(
     root: &Path,
     key: &str,
     value: &str,
+    operation_name: &str,
 ) -> AppResult<()> {
     let current = git_stdout(
         runner,
         Some(root),
         ["config", "--local", "--get", key],
-        "openRepository",
+        operation_name,
     )
     .ok()
     .map(|value| value.trim().to_owned());
@@ -529,7 +654,7 @@ fn write_local_config_if_changed(
             runner,
             Some(root),
             ["config", "--local", key, value],
-            "openRepository",
+            operation_name,
         )?;
     }
 

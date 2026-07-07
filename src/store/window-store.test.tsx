@@ -47,6 +47,18 @@ describe("window store", () => {
       changedQueries: ["summary", "localChanges"],
       repositoryPath: "/repo/art",
     });
+    store.getState().setConflictEntered({
+      files: [
+        {
+          fileKind: "text",
+          path: "src/file.ts",
+          status: "unresolved",
+        },
+      ],
+      operationId: "op-conflict",
+      operationName: "Rebase",
+      repositoryPath: "/repo/art",
+    });
 
     expect(store.getState().fetchStatesByRepository["/repo/art"].state).toBe(
       "offline",
@@ -55,6 +67,13 @@ describe("window store", () => {
     expect(
       store.getState().repoChangesByRepository["/repo/art"].changedQueries,
     ).toEqual(["summary", "localChanges"]);
+    expect(
+      store.getState().conflictsByRepository["/repo/art"].files[0].path,
+    ).toBe("src/file.ts");
+
+    store.getState().clearConflict("/repo/art");
+
+    expect(store.getState().conflictsByRepository["/repo/art"]).toBeUndefined();
   });
 });
 

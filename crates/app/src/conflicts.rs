@@ -1,0 +1,965 @@
+use artistic_git_contracts::{
+    AppError, AppResult, ConflictCancelRequest, ConflictCancelResponse, ConflictCompleteRequest,
+    ConflictCompleteResponse, ConflictDetailResponse, ConflictFile, ConflictFileDetail,
+    ConflictHunk, ConflictImagePreview, ConflictListRequest, ConflictListResponse,
+    ConflictOperation, ConflictOperationKind, ConflictPathRequest, ConflictResolutionStatus,
+    ConflictSaveResolutionRequest, ConflictSaveResolutionResponse, ConflictSelectSideRequest,
+    ConflictSelectSideResponse, ConflictSide, ConflictSideFile, DiffFileKind, GitCommandError,
+};
+use artistic_git_git_runner::{GitCommandPlan, GitRunner};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ffi::{OsStr, OsString},
+    fs, io,
+    path::{Component, Path, PathBuf},
+    process::Command,
+};
+
+use crate::repository::RepositoryBackend;
+
+const OP_LIST_CONFLICTS: &str = "listConflicts";
+const OP_CONFLICT_DETAIL: &str = "conflictDetail";
+const OP_SELECT_SIDE: &str = "selectConflictSide";
+const OP_SAVE_RESOLUTION: &str = "saveConflictResolution";
+const OP_COMPLETE: &str = "completeConflictResolution";
+const OP_CANCEL: &str = "cancelConflictResolution";
+const IMAGE_PREVIEW_LIMIT_BYTES: usize = 2 * 1024 * 1024;
+
+impl RepositoryBackend {
+    pub fn list_conflicts(&self, request: ConflictListRequest) -> AppResult<ConflictListResponse> {
+        list_conflicts(self.runner(), request)
+    }
+
+    pub fn conflict_detail(
+        &self,
+        request: ConflictPathRequest,
+    ) -> AppResult<ConflictDetailResponse> {
+        conflict_detail(self.runner(), request)
+    }
+
+    pub fn select_conflict_side(
+        &self,
+        request: ConflictSelectSideRequest,
+    ) -> AppResult<ConflictSelectSideResponse> {
+        select_conflict_side(self.runner(), request)
+    }
+
+    pub fn save_conflict_resolution(
+        &self,
+        request: ConflictSaveResolutionRequest,
+    ) -> AppResult<ConflictSaveResolutionResponse> {
+        save_conflict_resolution(self.runner(), request)
+    }
+
+    pub fn complete_conflict_resolution(
+        &self,
+        request: ConflictCompleteRequest,
+    ) -> AppResult<ConflictCompleteResponse> {
+        complete_conflict_resolution(self.runner(), request)
+    }
+
+    pub fn cancel_conflict_resolution(
+        &self,
+        request: ConflictCancelRequest,
+    ) -> AppResult<ConflictCancelResponse> {
+        cancel_conflict_resolution(self.runner(), request)
+    }
+}
+
+pub fn list_conflicts(
+    runner: &GitRunner,
+    request: ConflictListRequest,
+) -> AppResult<ConflictListResponse> {
+    let root = canonical_repository_path(&request.repository_path, OP_LIST_CONFLICTS)?;
+    let operation = detect_operation(runner, &root, OP_LIST_CONFLICTS)?;
+    let entries = unmerged_entries(runner, &root, OP_LIST_CONFLICTS)?;
+    let mut files = Vec::new();
+
+    for path in entries.keys() {
+        files.push(conflict_file(runner, &root, path, OP_LIST_CONFLICTS)?);
+    }
+
+    Ok(ConflictListResponse { operation, files })
+}
+
+pub fn conflict_detail(
+    runner: &GitRunner,
+    request: ConflictPathRequest,
+) -> AppResult<ConflictDetailResponse> {
+    let root = canonical_repository_path(&request.repository_path, OP_CONFLICT_DETAIL)?;
+    let path = validate_conflict_path(&request.path, OP_CONFLICT_DETAIL)?;
+    let operation = detect_operation(runner, &root, OP_CONFLICT_DETAIL)?;
+    let entries = unmerged_entries(runner, &root, OP_CONFLICT_DETAIL)?;
+    let file = conflict_file(runner, &root, &path, OP_CONFLICT_DETAIL)?;
+    let stage_map = entries.get(&path);
+
+    let detail = match file.file_kind {
+        DiffFileKind::Text | DiffFileKind::OversizedText | DiffFileKind::LfsPointer => {
+            let working_bytes = fs::read(root.join(&path)).map_err(|source| {
+                logged(AppError::expected(
+                    format!("failed to read conflict file: {source}"),
+                    OP_CONFLICT_DETAIL,
+                ))
+            })?;
+            let working_text = String::from_utf8_lossy(&working_bytes).into_owned();
+            let parsed = parse_conflict_text(&working_text);
+            let own_text = stage_text(
+                runner,
+                &root,
+                stage_map,
+                stage_for_side(operation.as_ref(), ConflictSide::Own),
+                &working_text,
+                OP_CONFLICT_DETAIL,
+            )?;
+            let other_text = stage_text(
+                runner,
+                &root,
+                stage_map,
+                stage_for_side(operation.as_ref(), ConflictSide::Other),
+                &working_text,
+                OP_CONFLICT_DETAIL,
+            )?;
+
+            ConflictFileDetail::Text {
+                current_text: parsed.current_text,
+                own_text,
+                other_text,
+                hunks: parsed.hunks,
+                language: language_for_path(&path),
+            }
+        }
+        DiffFileKind::Binary | DiffFileKind::Image => ConflictFileDetail::Binary {
+            own: stage_side_file(
+                runner,
+                &root,
+                &path,
+                stage_map,
+                operation.as_ref(),
+                ConflictSide::Own,
+                OP_CONFLICT_DETAIL,
+            )?,
+            other: stage_side_file(
+                runner,
+                &root,
+                &path,
+                stage_map,
+                operation.as_ref(),
+                ConflictSide::Other,
+                OP_CONFLICT_DETAIL,
+            )?,
+        },
+    };
+
+    Ok(ConflictDetailResponse { file, detail })
+}
+
+pub fn select_conflict_side(
+    runner: &GitRunner,
+    request: ConflictSelectSideRequest,
+) -> AppResult<ConflictSelectSideResponse> {
+    let root = canonical_repository_path(&request.repository_path, OP_SELECT_SIDE)?;
+    let operation = require_operation(runner, &root, OP_SELECT_SIDE)?;
+    let checkout_side = checkout_side_for_operation(operation.kind, request.side);
+    let mut files = Vec::new();
+
+    for raw_path in request.paths {
+        let path = validate_conflict_path(&raw_path, OP_SELECT_SIDE)?;
+        git_stdout(
+            runner,
+            &root,
+            [
+                OsString::from("checkout"),
+                OsString::from(checkout_side),
+                OsString::from("--"),
+                path.as_os_str().to_owned(),
+            ],
+            OP_SELECT_SIDE,
+        )?;
+        git_add_paths(runner, &root, [&path], OP_SELECT_SIDE)?;
+        files.push(conflict_file(runner, &root, &path, OP_SELECT_SIDE)?);
+    }
+
+    Ok(ConflictSelectSideResponse { files })
+}
+
+pub fn save_conflict_resolution(
+    runner: &GitRunner,
+    request: ConflictSaveResolutionRequest,
+) -> AppResult<ConflictSaveResolutionResponse> {
+    let root = canonical_repository_path(&request.repository_path, OP_SAVE_RESOLUTION)?;
+    let path = validate_conflict_path(&request.path, OP_SAVE_RESOLUTION)?;
+
+    if request.pending_hunks > 0 {
+        return Err(logged(AppError::expected(
+            "cannot save while conflicts are still pending",
+            OP_SAVE_RESOLUTION,
+        )));
+    }
+    if contains_conflict_markers(&request.content) {
+        return Err(logged(AppError::expected(
+            "cannot save while conflict markers remain",
+            OP_SAVE_RESOLUTION,
+        )));
+    }
+
+    let absolute_path = root.join(&path);
+    if let Some(parent) = absolute_path.parent() {
+        fs::create_dir_all(parent).map_err(|source| {
+            logged(AppError::expected(
+                format!("failed to create parent directory: {source}"),
+                OP_SAVE_RESOLUTION,
+            ))
+        })?;
+    }
+    fs::write(&absolute_path, request.content).map_err(|source| {
+        logged(AppError::expected(
+            format!("failed to write conflict resolution: {source}"),
+            OP_SAVE_RESOLUTION,
+        ))
+    })?;
+    git_add_paths(runner, &root, [&path], OP_SAVE_RESOLUTION)?;
+
+    Ok(ConflictSaveResolutionResponse {
+        file: conflict_file(runner, &root, &path, OP_SAVE_RESOLUTION)?,
+    })
+}
+
+pub fn complete_conflict_resolution(
+    runner: &GitRunner,
+    request: ConflictCompleteRequest,
+) -> AppResult<ConflictCompleteResponse> {
+    let root = canonical_repository_path(&request.repository_path, OP_COMPLETE)?;
+    let operation = require_operation(runner, &root, OP_COMPLETE)?;
+    let paths = validate_conflict_paths(&request.paths, OP_COMPLETE)?;
+
+    for path in &paths {
+        assert_no_worktree_markers(&root, path, OP_COMPLETE)?;
+    }
+    git_add_paths(runner, &root, paths.iter(), OP_COMPLETE)?;
+    run_continuation(runner, &root, operation.kind, OP_COMPLETE)?;
+
+    Ok(ConflictCompleteResponse {
+        continuation: operation.kind,
+    })
+}
+
+pub fn cancel_conflict_resolution(
+    runner: &GitRunner,
+    request: ConflictCancelRequest,
+) -> AppResult<ConflictCancelResponse> {
+    let root = canonical_repository_path(&request.repository_path, OP_CANCEL)?;
+    let operation = require_operation(runner, &root, OP_CANCEL)?;
+    let command = match operation.kind {
+        ConflictOperationKind::Merge => ["merge", "--abort"],
+        ConflictOperationKind::Rebase => ["rebase", "--abort"],
+        ConflictOperationKind::CherryPick => ["cherry-pick", "--abort"],
+        ConflictOperationKind::Revert => ["revert", "--abort"],
+    };
+    git_stdout(runner, &root, command, OP_CANCEL)?;
+
+    Ok(ConflictCancelResponse {
+        aborted: operation.kind,
+    })
+}
+
+fn detect_operation(
+    runner: &GitRunner,
+    root: &Path,
+    operation_name: &str,
+) -> AppResult<Option<ConflictOperation>> {
+    let candidates = [
+        (ConflictOperationKind::Rebase, "rebase-merge", "Rebase"),
+        (ConflictOperationKind::Rebase, "rebase-apply", "Rebase"),
+        (ConflictOperationKind::Merge, "MERGE_HEAD", "Merge"),
+        (
+            ConflictOperationKind::CherryPick,
+            "CHERRY_PICK_HEAD",
+            "Cherry-pick",
+        ),
+        (ConflictOperationKind::Revert, "REVERT_HEAD", "Revert"),
+    ];
+
+    for (kind, git_path, label) in candidates {
+        let path = git_path_for(runner, root, git_path, operation_name)?;
+        if path.exists() {
+            return Ok(Some(ConflictOperation {
+                kind,
+                label: label.to_owned(),
+            }));
+        }
+    }
+
+    Ok(None)
+}
+
+fn require_operation(
+    runner: &GitRunner,
+    root: &Path,
+    operation_name: &str,
+) -> AppResult<ConflictOperation> {
+    detect_operation(runner, root, operation_name)?.ok_or_else(|| {
+        logged(AppError::expected(
+            "no merge, rebase, cherry-pick, or revert operation is in progress",
+            operation_name,
+        ))
+    })
+}
+
+fn unmerged_entries(
+    runner: &GitRunner,
+    root: &Path,
+    operation_name: &str,
+) -> AppResult<BTreeMap<PathBuf, BTreeMap<u8, StageEntry>>> {
+    let bytes = git_output_bytes(runner, root, ["ls-files", "-u", "-z"], operation_name)?;
+    let mut entries = BTreeMap::<PathBuf, BTreeMap<u8, StageEntry>>::new();
+
+    for raw in bytes
+        .split(|byte| *byte == 0)
+        .filter(|field| !field.is_empty())
+    {
+        let record = String::from_utf8_lossy(raw);
+        let Some((metadata, path)) = record.split_once('\t') else {
+            continue;
+        };
+        let mut fields = metadata.split_whitespace();
+        let _mode = fields.next();
+        let Some(oid) = fields.next() else {
+            continue;
+        };
+        let Some(stage) = fields.next().and_then(|value| value.parse::<u8>().ok()) else {
+            continue;
+        };
+        entries.entry(PathBuf::from(path)).or_default().insert(
+            stage,
+            StageEntry {
+                oid: oid.to_owned(),
+            },
+        );
+    }
+
+    Ok(entries)
+}
+
+fn conflict_file(
+    runner: &GitRunner,
+    root: &Path,
+    path: &Path,
+    operation_name: &str,
+) -> AppResult<ConflictFile> {
+    let path_string = display_path(path);
+    let entries = unmerged_entries(runner, root, operation_name)?;
+    let has_unmerged_stages = entries.contains_key(path);
+    let file_kind = file_kind_for_path(root, path);
+    let status = if has_unmerged_stages || worktree_has_markers(root, path) {
+        ConflictResolutionStatus::Unresolved
+    } else {
+        ConflictResolutionStatus::Resolved
+    };
+
+    Ok(ConflictFile {
+        path: path_string,
+        status,
+        file_kind,
+    })
+}
+
+fn file_kind_for_path(root: &Path, path: &Path) -> DiffFileKind {
+    if image_mime_for_path(path).is_some() {
+        return DiffFileKind::Image;
+    }
+
+    let Ok(bytes) = fs::read(root.join(path)) else {
+        return DiffFileKind::Binary;
+    };
+    if bytes.contains(&0) || std::str::from_utf8(&bytes).is_err() {
+        DiffFileKind::Binary
+    } else if looks_like_lfs_pointer(&bytes) {
+        DiffFileKind::LfsPointer
+    } else {
+        DiffFileKind::Text
+    }
+}
+
+fn looks_like_lfs_pointer(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"version https://git-lfs.github.com/spec/v1\n")
+}
+
+fn stage_text(
+    runner: &GitRunner,
+    root: &Path,
+    stage_map: Option<&BTreeMap<u8, StageEntry>>,
+    stage: u8,
+    fallback: &str,
+    operation_name: &str,
+) -> AppResult<String> {
+    let Some(entry) = stage_map.and_then(|stages| stages.get(&stage)) else {
+        return Ok(fallback.to_owned());
+    };
+    let bytes = git_output_bytes(
+        runner,
+        root,
+        [
+            OsString::from("cat-file"),
+            OsString::from("-p"),
+            OsString::from(&entry.oid),
+        ],
+        operation_name,
+    )?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn stage_side_file(
+    runner: &GitRunner,
+    root: &Path,
+    path: &Path,
+    stage_map: Option<&BTreeMap<u8, StageEntry>>,
+    operation: Option<&ConflictOperation>,
+    side: ConflictSide,
+    operation_name: &str,
+) -> AppResult<Option<ConflictSideFile>> {
+    let stage = stage_for_side(operation, side);
+    let Some(entry) = stage_map.and_then(|stages| stages.get(&stage)) else {
+        return Ok(None);
+    };
+    let size_bytes = git_stdout(
+        runner,
+        root,
+        [
+            OsString::from("cat-file"),
+            OsString::from("-s"),
+            OsString::from(&entry.oid),
+        ],
+        operation_name,
+    )?
+    .trim()
+    .parse::<u64>()
+    .ok()
+    .map(|value| value.min(u64::from(u32::MAX)) as u32);
+    let mime_type = image_mime_for_path(path).map(str::to_owned);
+    let preview = if let Some(mime_type) = mime_type.as_deref() {
+        let bytes = if size_bytes
+            .map(|size| usize::try_from(size).unwrap_or(usize::MAX) <= IMAGE_PREVIEW_LIMIT_BYTES)
+            .unwrap_or(false)
+        {
+            Some(git_output_bytes(
+                runner,
+                root,
+                [
+                    OsString::from("cat-file"),
+                    OsString::from("-p"),
+                    OsString::from(&entry.oid),
+                ],
+                operation_name,
+            )?)
+        } else {
+            None
+        };
+        bytes.map(|value| ConflictImagePreview {
+            data_url: format!("data:{mime_type};base64,{}", base64_encode(&value)),
+        })
+    } else {
+        None
+    };
+
+    Ok(Some(ConflictSideFile {
+        side,
+        oid: Some(entry.oid.clone()),
+        size_bytes,
+        mime_type,
+        preview,
+    }))
+}
+
+fn stage_for_side(operation: Option<&ConflictOperation>, side: ConflictSide) -> u8 {
+    let is_rebase = operation
+        .map(|operation| operation.kind == ConflictOperationKind::Rebase)
+        .unwrap_or(false);
+    match (is_rebase, side) {
+        (true, ConflictSide::Own) => 3,
+        (true, ConflictSide::Other) => 2,
+        (false, ConflictSide::Own) => 2,
+        (false, ConflictSide::Other) => 3,
+    }
+}
+
+fn checkout_side_for_operation(kind: ConflictOperationKind, side: ConflictSide) -> &'static str {
+    match (kind, side) {
+        (ConflictOperationKind::Rebase, ConflictSide::Own) => "--theirs",
+        (ConflictOperationKind::Rebase, ConflictSide::Other) => "--ours",
+        (_, ConflictSide::Own) => "--ours",
+        (_, ConflictSide::Other) => "--theirs",
+    }
+}
+
+fn run_continuation(
+    runner: &GitRunner,
+    root: &Path,
+    kind: ConflictOperationKind,
+    operation_name: &str,
+) -> AppResult<()> {
+    let command = match kind {
+        ConflictOperationKind::Merge => ["merge", "--continue"],
+        ConflictOperationKind::Rebase => ["rebase", "--continue"],
+        ConflictOperationKind::CherryPick => ["cherry-pick", "--continue"],
+        ConflictOperationKind::Revert => ["revert", "--continue"],
+    };
+    let plan = plan_git(runner, root, command)
+        .config("core.editor", "true")
+        .config("sequence.editor", "true")
+        .build();
+    command_to_output(plan.to_command(), &plan, operation_name).map(|_| ())
+}
+
+fn git_add_paths<'a, I>(
+    runner: &GitRunner,
+    root: &Path,
+    paths: I,
+    operation_name: &str,
+) -> AppResult<()>
+where
+    I: IntoIterator<Item = &'a PathBuf>,
+{
+    let mut args = vec![
+        OsString::from("add"),
+        OsString::from("-A"),
+        OsString::from("--"),
+    ];
+    args.extend(paths.into_iter().map(|path| path.as_os_str().to_owned()));
+    git_stdout(runner, root, args, operation_name).map(|_| ())
+}
+
+fn assert_no_worktree_markers(root: &Path, path: &Path, operation_name: &str) -> AppResult<()> {
+    let absolute_path = root.join(path);
+    let Ok(bytes) = fs::read(&absolute_path) else {
+        return Ok(());
+    };
+    if bytes.contains(&0) {
+        return Ok(());
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    if contains_conflict_markers(&text) {
+        return Err(logged(AppError::expected(
+            format!(
+                "cannot complete while conflict markers remain in {}",
+                display_path(path)
+            ),
+            operation_name,
+        )));
+    }
+    Ok(())
+}
+
+fn worktree_has_markers(root: &Path, path: &Path) -> bool {
+    fs::read(root.join(path))
+        .ok()
+        .filter(|bytes| !bytes.contains(&0))
+        .map(|bytes| contains_conflict_markers(&String::from_utf8_lossy(&bytes)))
+        .unwrap_or(false)
+}
+
+fn contains_conflict_markers(text: &str) -> bool {
+    text.lines().any(|line| {
+        line.starts_with("<<<<<<< ")
+            || line.starts_with("||||||| ")
+            || line == "======="
+            || line.starts_with(">>>>>>> ")
+    })
+}
+
+fn parse_conflict_text(text: &str) -> ParsedConflictText {
+    let mut current_text = String::new();
+    let mut hunks = Vec::new();
+    let mut state = ParseState::Normal;
+    let mut own = String::new();
+    let mut other = String::new();
+    let mut start_offset = 0usize;
+    let mut start_line = 1u32;
+
+    for line in split_inclusive_lines(text) {
+        match state {
+            ParseState::Normal => {
+                if line.starts_with("<<<<<<< ") {
+                    state = ParseState::Own;
+                    start_offset = current_text.len();
+                    start_line = line_number_at_offset(&current_text);
+                    own.clear();
+                    other.clear();
+                } else {
+                    current_text.push_str(line);
+                }
+            }
+            ParseState::Own => {
+                if line.starts_with("||||||| ") {
+                    state = ParseState::Base;
+                } else if line == "=======\n" || line == "=======" {
+                    state = ParseState::Other;
+                } else {
+                    own.push_str(line);
+                }
+            }
+            ParseState::Base => {
+                if line == "=======\n" || line == "=======" {
+                    state = ParseState::Other;
+                }
+            }
+            ParseState::Other => {
+                if line.starts_with(">>>>>>> ") {
+                    let mut replacement = String::new();
+                    replacement.push_str(&own);
+                    replacement.push_str(&other);
+                    current_text.push_str(&replacement);
+                    let end_offset = current_text.len();
+                    let end_line = line_number_at_offset(&current_text);
+                    hunks.push(ConflictHunk {
+                        id: hunks.len() as u32,
+                        start_line,
+                        end_line,
+                        start_offset: clamp_u32(start_offset),
+                        end_offset: clamp_u32(end_offset),
+                        own_text: own.clone(),
+                        other_text: other.clone(),
+                    });
+                    state = ParseState::Normal;
+                } else {
+                    other.push_str(line);
+                }
+            }
+        }
+    }
+
+    if state != ParseState::Normal {
+        current_text.push_str(&own);
+        current_text.push_str(&other);
+    }
+
+    ParsedConflictText {
+        current_text,
+        hunks,
+    }
+}
+
+fn split_inclusive_lines(text: &str) -> Vec<&str> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+
+    let mut lines = text.split_inclusive('\n').collect::<Vec<_>>();
+    if !text.ends_with('\n') {
+        let consumed = lines.iter().map(|line| line.len()).sum::<usize>();
+        if consumed < text.len() {
+            lines.push(&text[consumed..]);
+        }
+    }
+    lines
+}
+
+fn line_number_at_offset(text: &str) -> u32 {
+    clamp_u32(
+        text.as_bytes()
+            .iter()
+            .filter(|byte| **byte == b'\n')
+            .count()
+            + 1,
+    )
+}
+
+fn clamp_u32(value: usize) -> u32 {
+    value.min(u32::MAX as usize) as u32
+}
+
+fn image_mime_for_path(path: &Path) -> Option<&'static str> {
+    match path
+        .extension()
+        .and_then(OsStr::to_str)
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "bmp" => Some("image/bmp"),
+        _ => None,
+    }
+}
+
+fn language_for_path(path: &Path) -> Option<String> {
+    match path
+        .extension()
+        .and_then(OsStr::to_str)
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "js" | "jsx" | "ts" | "tsx" | "json" => Some("ts".to_owned()),
+        extension if !extension.is_empty() => Some(extension.to_owned()),
+        _ => None,
+    }
+}
+
+fn validate_conflict_paths(paths: &[String], operation_name: &str) -> AppResult<Vec<PathBuf>> {
+    let mut validated = Vec::with_capacity(paths.len());
+    let mut seen = BTreeSet::new();
+    for path in paths {
+        let validated_path = validate_conflict_path(path, operation_name)?;
+        if seen.insert(validated_path.clone()) {
+            validated.push(validated_path);
+        }
+    }
+    if validated.is_empty() {
+        return Err(logged(AppError::expected(
+            "at least one conflict path is required",
+            operation_name,
+        )));
+    }
+    Ok(validated)
+}
+
+fn validate_conflict_path(path: &str, operation_name: &str) -> AppResult<PathBuf> {
+    let path = PathBuf::from(path.trim());
+    if path.as_os_str().is_empty()
+        || path.is_absolute()
+        || path
+            .components()
+            .any(|component| matches!(component, Component::ParentDir | Component::Prefix(_)))
+    {
+        return Err(logged(AppError::expected(
+            "conflict path must be a repository-relative path",
+            operation_name,
+        )));
+    }
+    Ok(path)
+}
+
+fn git_path_for(
+    runner: &GitRunner,
+    root: &Path,
+    relative: &str,
+    operation_name: &str,
+) -> AppResult<PathBuf> {
+    let output = git_stdout(
+        runner,
+        root,
+        ["rev-parse", "--git-path", relative],
+        operation_name,
+    )?;
+    let path = PathBuf::from(output.trim());
+    Ok(if path.is_absolute() {
+        path
+    } else {
+        root.join(path)
+    })
+}
+
+fn canonical_repository_path(path: &str, operation_name: &str) -> AppResult<PathBuf> {
+    fs::canonicalize(Path::new(path)).map_err(|source| {
+        logged(AppError::expected(
+            format!("failed to resolve repository path: {source}"),
+            operation_name,
+        ))
+    })
+}
+
+fn git_stdout<I, S>(
+    runner: &GitRunner,
+    root: &Path,
+    args: I,
+    operation_name: &str,
+) -> AppResult<String>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<OsString>,
+{
+    let bytes = git_output_bytes(runner, root, args, operation_name)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn git_output_bytes<I, S>(
+    runner: &GitRunner,
+    root: &Path,
+    args: I,
+    operation_name: &str,
+) -> AppResult<Vec<u8>>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<OsString>,
+{
+    let plan = plan_git(runner, root, args).build();
+    let output = plan
+        .to_command()
+        .output()
+        .map_err(|source| spawn_error(&plan, source, operation_name))?;
+    if output.status.success() {
+        Ok(output.stdout)
+    } else {
+        Err(command_failure(&plan, output, operation_name))
+    }
+}
+
+fn command_to_output(
+    mut command: Command,
+    plan: &GitCommandPlan,
+    operation_name: &str,
+) -> AppResult<Vec<u8>> {
+    let output = command
+        .output()
+        .map_err(|source| spawn_error(plan, source, operation_name))?;
+    if output.status.success() {
+        Ok(output.stdout)
+    } else {
+        Err(command_failure(plan, output, operation_name))
+    }
+}
+
+fn plan_git<'a, I, S>(
+    runner: &'a GitRunner,
+    root: &Path,
+    args: I,
+) -> artistic_git_git_runner::GitCommandBuilder<'a>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<OsString>,
+{
+    let mut planned_args = vec![OsString::from("-C"), root.as_os_str().to_owned()];
+    planned_args.extend(args.into_iter().map(Into::into));
+    runner
+        .git_command_builder()
+        .enable_rename_detection()
+        .enable_windows_longpaths()
+        .args(planned_args)
+}
+
+fn command_failure(
+    plan: &GitCommandPlan,
+    output: std::process::Output,
+    operation_name: &str,
+) -> AppError {
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let summary = stderr
+        .lines()
+        .next()
+        .filter(|line| !line.trim().is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("git command failed during {operation_name}"));
+
+    logged(
+        AppError::expected(summary, operation_name).with_git(GitCommandError {
+            command: plan.command_for_error(),
+            exit_code: output.status.code(),
+            stdout,
+            stderr,
+        }),
+    )
+}
+
+fn spawn_error(plan: &GitCommandPlan, source: io::Error, operation_name: &str) -> AppError {
+    logged(
+        AppError::fatal(
+            format!("embedded git command could not be executed: {source}"),
+            operation_name,
+        )
+        .with_git(GitCommandError {
+            command: plan.command_for_error(),
+            exit_code: None,
+            stdout: String::new(),
+            stderr: source.to_string(),
+        }),
+    )
+}
+
+fn display_path(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = *chunk.get(1).unwrap_or(&0);
+        let b2 = *chunk.get(2).unwrap_or(&0);
+        output.push(TABLE[(b0 >> 2) as usize] as char);
+        output.push(TABLE[(((b0 & 0b0000_0011) << 4) | (b1 >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            output.push(TABLE[(((b1 & 0b0000_1111) << 2) | (b2 >> 6)) as usize] as char);
+        } else {
+            output.push('=');
+        }
+        if chunk.len() > 2 {
+            output.push(TABLE[(b2 & 0b0011_1111) as usize] as char);
+        } else {
+            output.push('=');
+        }
+    }
+    output
+}
+
+fn logged(error: AppError) -> AppError {
+    crate::logged_app_error(error)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StageEntry {
+    oid: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedConflictText {
+    current_text: String,
+    hunks: Vec<ConflictHunk>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParseState {
+    Normal,
+    Own,
+    Base,
+    Other,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_conflict_markers_without_exposing_marker_lines() {
+        let parsed = parse_conflict_text(
+            "a\n<<<<<<< HEAD\nown\n||||||| base\nbase\n=======\nother\n>>>>>>> branch\nz\n",
+        );
+
+        assert_eq!(parsed.current_text, "a\nown\nother\nz\n");
+        assert_eq!(parsed.hunks.len(), 1);
+        assert_eq!(parsed.hunks[0].own_text, "own\n");
+        assert_eq!(parsed.hunks[0].other_text, "other\n");
+        assert!(!contains_conflict_markers(&parsed.current_text));
+    }
+
+    #[test]
+    fn maps_rebase_sides_to_git_checkout_semantics() {
+        assert_eq!(
+            checkout_side_for_operation(ConflictOperationKind::Rebase, ConflictSide::Own),
+            "--theirs"
+        );
+        assert_eq!(
+            checkout_side_for_operation(ConflictOperationKind::Rebase, ConflictSide::Other),
+            "--ours"
+        );
+        assert_eq!(
+            checkout_side_for_operation(ConflictOperationKind::Merge, ConflictSide::Own),
+            "--ours"
+        );
+        assert_eq!(
+            checkout_side_for_operation(ConflictOperationKind::Merge, ConflictSide::Other),
+            "--theirs"
+        );
+    }
+
+    #[test]
+    fn rejects_absolute_or_parent_conflict_paths() {
+        assert!(validate_conflict_path("/tmp/file", "test").is_err());
+        assert!(validate_conflict_path("../file", "test").is_err());
+        assert!(validate_conflict_path("src/file.txt", "test").is_ok());
+    }
+}
