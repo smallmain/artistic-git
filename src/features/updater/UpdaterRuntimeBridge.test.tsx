@@ -329,6 +329,47 @@ describe("UpdaterRuntimeBridge", () => {
     expect(bridgeMocks.updateInstallGate).toHaveBeenCalled();
   });
 
+  it("opens a ready prompt after a closed target is retargeted to this window", async () => {
+    render(
+      <TestProviders>
+        <UpdaterRuntimeBridge />
+        <UpdateProbe />
+      </TestProviders>,
+    );
+
+    await waitFor(() => expect(updateStatusHandler).not.toBeNull());
+
+    await emitUpdateStatus({
+      requestId: "auto-retarget-1",
+      source: "automatic",
+      targetWindowLabel: "repo-2",
+      status: {
+        notes: "Retargeted notes",
+        state: "ready",
+        version: "0.2.0",
+      },
+    });
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByText("none")).toBeInTheDocument();
+
+    await emitUpdateStatus({
+      requestId: "auto-retarget-1",
+      source: "automatic",
+      targetWindowLabel: "main",
+      status: {
+        notes: "Retargeted notes",
+        state: "ready",
+        version: "0.2.0",
+      },
+    });
+
+    expect(
+      await screen.findByRole("dialog", { name: "Update ready to install" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Retargeted notes")).toBeInTheDocument();
+  });
+
   it("blocks install when conflict resolution is active in this window", async () => {
     render(
       <TestProviders

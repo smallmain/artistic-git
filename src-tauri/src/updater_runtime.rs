@@ -6,18 +6,20 @@ use std::sync::{
 use artistic_git_contracts::{AppError, AppResult};
 use artistic_git_git_runner::OperationBusy;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State, Window};
+use tauri::{AppHandle, Emitter, Manager, State, Window};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
 const UPDATE_STATUS_EVENT: &str = "update-status";
 const INSTALL_OPERATION: &str = "installReadyUpdate";
 const INSTALL_GATE_OPERATION: &str = "updateInstallGate";
+const PROMPT_ROUTE_OPERATION: &str = "updatePromptRoute";
 
 #[derive(Default)]
 pub struct UpdaterRuntimeState {
     checking: AtomicBool,
     next_request_id: AtomicU64,
     ready: Mutex<Option<ReadyUpdate>>,
+    ready_prompt: Mutex<Option<UpdateStatusEvent>>,
 }
 
 #[derive(Clone)]
@@ -100,8 +102,13 @@ pub async fn check_for_updates(
     request: UpdateCheckRequest,
 ) -> AppResult<UpdateStatusEvent> {
     let request_id = state.next_request_id();
-    let target_window_label = Some(window.label().to_owned());
+    let request_window_label = window.label().to_owned();
     let source = request.source;
+    let target_window_label = update_status_target_window_label(
+        source,
+        &request_window_label,
+        focused_update_window_label(&app_handle),
+    );
 
     let Some(_guard) = state.try_begin_check() else {
         let event = UpdateStatusEvent {
@@ -227,13 +234,18 @@ pub async fn check_for_updates(
         }
     };
 
-    state.store_ready_update(update, bytes)?;
+    let target_window_label = update_status_target_window_label(
+        source,
+        &request_window_label,
+        focused_update_window_label(&app_handle),
+    );
     let event = UpdateStatusEvent {
         request_id,
         source,
         target_window_label,
         status: UpdateStatus::Ready { version, notes },
     };
+    state.store_ready_update(update, bytes, event.clone())?;
     emit_status(&app_handle, &event);
     Ok(event)
 }
@@ -274,6 +286,38 @@ pub fn install_ready_update(
                 INSTALL_OPERATION,
             )
         })
+}
+
+pub(crate) fn retarget_ready_update_prompt(
+    app_handle: &AppHandle,
+    closed_window_label: &str,
+    next_window_label: Option<String>,
+) {
+    let Some(state) = app_handle.try_state::<UpdaterRuntimeState>() else {
+        return;
+    };
+    let Ok(Some(event)) =
+        state.retarget_ready_prompt_after_closed(closed_window_label, next_window_label)
+    else {
+        return;
+    };
+
+    emit_status(app_handle, &event);
+}
+
+pub(crate) fn route_unassigned_ready_update_prompt(
+    app_handle: &AppHandle,
+    target_window_label: &str,
+) {
+    let Some(state) = app_handle.try_state::<UpdaterRuntimeState>() else {
+        return;
+    };
+    let Ok(Some(event)) = state.route_unassigned_ready_prompt(target_window_label.to_owned())
+    else {
+        return;
+    };
+
+    emit_status(app_handle, &event);
 }
 
 fn install_gate_response(
@@ -334,6 +378,29 @@ fn emit_status(app_handle: &AppHandle, event: &UpdateStatusEvent) {
     let _ = app_handle.emit(UPDATE_STATUS_EVENT, event);
 }
 
+fn focused_update_window_label(app_handle: &AppHandle) -> Option<String> {
+    app_handle
+        .try_state::<crate::WindowRegistry>()
+        .and_then(|registry| crate::registry_recent_focused_label(&registry))
+        .filter(|label| app_handle.get_webview_window(label).is_some())
+        .or_else(|| {
+            crate::focused_webview_window(app_handle).map(|window| window.label().to_owned())
+        })
+}
+
+fn update_status_target_window_label(
+    source: UpdateCheckSource,
+    request_window_label: &str,
+    focused_window_label: Option<String>,
+) -> Option<String> {
+    match source {
+        UpdateCheckSource::Manual => Some(request_window_label.to_owned()),
+        UpdateCheckSource::Automatic => {
+            focused_window_label.or_else(|| Some(request_window_label.to_owned()))
+        }
+    }
+}
+
 fn install_busy_error(busy: OperationBusy, operation_name: &str) -> AppError {
     artistic_git_app::logged_app_error(AppError::expected(
         install_busy_message(busy),
@@ -373,16 +440,68 @@ impl UpdaterRuntimeState {
     }
 
     fn clear_ready_update(&self) -> AppResult<()> {
-        *self.ready_lock()? = None;
+        let mut ready = self.ready_lock()?;
+        let mut prompt = self.ready_prompt_lock()?;
+        *ready = None;
+        *prompt = None;
         Ok(())
     }
 
-    fn store_ready_update(&self, update: Update, bytes: Vec<u8>) -> AppResult<()> {
-        *self.ready_lock()? = Some(ReadyUpdate {
+    fn store_ready_update(
+        &self,
+        update: Update,
+        bytes: Vec<u8>,
+        prompt_event: UpdateStatusEvent,
+    ) -> AppResult<()> {
+        let mut ready = self.ready_lock()?;
+        let mut prompt = self.ready_prompt_lock()?;
+        *ready = Some(ReadyUpdate {
             update,
             bytes: Arc::new(bytes),
         });
+        *prompt = Some(prompt_event);
         Ok(())
+    }
+
+    #[cfg(test)]
+    fn store_ready_prompt_event(&self, prompt_event: UpdateStatusEvent) -> AppResult<()> {
+        *self.ready_prompt_lock()? = Some(prompt_event);
+        Ok(())
+    }
+
+    fn retarget_ready_prompt_after_closed(
+        &self,
+        closed_window_label: &str,
+        next_window_label: Option<String>,
+    ) -> AppResult<Option<UpdateStatusEvent>> {
+        let mut prompt = self.ready_prompt_lock()?;
+        let Some(event) = prompt.as_mut() else {
+            return Ok(None);
+        };
+
+        if event.target_window_label.as_deref() != Some(closed_window_label) {
+            return Ok(None);
+        }
+
+        event.target_window_label = next_window_label;
+        Ok(event.target_window_label.as_ref().map(|_| event.clone()))
+    }
+
+    fn route_unassigned_ready_prompt(
+        &self,
+        target_window_label: String,
+    ) -> AppResult<Option<UpdateStatusEvent>> {
+        let mut prompt = self.ready_prompt_lock()?;
+        let Some(event) = prompt.as_mut() else {
+            return Ok(None);
+        };
+
+        if event.target_window_label.is_some() {
+            return Ok(None);
+        }
+
+        event.target_window_label = Some(target_window_label);
+        Ok(Some(event.clone()))
     }
 
     fn ready_update(&self) -> AppResult<Option<ReadyUpdate>> {
@@ -401,6 +520,15 @@ impl UpdaterRuntimeState {
             )
         })
     }
+
+    fn ready_prompt_lock(&self) -> AppResult<std::sync::MutexGuard<'_, Option<UpdateStatusEvent>>> {
+        self.ready_prompt.lock().map_err(|_| {
+            artistic_git_app::unexpected_command_error(
+                "update prompt route state is unavailable",
+                PROMPT_ROUTE_OPERATION,
+            )
+        })
+    }
 }
 
 struct CheckGuard<'a> {
@@ -415,6 +543,8 @@ impl Drop for CheckGuard<'_> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     use tauri_plugin_updater::RemoteRelease;
 
     #[test]
@@ -467,6 +597,75 @@ mod tests {
         assert!(error.contains("linux-x86_64"));
     }
 
+    #[test]
+    fn automatic_status_targets_recently_focused_window() {
+        assert_eq!(
+            update_status_target_window_label(
+                UpdateCheckSource::Automatic,
+                "repo-1",
+                Some("repo-2".to_owned())
+            ),
+            Some("repo-2".to_owned())
+        );
+    }
+
+    #[test]
+    fn manual_status_stays_on_requesting_window() {
+        assert_eq!(
+            update_status_target_window_label(
+                UpdateCheckSource::Manual,
+                "repo-1",
+                Some("repo-2".to_owned())
+            ),
+            Some("repo-1".to_owned())
+        );
+    }
+
+    #[test]
+    fn ready_prompt_retargets_when_target_window_closes() {
+        let state = UpdaterRuntimeState::default();
+        state
+            .store_ready_prompt_event(ready_prompt_event(Some("repo-1")))
+            .expect("store prompt");
+
+        let event = state
+            .retarget_ready_prompt_after_closed("repo-1", Some("repo-2".to_owned()))
+            .expect("retarget prompt")
+            .expect("retargeted event");
+
+        assert_eq!(event.target_window_label, Some("repo-2".to_owned()));
+    }
+
+    #[test]
+    fn ready_prompt_does_not_retarget_unrelated_window_close() {
+        let state = UpdaterRuntimeState::default();
+        state
+            .store_ready_prompt_event(ready_prompt_event(Some("repo-1")))
+            .expect("store prompt");
+
+        assert_eq!(
+            state
+                .retarget_ready_prompt_after_closed("repo-2", Some("repo-3".to_owned()))
+                .expect("retarget prompt"),
+            None
+        );
+    }
+
+    #[test]
+    fn unassigned_ready_prompt_routes_to_next_focused_window() {
+        let state = UpdaterRuntimeState::default();
+        state
+            .store_ready_prompt_event(ready_prompt_event(None))
+            .expect("store prompt");
+
+        let event = state
+            .route_unassigned_ready_prompt("repo-2".to_owned())
+            .expect("route prompt")
+            .expect("routed event");
+
+        assert_eq!(event.target_window_label, Some("repo-2".to_owned()));
+    }
+
     #[derive(Debug, PartialEq, Eq)]
     struct LatestJsonSummary {
         version: String,
@@ -496,5 +695,17 @@ mod tests {
             signature,
             url,
         })
+    }
+
+    fn ready_prompt_event(target_window_label: Option<&str>) -> UpdateStatusEvent {
+        UpdateStatusEvent {
+            request_id: "update-check-1".to_owned(),
+            source: UpdateCheckSource::Automatic,
+            target_window_label: target_window_label.map(str::to_owned),
+            status: UpdateStatus::Ready {
+                version: "0.2.0".to_owned(),
+                notes: Some("Release notes".to_owned()),
+            },
+        }
     }
 }

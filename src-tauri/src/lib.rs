@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     env, fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -31,6 +31,7 @@ struct WindowRegistryInner {
     label_to_repository: BTreeMap<String, String>,
     repository_to_label: BTreeMap<String, String>,
     close_guard_labels: BTreeSet<String>,
+    focused_window_labels: VecDeque<String>,
     pending_crashes_by_label: BTreeMap<String, CrashDialogPayload>,
     pending_exit_after_close_guards: bool,
     next_window_id: u64,
@@ -210,6 +211,7 @@ fn open_repository_window(
     if let Some((action, label)) = decision {
         if matches!(action, OpenRepositoryWindowAction::FocusedExisting) {
             focus_window(&app_handle, &label);
+            let _ = registry_mark_focused(&registry, &label);
         }
         return Ok(OpenRepositoryWindowResponse {
             action,
@@ -227,6 +229,7 @@ fn open_repository_window(
     )?;
     registry_register(&registry, label.clone(), repository_path.clone())?;
     let _ = window.set_focus();
+    let _ = registry_mark_focused(&registry, &label);
 
     Ok(OpenRepositoryWindowResponse {
         action: OpenRepositoryWindowAction::Created,
@@ -1352,6 +1355,7 @@ fn create_start_window(
                 "newProjectWindow",
             )
         })?;
+    let _ = registry_mark_focused(registry, &label);
 
     Ok(NewWindowResponse { label })
 }
@@ -1452,8 +1456,34 @@ fn registry_unregister(registry: &WindowRegistry, label: &str) {
             inner.repository_to_label.remove(&repository_path);
         }
         inner.close_guard_labels.remove(label);
+        inner
+            .focused_window_labels
+            .retain(|focused_label| focused_label != label);
         inner.pending_crashes_by_label.remove(label);
     }
+}
+
+fn registry_mark_focused(
+    registry: &WindowRegistry,
+    label: &str,
+) -> artistic_git_contracts::AppResult<()> {
+    let mut inner = registry
+        .inner
+        .lock()
+        .map_err(|_| window_command_error("window registry lock poisoned", "focusWindow"))?;
+    inner
+        .focused_window_labels
+        .retain(|focused_label| focused_label != label);
+    inner.focused_window_labels.push_front(label.to_owned());
+    Ok(())
+}
+
+fn registry_recent_focused_label(registry: &WindowRegistry) -> Option<String> {
+    registry
+        .inner
+        .lock()
+        .ok()
+        .and_then(|inner| inner.focused_window_labels.front().cloned())
 }
 
 fn registry_set_close_guard(
@@ -1685,6 +1715,7 @@ fn open_or_focus_repository_from_settings(
     let repository_path = project_settings.path;
     if let Some(existing_label) = registry_label_for_repository(registry, &repository_path)? {
         focus_window(app, &existing_label);
+        let _ = registry_mark_focused(registry, &existing_label);
         return Ok(OpenRepositoryWindowResponse {
             action: OpenRepositoryWindowAction::FocusedExisting,
             label: existing_label,
@@ -1701,6 +1732,7 @@ fn open_or_focus_repository_from_settings(
     )?;
     registry_register(registry, label.clone(), repository_path.clone())?;
     let _ = window.set_focus();
+    let _ = registry_mark_focused(registry, &label);
 
     Ok(OpenRepositoryWindowResponse {
         action: OpenRepositoryWindowAction::Created,
@@ -1725,6 +1757,13 @@ fn focus_or_create_start_window(app: &tauri::AppHandle) {
 fn handle_window_event(window: &tauri::Window, event: &WindowEvent) {
     let app = window.app_handle();
     match event {
+        WindowEvent::Focused(true) => {
+            let label = window.label().to_owned();
+            if let Some(registry) = app.try_state::<WindowRegistry>() {
+                let _ = registry_mark_focused(&registry, &label);
+            }
+            updater_runtime::route_unassigned_ready_update_prompt(app, &label);
+        }
         WindowEvent::CloseRequested { api, .. } => {
             if let Some(registry) = app.try_state::<WindowRegistry>() {
                 if let Some(event) = close_guard_block_event(
@@ -1739,8 +1778,10 @@ fn handle_window_event(window: &tauri::Window, event: &WindowEvent) {
         }
         WindowEvent::Destroyed => {
             let label = window.label().to_owned();
+            let mut next_update_prompt_label = None;
             if let Some(registry) = app.try_state::<WindowRegistry>() {
                 registry_unregister(&registry, &label);
+                next_update_prompt_label = registry_recent_focused_label(&registry);
                 if registry_pending_exit_after_close_guards(&registry)
                     && !registry_has_close_guards(&registry)
                 {
@@ -1748,6 +1789,7 @@ fn handle_window_event(window: &tauri::Window, event: &WindowEvent) {
                     return;
                 }
             }
+            updater_runtime::retarget_ready_update_prompt(app, &label, next_update_prompt_label);
             exit_if_last_window_closed(app, &label);
         }
         _ => {}
@@ -2041,6 +2083,26 @@ mod tests {
         assert_eq!(
             registry_label_for_repository(&registry, "/tmp/project").expect("lookup"),
             None
+        );
+    }
+
+    #[test]
+    fn window_menu_focus_order_tracks_most_recent_window() {
+        let registry = WindowRegistry::default();
+
+        registry_mark_focused(&registry, "repo-1").expect("focus first");
+        registry_mark_focused(&registry, "repo-2").expect("focus second");
+        registry_mark_focused(&registry, "repo-1").expect("refocus first");
+
+        assert_eq!(
+            registry_recent_focused_label(&registry),
+            Some("repo-1".to_owned())
+        );
+
+        registry_unregister(&registry, "repo-1");
+        assert_eq!(
+            registry_recent_focused_label(&registry),
+            Some("repo-2".to_owned())
         );
     }
 
