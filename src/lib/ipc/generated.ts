@@ -992,6 +992,12 @@ export type SshKeyStatus = {
   exists: boolean;
 };
 
+export type SshPassphrasePromptRequest = {
+  keyId: string;
+  prompt: string;
+  rememberAvailable: boolean;
+};
+
 export type StartReviewModeRequest = {
   repositoryPath: string;
   operationId: OperationId | null;

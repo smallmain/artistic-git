@@ -350,13 +350,15 @@ graph TD
 
 依赖：4A。
 
-- [ ] ssh 二进制选择：Windows 用捆绑 Win32-OpenSSH（1A 产物）；macOS 13+ / Linux 用系统 ssh
-- [ ] 统一注入 `-c core.sshCommand="<ssh 路径> -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=~/.ssh/known_hosts"`（不落盘）；首连自动信任、指纹变更报错
-- [ ] 密码短语：`SSH_ASKPASS` helper + `SSH_ASKPASS_REQUIRE=force`，经 IPC 回调弹输入框，不依赖 TTY 永不卡死；首次输入后内存缓存，后续静默；不自主管理 ssh-agent（agent 已有密钥则 askpass 不触发）
-- [ ] 后台绝不弹框：`non-interactive` 标记的后台操作需要密码短语且无缓存 → 直接归入可预期认证失败走离线图标
-- [ ] 「记住密码短语」开关（默认关）：勾选存系统钥匙串（与 HTTPS 同套存储）
+- [x] ssh 二进制选择：Windows 用捆绑 Win32-OpenSSH（1A 产物）；macOS 13+ / Linux 用系统 ssh
+- [x] 统一注入 `-c core.sshCommand="<ssh 路径> -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=~/.ssh/known_hosts"`（不落盘）；首连自动信任、指纹变更报错
+- [x] 密码短语：`SSH_ASKPASS` helper + `SSH_ASKPASS_REQUIRE=force`，经 IPC 回调弹输入框，不依赖 TTY 永不卡死；首次输入后内存缓存，后续静默；不自主管理 ssh-agent（agent 已有密钥则 askpass 不触发）
+- [x] 后台绝不弹框：`non-interactive` 标记的后台操作需要密码短语且无缓存 → 直接归入可预期认证失败走离线图标
+- [x] 「记住密码短语」开关（默认关）：勾选存系统钥匙串（与 HTTPS 同套存储）
 
 **验收**：本地 sshd 容器（Linux CI）：accept-new 首连/指纹变更报错/passphrase 弹一次后缓存静默/后台无缓存不弹框走离线/agent 路径。
+
+进展备注：SSH 二进制选择、`core.sshCommand`/`SSH_ASKPASS` 注入、主进程 askpass IPC、前端密码短语弹窗、内存缓存、可选 keyring 记住密码短语、后台 non-interactive 失败路径均已接入并覆盖后端/组件测试；真实 sshd/container 端到端验收仍待补齐。
 
 ### 4D 克隆流程 **\[P\]**
 

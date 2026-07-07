@@ -112,6 +112,7 @@ pub use settings::{
     ProjectSettingsRequest, SaveAppSettingsRequest, SaveGitignoreRequest,
     SaveProjectSettingsRequest, SettingsSnapshot, SshKeyStatus,
 };
+pub use ssh_auth::SshPassphrasePromptRequest;
 pub use stash::{
     cancel_stash_restore, create_auto_stash, create_stash, delete_stash, restore_stash,
     stash_details,

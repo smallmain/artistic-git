@@ -5,6 +5,7 @@ import { AppErrorBoundary } from "@/components/layout/AppErrorBoundary";
 import { CrashDetailsDialog } from "@/components/dialogs/CrashDetailsDialog";
 import { ErrorDetailsDialog } from "@/components/dialogs/ErrorDetailsDialog";
 import { HttpsCredentialPromptDialog } from "@/features/auth/HttpsCredentialPromptDialog";
+import { SshPassphrasePromptDialog } from "@/features/auth/SshPassphrasePromptDialog";
 import { OnboardingWizard } from "@/features/onboarding/OnboardingWizard";
 import { RepositoryShell } from "@/features/repository-shell/RepositoryShell";
 import { SettingsModal } from "@/features/settings/SettingsModal";
@@ -28,6 +29,7 @@ export function App() {
       <AppMenuBridge />
       <GlobalSettingsModal />
       <HttpsCredentialPromptDialog />
+      <SshPassphrasePromptDialog />
       <GlobalErrorDialogs />
     </AppErrorBoundary>
   );

@@ -1,6 +1,8 @@
 use crate::auth_ipc::{AuthPromptDecision, InteractionPolicy};
 use artistic_git_core::keyring::{KeyringResult, KeyringVault, SshPassphraseKey};
 use artistic_git_git_runner::GitDistribution;
+use serde::Serialize;
+use specta::Type;
 use std::{
     collections::BTreeMap,
     env,
@@ -191,6 +193,68 @@ pub enum SshAuthFailureClassification {
 pub enum SshPromptKind {
     KeyPassphrase(SshPassphraseKey),
     Unsupported,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SshPassphrasePromptRequest {
+    pub key_id: String,
+    pub prompt: String,
+    pub remember_available: bool,
+}
+
+impl SshPassphrasePromptRequest {
+    pub fn new(
+        key: &SshPassphraseKey,
+        prompt: impl Into<String>,
+        remember_available: bool,
+    ) -> Self {
+        Self {
+            key_id: key.key_id.clone(),
+            prompt: prompt.into(),
+            remember_available,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SshPassphrasePromptSubmission {
+    pub passphrase: String,
+    pub remember: bool,
+}
+
+impl SshPassphrasePromptSubmission {
+    pub fn new(passphrase: impl Into<String>, remember: bool) -> Self {
+        Self {
+            passphrase: passphrase.into(),
+            remember,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SshPassphrasePromptResult {
+    Submit(SshPassphrasePromptSubmission),
+    Cancel,
+}
+
+pub trait SshPassphrasePromptSink: Send + Sync + 'static {
+    fn prompt_ssh_passphrase(
+        &self,
+        request: SshPassphrasePromptRequest,
+    ) -> SshPassphrasePromptResult;
+}
+
+#[derive(Debug, Default)]
+pub struct CancellingSshPassphrasePromptSink;
+
+impl SshPassphrasePromptSink for CancellingSshPassphrasePromptSink {
+    fn prompt_ssh_passphrase(
+        &self,
+        _request: SshPassphrasePromptRequest,
+    ) -> SshPassphrasePromptResult {
+        SshPassphrasePromptResult::Cancel
+    }
 }
 
 pub fn resolve_askpass_prompt(

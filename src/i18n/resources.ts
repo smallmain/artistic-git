@@ -44,6 +44,15 @@ export const resources = {
             "You can generate one on your Git platform Access Tokens page.",
           username: "Username",
         },
+        ssh: {
+          description: "Enter the SSH key passphrase to continue.",
+          key: "SSH key",
+          passphrase: "Passphrase",
+          prompt: "Prompt",
+          remember: "Remember passphrase in secure storage",
+          submit: "Unlock",
+          title: "SSH passphrase required",
+        },
       },
       updaterPrompt: {
         availableDescription:
@@ -752,6 +761,15 @@ export const resources = {
           token: "Token",
           tokenHelp: "可在 Git 平台的 Access Tokens 页面生成。",
           username: "用户名",
+        },
+        ssh: {
+          description: "输入 SSH Key 密码短语以继续。",
+          key: "SSH Key",
+          passphrase: "密码短语",
+          prompt: "提示",
+          remember: "在安全存储中记住密码短语",
+          submit: "解锁",
+          title: "需要 SSH 密码短语",
         },
       },
       updaterPrompt: {

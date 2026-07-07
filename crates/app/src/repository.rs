@@ -60,10 +60,11 @@ pub struct RepositoryBackend {
 
 impl RepositoryBackend {
     pub fn new(runner: GitRunner, config: Option<ConfigActor>) -> Self {
-        Self::with_https_prompt_sink(
+        Self::with_auth_prompt_sinks(
             runner,
             config,
             Arc::new(crate::https_auth::CancellingHttpsCredentialPromptSink),
+            Arc::new(crate::ssh_auth::CancellingSshPassphrasePromptSink),
         )
     }
 
@@ -76,16 +77,56 @@ impl RepositoryBackend {
         Self::with_https_vault_and_prompt_sink(runner, config, vault, prompt_sink)
     }
 
+    pub fn with_auth_prompt_sinks(
+        runner: GitRunner,
+        config: Option<ConfigActor>,
+        https_prompt_sink: Arc<dyn crate::https_auth::HttpsCredentialPromptSink>,
+        ssh_prompt_sink: Arc<dyn crate::ssh_auth::SshPassphrasePromptSink>,
+    ) -> Self {
+        let vault = KeyringVault::new(Arc::new(SystemCredentialStore::default()));
+        Self::with_auth_vault_and_prompt_sinks(
+            runner,
+            config,
+            vault,
+            https_prompt_sink,
+            ssh_prompt_sink,
+        )
+    }
+
     pub fn with_https_vault_and_prompt_sink(
         runner: GitRunner,
         config: Option<ConfigActor>,
         vault: KeyringVault,
         prompt_sink: Arc<dyn crate::https_auth::HttpsCredentialPromptSink>,
     ) -> Self {
-        let https_credentials = Arc::new(Mutex::new(crate::https_auth::HttpsCredentialFlow::new(
+        Self::with_auth_vault_and_prompt_sinks(
+            runner,
+            config,
             vault,
+            prompt_sink,
+            Arc::new(crate::ssh_auth::CancellingSshPassphrasePromptSink),
+        )
+    }
+
+    pub fn with_auth_vault_and_prompt_sinks(
+        runner: GitRunner,
+        config: Option<ConfigActor>,
+        vault: KeyringVault,
+        https_prompt_sink: Arc<dyn crate::https_auth::HttpsCredentialPromptSink>,
+        ssh_prompt_sink: Arc<dyn crate::ssh_auth::SshPassphrasePromptSink>,
+    ) -> Self {
+        let https_credentials = Arc::new(Mutex::new(crate::https_auth::HttpsCredentialFlow::new(
+            vault.clone(),
         )));
-        let auth_runtime = start_auth_runtime(&runner, Arc::clone(&https_credentials), prompt_sink);
+        let auth_runtime = start_auth_runtime(
+            &runner,
+            config.clone(),
+            Arc::clone(&https_credentials),
+            vault,
+            https_prompt_sink,
+            crate::ssh_auth::SshPassphraseCache::new(),
+            ssh_prompt_sink,
+        );
         Self {
             runner,
             config,
@@ -589,8 +630,12 @@ impl RepositoryBackend {
 
 fn start_auth_runtime(
     runner: &GitRunner,
+    config: Option<ConfigActor>,
     https_credentials: Arc<Mutex<crate::https_auth::HttpsCredentialFlow>>,
-    prompt_sink: Arc<dyn crate::https_auth::HttpsCredentialPromptSink>,
+    ssh_keyring: KeyringVault,
+    https_prompt_sink: Arc<dyn crate::https_auth::HttpsCredentialPromptSink>,
+    ssh_passphrase_cache: crate::ssh_auth::SshPassphraseCache,
+    ssh_prompt_sink: Arc<dyn crate::ssh_auth::SshPassphrasePromptSink>,
 ) -> Option<crate::auth_ipc::AuthRuntime> {
     let handler = move |context: crate::auth_ipc::AuthIpcRequestContext,
                         payload: artistic_git_helpers::HelperIpcPayload| {
@@ -604,7 +649,7 @@ fn start_auth_runtime(
                         };
                     }
                 };
-                let prompt_sink = Arc::clone(&prompt_sink);
+                let prompt_sink = Arc::clone(&https_prompt_sink);
                 let mut prompter = move |request| prompt_sink.prompt_https_credentials(request);
                 match flow.handle_git_credential_request(
                     &credential,
@@ -617,11 +662,29 @@ fn start_auth_runtime(
                     },
                 }
             }
-            artistic_git_helpers::HelperIpcPayload::Askpass { .. } => {
-                artistic_git_helpers::HelperIpcResponse::Error {
-                    message: "SSH askpass prompts are not handled by the HTTPS credential flow"
-                        .to_owned(),
-                }
+            artistic_git_helpers::HelperIpcPayload::Askpass { prompt } => {
+                let remember_ssh_passphrase = match config.as_ref() {
+                    Some(config) => match config.settings() {
+                        Ok(settings) => settings.git.remember_ssh_passphrase,
+                        Err(error) => {
+                            return artistic_git_helpers::HelperIpcResponse::Error {
+                                message: format!(
+                                    "SSH passphrase settings could not be read: {error}"
+                                ),
+                            };
+                        }
+                    },
+                    None => false,
+                };
+
+                handle_ssh_askpass_request(
+                    &ssh_passphrase_cache,
+                    &ssh_keyring,
+                    ssh_prompt_sink.as_ref(),
+                    context.interaction_policy,
+                    remember_ssh_passphrase,
+                    prompt,
+                )
             }
         }
     };
@@ -633,6 +696,90 @@ fn start_auth_runtime(
             None
         }
     }
+}
+
+fn handle_ssh_askpass_request(
+    cache: &crate::ssh_auth::SshPassphraseCache,
+    keyring: &KeyringVault,
+    prompt_sink: &dyn crate::ssh_auth::SshPassphrasePromptSink,
+    interaction_policy: crate::auth_ipc::InteractionPolicy,
+    remember_ssh_passphrase: bool,
+    prompt: String,
+) -> artistic_git_helpers::HelperIpcResponse {
+    match crate::ssh_auth::resolve_askpass_prompt(
+        cache,
+        Some(keyring),
+        interaction_policy,
+        remember_ssh_passphrase,
+        prompt,
+    ) {
+        crate::ssh_auth::SshAskpassDecision::ReturnSecret { secret, .. } => {
+            artistic_git_helpers::HelperIpcResponse::Askpass { secret }
+        }
+        crate::ssh_auth::SshAskpassDecision::PromptUser {
+            key,
+            prompt,
+            remember_available,
+        } => match prompt_sink.prompt_ssh_passphrase(
+            crate::ssh_auth::SshPassphrasePromptRequest::new(&key, prompt, remember_available),
+        ) {
+            crate::ssh_auth::SshPassphrasePromptResult::Cancel => {
+                artistic_git_helpers::HelperIpcResponse::Error {
+                    message: format!("SSH passphrase entry for {} was cancelled", key.key_id),
+                }
+            }
+            crate::ssh_auth::SshPassphrasePromptResult::Submit(submission) => {
+                let remember = submission.remember && remember_available;
+                match crate::ssh_auth::remember_prompted_passphrase(
+                    cache,
+                    Some(keyring),
+                    &key,
+                    submission.passphrase.clone(),
+                    remember,
+                ) {
+                    Ok(()) => artistic_git_helpers::HelperIpcResponse::Askpass {
+                        secret: submission.passphrase,
+                    },
+                    Err(error) => artistic_git_helpers::HelperIpcResponse::Error {
+                        message: format!(
+                            "SSH passphrase could not be saved for {}: {error}",
+                            key.key_id
+                        ),
+                    },
+                }
+            }
+        },
+        crate::ssh_auth::SshAskpassDecision::Fail {
+            reason,
+            classification,
+        } => artistic_git_helpers::HelperIpcResponse::Error {
+            message: ssh_askpass_failure_message(reason, classification),
+        },
+    }
+}
+
+fn ssh_askpass_failure_message(
+    reason: crate::ssh_auth::SshAskpassFailureReason,
+    classification: crate::ssh_auth::SshAuthFailureClassification,
+) -> String {
+    let detail = match reason {
+        crate::ssh_auth::SshAskpassFailureReason::PassphraseRequired => {
+            "SSH key passphrase is required but this operation is non-interactive"
+        }
+        crate::ssh_auth::SshAskpassFailureReason::UnsupportedPrompt => {
+            "SSH askpass prompt is not supported"
+        }
+        crate::ssh_auth::SshAskpassFailureReason::KeyringUnavailable => {
+            "SSH passphrase keyring is unavailable"
+        }
+    };
+    let class = match classification {
+        crate::ssh_auth::SshAuthFailureClassification::ExpectedOffline => "expected offline",
+        crate::ssh_auth::SshAuthFailureClassification::ExpectedAuthenticationFailure => {
+            "expected authentication failure"
+        }
+    };
+    format!("{detail} ({class})")
 }
 
 fn credentials_registry_error(operation_name: &str) -> AppError {
@@ -3615,12 +3762,43 @@ struct CloneTarget {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use artistic_git_core::keyring::{InMemoryCredentialStore, SshPassphraseKey};
     use artistic_git_git_runner::GitDistribution;
+    use artistic_git_helpers::HelperIpcResponse;
     use artistic_git_test_support::{
         git_dist_manifest_fixture, require_git_dist, write_executable_script,
         write_git_dist_manifest, GitDistError, TestTempDir,
     };
-    use std::io::Write;
+    use std::{io::Write, sync::Mutex};
+
+    #[derive(Debug)]
+    struct TestSshPassphrasePromptSink {
+        response: crate::ssh_auth::SshPassphrasePromptResult,
+        requests: Mutex<Vec<crate::ssh_auth::SshPassphrasePromptRequest>>,
+    }
+
+    impl TestSshPassphrasePromptSink {
+        fn new(response: crate::ssh_auth::SshPassphrasePromptResult) -> Self {
+            Self {
+                response,
+                requests: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn requests(&self) -> Vec<crate::ssh_auth::SshPassphrasePromptRequest> {
+            self.requests.lock().expect("requests").clone()
+        }
+    }
+
+    impl crate::ssh_auth::SshPassphrasePromptSink for TestSshPassphrasePromptSink {
+        fn prompt_ssh_passphrase(
+            &self,
+            request: crate::ssh_auth::SshPassphrasePromptRequest,
+        ) -> crate::ssh_auth::SshPassphrasePromptResult {
+            self.requests.lock().expect("requests").push(request);
+            self.response.clone()
+        }
+    }
 
     #[test]
     fn local_change_parser_marks_untracked_as_added() {
@@ -3633,6 +3811,124 @@ mod tests {
     fn log_pagination_is_capped_at_phase_batch_size() {
         assert_eq!(log_limit_and_skip(None, None), (200, 0));
         assert_eq!(log_limit_and_skip(Some(500), Some("12")), (200, 12));
+    }
+
+    #[test]
+    fn ssh_askpass_prompts_and_remembers_passphrase_when_enabled() {
+        let cache = crate::ssh_auth::SshPassphraseCache::new();
+        let vault = KeyringVault::new(Arc::new(InMemoryCredentialStore::default()));
+        let sink =
+            TestSshPassphrasePromptSink::new(crate::ssh_auth::SshPassphrasePromptResult::Submit(
+                crate::ssh_auth::SshPassphrasePromptSubmission::new("secret", true),
+            ));
+
+        let response = handle_ssh_askpass_request(
+            &cache,
+            &vault,
+            &sink,
+            crate::auth_ipc::InteractionPolicy::interactive(),
+            true,
+            "Enter passphrase for key '/Users/me/.ssh/id_ed25519':".to_owned(),
+        );
+
+        assert_eq!(
+            response,
+            HelperIpcResponse::Askpass {
+                secret: "secret".to_owned(),
+            }
+        );
+        assert_eq!(
+            sink.requests(),
+            vec![crate::ssh_auth::SshPassphrasePromptRequest {
+                key_id: "/Users/me/.ssh/id_ed25519".to_owned(),
+                prompt: "Enter passphrase for key '/Users/me/.ssh/id_ed25519':".to_owned(),
+                remember_available: true,
+            }]
+        );
+        let key = SshPassphraseKey::new("/Users/me/.ssh/id_ed25519");
+        assert_eq!(cache.get(&key), Some("secret".to_owned()));
+        assert_eq!(
+            vault.get_ssh_passphrase(&key).expect("stored passphrase"),
+            Some("secret".to_owned())
+        );
+    }
+
+    #[test]
+    fn ssh_askpass_uses_memory_cache_without_prompting() {
+        let cache = crate::ssh_auth::SshPassphraseCache::new();
+        let vault = KeyringVault::new(Arc::new(InMemoryCredentialStore::default()));
+        let key = SshPassphraseKey::new("/Users/me/.ssh/id_ed25519");
+        cache.insert(key, "cached-secret");
+        let sink =
+            TestSshPassphrasePromptSink::new(crate::ssh_auth::SshPassphrasePromptResult::Cancel);
+
+        let response = handle_ssh_askpass_request(
+            &cache,
+            &vault,
+            &sink,
+            crate::auth_ipc::InteractionPolicy::background_non_interactive(),
+            false,
+            "Enter passphrase for key '/Users/me/.ssh/id_ed25519':".to_owned(),
+        );
+
+        assert_eq!(
+            response,
+            HelperIpcResponse::Askpass {
+                secret: "cached-secret".to_owned(),
+            }
+        );
+        assert!(sink.requests().is_empty());
+    }
+
+    #[test]
+    fn ssh_askpass_background_without_cache_fails_without_prompting() {
+        let cache = crate::ssh_auth::SshPassphraseCache::new();
+        let vault = KeyringVault::new(Arc::new(InMemoryCredentialStore::default()));
+        let sink =
+            TestSshPassphrasePromptSink::new(crate::ssh_auth::SshPassphrasePromptResult::Cancel);
+
+        let response = handle_ssh_askpass_request(
+            &cache,
+            &vault,
+            &sink,
+            crate::auth_ipc::InteractionPolicy::background_non_interactive(),
+            false,
+            "Enter passphrase for key '/Users/me/.ssh/id_ed25519':".to_owned(),
+        );
+
+        match response {
+            HelperIpcResponse::Error { message } => {
+                assert!(message.contains("non-interactive"));
+                assert!(message.contains("expected offline"));
+            }
+            other => panic!("expected askpass error, got {other:?}"),
+        }
+        assert!(sink.requests().is_empty());
+    }
+
+    #[test]
+    fn ssh_askpass_cancel_returns_error() {
+        let cache = crate::ssh_auth::SshPassphraseCache::new();
+        let vault = KeyringVault::new(Arc::new(InMemoryCredentialStore::default()));
+        let sink =
+            TestSshPassphrasePromptSink::new(crate::ssh_auth::SshPassphrasePromptResult::Cancel);
+
+        let response = handle_ssh_askpass_request(
+            &cache,
+            &vault,
+            &sink,
+            crate::auth_ipc::InteractionPolicy::interactive(),
+            false,
+            "Enter passphrase for key '/Users/me/.ssh/id_ed25519':".to_owned(),
+        );
+
+        match response {
+            HelperIpcResponse::Error { message } => {
+                assert!(message.contains("was cancelled"));
+            }
+            other => panic!("expected askpass error, got {other:?}"),
+        }
+        assert_eq!(sink.requests().len(), 1);
     }
 
     #[test]

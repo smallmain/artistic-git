@@ -32,8 +32,18 @@ struct HttpsCredentialPromptState {
 }
 
 #[derive(Default)]
+struct SshPassphrasePromptState {
+    registry: Arc<SshPassphrasePromptRegistry>,
+}
+
+#[derive(Default)]
 struct HttpsCredentialPromptRegistry {
     inner: Mutex<HttpsCredentialPromptRegistryInner>,
+}
+
+#[derive(Default)]
+struct SshPassphrasePromptRegistry {
+    inner: Mutex<SshPassphrasePromptRegistryInner>,
 }
 
 #[derive(Default)]
@@ -42,8 +52,19 @@ struct HttpsCredentialPromptRegistryInner {
     pending: BTreeMap<String, mpsc::Sender<HttpsCredentialPromptResponse>>,
 }
 
+#[derive(Default)]
+struct SshPassphrasePromptRegistryInner {
+    next_id: u64,
+    pending: BTreeMap<String, mpsc::Sender<SshPassphrasePromptResponse>>,
+}
+
 enum HttpsCredentialPromptResponse {
     Submit(artistic_git_app::https_auth::HttpsCredentialPromptSubmission),
+    Cancel,
+}
+
+enum SshPassphrasePromptResponse {
+    Submit(artistic_git_app::ssh_auth::SshPassphrasePromptSubmission),
     Cancel,
 }
 
@@ -51,6 +72,12 @@ enum HttpsCredentialPromptResponse {
 struct TauriHttpsCredentialPromptSink {
     app: tauri::AppHandle,
     registry: Arc<HttpsCredentialPromptRegistry>,
+}
+
+#[derive(Clone)]
+struct TauriSshPassphrasePromptSink {
+    app: tauri::AppHandle,
+    registry: Arc<SshPassphrasePromptRegistry>,
 }
 
 impl artistic_git_app::https_auth::HttpsCredentialPromptSink for TauriHttpsCredentialPromptSink {
@@ -62,11 +89,27 @@ impl artistic_git_app::https_auth::HttpsCredentialPromptSink for TauriHttpsCrede
     }
 }
 
+impl artistic_git_app::ssh_auth::SshPassphrasePromptSink for TauriSshPassphrasePromptSink {
+    fn prompt_ssh_passphrase(
+        &self,
+        request: artistic_git_app::SshPassphrasePromptRequest,
+    ) -> artistic_git_app::ssh_auth::SshPassphrasePromptResult {
+        self.registry.prompt(&self.app, request)
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct HttpsCredentialPromptEvent {
     prompt_id: String,
     request: artistic_git_app::HttpsCredentialPromptRequest,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SshPassphrasePromptEvent {
+    prompt_id: String,
+    request: artistic_git_app::SshPassphrasePromptRequest,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -76,6 +119,15 @@ struct SubmitHttpsCredentialPromptRequest {
     username: Option<String>,
     token: Option<String>,
     scope: Option<artistic_git_app::HttpsCredentialScope>,
+    cancelled: bool,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SubmitSshPassphrasePromptRequest {
+    prompt_id: String,
+    passphrase: Option<String>,
+    remember: bool,
     cancelled: bool,
 }
 
@@ -157,6 +209,78 @@ impl HttpsCredentialPromptRegistry {
     }
 
     fn remove(&self, prompt_id: &str) -> Option<mpsc::Sender<HttpsCredentialPromptResponse>> {
+        self.inner.lock().ok()?.pending.remove(prompt_id)
+    }
+}
+
+impl SshPassphrasePromptRegistry {
+    fn prompt(
+        &self,
+        app: &tauri::AppHandle,
+        request: artistic_git_app::SshPassphrasePromptRequest,
+    ) -> artistic_git_app::ssh_auth::SshPassphrasePromptResult {
+        let (tx, rx) = mpsc::channel();
+        let prompt_id = {
+            let mut inner = match self.inner.lock() {
+                Ok(inner) => inner,
+                Err(_) => {
+                    return artistic_git_app::ssh_auth::SshPassphrasePromptResult::Cancel;
+                }
+            };
+            inner.next_id = inner.next_id.saturating_add(1);
+            let prompt_id = format!("ssh-passphrase-{}", inner.next_id);
+            inner.pending.insert(prompt_id.clone(), tx);
+            prompt_id
+        };
+
+        let event = SshPassphrasePromptEvent {
+            prompt_id: prompt_id.clone(),
+            request,
+        };
+        if app.emit("ssh-passphrase-prompt", event).is_err() {
+            self.remove(&prompt_id);
+            return artistic_git_app::ssh_auth::SshPassphrasePromptResult::Cancel;
+        }
+
+        match rx.recv() {
+            Ok(SshPassphrasePromptResponse::Submit(submission)) => {
+                artistic_git_app::ssh_auth::SshPassphrasePromptResult::Submit(submission)
+            }
+            Ok(SshPassphrasePromptResponse::Cancel) | Err(_) => {
+                artistic_git_app::ssh_auth::SshPassphrasePromptResult::Cancel
+            }
+        }
+    }
+
+    fn submit(&self, request: SubmitSshPassphrasePromptRequest) -> Result<(), String> {
+        let sender = self.remove(&request.prompt_id).ok_or_else(|| {
+            format!(
+                "SSH passphrase prompt {} is no longer active",
+                request.prompt_id
+            )
+        })?;
+
+        let response = if request.cancelled {
+            SshPassphrasePromptResponse::Cancel
+        } else {
+            let passphrase = request
+                .passphrase
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "passphrase is required".to_owned())?;
+            SshPassphrasePromptResponse::Submit(
+                artistic_git_app::ssh_auth::SshPassphrasePromptSubmission::new(
+                    passphrase,
+                    request.remember,
+                ),
+            )
+        };
+
+        sender
+            .send(response)
+            .map_err(|_| "SSH passphrase prompt receiver was dropped".to_owned())
+    }
+
+    fn remove(&self, prompt_id: &str) -> Option<mpsc::Sender<SshPassphrasePromptResponse>> {
         self.inner.lock().ok()?.pending.remove(prompt_id)
     }
 }
@@ -1262,6 +1386,19 @@ fn submit_https_credential_prompt(
     })
 }
 
+#[tauri::command]
+fn submit_ssh_passphrase_prompt(
+    state: State<'_, SshPassphrasePromptState>,
+    request: SubmitSshPassphrasePromptRequest,
+) -> artistic_git_contracts::AppResult<()> {
+    state.registry.submit(request).map_err(|message| {
+        artistic_git_app::logged_app_error(artistic_git_contracts::AppError::expected(
+            message,
+            "submitSshPassphrasePrompt",
+        ))
+    })
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(handle_second_instance))
@@ -1284,10 +1421,18 @@ pub fn run() {
             app.manage(WindowRegistry::default());
             app.manage(updater_runtime::UpdaterRuntimeState::default());
             let credential_prompts = Arc::new(HttpsCredentialPromptRegistry::default());
+            let ssh_passphrase_prompts = Arc::new(SshPassphrasePromptRegistry::default());
             app.manage(HttpsCredentialPromptState {
                 registry: Arc::clone(&credential_prompts),
             });
-            app.manage(repository_backend(app, credential_prompts)?);
+            app.manage(SshPassphrasePromptState {
+                registry: Arc::clone(&ssh_passphrase_prompts),
+            });
+            app.manage(repository_backend(
+                app,
+                credential_prompts,
+                ssh_passphrase_prompts,
+            )?);
 
             Ok(())
         })
@@ -1363,6 +1508,7 @@ pub fn run() {
             save_https_credential,
             delete_https_credential,
             submit_https_credential_prompt,
+            submit_ssh_passphrase_prompt,
             updater_runtime::check_for_updates,
             updater_runtime::update_install_gate,
             updater_runtime::install_ready_update
@@ -2149,6 +2295,7 @@ fn window_command_error(
 fn repository_backend(
     app: &tauri::App,
     credential_prompts: Arc<HttpsCredentialPromptRegistry>,
+    ssh_passphrase_prompts: Arc<SshPassphrasePromptRegistry>,
 ) -> Result<artistic_git_app::RepositoryBackend, Box<dyn std::error::Error>> {
     let dist_root = git_dist_root(app)?;
     let app_data_dir = app.path().app_data_dir()?;
@@ -2174,12 +2321,16 @@ fn repository_backend(
         let _ = app_handle.emit("config-change", &event);
     }))?;
 
-    Ok(artistic_git_app::RepositoryBackend::with_https_prompt_sink(
+    Ok(artistic_git_app::RepositoryBackend::with_auth_prompt_sinks(
         runner,
         Some(config),
         Arc::new(TauriHttpsCredentialPromptSink {
             app: app.handle().clone(),
             registry: credential_prompts,
+        }),
+        Arc::new(TauriSshPassphrasePromptSink {
+            app: app.handle().clone(),
+            registry: ssh_passphrase_prompts,
         }),
     ))
 }
