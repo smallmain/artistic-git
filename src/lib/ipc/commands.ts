@@ -38,6 +38,7 @@ import type {
   DeleteHttpsCredentialRequest,
   DeleteStashRequest,
   DeleteStashResponse,
+  ExitReviewModeResponse,
   FetchRepositoryRequest,
   FetchRepositoryResponse,
   GenerateSshKeyRequest,
@@ -65,6 +66,9 @@ import type {
   RestoreStashResponse,
   RevertCommitRequest,
   RevertCommitResponse,
+  ReviewModeRecoveryRequest,
+  ReviewModeRecoveryResponse,
+  ReviewModeRequest,
   SaveAppSettingsRequest,
   SaveGitignoreRequest,
   SaveProjectSettingsRequest,
@@ -74,10 +78,13 @@ import type {
   StashDetailsRequest,
   StashDetailsResponse,
   StashListResponse,
+  StartReviewModeRequest,
+  StartReviewModeResponse,
   SyncBranchRequest,
   SyncBranchResponse,
   SyncCurrentBranchRequest,
   SyncCurrentBranchResponse,
+  SyncReviewModeResponse,
 } from "./generated";
 import type {
   UpdateCheckRequest,
@@ -93,6 +100,7 @@ export interface AppCommandArgs {
   register_window_repository: { request: OpenRepositoryWindowRequest };
   save_window_geometry: { request: OpenRepositoryWindowRequest };
   close_current_window: undefined;
+  set_window_close_guard: { request: WindowCloseGuardRequest };
   open_log_dir: undefined;
   open_repository: { request: OpenRepositoryRequest };
   clone_repository: { request: CloneRepositoryRequest };
@@ -101,6 +109,12 @@ export interface AppCommandArgs {
   fetch_repository: { request: FetchRepositoryRequest };
   sync_current_branch: { request: SyncCurrentBranchRequest };
   sync_branch: { request: SyncBranchRequest };
+  start_review_mode: { request: StartReviewModeRequest };
+  sync_review_mode: { request: ReviewModeRequest };
+  exit_review_mode: { request: ReviewModeRequest };
+  review_mode_recovery: { request: ReviewModeRecoveryRequest };
+  recover_review_mode_stash: { request: ReviewModeRecoveryRequest };
+  dismiss_review_mode_recovery: { request: ReviewModeRecoveryRequest };
   load_remote_settings: { request: RepositoryPathRequest };
   save_remote_settings: { request: SaveRemoteSettingsRequest };
   list_branches: { request: RepositoryPathRequest };
@@ -153,6 +167,7 @@ export interface AppCommandResponses {
   register_window_repository: WindowContextResponse;
   save_window_geometry: ProjectSettings;
   close_current_window: void;
+  set_window_close_guard: void;
   open_log_dir: OpenLogDirResponse;
   open_repository: OpenRepositoryResponse;
   clone_repository: CloneRepositoryResponse;
@@ -161,6 +176,12 @@ export interface AppCommandResponses {
   fetch_repository: FetchRepositoryResponse;
   sync_current_branch: SyncCurrentBranchResponse;
   sync_branch: SyncBranchResponse;
+  start_review_mode: StartReviewModeResponse;
+  sync_review_mode: SyncReviewModeResponse;
+  exit_review_mode: ExitReviewModeResponse;
+  review_mode_recovery: ReviewModeRecoveryResponse;
+  recover_review_mode_stash: ExitReviewModeResponse;
+  dismiss_review_mode_recovery: ReviewModeRecoveryResponse;
   load_remote_settings: RemoteSettingsResponse;
   save_remote_settings: RemoteSettingsResponse;
   list_branches: BranchListResponse;
@@ -221,6 +242,10 @@ export interface NewWindowResponse {
 
 export interface OpenRepositoryWindowRequest {
   repositoryPath: string;
+}
+
+export interface WindowCloseGuardRequest {
+  active: boolean;
 }
 
 export interface OpenRepositoryWindowResponse {
@@ -286,6 +311,12 @@ export function closeCurrentWindow(): Promise<void> {
   return invokeAppCommand("close_current_window");
 }
 
+export function setWindowCloseGuard(
+  request: WindowCloseGuardRequest,
+): Promise<void> {
+  return invokeAppCommand("set_window_close_guard", { request });
+}
+
 export function openLogDir(): Promise<OpenLogDirResponse> {
   return invokeAppCommand("open_log_dir");
 }
@@ -330,6 +361,42 @@ export function syncBranch(
   request: SyncBranchRequest,
 ): Promise<SyncBranchResponse> {
   return invokeAppCommand("sync_branch", { request });
+}
+
+export function startReviewMode(
+  request: StartReviewModeRequest,
+): Promise<StartReviewModeResponse> {
+  return invokeAppCommand("start_review_mode", { request });
+}
+
+export function syncReviewMode(
+  request: ReviewModeRequest,
+): Promise<SyncReviewModeResponse> {
+  return invokeAppCommand("sync_review_mode", { request });
+}
+
+export function exitReviewMode(
+  request: ReviewModeRequest,
+): Promise<ExitReviewModeResponse> {
+  return invokeAppCommand("exit_review_mode", { request });
+}
+
+export function reviewModeRecovery(
+  request: ReviewModeRecoveryRequest,
+): Promise<ReviewModeRecoveryResponse> {
+  return invokeAppCommand("review_mode_recovery", { request });
+}
+
+export function recoverReviewModeStash(
+  request: ReviewModeRecoveryRequest,
+): Promise<ExitReviewModeResponse> {
+  return invokeAppCommand("recover_review_mode_stash", { request });
+}
+
+export function dismissReviewModeRecovery(
+  request: ReviewModeRecoveryRequest,
+): Promise<ReviewModeRecoveryResponse> {
+  return invokeAppCommand("dismiss_review_mode_recovery", { request });
 }
 
 export function loadRemoteSettings(

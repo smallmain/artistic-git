@@ -193,6 +193,48 @@ impl RepositoryBackend {
         crate::sync_branch(&self.runner, request)
     }
 
+    pub fn start_review_mode(
+        &self,
+        request: artistic_git_contracts::StartReviewModeRequest,
+    ) -> AppResult<artistic_git_contracts::StartReviewModeResponse> {
+        crate::start_review_mode_with_config(&self.runner, self.config.as_ref(), request)
+    }
+
+    pub fn sync_review_mode(
+        &self,
+        request: artistic_git_contracts::ReviewModeRequest,
+    ) -> AppResult<artistic_git_contracts::SyncReviewModeResponse> {
+        crate::sync_review_mode_with_lock(&self.runner, request)
+    }
+
+    pub fn exit_review_mode(
+        &self,
+        request: artistic_git_contracts::ReviewModeRequest,
+    ) -> AppResult<artistic_git_contracts::ExitReviewModeResponse> {
+        crate::exit_review_mode_with_config(&self.runner, self.config.as_ref(), request)
+    }
+
+    pub fn review_mode_recovery(
+        &self,
+        request: artistic_git_contracts::ReviewModeRecoveryRequest,
+    ) -> AppResult<artistic_git_contracts::ReviewModeRecoveryResponse> {
+        crate::review_mode_recovery(&self.runner, self.config.as_ref(), request)
+    }
+
+    pub fn recover_review_mode_stash(
+        &self,
+        request: artistic_git_contracts::ReviewModeRecoveryRequest,
+    ) -> AppResult<artistic_git_contracts::ExitReviewModeResponse> {
+        crate::recover_review_mode_stash_with_config(&self.runner, self.config.as_ref(), request)
+    }
+
+    pub fn dismiss_review_mode_recovery(
+        &self,
+        request: artistic_git_contracts::ReviewModeRecoveryRequest,
+    ) -> AppResult<artistic_git_contracts::ReviewModeRecoveryResponse> {
+        crate::dismiss_review_mode_recovery(self.config.as_ref(), request)
+    }
+
     pub fn load_remote_settings(
         &self,
         request: RepositoryPathRequest,
@@ -1884,15 +1926,12 @@ fn display_content_for_side(
         });
     };
 
-    match read_local_lfs_object(runner, root, &pointer.oid, Some(pointer.size)) {
-        Ok(content) => {
-            return Ok(DisplayContent {
-                content,
-                lfs_pointer: true,
-                fetch_attempted: false,
-            });
-        }
-        Err(_) => {}
+    if let Ok(content) = read_local_lfs_object(runner, root, &pointer.oid, Some(pointer.size)) {
+        return Ok(DisplayContent {
+            content,
+            lfs_pointer: true,
+            fetch_attempted: false,
+        });
     }
 
     if let Err(error) = fetch_lfs_object(runner, root, &pointer.oid, "listLocalChanges") {

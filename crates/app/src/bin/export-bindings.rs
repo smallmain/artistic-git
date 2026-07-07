@@ -18,13 +18,16 @@ use artistic_git_contracts::{
     ConflictSelectSideRequest, ConflictSelectSideResponse, CreateAutoStashRequest,
     CreateBranchRequest, CreateStashRequest, CreateStashResponse, DeleteBranchRequest,
     DeleteStashRequest, DeleteStashResponse, DiffAsset, DiffContent, DiffPayload,
-    FetchRepositoryRequest, FetchRepositoryResponse, GitDistManifest, LargeFileWarning,
-    LfsContentStatus, LocalChangesResponse, LogPageRequest, LogPageResponse, LogSearchRequest,
-    OpenRepositoryRequest, OpenRepositoryResponse, RemoteSettingsResponse, RepositoryPathRequest,
-    RepositorySummary, RestoreChangesRequest, RestoreChangesResponse, RestoreStashRequest,
-    RestoreStashResponse, RevertCommitRequest, RevertCommitResponse, SaveRemoteSettingsRequest,
+    ExitReviewModeResponse, FetchRepositoryRequest, FetchRepositoryResponse, GitDistManifest,
+    LargeFileWarning, LfsContentStatus, LocalChangesResponse, LogPageRequest, LogPageResponse,
+    LogSearchRequest, OpenRepositoryRequest, OpenRepositoryResponse, RemoteSettingsResponse,
+    RepositoryPathRequest, RepositorySummary, RestoreChangesRequest, RestoreChangesResponse,
+    RestoreStashRequest, RestoreStashResponse, RevertCommitRequest, RevertCommitResponse,
+    ReviewModeRecoveryRequest, ReviewModeRecoveryResponse, ReviewModeRequest,
+    SaveRemoteSettingsRequest, StartReviewModeRequest, StartReviewModeResponse,
     StashDetailsRequest, StashDetailsResponse, StashListResponse, SyncBranchRequest,
     SyncBranchResponse, SyncCurrentBranchRequest, SyncCurrentBranchResponse,
+    SyncReviewModeResponse,
 };
 use artistic_git_core::config::{
     AppSettings, ConfigChangeEvent, ProjectSettings, ProjectsDocument,
@@ -50,6 +53,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register::<SyncCurrentBranchResponse>()
         .register::<SyncBranchRequest>()
         .register::<SyncBranchResponse>()
+        .register::<StartReviewModeRequest>()
+        .register::<StartReviewModeResponse>()
+        .register::<ReviewModeRequest>()
+        .register::<SyncReviewModeResponse>()
+        .register::<ExitReviewModeResponse>()
+        .register::<ReviewModeRecoveryRequest>()
+        .register::<ReviewModeRecoveryResponse>()
         .register::<RemoteSettingsResponse>()
         .register::<SaveRemoteSettingsRequest>()
         .register::<BranchListResponse>()

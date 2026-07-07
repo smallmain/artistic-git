@@ -316,6 +316,86 @@ pub struct SyncBranchResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
+pub struct StartReviewModeRequest {
+    pub repository_path: String,
+    pub operation_id: Option<OperationId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewModeRequest {
+    pub repository_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewModeRecoveryRequest {
+    pub repository_path: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ReviewModePullStatus {
+    NoRemote,
+    NoUpstream,
+    AlreadyUpToDate,
+    Pulled,
+    Offline,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ReviewModeExitStatus {
+    Applied,
+    NothingToRestore,
+    Conflicts,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewModeState {
+    pub repository_path: String,
+    pub branch_name: Option<String>,
+    pub head_oid: Option<String>,
+    pub latest_commit: Option<CommitSummary>,
+    pub auto_stash: Option<StashEntry>,
+    pub pull_status: ReviewModePullStatus,
+    pub pull_message: Option<String>,
+    pub has_remote_update: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct StartReviewModeResponse {
+    pub state: ReviewModeState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncReviewModeResponse {
+    pub state: ReviewModeState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ExitReviewModeResponse {
+    pub repository_path: String,
+    pub status: ReviewModeExitStatus,
+    pub conflict: Option<ConflictEnteredEvent>,
+    pub stash_recovery: Option<StashRecoveryPoint>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewModeRecoveryResponse {
+    pub repository_path: String,
+    pub auto_stash: Option<StashEntry>,
+    pub should_prompt: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
 pub struct ConflictEnteredEvent {
     pub operation_id: OperationId,
     pub repository_path: String,

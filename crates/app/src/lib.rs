@@ -21,6 +21,7 @@ pub mod remote;
 pub mod repository;
 pub mod restore;
 pub mod revert;
+pub mod review;
 pub mod settings;
 pub mod ssh_auth;
 #[path = "stash.rs"]
@@ -93,6 +94,10 @@ pub use repository::{
 };
 pub use restore::restore_changes;
 pub use revert::abort_revert;
+pub use review::{
+    dismiss_review_mode_recovery, exit_review_mode, recover_review_mode_stash,
+    review_mode_recovery, start_review_mode, sync_review_mode,
+};
 pub use settings::{
     generate_ssh_key, identity_sources, load_app_settings, load_gitignore, load_project_settings,
     save_app_settings, save_gitignore, save_project_settings, settings_snapshot, ssh_key_status,
@@ -121,6 +126,46 @@ pub fn sync_branch(
 ) -> AppResult<SyncBranchResponse> {
     let _permit = begin_identity_write(runner, "syncBranch", &request.repository_path, false)?;
     sync::sync_branch(runner, request)
+}
+
+pub fn start_review_mode_with_config(
+    runner: &GitRunner,
+    config: Option<&artistic_git_core::config::ConfigActor>,
+    request: artistic_git_contracts::StartReviewModeRequest,
+) -> AppResult<artistic_git_contracts::StartReviewModeResponse> {
+    let _permit = begin_identity_write(runner, "startReviewMode", &request.repository_path, true)?;
+    review::start_review_mode(runner, config, request)
+}
+
+pub fn sync_review_mode_with_lock(
+    runner: &GitRunner,
+    request: artistic_git_contracts::ReviewModeRequest,
+) -> AppResult<artistic_git_contracts::SyncReviewModeResponse> {
+    let _permit = begin_identity_write(runner, "syncReviewMode", &request.repository_path, false)?;
+    review::sync_review_mode(runner, request)
+}
+
+pub fn exit_review_mode_with_config(
+    runner: &GitRunner,
+    config: Option<&artistic_git_core::config::ConfigActor>,
+    request: artistic_git_contracts::ReviewModeRequest,
+) -> AppResult<artistic_git_contracts::ExitReviewModeResponse> {
+    let _permit = begin_identity_write(runner, "exitReviewMode", &request.repository_path, false)?;
+    review::exit_review_mode(runner, config, request)
+}
+
+pub fn recover_review_mode_stash_with_config(
+    runner: &GitRunner,
+    config: Option<&artistic_git_core::config::ConfigActor>,
+    request: artistic_git_contracts::ReviewModeRecoveryRequest,
+) -> AppResult<artistic_git_contracts::ExitReviewModeResponse> {
+    let _permit = begin_identity_write(
+        runner,
+        "recoverReviewModeStash",
+        &request.repository_path,
+        false,
+    )?;
+    review::recover_review_mode_stash(runner, config, request)
 }
 
 pub fn commit_changes(runner: &GitRunner, request: CommitRequest) -> AppResult<CommitResponse> {

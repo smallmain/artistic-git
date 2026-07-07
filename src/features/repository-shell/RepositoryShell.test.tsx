@@ -31,6 +31,8 @@ const commandMocks = vi.hoisted(() => ({
   createStash: vi.fn(),
   deleteBranch: vi.fn(),
   deleteStash: vi.fn(),
+  dismissReviewModeRecovery: vi.fn(),
+  exitReviewMode: vi.fn(),
   fetchRepository: vi.fn(),
   listBranches: vi.fn(),
   listConflicts: vi.fn(),
@@ -40,14 +42,19 @@ const commandMocks = vi.hoisted(() => ({
   repositorySummary: vi.fn(),
   restoreChanges: vi.fn(),
   restoreStash: vi.fn(),
+  recoverReviewModeStash: vi.fn(),
   saveProjectSettings: vi.fn(),
+  reviewModeRecovery: vi.fn(),
   revertCommit: vi.fn(),
   saveWindowGeometry: vi.fn(),
   saveConflictResolution: vi.fn(),
   selectConflictSide: vi.fn(),
+  setWindowCloseGuard: vi.fn(),
   settingsSnapshot: vi.fn(),
   stashDetails: vi.fn(),
+  startReviewMode: vi.fn(),
   syncCurrentBranch: vi.fn(),
+  syncReviewMode: vi.fn(),
   validateBranchName: vi.fn(),
 }));
 
@@ -132,7 +139,8 @@ function createConflictEvent(): ConflictEnteredEvent {
   });
   commandMocks.conflictDetail.mockResolvedValue({
     detail: {
-      currentText: "before\n<<<<<<< HEAD\nown\n=======\nother\n>>>>>>> branch\n",
+      currentText:
+        "before\n<<<<<<< HEAD\nown\n=======\nother\n>>>>>>> branch\n",
       hunks: [],
       kind: "text",
       language: null,
@@ -244,6 +252,35 @@ beforeEach(() => {
     stashRecovery: null,
     upstream: "origin/main",
   });
+  commandMocks.reviewModeRecovery.mockResolvedValue({
+    autoStash: null,
+    repositoryPath: "/repo/art",
+    shouldPrompt: false,
+  });
+  commandMocks.startReviewMode.mockResolvedValue({
+    state: reviewModeState(),
+  });
+  commandMocks.syncReviewMode.mockResolvedValue({
+    state: reviewModeState({ hasRemoteUpdate: false, subject: "Remote sync" }),
+  });
+  commandMocks.exitReviewMode.mockResolvedValue({
+    conflict: null,
+    repositoryPath: "/repo/art",
+    stashRecovery: null,
+    status: "applied",
+  });
+  commandMocks.recoverReviewModeStash.mockResolvedValue({
+    conflict: null,
+    repositoryPath: "/repo/art",
+    stashRecovery: null,
+    status: "applied",
+  });
+  commandMocks.dismissReviewModeRecovery.mockResolvedValue({
+    autoStash: null,
+    repositoryPath: "/repo/art",
+    shouldPrompt: false,
+  });
+  commandMocks.setWindowCloseGuard.mockResolvedValue(undefined);
   commandMocks.restoreStash.mockResolvedValue({
     oid: "stashoid",
     outcome: { status: "applied", dropped: false },
@@ -539,6 +576,103 @@ describe("RepositoryShell stash flow", () => {
     expect(dialog).toHaveTextContent("src/app.ts");
     expect(dialog).toHaveTextContent("Modified");
     expect(dialog).toHaveTextContent("diff --git a/src/app.ts b/src/app.ts");
+  });
+});
+
+describe("RepositoryShell review mode", () => {
+  it("starts review mode, blocks the shell, syncs remote updates, and exits", async () => {
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Review Mode" }));
+
+    const overlay = await screen.findByRole("dialog", { name: "Review mode" });
+    expect(commandMocks.startReviewMode).toHaveBeenCalledWith({
+      operationId: null,
+      repositoryPath: "/repo/art",
+    });
+    expect(overlay).toHaveTextContent("Branch main");
+    expect(overlay).toHaveTextContent("Latest remote work");
+    expect(overlay).toHaveTextContent("New remote content is available.");
+    expect(screen.getByRole("button", { name: "Review Mode" })).toBeDisabled();
+    expect(commandMocks.setWindowCloseGuard).toHaveBeenCalledWith({
+      active: true,
+    });
+
+    fireEvent.click(within(overlay).getByRole("button", { name: "Sync" }));
+
+    await waitFor(() => expect(commandMocks.syncReviewMode).toHaveBeenCalled());
+    expect(commandMocks.syncReviewMode).toHaveBeenCalledWith({
+      repositoryPath: "/repo/art",
+    });
+    expect(await screen.findByText("Remote sync")).toBeInTheDocument();
+
+    fireEvent.click(
+      within(overlay).getByRole("button", { name: "Exit review mode" }),
+    );
+
+    await waitFor(() => expect(commandMocks.exitReviewMode).toHaveBeenCalled());
+    expect(commandMocks.exitReviewMode).toHaveBeenCalledWith({
+      repositoryPath: "/repo/art",
+    });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("dialog", { name: "Review mode" }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(commandMocks.setWindowCloseGuard).toHaveBeenLastCalledWith({
+      active: false,
+    });
+  });
+
+  it("shows offline status inside review mode without dispatching a global error", async () => {
+    commandMocks.startReviewMode.mockResolvedValueOnce({
+      state: reviewModeState({
+        hasRemoteUpdate: false,
+        pullMessage: "could not resolve host",
+        pullStatus: "offline",
+      }),
+    });
+    const errorListener = vi.fn();
+    window.addEventListener("artistic-git:error", errorListener);
+
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Review Mode" }));
+
+    const overlay = await screen.findByRole("dialog", { name: "Review mode" });
+    expect(overlay).toHaveTextContent("Latest remote work");
+    expect(overlay).toHaveTextContent("could not resolve host");
+    expect(errorListener).not.toHaveBeenCalled();
+
+    window.removeEventListener("artistic-git:error", errorListener);
+  });
+
+  it("prompts to recover a previous review mode stash", async () => {
+    commandMocks.reviewModeRecovery.mockResolvedValueOnce({
+      autoStash: stashEntry({
+        isAutoStash: true,
+        message: "Auto Stash: review mode",
+        origin: "review mode",
+        selector: "stash@{0}",
+      }),
+      repositoryPath: "/repo/art",
+      shouldPrompt: true,
+    });
+
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    const dialog = await screen.findByRole("dialog", {
+      name: "Restore review mode changes?",
+    });
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Restore changes" }),
+    );
+
+    await waitFor(() =>
+      expect(commandMocks.recoverReviewModeStash).toHaveBeenCalledWith({
+        repositoryPath: "/repo/art",
+      }),
+    );
   });
 });
 
@@ -1279,5 +1413,41 @@ function stashEntry({
     oid: "stashoid",
     origin,
     selector,
+  };
+}
+
+function reviewModeState({
+  hasRemoteUpdate = true,
+  pullMessage = null,
+  pullStatus = "pulled",
+  subject = "Latest remote work",
+}: {
+  hasRemoteUpdate?: boolean;
+  pullMessage?: string | null;
+  pullStatus?: "pulled" | "offline" | "failed" | "alreadyUpToDate";
+  subject?: string;
+} = {}) {
+  return {
+    autoStash: stashEntry({
+      isAutoStash: true,
+      message: "Auto Stash: review mode",
+      origin: "review mode",
+      selector: "stash@{0}",
+    }),
+    branchName: "main",
+    hasRemoteUpdate,
+    headOid: "abc123456789",
+    latestCommit: {
+      authoredAtUnixSeconds: "1760000000",
+      authorEmail: "artist@example.com",
+      authorName: "Artist",
+      oid: "abc123456789",
+      parents: [],
+      refs: [],
+      subject,
+    },
+    pullMessage,
+    pullStatus,
+    repositoryPath: "/repo/art",
   };
 }

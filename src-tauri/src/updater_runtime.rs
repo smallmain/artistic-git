@@ -33,17 +33,12 @@ pub struct UpdateCheckRequest {
     pub source: UpdateCheckSource,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum UpdateCheckSource {
+    #[default]
     Manual,
     Automatic,
-}
-
-impl Default for UpdateCheckSource {
-    fn default() -> Self {
-        Self::Manual
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

@@ -403,6 +403,13 @@ export type DiffPayload = {
   metadata: { [key in string]: string };
 };
 
+export type ExitReviewModeResponse = {
+  repositoryPath: string;
+  status: ReviewModeExitStatus;
+  conflict: ConflictEnteredEvent | null;
+  stashRecovery: StashRecoveryPoint | null;
+};
+
 export type FetchRepositoryRequest = {
   repositoryPath: string;
 };
@@ -810,6 +817,41 @@ export type ReviewModeCrashMarker = {
   operationId?: string | null;
 };
 
+export type ReviewModeExitStatus = "applied" | "nothingToRestore" | "conflicts";
+
+export type ReviewModePullStatus =
+  | "noRemote"
+  | "noUpstream"
+  | "alreadyUpToDate"
+  | "pulled"
+  | "offline"
+  | "failed";
+
+export type ReviewModeRecoveryRequest = {
+  repositoryPath: string;
+};
+
+export type ReviewModeRecoveryResponse = {
+  repositoryPath: string;
+  autoStash: StashEntry | null;
+  shouldPrompt: boolean;
+};
+
+export type ReviewModeRequest = {
+  repositoryPath: string;
+};
+
+export type ReviewModeState = {
+  repositoryPath: string;
+  branchName: string | null;
+  headOid: string | null;
+  latestCommit: CommitSummary | null;
+  autoStash: StashEntry | null;
+  pullStatus: ReviewModePullStatus;
+  pullMessage: string | null;
+  hasRemoteUpdate: boolean;
+};
+
 export type SaveAppSettingsRequest = {
   settings: AppSettings;
   openRepositoryPaths?: string[];
@@ -853,6 +895,15 @@ export type SshKeyStatus = {
   publicKeyPath: string | null;
   publicKey: string | null;
   exists: boolean;
+};
+
+export type StartReviewModeRequest = {
+  repositoryPath: string;
+  operationId: OperationId | null;
+};
+
+export type StartReviewModeResponse = {
+  state: ReviewModeState;
 };
 
 export type StashDetailsRequest = {
@@ -948,6 +999,10 @@ export type SyncCurrentBranchStatus =
   | "pulledAndPushed"
   | "published"
   | "conflicts";
+
+export type SyncReviewModeResponse = {
+  state: ReviewModeState;
+};
 
 export type ThemePreference = "system" | "light" | "dark";
 

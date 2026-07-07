@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     env, fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -30,6 +30,7 @@ struct WindowRegistry {
 struct WindowRegistryInner {
     label_to_repository: BTreeMap<String, String>,
     repository_to_label: BTreeMap<String, String>,
+    close_guard_labels: BTreeSet<String>,
     next_window_id: u64,
 }
 
@@ -37,6 +38,12 @@ struct WindowRegistryInner {
 #[serde(rename_all = "camelCase")]
 struct OpenRepositoryWindowRequest {
     repository_path: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WindowCloseGuardRequest {
+    active: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -229,6 +236,15 @@ fn close_current_window(window: tauri::Window) -> artistic_git_contracts::AppRes
 }
 
 #[tauri::command]
+fn set_window_close_guard(
+    window: tauri::Window,
+    registry: State<'_, WindowRegistry>,
+    request: WindowCloseGuardRequest,
+) -> artistic_git_contracts::AppResult<()> {
+    registry_set_close_guard(&registry, window.label(), request.active)
+}
+
+#[tauri::command]
 fn open_log_dir(
     app_handle: tauri::AppHandle,
 ) -> artistic_git_contracts::AppResult<artistic_git_app::OpenLogDirResponse> {
@@ -351,6 +367,84 @@ fn sync_branch(
         ],
     );
     Ok(response)
+}
+
+#[tauri::command]
+fn start_review_mode(
+    app_handle: tauri::AppHandle,
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::StartReviewModeRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::StartReviewModeResponse> {
+    let response = backend.start_review_mode(request)?;
+    emit_repo_changed(
+        &app_handle,
+        response.state.repository_path.clone(),
+        vec![
+            artistic_git_contracts::RepoQueryKind::Summary,
+            artistic_git_contracts::RepoQueryKind::Branches,
+            artistic_git_contracts::RepoQueryKind::History,
+            artistic_git_contracts::RepoQueryKind::LocalChanges,
+            artistic_git_contracts::RepoQueryKind::Stashes,
+        ],
+    );
+    Ok(response)
+}
+
+#[tauri::command]
+fn sync_review_mode(
+    app_handle: tauri::AppHandle,
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::ReviewModeRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::SyncReviewModeResponse> {
+    let response = backend.sync_review_mode(request)?;
+    emit_repo_changed(
+        &app_handle,
+        response.state.repository_path.clone(),
+        vec![
+            artistic_git_contracts::RepoQueryKind::Summary,
+            artistic_git_contracts::RepoQueryKind::Branches,
+            artistic_git_contracts::RepoQueryKind::History,
+        ],
+    );
+    Ok(response)
+}
+
+#[tauri::command]
+fn exit_review_mode(
+    app_handle: tauri::AppHandle,
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::ReviewModeRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::ExitReviewModeResponse> {
+    let response = backend.exit_review_mode(request)?;
+    emit_review_exit_events(&app_handle, &response);
+    Ok(response)
+}
+
+#[tauri::command]
+fn review_mode_recovery(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::ReviewModeRecoveryRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::ReviewModeRecoveryResponse> {
+    backend.review_mode_recovery(request)
+}
+
+#[tauri::command]
+fn recover_review_mode_stash(
+    app_handle: tauri::AppHandle,
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::ReviewModeRecoveryRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::ExitReviewModeResponse> {
+    let response = backend.recover_review_mode_stash(request)?;
+    emit_review_exit_events(&app_handle, &response);
+    Ok(response)
+}
+
+#[tauri::command]
+fn dismiss_review_mode_recovery(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::ReviewModeRecoveryRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::ReviewModeRecoveryResponse> {
+    backend.dismiss_review_mode_recovery(request)
 }
 
 #[tauri::command]
@@ -844,6 +938,7 @@ pub fn run() {
             register_window_repository,
             save_window_geometry,
             close_current_window,
+            set_window_close_guard,
             open_log_dir,
             open_repository,
             clone_repository,
@@ -852,6 +947,12 @@ pub fn run() {
             fetch_repository,
             sync_current_branch,
             sync_branch,
+            start_review_mode,
+            sync_review_mode,
+            exit_review_mode,
+            review_mode_recovery,
+            recover_review_mode_stash,
+            dismiss_review_mode_recovery,
             load_remote_settings,
             save_remote_settings,
             list_branches,
@@ -1190,7 +1291,32 @@ fn registry_unregister(registry: &WindowRegistry, label: &str) {
         if let Some(repository_path) = inner.label_to_repository.remove(label) {
             inner.repository_to_label.remove(&repository_path);
         }
+        inner.close_guard_labels.remove(label);
     }
+}
+
+fn registry_set_close_guard(
+    registry: &WindowRegistry,
+    label: &str,
+    active: bool,
+) -> artistic_git_contracts::AppResult<()> {
+    let mut inner = registry.inner.lock().map_err(|_| {
+        window_command_error("window registry lock poisoned", "setWindowCloseGuard")
+    })?;
+    if active {
+        inner.close_guard_labels.insert(label.to_owned());
+    } else {
+        inner.close_guard_labels.remove(label);
+    }
+    Ok(())
+}
+
+fn registry_close_guarded(registry: &WindowRegistry, label: &str) -> bool {
+    registry
+        .inner
+        .lock()
+        .map(|inner| inner.close_guard_labels.contains(label))
+        .unwrap_or(false)
 }
 
 fn registry_label_for_repository(
@@ -1314,16 +1440,25 @@ fn focus_or_create_start_window(app: &tauri::AppHandle) {
 }
 
 fn handle_window_event(window: &tauri::Window, event: &WindowEvent) {
-    if !matches!(event, WindowEvent::Destroyed) {
-        return;
-    }
-
-    let label = window.label().to_owned();
     let app = window.app_handle();
-    if let Some(registry) = app.try_state::<WindowRegistry>() {
-        registry_unregister(&registry, &label);
+    match event {
+        WindowEvent::CloseRequested { api, .. } => {
+            if let Some(registry) = app.try_state::<WindowRegistry>() {
+                if registry_close_guarded(&registry, window.label()) {
+                    api.prevent_close();
+                    let _ = window.emit("window-close-blocked", "reviewMode");
+                }
+            }
+        }
+        WindowEvent::Destroyed => {
+            let label = window.label().to_owned();
+            if let Some(registry) = app.try_state::<WindowRegistry>() {
+                registry_unregister(&registry, &label);
+            }
+            exit_if_last_window_closed(app, &label);
+        }
+        _ => {}
     }
-    exit_if_last_window_closed(app, &label);
 }
 
 #[cfg(target_os = "macos")]
@@ -1476,6 +1611,26 @@ fn emit_branch_operation_events(
     );
 }
 
+fn emit_review_exit_events(
+    app_handle: &tauri::AppHandle,
+    response: &artistic_git_contracts::ExitReviewModeResponse,
+) {
+    if let Some(conflict) = response.conflict.as_ref() {
+        let _ = app_handle.emit("conflict-entered", conflict);
+    }
+    emit_repo_changed(
+        app_handle,
+        response.repository_path.clone(),
+        vec![
+            artistic_git_contracts::RepoQueryKind::Summary,
+            artistic_git_contracts::RepoQueryKind::Branches,
+            artistic_git_contracts::RepoQueryKind::History,
+            artistic_git_contracts::RepoQueryKind::LocalChanges,
+            artistic_git_contracts::RepoQueryKind::Stashes,
+        ],
+    );
+}
+
 fn emit_repo_changed(
     app_handle: &tauri::AppHandle,
     repository_path: String,
@@ -1562,5 +1717,19 @@ mod tests {
             registry_label_for_repository(&registry, "/tmp/project").expect("lookup"),
             None
         );
+    }
+
+    #[test]
+    fn window_menu_close_guard_tracks_window_labels() {
+        let registry = WindowRegistry::default();
+        registry_set_close_guard(&registry, "repo-1", true).expect("set guard");
+        assert!(registry_close_guarded(&registry, "repo-1"));
+
+        registry_set_close_guard(&registry, "repo-1", false).expect("clear guard");
+        assert!(!registry_close_guarded(&registry, "repo-1"));
+
+        registry_set_close_guard(&registry, "repo-2", true).expect("set guard");
+        registry_unregister(&registry, "repo-2");
+        assert!(!registry_close_guarded(&registry, "repo-2"));
     }
 }

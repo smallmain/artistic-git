@@ -34,6 +34,8 @@ import {
   createStash,
   deleteBranch,
   deleteStash,
+  dismissReviewModeRecovery,
+  exitReviewMode,
   fetchRepository,
   listBranches,
   listConflicts,
@@ -42,13 +44,18 @@ import {
   loadProjectSettings,
   restoreChanges,
   restoreStash,
+  recoverReviewModeStash,
   repositorySummary,
+  reviewModeRecovery,
   saveProjectSettings,
   saveWindowGeometry,
   saveConflictResolution,
   selectConflictSide,
+  setWindowCloseGuard,
   stashDetails,
+  startReviewMode,
   syncCurrentBranch,
+  syncReviewMode,
   validateBranchName,
 } from "@/lib/ipc/commands";
 import type {
@@ -60,6 +67,7 @@ import type {
   LargeFileWarning,
   LocalChange,
   LocalChangesViewMode,
+  ReviewModeState,
   SidebarLayoutSettings,
   StashEntry,
   StashDetailsResponse,
@@ -73,6 +81,7 @@ import {
   normalizeProjectSettings,
   validateFetchIntervalSeconds,
 } from "@/features/settings/settings-model";
+import { ReviewModeOverlay } from "@/features/review/ReviewModeOverlay";
 
 type MainTab = "history" | "localChanges";
 type StashScope = "all" | "selected";
@@ -147,6 +156,10 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   const [branchActionBusy, setBranchActionBusy] = React.useState(false);
   const [fetchBusy, setFetchBusy] = React.useState(false);
   const [syncBusy, setSyncBusy] = React.useState(false);
+  const [reviewBusy, setReviewBusy] = React.useState(false);
+  const [reviewModeState, setReviewModeState] =
+    React.useState<ReviewModeState | null>(null);
+  const [reviewRecoveryPrompt, setReviewRecoveryPrompt] = React.useState(false);
   const [liveFetchState, setLiveFetchState] =
     React.useState<FetchStateEvent | null>(null);
   const fetchInFlightRef = React.useRef(false);
@@ -404,7 +417,10 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     commitBusy ||
     restoreBusy ||
     branchActionBusy ||
-    stashActionBusy;
+    stashActionBusy ||
+    reviewBusy;
+  const reviewActive = reviewModeState !== null;
+  const interactionBusy = busy || reviewActive;
   const busyLabel = activeOperation
     ? activeOperation.label
     : fetchBusy
@@ -419,7 +435,9 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
               ? t("repository.branchBusy")
               : stashActionBusy
                 ? t("repository.stashBusy")
-                : t("repository.ready");
+                : reviewBusy
+                  ? t("review.busy")
+                  : t("repository.ready");
   const selectedCommitPaths = React.useMemo(
     () => pathsForChangeIds(commitIds ?? [], localChanges),
     [commitIds, localChanges],
@@ -571,6 +589,171 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     setConflictEntered,
     syncBusy,
   ]);
+
+  const invalidateReviewQueries = React.useCallback(async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({
+        queryKey: repoQueryKeys.summary(repositoryPath),
+      }),
+      queryClient.invalidateQueries({
+        queryKey: repoQueryKeys.branches(repositoryPath),
+      }),
+      queryClient.invalidateQueries({
+        queryKey: repoQueryKeys.history(repositoryPath),
+      }),
+      queryClient.invalidateQueries({
+        queryKey: repoQueryKeys.localChanges(repositoryPath),
+      }),
+      queryClient.invalidateQueries({
+        queryKey: repoQueryKeys.stashes(repositoryPath),
+      }),
+    ]);
+  }, [queryClient, repositoryPath]);
+
+  const handleReviewExitResponse = React.useCallback(
+    async (response: Awaited<ReturnType<typeof exitReviewMode>>) => {
+      if (response.status === "conflicts" && response.conflict) {
+        if (response.stashRecovery) {
+          setStashRecoveryByOperation((current) => ({
+            ...current,
+            [response.conflict!.operationId]: response.stashRecovery!,
+          }));
+        }
+        setConflictEntered(response.conflict);
+      }
+      setReviewModeState(null);
+      setReviewRecoveryPrompt(false);
+      await invalidateReviewQueries();
+    },
+    [invalidateReviewQueries, setConflictEntered],
+  );
+
+  const runStartReviewMode = React.useCallback(async () => {
+    if (reviewBusy || reviewModeState) {
+      return;
+    }
+
+    setReviewBusy(true);
+    try {
+      const response = await startReviewMode({
+        operationId: null,
+        repositoryPath,
+      });
+      setReviewModeState(response.state);
+      await invalidateReviewQueries();
+    } catch (error) {
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:error", { detail: error }),
+      );
+    } finally {
+      setReviewBusy(false);
+    }
+  }, [invalidateReviewQueries, repositoryPath, reviewBusy, reviewModeState]);
+
+  const runSyncReviewMode = React.useCallback(async () => {
+    if (reviewBusy || !reviewModeState) {
+      return;
+    }
+
+    setReviewBusy(true);
+    try {
+      const response = await syncReviewMode({ repositoryPath });
+      setReviewModeState(response.state);
+      await invalidateReviewQueries();
+    } catch (error) {
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:error", { detail: error }),
+      );
+    } finally {
+      setReviewBusy(false);
+    }
+  }, [invalidateReviewQueries, repositoryPath, reviewBusy, reviewModeState]);
+
+  const runExitReviewMode = React.useCallback(async () => {
+    if (reviewBusy || !reviewModeState) {
+      return;
+    }
+
+    setReviewBusy(true);
+    try {
+      const response = await exitReviewMode({ repositoryPath });
+      await handleReviewExitResponse(response);
+    } catch (error) {
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:error", { detail: error }),
+      );
+    } finally {
+      setReviewBusy(false);
+    }
+  }, [handleReviewExitResponse, repositoryPath, reviewBusy, reviewModeState]);
+
+  const runRecoverReviewMode = React.useCallback(async () => {
+    if (reviewBusy) {
+      return;
+    }
+
+    setReviewBusy(true);
+    try {
+      const response = await recoverReviewModeStash({ repositoryPath });
+      await handleReviewExitResponse(response);
+    } catch (error) {
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:error", { detail: error }),
+      );
+    } finally {
+      setReviewBusy(false);
+    }
+  }, [handleReviewExitResponse, repositoryPath, reviewBusy]);
+
+  const dismissReviewRecovery = React.useCallback(async () => {
+    setReviewRecoveryPrompt(false);
+    try {
+      await dismissReviewModeRecovery({ repositoryPath });
+    } catch (error) {
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:error", { detail: error }),
+      );
+    }
+  }, [repositoryPath]);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    void reviewModeRecovery({ repositoryPath })
+      .then((response) => {
+        if (!cancelled && response.shouldPrompt) {
+          setReviewRecoveryPrompt(true);
+        }
+      })
+      .catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [repositoryPath]);
+
+  React.useEffect(() => {
+    if (!reviewActive) {
+      void setWindowCloseGuard({ active: false }).catch(() => undefined);
+      return;
+    }
+
+    void setWindowCloseGuard({ active: true }).catch((error) => {
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:error", { detail: error }),
+      );
+    });
+
+    const blockClose = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+
+    window.addEventListener("beforeunload", blockClose);
+    return () => {
+      void setWindowCloseGuard({ active: false }).catch(() => undefined);
+      window.removeEventListener("beforeunload", blockClose);
+    };
+  }, [reviewActive]);
 
   React.useEffect(() => {
     if (
@@ -1115,7 +1298,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       <RepositorySidebar
         branchActionsDisabledReason={branchActionsDisabledReason}
         branches={branches}
-        busy={busy}
+        busy={interactionBusy}
         fetchState={fetchState}
         onApplyStash={(stash) => void applyStash(stash)}
         onBranchFocus={(branch) => {
@@ -1134,6 +1317,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         onDeleteStash={setStashToDelete}
         onFetch={() => void runSyncCurrentBranch()}
         onOpenSettings={() => openSettings("general")}
+        onReviewMode={() => void runStartReviewMode()}
         onSidebarLayoutChange={(layout) => {
           void persistProjectPreferences({ sidebar: layout });
         }}
@@ -1235,7 +1419,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
             </div>
           ) : (
             <LocalChangesPanel
-              busy={busy}
+              busy={interactionBusy}
               changes={localChanges}
               initialCheckedIds={localChangeCheckedIds}
               onCheckedChange={setLocalChangeCheckedIds}
@@ -1259,6 +1443,26 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
           onClose={closeConflictOverlay}
         />
       ) : null}
+      {reviewModeState ? (
+        <ReviewModeOverlay
+          busy={reviewBusy}
+          onExit={() => void runExitReviewMode()}
+          onSync={() => void runSyncReviewMode()}
+          state={reviewModeState}
+        />
+      ) : null}
+      <ConfirmDialog
+        confirmLabel={t("review.recover")}
+        description={t("review.recoveryDescription")}
+        onConfirm={() => void runRecoverReviewMode()}
+        onOpenChange={(open) => {
+          if (!open && reviewRecoveryPrompt) {
+            void dismissReviewRecovery();
+          }
+        }}
+        open={reviewRecoveryPrompt}
+        title={t("review.recoveryTitle")}
+      />
       <CreateBranchDialog
         baseBranch={branchCreateBase}
         baseBranches={branches}

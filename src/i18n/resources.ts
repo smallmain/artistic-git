@@ -157,6 +157,25 @@ export const resources = {
         unbornBranchActionsDisabled:
           "Create the first commit before managing branches",
       },
+      review: {
+        branch: "Branch {{branch}}",
+        busy: "Updating review mode...",
+        detachedBranch: "detached HEAD",
+        exit: "Exit review mode",
+        exiting: "Exiting...",
+        latestCommit: "Latest commit",
+        noCommit: "No commit yet",
+        offlineTooltip:
+          "Review mode is using local content because the remote could not be reached.",
+        overlayLabel: "Review mode",
+        recover: "Restore changes",
+        recoveryDescription:
+          "A previous review mode session did not exit cleanly. Restore the stashed local changes now?",
+        recoveryTitle: "Restore review mode changes?",
+        remoteUpdate: "New remote content is available.",
+        sync: "Sync",
+        title: "Review Mode",
+      },
       start: {
         clearRecent: "Clear history",
         cloneBrowse: "Choose",
@@ -706,6 +725,24 @@ export const resources = {
         tabs: "仓库选项卡",
         untitledProject: "未命名项目",
         unbornBranchActionsDisabled: "创建首次提交后才能管理分支",
+      },
+      review: {
+        branch: "分支 {{branch}}",
+        busy: "正在更新审查模式...",
+        detachedBranch: "游离 HEAD",
+        exit: "退出审查模式",
+        exiting: "正在退出...",
+        latestCommit: "最新提交",
+        noCommit: "暂无提交",
+        offlineTooltip: "远程仓库暂时无法访问，审查模式正在使用本地内容。",
+        overlayLabel: "审查模式",
+        recover: "恢复更改",
+        recoveryDescription:
+          "上次审查模式未正常退出。是否现在恢复当时储藏的本地更改？",
+        recoveryTitle: "恢复审查模式更改？",
+        remoteUpdate: "远程有新内容需要同步。",
+        sync: "同步",
+        title: "审查模式",
       },
       start: {
         clearRecent: "清空历史记录",

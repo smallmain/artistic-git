@@ -63,6 +63,7 @@ interface RepositorySidebarProps {
   onDeleteStash?: (stash: StashListItem) => void;
   onFetch?: () => void;
   onOpenSettings?: () => void;
+  onReviewMode?: () => void;
   onShowStashDetails?: (stash: StashListItem) => void;
   onSidebarLayoutChange?: (layout: Required<SidebarLayoutSettings>) => void;
   onSyncBranch?: (branch: BranchListItem) => void;
@@ -88,6 +89,7 @@ export function RepositorySidebar({
   onDeleteStash,
   onFetch,
   onOpenSettings,
+  onReviewMode,
   onShowStashDetails,
   onSidebarLayoutChange,
   onSyncBranch,
@@ -239,9 +241,12 @@ export function RepositorySidebar({
 
       <section className="flex shrink-0 items-center gap-2 border-b px-3 py-2">
         <button
-          className="flex h-9 flex-1 items-center justify-center gap-2 rounded-md text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
-          disabled
-          title={t("repository.reviewModePlaceholder")}
+          className="flex h-9 flex-1 items-center justify-center gap-2 rounded-md bg-[linear-gradient(135deg,hsl(var(--review-cyan-start)),hsl(var(--review-cyan-end)))] px-3 text-sm font-medium text-white shadow-sm hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-60"
+          disabled={busy || !onReviewMode}
+          onClick={onReviewMode}
+          title={
+            busy ? t("repository.busyTooltip") : t("repository.reviewMode")
+          }
           type="button"
         >
           <History className="size-4" aria-hidden="true" />
