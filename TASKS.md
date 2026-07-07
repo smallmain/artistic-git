@@ -490,10 +490,10 @@ graph TD
 ### 9A 多窗口核心 **\[P\]**（依赖：阶段 2）
 
 - [x] 单进程多 WebviewWindow：每窗口独立承载一个项目（独立 React 根/store/query client 已备）；后端按 window label 路由事件复核
-- [ ] 应用单实例：second-instance 转发给已运行进程
+- [x] 应用单实例：second-instance 转发给已运行进程
 - [x] 同项目去重：再次打开已打开项目 → 聚焦已有窗口，发起窗口保留不关闭（消除 index.lock 并发风险）
 - [x] 打开新窗口唯一入口：File → New Window / `Cmd/Ctrl+N`，新窗口显示起始界面；界面内不提供入口
-- [ ] 关闭最后窗口退出应用（Windows/Linux）；macOS Dock 保活遵循平台惯例
+- [x] 关闭最后窗口退出应用（Windows/Linux）；macOS Dock 保活遵循平台惯例
 - [x] 窗口几何按项目存 projects.json 恢复；起始/新建窗口用全局默认几何
 
 **验收**：集成/手动清单：双窗口双项目互不干扰；同项目去重聚焦；单实例转发；几何按项目恢复。

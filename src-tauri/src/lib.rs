@@ -1,12 +1,12 @@
 use std::{
     collections::BTreeMap,
     env, fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 use tauri::{
     menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu},
-    Emitter, Manager, PhysicalPosition, PhysicalSize, State, WebviewUrl,
+    Emitter, Manager, PhysicalPosition, PhysicalSize, State, WebviewUrl, WindowEvent,
 };
 
 const MENU_EVENT_NAME: &str = "app-menu";
@@ -76,6 +76,7 @@ struct AppMenuEvent {
 #[serde(rename_all = "camelCase")]
 struct SecondInstanceForward {
     args: Vec<String>,
+    cwd: String,
     repository_path: Option<String>,
 }
 
@@ -790,9 +791,11 @@ fn delete_https_credential(
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(handle_second_instance))
         .plugin(tauri_plugin_dialog::init())
         .menu(build_app_menu)
         .on_menu_event(handle_menu_event)
+        .on_window_event(handle_window_event)
         .setup(|app| {
             let log_dir = app.path().app_log_dir()?;
             let logging_config = artistic_git_core::logging::LoggingConfig::new(log_dir);
@@ -806,7 +809,6 @@ pub fn run() {
             });
             app.manage(WindowRegistry::default());
             app.manage(repository_backend(app)?);
-            install_second_instance_forwarding_skeleton(app.handle());
 
             Ok(())
         })
@@ -1044,7 +1046,7 @@ fn toggle_focused_devtools(app: &tauri::AppHandle) {
 
 fn create_start_window(
     app: &tauri::AppHandle,
-    registry: &State<'_, WindowRegistry>,
+    registry: &WindowRegistry,
 ) -> artistic_git_contracts::AppResult<NewWindowResponse> {
     let label = next_start_window_label(registry)?;
     tauri::WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html".into()))
@@ -1101,14 +1103,12 @@ fn build_repository_window(
     })
 }
 
-fn next_start_window_label(
-    registry: &State<'_, WindowRegistry>,
-) -> artistic_git_contracts::AppResult<String> {
+fn next_start_window_label(registry: &WindowRegistry) -> artistic_git_contracts::AppResult<String> {
     next_window_label(registry, START_WINDOW_LABEL_PREFIX, "newProjectWindow")
 }
 
 fn next_repository_window_label(
-    registry: &State<'_, WindowRegistry>,
+    registry: &WindowRegistry,
 ) -> artistic_git_contracts::AppResult<String> {
     next_window_label(
         registry,
@@ -1118,7 +1118,7 @@ fn next_repository_window_label(
 }
 
 fn next_window_label(
-    registry: &State<'_, WindowRegistry>,
+    registry: &WindowRegistry,
     prefix: &str,
     operation: &'static str,
 ) -> artistic_git_contracts::AppResult<String> {
@@ -1139,7 +1139,7 @@ fn next_window_label_inner(
 }
 
 fn registry_register(
-    registry: &State<'_, WindowRegistry>,
+    registry: &WindowRegistry,
     label: String,
     repository_path: String,
 ) -> artistic_git_contracts::AppResult<()> {
@@ -1155,6 +1155,25 @@ fn registry_register(
     }
     inner.repository_to_label.insert(repository_path, label);
     Ok(())
+}
+
+fn registry_unregister(registry: &WindowRegistry, label: &str) {
+    if let Ok(mut inner) = registry.inner.lock() {
+        if let Some(repository_path) = inner.label_to_repository.remove(label) {
+            inner.repository_to_label.remove(&repository_path);
+        }
+    }
+}
+
+fn registry_label_for_repository(
+    registry: &WindowRegistry,
+    repository_path: &str,
+) -> artistic_git_contracts::AppResult<Option<String>> {
+    let inner = registry
+        .inner
+        .lock()
+        .map_err(|_| window_command_error("window registry lock poisoned", "focusRepository"))?;
+    Ok(inner.repository_to_label.get(repository_path).cloned())
 }
 
 fn focus_window(app: &tauri::AppHandle, label: &str) {
@@ -1186,29 +1205,136 @@ fn current_window_geometry(
     })
 }
 
-fn install_second_instance_forwarding_skeleton(app: &tauri::AppHandle) {
-    let args = env::args().collect::<Vec<_>>();
-    if let Some(repository_path) = repository_path_from_args(&args) {
-        let _ = app.emit(
-            "second-instance-forwarded",
-            SecondInstanceForward {
-                args,
-                repository_path: Some(repository_path),
-            },
-        );
+fn handle_second_instance(app: &tauri::AppHandle, args: Vec<String>, cwd: String) {
+    let repository_path = repository_path_from_args(&args, Some(&cwd));
+    if let Some(repository_path) = repository_path.clone() {
+        if open_second_instance_repository(app, repository_path).is_err() {
+            focus_or_create_start_window(app);
+        }
+    } else {
+        focus_or_create_start_window(app);
+    }
+
+    let _ = app.emit(
+        "second-instance-forwarded",
+        SecondInstanceForward {
+            args,
+            cwd,
+            repository_path,
+        },
+    );
+}
+
+fn open_second_instance_repository(
+    app: &tauri::AppHandle,
+    repository_path: String,
+) -> artistic_git_contracts::AppResult<()> {
+    let registry = app
+        .try_state::<WindowRegistry>()
+        .ok_or_else(|| window_command_error("window registry unavailable", "secondInstance"))?;
+    let backend = app
+        .try_state::<artistic_git_app::RepositoryBackend>()
+        .ok_or_else(|| window_command_error("repository backend unavailable", "secondInstance"))?;
+    let project_settings = backend
+        .load_project_settings(artistic_git_app::ProjectSettingsRequest { repository_path })?;
+    open_or_focus_repository_from_settings(app, &registry, project_settings).map(|_| ())
+}
+
+fn open_or_focus_repository_from_settings(
+    app: &tauri::AppHandle,
+    registry: &WindowRegistry,
+    project_settings: artistic_git_core::config::ProjectSettings,
+) -> artistic_git_contracts::AppResult<OpenRepositoryWindowResponse> {
+    let repository_path = project_settings.path;
+    if let Some(existing_label) = registry_label_for_repository(registry, &repository_path)? {
+        focus_window(app, &existing_label);
+        return Ok(OpenRepositoryWindowResponse {
+            action: OpenRepositoryWindowAction::FocusedExisting,
+            label: existing_label,
+            repository_path,
+        });
+    }
+
+    let label = next_repository_window_label(registry)?;
+    let window = build_repository_window(
+        app,
+        &label,
+        &repository_path,
+        project_settings.window_geometry,
+    )?;
+    registry_register(registry, label.clone(), repository_path.clone())?;
+    let _ = window.set_focus();
+
+    Ok(OpenRepositoryWindowResponse {
+        action: OpenRepositoryWindowAction::Created,
+        label,
+        repository_path,
+    })
+}
+
+fn focus_or_create_start_window(app: &tauri::AppHandle) {
+    if let Some(window) =
+        focused_webview_window(app).or_else(|| app.webview_windows().into_values().next())
+    {
+        focus_window(app, window.label());
+        return;
+    }
+
+    if let Some(registry) = app.try_state::<WindowRegistry>() {
+        let _ = create_start_window(app, &registry);
     }
 }
 
-fn repository_path_from_args(args: &[String]) -> Option<String> {
+fn handle_window_event(window: &tauri::Window, event: &WindowEvent) {
+    if !matches!(event, WindowEvent::Destroyed) {
+        return;
+    }
+
+    let label = window.label().to_owned();
+    let app = window.app_handle();
+    if let Some(registry) = app.try_state::<WindowRegistry>() {
+        registry_unregister(&registry, &label);
+    }
+    exit_if_last_window_closed(app, &label);
+}
+
+#[cfg(target_os = "macos")]
+fn exit_if_last_window_closed(_app: &tauri::AppHandle, _destroyed_label: &str) {}
+
+#[cfg(not(target_os = "macos"))]
+fn exit_if_last_window_closed(app: &tauri::AppHandle, destroyed_label: &str) {
+    let has_remaining_window = app
+        .webview_windows()
+        .keys()
+        .any(|label| label.as_str() != destroyed_label);
+    if !has_remaining_window {
+        app.exit(0);
+    }
+}
+
+fn repository_path_from_args(args: &[String], cwd: Option<&str>) -> Option<String> {
     args.iter()
         .skip(1)
-        .find(|arg| {
-            !arg.starts_with('-')
-                && fs::metadata(arg)
-                    .map(|metadata| metadata.is_dir())
-                    .unwrap_or(false)
+        .filter(|arg| !arg.starts_with('-'))
+        .find_map(|arg| {
+            let path = PathBuf::from(arg);
+            let candidate = if path.is_absolute() {
+                path
+            } else {
+                cwd.map(PathBuf::from)
+                    .or_else(|| env::current_dir().ok())
+                    .unwrap_or_else(|| PathBuf::from("."))
+                    .join(path)
+            };
+            fs::metadata(&candidate)
+                .ok()
+                .filter(|metadata| metadata.is_dir())
+                .map(|_| display_path(&candidate))
         })
-        .cloned()
+}
+
+fn display_path(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
 }
 
 fn encode_url_component(value: &str) -> String {
@@ -1363,7 +1489,20 @@ mod tests {
             "/definitely/not/a/real/repo".to_owned(),
         ];
 
-        assert_eq!(repository_path_from_args(&args), None);
+        assert_eq!(repository_path_from_args(&args, None), None);
+    }
+
+    #[test]
+    fn window_menu_second_instance_resolves_relative_repository_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo = dir.path().join("repo");
+        fs::create_dir(&repo).expect("repo dir");
+        let args = vec!["artistic-git".to_owned(), "repo".to_owned()];
+
+        assert_eq!(
+            repository_path_from_args(&args, Some(&display_path(dir.path()))),
+            Some(display_path(&repo))
+        );
     }
 
     #[test]
@@ -1377,6 +1516,23 @@ mod tests {
         assert_eq!(
             next_window_label_inner(&registry, "repo-", "test").expect("second label"),
             "repo-2"
+        );
+    }
+
+    #[test]
+    fn window_menu_registry_unregister_removes_repository_mapping() {
+        let registry = WindowRegistry::default();
+        registry_register(&registry, "repo-1".to_owned(), "/tmp/project".to_owned())
+            .expect("register");
+
+        assert_eq!(
+            registry_label_for_repository(&registry, "/tmp/project").expect("lookup"),
+            Some("repo-1".to_owned())
+        );
+        registry_unregister(&registry, "repo-1");
+        assert_eq!(
+            registry_label_for_repository(&registry, "/tmp/project").expect("lookup"),
+            None
         );
     }
 }
