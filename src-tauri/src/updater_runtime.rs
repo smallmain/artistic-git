@@ -6,7 +6,10 @@ use std::sync::{
 use artistic_git_contracts::{AppError, AppResult};
 use artistic_git_git_runner::OperationBusy;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, State, Window};
+use tauri::{
+    utils::{config::BundleType, platform::bundle_type},
+    AppHandle, Emitter, Manager, State, Window,
+};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
 const UPDATE_STATUS_EVENT: &str = "update-status";
@@ -60,6 +63,11 @@ pub enum UpdateStatus {
         version: String,
         notes: Option<String>,
     },
+    ReleaseAvailable {
+        version: String,
+        notes: Option<String>,
+        reason: UpdateReleasePageReason,
+    },
     Downloading {
         version: String,
         notes: Option<String>,
@@ -78,6 +86,14 @@ pub enum UpdateStatus {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UpdateReleasePageReason {
+    LinuxPackageManager,
+    UnknownInstallFormat,
+    UnsupportedInstallFormat,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateInstallGateResponse {
@@ -92,6 +108,7 @@ pub enum UpdateInstallBlockedReason {
     GitOperation,
     BackgroundOperation,
     NoReadyUpdate,
+    UnsupportedInstallFormat,
 }
 
 #[tauri::command]
@@ -173,6 +190,21 @@ pub async fn check_for_updates(
 
     let version = update.version.clone();
     let notes = update.body.clone();
+
+    if let UpdateCapability::ReleasePage { reason } = current_update_capability(&app_handle) {
+        state.clear_ready_update()?;
+        let event = release_available_status(
+            request_id,
+            source,
+            target_window_label,
+            version,
+            notes,
+            reason,
+        );
+        emit_status(&app_handle, &event);
+        return Ok(event);
+    }
+
     emit_status(
         &app_handle,
         &UpdateStatusEvent {
@@ -252,14 +284,16 @@ pub async fn check_for_updates(
 
 #[tauri::command]
 pub fn update_install_gate(
+    app_handle: AppHandle,
     state: State<'_, UpdaterRuntimeState>,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
 ) -> AppResult<UpdateInstallGateResponse> {
-    install_gate_response(&state, &backend)
+    install_gate_response(&app_handle, &state, &backend)
 }
 
 #[tauri::command]
 pub fn install_ready_update(
+    app_handle: AppHandle,
     state: State<'_, UpdaterRuntimeState>,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
 ) -> AppResult<()> {
@@ -270,6 +304,13 @@ pub fn install_ready_update(
             INSTALL_OPERATION,
         )));
     };
+
+    if let UpdateCapability::ReleasePage { reason } = current_update_capability(&app_handle) {
+        return Err(artistic_git_app::logged_app_error(AppError::expected(
+            release_page_only_message(reason),
+            INSTALL_OPERATION,
+        )));
+    }
 
     let _permit = backend
         .runner()
@@ -321,6 +362,7 @@ pub(crate) fn route_unassigned_ready_update_prompt(
 }
 
 fn install_gate_response(
+    app_handle: &AppHandle,
     state: &UpdaterRuntimeState,
     backend: &artistic_git_app::RepositoryBackend,
 ) -> AppResult<UpdateInstallGateResponse> {
@@ -329,6 +371,14 @@ fn install_gate_response(
             blocked: true,
             reason: Some(UpdateInstallBlockedReason::NoReadyUpdate),
             message: Some("no downloaded update is ready to install".to_owned()),
+        });
+    }
+
+    if let UpdateCapability::ReleasePage { reason } = current_update_capability(app_handle) {
+        return Ok(UpdateInstallGateResponse {
+            blocked: true,
+            reason: Some(UpdateInstallBlockedReason::UnsupportedInstallFormat),
+            message: Some(release_page_only_message(reason).to_owned()),
         });
     }
 
@@ -343,6 +393,26 @@ fn install_gate_response(
             reason: None,
             message: None,
         }),
+    }
+}
+
+fn release_available_status(
+    request_id: String,
+    source: UpdateCheckSource,
+    target_window_label: Option<String>,
+    version: String,
+    notes: Option<String>,
+    reason: UpdateReleasePageReason,
+) -> UpdateStatusEvent {
+    UpdateStatusEvent {
+        request_id,
+        source,
+        target_window_label,
+        status: UpdateStatus::ReleaseAvailable {
+            version,
+            notes,
+            reason,
+        },
     }
 }
 
@@ -397,6 +467,139 @@ fn update_status_target_window_label(
         UpdateCheckSource::Manual => Some(request_window_label.to_owned()),
         UpdateCheckSource::Automatic => {
             focused_window_label.or_else(|| Some(request_window_label.to_owned()))
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpdateCapability {
+    InApp,
+    ReleasePage { reason: UpdateReleasePageReason },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeOperatingSystem {
+    Linux,
+    Macos,
+    Windows,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpdateInstallFormat {
+    AppImage,
+    Deb,
+    Rpm,
+    MacApp,
+    MacDmg,
+    WindowsMsi,
+    WindowsNsis,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UpdateInstallSignals {
+    operating_system: RuntimeOperatingSystem,
+    install_format: Option<UpdateInstallFormat>,
+    appimage_env_present: bool,
+}
+
+fn current_update_capability(app_handle: &AppHandle) -> UpdateCapability {
+    update_capability_for_signals(UpdateInstallSignals {
+        operating_system: current_operating_system(),
+        install_format: current_install_format(),
+        appimage_env_present: appimage_env_present(app_handle),
+    })
+}
+
+fn update_capability_for_signals(signals: UpdateInstallSignals) -> UpdateCapability {
+    match signals.operating_system {
+        RuntimeOperatingSystem::Linux => match signals.install_format {
+            Some(UpdateInstallFormat::AppImage) => UpdateCapability::InApp,
+            Some(UpdateInstallFormat::Deb | UpdateInstallFormat::Rpm) => {
+                UpdateCapability::ReleasePage {
+                    reason: UpdateReleasePageReason::LinuxPackageManager,
+                }
+            }
+            None if signals.appimage_env_present => UpdateCapability::InApp,
+            None => UpdateCapability::ReleasePage {
+                reason: UpdateReleasePageReason::UnknownInstallFormat,
+            },
+            Some(_) => UpdateCapability::ReleasePage {
+                reason: UpdateReleasePageReason::UnsupportedInstallFormat,
+            },
+        },
+        RuntimeOperatingSystem::Macos => match signals.install_format {
+            Some(UpdateInstallFormat::MacApp) => UpdateCapability::InApp,
+            None => UpdateCapability::ReleasePage {
+                reason: UpdateReleasePageReason::UnknownInstallFormat,
+            },
+            Some(_) => UpdateCapability::ReleasePage {
+                reason: UpdateReleasePageReason::UnsupportedInstallFormat,
+            },
+        },
+        RuntimeOperatingSystem::Windows => match signals.install_format {
+            Some(UpdateInstallFormat::WindowsMsi | UpdateInstallFormat::WindowsNsis) => {
+                UpdateCapability::InApp
+            }
+            None => UpdateCapability::ReleasePage {
+                reason: UpdateReleasePageReason::UnknownInstallFormat,
+            },
+            Some(_) => UpdateCapability::ReleasePage {
+                reason: UpdateReleasePageReason::UnsupportedInstallFormat,
+            },
+        },
+        RuntimeOperatingSystem::Other => UpdateCapability::ReleasePage {
+            reason: UpdateReleasePageReason::UnsupportedInstallFormat,
+        },
+    }
+}
+
+fn current_install_format() -> Option<UpdateInstallFormat> {
+    bundle_type().map(|bundle| match bundle {
+        BundleType::App => UpdateInstallFormat::MacApp,
+        BundleType::AppImage => UpdateInstallFormat::AppImage,
+        BundleType::Deb => UpdateInstallFormat::Deb,
+        BundleType::Dmg => UpdateInstallFormat::MacDmg,
+        BundleType::Msi => UpdateInstallFormat::WindowsMsi,
+        BundleType::Nsis => UpdateInstallFormat::WindowsNsis,
+        BundleType::Rpm => UpdateInstallFormat::Rpm,
+    })
+}
+
+fn current_operating_system() -> RuntimeOperatingSystem {
+    if cfg!(target_os = "linux") {
+        RuntimeOperatingSystem::Linux
+    } else if cfg!(target_os = "macos") {
+        RuntimeOperatingSystem::Macos
+    } else if cfg!(target_os = "windows") {
+        RuntimeOperatingSystem::Windows
+    } else {
+        RuntimeOperatingSystem::Other
+    }
+}
+
+fn appimage_env_present(_app_handle: &AppHandle) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        return _app_handle.env().appimage.is_some() || std::env::var_os("APPIMAGE").is_some();
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
+fn release_page_only_message(reason: UpdateReleasePageReason) -> &'static str {
+    match reason {
+        UpdateReleasePageReason::LinuxPackageManager => {
+            "this installation is managed by the operating system package manager; download the latest release from GitHub Releases"
+        }
+        UpdateReleasePageReason::UnknownInstallFormat => {
+            "this installation format cannot be confirmed for safe in-app updates; download the latest release from GitHub Releases"
+        }
+        UpdateReleasePageReason::UnsupportedInstallFormat => {
+            "this installation format does not support safe in-app updates; download the latest release from GitHub Releases"
         }
     }
 }
@@ -664,6 +867,75 @@ mod tests {
             .expect("routed event");
 
         assert_eq!(event.target_window_label, Some("repo-2".to_owned()));
+    }
+
+    #[test]
+    fn linux_appimage_installation_supports_in_app_update() {
+        assert_eq!(
+            update_capability_for_signals(UpdateInstallSignals {
+                operating_system: RuntimeOperatingSystem::Linux,
+                install_format: Some(UpdateInstallFormat::AppImage),
+                appimage_env_present: false,
+            }),
+            UpdateCapability::InApp
+        );
+    }
+
+    #[test]
+    fn linux_appimage_environment_supports_in_app_update_when_bundle_type_is_unknown() {
+        assert_eq!(
+            update_capability_for_signals(UpdateInstallSignals {
+                operating_system: RuntimeOperatingSystem::Linux,
+                install_format: None,
+                appimage_env_present: true,
+            }),
+            UpdateCapability::InApp
+        );
+    }
+
+    #[test]
+    fn linux_deb_installation_falls_back_to_release_page() {
+        assert_eq!(
+            update_capability_for_signals(UpdateInstallSignals {
+                operating_system: RuntimeOperatingSystem::Linux,
+                install_format: Some(UpdateInstallFormat::Deb),
+                appimage_env_present: false,
+            }),
+            UpdateCapability::ReleasePage {
+                reason: UpdateReleasePageReason::LinuxPackageManager
+            }
+        );
+    }
+
+    #[test]
+    fn linux_unknown_installation_fails_safe_to_release_page() {
+        assert_eq!(
+            update_capability_for_signals(UpdateInstallSignals {
+                operating_system: RuntimeOperatingSystem::Linux,
+                install_format: None,
+                appimage_env_present: false,
+            }),
+            UpdateCapability::ReleasePage {
+                reason: UpdateReleasePageReason::UnknownInstallFormat
+            }
+        );
+    }
+
+    #[test]
+    fn release_available_status_serializes_for_frontend() {
+        let event = release_available_status(
+            "update-check-1".to_owned(),
+            UpdateCheckSource::Manual,
+            Some("main".to_owned()),
+            "0.2.0".to_owned(),
+            Some("Release notes".to_owned()),
+            UpdateReleasePageReason::LinuxPackageManager,
+        );
+        let json = serde_json::to_value(event).expect("serialize event");
+
+        assert_eq!(json["status"]["state"], "releaseAvailable");
+        assert_eq!(json["status"]["reason"], "linuxPackageManager");
+        assert_eq!(json["status"]["version"], "0.2.0");
     }
 
     #[derive(Debug, PartialEq, Eq)]

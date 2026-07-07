@@ -3,6 +3,7 @@ import {
   Clipboard,
   Cloud,
   Download,
+  ExternalLink,
   FolderCog,
   GitBranch,
   Info,
@@ -45,6 +46,7 @@ import {
   loadGitignore,
   loadProjectSettings,
   loadRemoteSettings,
+  openUpdateReleasePage,
   saveAppSettings,
   saveGitignore,
   saveProjectSettings,
@@ -686,6 +688,15 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
                   new CustomEvent("artistic-git:check-updates"),
                 )
               }
+              onOpenReleasePage={() => {
+                void openUpdateReleasePage().catch((error) => {
+                  window.dispatchEvent(
+                    new CustomEvent("artistic-git:error", {
+                      detail: error,
+                    }),
+                  );
+                });
+              }}
               onInstallUpdate={() =>
                 window.dispatchEvent(
                   new CustomEvent("artistic-git:install-update"),
@@ -1411,12 +1422,14 @@ function AboutSettings({
   installGate,
   onCheckUpdates,
   onInstallUpdate,
+  onOpenReleasePage,
   updateStatus,
 }: {
   appVersion: string;
   installGate: UpdateInstallGateResponse;
   onCheckUpdates: () => void;
   onInstallUpdate: () => void;
+  onOpenReleasePage: () => void;
   updateStatus: UpdateStatusEvent | null;
 }) {
   const { t } = useTranslation();
@@ -1426,8 +1439,10 @@ function AboutSettings({
     status?.state === "available" ||
     status?.state === "downloading";
   const ready = status?.state === "ready";
+  const releaseAvailable = status?.state === "releaseAvailable";
   const notes =
     status?.state === "available" ||
+    status?.state === "releaseAvailable" ||
     status?.state === "downloading" ||
     status?.state === "ready"
       ? status.notes
@@ -1474,6 +1489,12 @@ function AboutSettings({
             <Download className="size-4" aria-hidden="true" />
             {t("settings.about.installUpdate")}
           </Button>
+          {releaseAvailable ? (
+            <Button className="gap-2" onClick={onOpenReleasePage} type="button">
+              <ExternalLink className="size-4" aria-hidden="true" />
+              {t("settings.about.openReleases")}
+            </Button>
+          ) : null}
         </div>
 
         <UpdateStatusMessage status={status} />
@@ -1533,6 +1554,14 @@ function UpdateStatusMessage({
           {t("settings.about.updateAvailable", { version: status.version })}
         </p>
       );
+    case "releaseAvailable":
+      return (
+        <p className="text-sm text-muted-foreground">
+          {t("settings.about.updateReleaseAvailable", {
+            version: status.version,
+          })}
+        </p>
+      );
     case "downloading":
       return (
         <p className="text-sm text-muted-foreground">
@@ -1575,6 +1604,8 @@ function updateInstallGateMessage(
       return t("settings.about.installBlockedConflict");
     case "reviewMode":
       return t("settings.about.installBlockedReviewMode");
+    case "unsupportedInstallFormat":
+      return t("settings.about.installBlockedUnsupportedFormat");
     default:
       return gate.message ?? t("settings.about.installBlocked");
   }

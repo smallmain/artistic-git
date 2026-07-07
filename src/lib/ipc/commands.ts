@@ -113,6 +113,7 @@ export interface AppCommandArgs {
   cancel_pending_window_exit: undefined;
   inject_renderer_crash: { request: RendererCrashInjectionRequest };
   open_log_dir: undefined;
+  open_update_release_page: undefined;
   open_repository: { request: OpenRepositoryRequest };
   clone_repository: { request: CloneRepositoryRequest };
   cancel_clone_repository: { request: CancelCloneRepositoryRequest };
@@ -187,6 +188,7 @@ export interface AppCommandResponses {
   cancel_pending_window_exit: void;
   inject_renderer_crash: void;
   open_log_dir: OpenLogDirResponse;
+  open_update_release_page: void;
   open_repository: OpenRepositoryResponse;
   clone_repository: CloneRepositoryResponse;
   cancel_clone_repository: CancelCloneRepositoryResponse;
@@ -364,6 +366,10 @@ export function injectRendererCrash(
 
 export function openLogDir(): Promise<OpenLogDirResponse> {
   return invokeAppCommand("open_log_dir");
+}
+
+export function openUpdateReleasePage(): Promise<void> {
+  return invokeAppCommand("open_update_release_page");
 }
 
 export function openRepository(

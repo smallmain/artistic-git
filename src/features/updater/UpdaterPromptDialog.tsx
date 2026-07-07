@@ -1,9 +1,10 @@
-import { Download, RefreshCw } from "lucide-react";
+import { Download, ExternalLink, RefreshCw } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { DialogFrame } from "@/components/dialogs/DialogFrame";
 import { Button } from "@/components/ui/button";
+import { openUpdateReleasePage } from "@/lib/ipc/commands";
 import type {
   UpdateInstallGateResponse,
   UpdateStatusEvent,
@@ -30,6 +31,7 @@ export function UpdaterPromptDialog() {
   const notes = "notes" in status ? status.notes : null;
   const ready = status.state === "ready";
   const failed = status.state === "failed";
+  const releaseAvailable = status.state === "releaseAvailable";
   const installBlockedMessage =
     ready && installGate.blocked
       ? updateInstallGateMessage(installGate, t)
@@ -43,15 +45,19 @@ export function UpdaterPromptDialog() {
   const title =
     status.state === "failed"
       ? t("updaterPrompt.failedTitle")
-      : ready
-        ? t("updaterPrompt.readyTitle")
-        : t("updaterPrompt.availableTitle");
+      : releaseAvailable
+        ? t("updaterPrompt.releasePageTitle")
+        : ready
+          ? t("updaterPrompt.readyTitle")
+          : t("updaterPrompt.availableTitle");
   const description =
     status.state === "failed"
       ? t("updaterPrompt.failedDescription")
-      : ready
-        ? t("updaterPrompt.readyDescription", { version })
-        : t("updaterPrompt.availableDescription", { version });
+      : releaseAvailable
+        ? t("updaterPrompt.releasePageDescription", { version })
+        : ready
+          ? t("updaterPrompt.readyDescription", { version })
+          : t("updaterPrompt.availableDescription", { version });
 
   return (
     <DialogFrame
@@ -63,19 +69,40 @@ export function UpdaterPromptDialog() {
             {failed ? t("actions.close") : t("updaterPrompt.later")}
           </Button>
           {failed ? null : (
-            <Button
-              className="gap-2"
-              disabled={!ready || installGate.blocked}
-              onClick={() => {
-                window.dispatchEvent(
-                  new CustomEvent("artistic-git:install-update"),
-                );
-              }}
-              type="button"
-            >
-              <Download className="size-4" aria-hidden="true" />
-              {t("updaterPrompt.restartNow")}
-            </Button>
+            <>
+              {releaseAvailable ? (
+                <Button
+                  className="gap-2"
+                  onClick={() => {
+                    void openUpdateReleasePage().catch((error) => {
+                      window.dispatchEvent(
+                        new CustomEvent("artistic-git:error", {
+                          detail: error,
+                        }),
+                      );
+                    });
+                  }}
+                  type="button"
+                >
+                  <ExternalLink className="size-4" aria-hidden="true" />
+                  {t("updaterPrompt.openReleases")}
+                </Button>
+              ) : (
+                <Button
+                  className="gap-2"
+                  disabled={!ready || installGate.blocked}
+                  onClick={() => {
+                    window.dispatchEvent(
+                      new CustomEvent("artistic-git:install-update"),
+                    );
+                  }}
+                  type="button"
+                >
+                  <Download className="size-4" aria-hidden="true" />
+                  {t("updaterPrompt.restartNow")}
+                </Button>
+              )}
+            </>
           )}
         </div>
       }
@@ -129,10 +156,18 @@ function UpdateDownloadStatus({
 }: {
   status: Extract<
     UpdateStatusEvent["status"],
-    { state: "available" | "downloading" | "ready" }
+    { state: "available" | "releaseAvailable" | "downloading" | "ready" }
   >;
 }) {
   const { t } = useTranslation();
+
+  if (status.state === "releaseAvailable") {
+    return (
+      <p className="text-sm text-muted-foreground">
+        {t("updaterPrompt.releasePageStatus")}
+      </p>
+    );
+  }
 
   if (status.state === "ready") {
     return (
@@ -173,14 +208,16 @@ function UpdateDownloadStatus({
   );
 }
 
-function isPromptStatus(
-  status: UpdateStatusEvent["status"],
-): status is Extract<
+function isPromptStatus(status: UpdateStatusEvent["status"]): status is Extract<
   UpdateStatusEvent["status"],
-  { state: "available" | "downloading" | "ready" | "failed" }
+  {
+    state:
+      "available" | "releaseAvailable" | "downloading" | "ready" | "failed";
+  }
 > {
   return (
     status.state === "available" ||
+    status.state === "releaseAvailable" ||
     status.state === "downloading" ||
     status.state === "ready" ||
     status.state === "failed"
@@ -199,6 +236,8 @@ function updateInstallGateMessage(
       return t("settings.about.installBlockedConflict");
     case "reviewMode":
       return t("settings.about.installBlockedReviewMode");
+    case "unsupportedInstallFormat":
+      return t("settings.about.installBlockedUnsupportedFormat");
     default:
       return gate.message ?? t("settings.about.installBlocked");
   }

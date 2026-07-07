@@ -54,6 +54,7 @@ export function UpdaterRuntimeBridge() {
   const dismissedPromptRequestIdRef = React.useRef(
     updatePromptDismissedRequestId,
   );
+  const updateStatusRef = React.useRef(updateStatus);
   const windowLabelRef = React.useRef(windowLabel);
 
   React.useEffect(() => {
@@ -70,6 +71,10 @@ export function UpdaterRuntimeBridge() {
   React.useEffect(() => {
     dismissedPromptRequestIdRef.current = updatePromptDismissedRequestId;
   }, [updatePromptDismissedRequestId]);
+
+  React.useEffect(() => {
+    updateStatusRef.current = updateStatus;
+  }, [updateStatus]);
 
   const frontendInstallGate =
     React.useCallback((): UpdateInstallGateResponse | null => {
@@ -134,7 +139,10 @@ export function UpdaterRuntimeBridge() {
       }
       if (payload.status.state === "ready") {
         void refreshInstallGate();
-      } else if (payload.status.state === "notAvailable") {
+      } else if (
+        payload.status.state === "notAvailable" ||
+        payload.status.state === "releaseAvailable"
+      ) {
         setUpdateInstallGate(noReadyUpdateGate);
       }
     })
@@ -170,6 +178,10 @@ export function UpdaterRuntimeBridge() {
       });
     };
     const handleInstall = () => {
+      if (updateStatusRef.current?.status.state !== "ready") {
+        return;
+      }
+
       void Promise.resolve()
         .then(refreshInstallGate)
         .then((gate) => {
@@ -261,7 +273,9 @@ function shouldExposeStatus(event: UpdateStatusEvent): boolean {
     return true;
   }
 
-  return event.status.state === "ready";
+  return (
+    event.status.state === "ready" || event.status.state === "releaseAvailable"
+  );
 }
 
 function shouldOpenUpdatePrompt(
@@ -273,11 +287,15 @@ function shouldOpenUpdatePrompt(
   }
 
   if (event.source === "automatic") {
-    return event.status.state === "ready";
+    return (
+      event.status.state === "ready" ||
+      event.status.state === "releaseAvailable"
+    );
   }
 
   return (
     event.status.state === "available" ||
+    event.status.state === "releaseAvailable" ||
     event.status.state === "downloading" ||
     event.status.state === "ready" ||
     (event.status.state === "failed" && event.status.visible)

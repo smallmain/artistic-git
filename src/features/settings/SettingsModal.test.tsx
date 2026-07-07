@@ -29,6 +29,7 @@ const commandMocks = vi.hoisted(() => ({
   loadGitignore: vi.fn(),
   loadProjectSettings: vi.fn(),
   loadRemoteSettings: vi.fn(),
+  openUpdateReleasePage: vi.fn(),
   saveAppSettings: vi.fn(),
   saveGitignore: vi.fn(),
   saveProjectSettings: vi.fn(),

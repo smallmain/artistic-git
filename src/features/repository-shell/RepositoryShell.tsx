@@ -182,7 +182,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   const [renormalizePreviewBusy, setRenormalizePreviewBusy] =
     React.useState(false);
   const [renormalizePreviewStatus, setRenormalizePreviewStatus] =
-    React.useState<string | null>(null);
+    React.useState<{ key: string; message: string } | null>(null);
   const [restoreIds, setRestoreIds] = React.useState<string[] | null>(null);
   const [restoreBusy, setRestoreBusy] = React.useState(false);
   const [branchActionBusy, setBranchActionBusy] = React.useState(false);
@@ -298,10 +298,19 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       demoLocalChanges,
     [localChangesQuery.data],
   );
-
-  React.useEffect(() => {
-    setRenormalizePreviewStatus(null);
-  }, [localChangesQuery.data?.renormalizeSuggestion?.totalChanges]);
+  const renormalizeSuggestion =
+    localChangesQuery.data?.renormalizeSuggestion ?? null;
+  const renormalizeSuggestionKey = renormalizeSuggestion
+    ? [
+        renormalizeSuggestion.totalChanges,
+        renormalizeSuggestion.modifiedChanges,
+        ...renormalizeSuggestion.samplePaths,
+      ].join("\0")
+    : null;
+  const visibleRenormalizePreviewStatus =
+    renormalizePreviewStatus?.key === renormalizeSuggestionKey
+      ? renormalizePreviewStatus.message
+      : null;
 
   const currentBranch = React.useMemo(
     () => branches.find((branch) => branch.current) ?? branches[0],
@@ -1280,17 +1289,21 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         sampleLimit: 8,
       });
       if (response.totalPaths === 0) {
-        setRenormalizePreviewStatus(t("localChanges.renormalizePreviewEmpty"));
+        setRenormalizePreviewStatus({
+          key: renormalizeSuggestionKey ?? "",
+          message: t("localChanges.renormalizePreviewEmpty"),
+        });
       } else {
-        setRenormalizePreviewStatus(
-          t("localChanges.renormalizePreviewResult", {
+        setRenormalizePreviewStatus({
+          key: renormalizeSuggestionKey ?? "",
+          message: t("localChanges.renormalizePreviewResult", {
             count: response.totalPaths,
             sample: response.samplePaths.join(", "),
             truncated: response.truncated
               ? t("localChanges.renormalizePreviewTruncated")
               : "",
           }),
-        );
+        });
       }
     } catch (error) {
       window.dispatchEvent(
@@ -1299,7 +1312,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     } finally {
       setRenormalizePreviewBusy(false);
     }
-  }, [renormalizePreviewBusy, repositoryPath, t]);
+  }, [renormalizePreviewBusy, renormalizeSuggestionKey, repositoryPath, t]);
 
   const runCommit = React.useCallback(
     async (
@@ -1870,10 +1883,8 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
                 });
               }}
               renormalizePreviewBusy={renormalizePreviewBusy}
-              renormalizePreviewStatus={renormalizePreviewStatus}
-              renormalizeSuggestion={
-                localChangesQuery.data?.renormalizeSuggestion ?? null
-              }
+              renormalizePreviewStatus={visibleRenormalizePreviewStatus}
+              renormalizeSuggestion={renormalizeSuggestion}
               viewMode={effectiveProjectSettings.localChangesViewMode}
             />
           )}

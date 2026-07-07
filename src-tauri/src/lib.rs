@@ -327,6 +327,12 @@ fn open_log_dir(
 }
 
 #[tauri::command]
+fn open_update_release_page() -> artistic_git_contracts::AppResult<()> {
+    open_url(APP_CHANGELOG);
+    Ok(())
+}
+
+#[tauri::command]
 fn open_repository(
     app_handle: tauri::AppHandle,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
@@ -1096,6 +1102,7 @@ pub fn run() {
             cancel_pending_window_exit,
             inject_renderer_crash,
             open_log_dir,
+            open_update_release_page,
             open_repository,
             clone_repository,
             cancel_clone_repository,

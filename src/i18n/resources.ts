@@ -40,11 +40,17 @@ export const resources = {
         failedTitle: "Check failed",
         later: "Later",
         noReleaseNotes: "No release notes were provided for this version.",
+        openReleases: "Open Releases",
         readyDescription:
           "Version {{version}} is downloaded. Restart Artistic Git to install it.",
         readyStatus: "The update is ready to install.",
         readyTitle: "Update ready to install",
         releaseNotes: "Release notes",
+        releasePageDescription:
+          "Version {{version}} is available. This installation needs a fresh download from GitHub Releases.",
+        releasePageStatus:
+          "This installation cannot be updated safely in the app.",
+        releasePageTitle: "Update available",
         restartNow: "Restart and install",
         unknownVersion: "the latest version",
         versionAvailable: "Version {{version}} is available.",
@@ -271,7 +277,10 @@ export const resources = {
             "Wait for the current Git operation to finish before restarting to install the update.",
           installBlockedReviewMode:
             "Finish review mode before restarting to install the update.",
+          installBlockedUnsupportedFormat:
+            "This installation cannot be updated safely in the app. Download the latest release from GitHub Releases.",
           installUpdate: "Restart and install",
+          openReleases: "Open Releases",
           unknown: "Unknown",
           updateAvailable: "Version {{version}} is available. Downloading...",
           updateChecking: "Checking for updates...",
@@ -280,6 +289,8 @@ export const resources = {
           updateIdle: "No update check has run in this window yet.",
           updateNotAvailable: "Artistic Git is up to date.",
           updateReady: "Version {{version}} is ready to install.",
+          updateReleaseAvailable:
+            "Version {{version}} is available on GitHub Releases.",
           updates: "Updates",
           version: "Version {{version}}",
         },
@@ -699,11 +710,16 @@ export const resources = {
         failedTitle: "检查失败",
         later: "稍后",
         noReleaseNotes: "此版本未提供更新日志。",
+        openReleases: "打开 Releases",
         readyDescription:
           "版本 {{version}} 已下载，重启 Artistic Git 即可安装。",
         readyStatus: "更新已准备好安装。",
         readyTitle: "更新已准备好安装",
         releaseNotes: "更新日志",
+        releasePageDescription:
+          "发现版本 {{version}}。当前安装方式需要从 GitHub Releases 重新下载安装包。",
+        releasePageStatus: "当前安装方式无法在应用内安全更新。",
+        releasePageTitle: "发现新版本",
         restartNow: "立即重启更新",
         unknownVersion: "最新版本",
         versionAvailable: "发现版本 {{version}}。",
@@ -911,7 +927,10 @@ export const resources = {
           installBlockedGitOperation:
             "请等待当前 Git 操作完成后再重启安装更新。",
           installBlockedReviewMode: "请先结束审查模式，再重启安装更新。",
+          installBlockedUnsupportedFormat:
+            "当前安装方式无法在应用内安全更新。请从 GitHub Releases 下载最新版本。",
           installUpdate: "重启并安装",
+          openReleases: "打开 Releases",
           unknown: "未知",
           updateAvailable: "发现版本 {{version}}，正在下载...",
           updateChecking: "正在检查更新...",
@@ -920,6 +939,7 @@ export const resources = {
           updateIdle: "此窗口尚未检查更新。",
           updateNotAvailable: "Artistic Git 已是最新版本。",
           updateReady: "版本 {{version}} 已准备好安装。",
+          updateReleaseAvailable: "GitHub Releases 上已有版本 {{version}}。",
           updates: "更新",
           version: "版本 {{version}}",
         },

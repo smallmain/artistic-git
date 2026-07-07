@@ -32,12 +32,14 @@ const bridgeMocks = vi.hoisted(() => ({
   checkForUpdates: vi.fn(),
   installReadyUpdate: vi.fn(),
   listenAppEvent: vi.fn(),
+  openUpdateReleasePage: vi.fn(),
   updateInstallGate: vi.fn(),
 }));
 
 vi.mock("@/lib/ipc/commands", () => ({
   checkForUpdates: bridgeMocks.checkForUpdates,
   installReadyUpdate: bridgeMocks.installReadyUpdate,
+  openUpdateReleasePage: bridgeMocks.openUpdateReleasePage,
   updateInstallGate: bridgeMocks.updateInstallGate,
 }));
 
@@ -70,6 +72,7 @@ beforeEach(() => {
     reason: null,
   });
   bridgeMocks.installReadyUpdate.mockResolvedValue(undefined);
+  bridgeMocks.openUpdateReleasePage.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -223,6 +226,49 @@ describe("UpdaterRuntimeBridge", () => {
     expect(
       screen.getByRole("progressbar", { name: "Update download progress" }),
     ).toHaveAttribute("aria-valuenow", "25");
+  });
+
+  it("shows a release-page fallback without download or install for package-managed Linux installs", async () => {
+    render(
+      <TestProviders>
+        <UpdaterRuntimeBridge />
+      </TestProviders>,
+    );
+
+    await waitFor(() => expect(updateStatusHandler).not.toBeNull());
+
+    await emitUpdateStatus({
+      requestId: "manual-deb-fallback-1",
+      source: "manual",
+      targetWindowLabel: "main",
+      status: {
+        notes: "Manual package release notes",
+        reason: "linuxPackageManager",
+        state: "releaseAvailable",
+        version: "0.2.0",
+      },
+    });
+
+    expect(
+      await screen.findByRole("dialog", { name: "Update available" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Version 0.2.0 is available. This installation needs a fresh download from GitHub Releases.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("progressbar", { name: "Update download progress" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Restart and install" }),
+    ).not.toBeInTheDocument();
+
+    window.dispatchEvent(new CustomEvent("artistic-git:install-update"));
+    expect(bridgeMocks.installReadyUpdate).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Open Releases" }));
+    expect(bridgeMocks.openUpdateReleasePage).toHaveBeenCalled();
   });
 
   it("shows manual check failures in the update prompt", async () => {
