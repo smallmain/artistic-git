@@ -13,6 +13,27 @@ type StartScreenState = {
   title: string;
 };
 
+const startScreenStateScript = `
+return (function () {
+  var byTestId = function (testId) {
+    return document.querySelector('[data-testid="' + testId + '"]');
+  };
+  var openProject = byTestId('start-open-project');
+  var cloneProject = byTestId('start-clone-project');
+
+  return {
+    bodyText: document.body ? document.body.innerText.slice(0, 500) : '',
+    cloneProjectEnabled: cloneProject ? !cloneProject.disabled : null,
+    hasCloneProject: Boolean(cloneProject),
+    hasOpenProject: Boolean(openProject),
+    hasStartScreen: Boolean(byTestId('start-screen')),
+    openProjectEnabled: openProject ? !openProject.disabled : null,
+    readyState: document.readyState,
+    title: document.title,
+  };
+})();
+`;
+
 describe("Artistic Git Tauri smoke", () => {
   it("opens the start screen", async () => {
     let lastState: StartScreenState | null = null;
@@ -53,25 +74,5 @@ describe("Artistic Git Tauri smoke", () => {
 });
 
 function startScreenState() {
-  return browser.execute(() => {
-    const byTestId = (testId: string) =>
-      document.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
-    const openProject = byTestId(
-      "start-open-project",
-    ) as HTMLButtonElement | null;
-    const cloneProject = byTestId(
-      "start-clone-project",
-    ) as HTMLButtonElement | null;
-
-    return {
-      bodyText: document.body.innerText.slice(0, 500),
-      cloneProjectEnabled: cloneProject ? !cloneProject.disabled : null,
-      hasCloneProject: Boolean(cloneProject),
-      hasOpenProject: Boolean(openProject),
-      hasStartScreen: Boolean(byTestId("start-screen")),
-      openProjectEnabled: openProject ? !openProject.disabled : null,
-      readyState: document.readyState,
-      title: document.title,
-    };
-  }) as Promise<StartScreenState>;
+  return browser.execute(startScreenStateScript) as Promise<StartScreenState>;
 }
