@@ -63,6 +63,9 @@ jobs:
       - name: Audit push safety
         run: pnpm git:push-safety:check
 
+      - name: Audit i18n coverage
+        run: pnpm i18n:audit
+
       - name: Audit privacy network surface
         run: pnpm privacy:audit
 

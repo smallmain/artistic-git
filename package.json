@@ -17,6 +17,7 @@
     "git-dist:check": "node scripts/check-git-dist.mjs --schema-only",
     "git-dist:check:real": "node scripts/check-git-dist.mjs --schema-only --real-build --expect-placeholder-rejection",
     "git:push-safety:check": "node scripts/check-no-force-push.mjs",
+    "i18n:audit": "node scripts/check-i18n-audit.mjs",
     "privacy:audit": "node scripts/check-privacy-network.mjs",
     "fetch:git-dist": "node scripts/fetch-git-dist.mjs",
     "release:version": "node scripts/release-version.mjs",
