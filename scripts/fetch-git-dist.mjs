@@ -10,6 +10,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import {
   GitDistConfigError,
+  assembleGitDist,
   configPath,
   getHostTarget,
   getTarget,
@@ -46,11 +47,14 @@ const stagingDir = path.resolve(
 const usage = `Usage:
   node scripts/fetch-git-dist.mjs --schema-only [--target=${supportedTargets.join("|")}]
   node scripts/fetch-git-dist.mjs --print-env [--target=${supportedTargets.join("|")}] [--output=/path/to/git-dist]
-  node scripts/fetch-git-dist.mjs [--target=${supportedTargets.join("|")}] [--output=/path/to/git-dist] [--cache-dir=/path] [--download-only] [--no-extract]
+  node scripts/fetch-git-dist.mjs [--target=${supportedTargets.join("|")}] [--output=/path/to/git-dist] [--cache-dir=/path] [--download-only] [--no-extract] [--helper-dir=/path | --credential-helper=/path --ssh-askpass=/path] [--helper-profile=auto|release|debug]
   node scripts/fetch-git-dist.mjs --dev-resources [--target=${supportedTargets.join("|")}] [--download-only]
 
 Default output is $ARTISTIC_GIT_DIST_DIR when set, otherwise a temp directory.
 --dev-resources writes to src-tauri/resources/git-dist for local Tauri runs.
+Archive assembly copies staged archives into the git-dist layout, copies helper
+binaries from explicit paths or target/{release,debug}, and writes manifest.json
+only after every required executable is present and hashed.
 The fetch pipeline never searches PATH for git and never falls back to a system Git.`;
 
 if (args.help) {
@@ -133,7 +137,21 @@ async function run() {
     return;
   }
 
-  await assembleTarget(config, target, sources);
+  const manifest = await assembleGitDist({
+    config,
+    targetName,
+    stagingDir,
+    outputDir,
+    helperDir: args.helperDir,
+    credentialHelperPath: args.credentialHelper,
+    sshAskpassPath: args.sshAskpass,
+    cargoTargetDir: args.cargoTargetDir,
+    helperProfile: args.helperProfile,
+  });
+  info(
+    `assembled ${target.manifest_platform}: ${Object.keys(manifest.sha256).length} files hashed`,
+  );
+  info(`manifest: ${path.join(outputDir, config.resources.layout.manifest)}`);
 }
 
 async function downloadSource(ref, source) {
@@ -205,22 +223,6 @@ async function extractSource(ref, source, archivePath) {
   }
 }
 
-async function assembleTarget(config, target, sources) {
-  const sourceBuilds = sources.filter(
-    ({ source }) => source.kind === "source-tarball",
-  );
-  if (sourceBuilds.length > 0) {
-    const refs = sourceBuilds.map(({ ref }) => ref).join(", ");
-    fail(
-      `source build stage is a CI recipe handoff for ${target.manifest_platform}; staged sources: ${refs}. Follow the build.${target.platform}.git recipe in git-dist.toml, assemble ${config.resources.layout.manifest}, then run ARTISTIC_GIT_DIST_DIR=${outputDir} node scripts/check-git-dist.mjs --target=${target.manifest_platform} --no-exec. No manifest was written and no system git fallback was attempted.`,
-    );
-  }
-
-  fail(
-    `archive assembly for ${target.manifest_platform} is not complete in phase 1A. Staged files are in ${stagingDir}; assemble files under ${outputDir}, write ${config.resources.layout.manifest}, then run scripts/check-git-dist.mjs. No incomplete manifest was written.`,
-  );
-}
-
 function extractionCommand(archivePath, destination) {
   if (/\.zip$/i.test(archivePath)) {
     if (process.platform === "win32") {
@@ -273,6 +275,11 @@ function parseArgs(argv) {
     output: undefined,
     cacheDir: undefined,
     stagingDir: undefined,
+    helperDir: undefined,
+    credentialHelper: undefined,
+    sshAskpass: undefined,
+    cargoTargetDir: undefined,
+    helperProfile: "auto",
   };
 
   for (const arg of argv) {
@@ -298,6 +305,16 @@ function parseArgs(argv) {
       parsed.cacheDir = arg.slice("--cache-dir=".length);
     } else if (arg.startsWith("--staging-dir=")) {
       parsed.stagingDir = arg.slice("--staging-dir=".length);
+    } else if (arg.startsWith("--helper-dir=")) {
+      parsed.helperDir = arg.slice("--helper-dir=".length);
+    } else if (arg.startsWith("--credential-helper=")) {
+      parsed.credentialHelper = arg.slice("--credential-helper=".length);
+    } else if (arg.startsWith("--ssh-askpass=")) {
+      parsed.sshAskpass = arg.slice("--ssh-askpass=".length);
+    } else if (arg.startsWith("--cargo-target-dir=")) {
+      parsed.cargoTargetDir = arg.slice("--cargo-target-dir=".length);
+    } else if (arg.startsWith("--helper-profile=")) {
+      parsed.helperProfile = arg.slice("--helper-profile=".length);
     } else {
       fail(`unknown argument: ${arg}`);
     }
