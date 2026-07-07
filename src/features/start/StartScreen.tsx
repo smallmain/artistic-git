@@ -324,7 +324,10 @@ export function StartScreen() {
   }, [appSettings]);
 
   return (
-    <main className="flex min-h-screen bg-background text-foreground">
+    <main
+      className="flex min-h-screen bg-background text-foreground"
+      data-testid="start-screen"
+    >
       <input
         aria-hidden="true"
         className="hidden"
@@ -366,6 +369,7 @@ export function StartScreen() {
             <div className="flex flex-col gap-3">
               <Button
                 className="h-12 justify-start gap-3 px-4"
+                data-testid="start-open-project"
                 disabled={openingPath !== null || isCloning}
                 onClick={() => {
                   fileInputRef.current?.click();
@@ -378,6 +382,7 @@ export function StartScreen() {
               </Button>
               <Button
                 className="h-12 justify-start gap-3 px-4"
+                data-testid="start-clone-project"
                 disabled={openingPath !== null || isCloning}
                 onClick={() => {
                   setCloneParentDirectory((current) =>
