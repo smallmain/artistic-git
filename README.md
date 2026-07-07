@@ -46,6 +46,15 @@ Environment allows the job. When the gate is not enabled, the workflow runs
 tests and a Tauri `--no-bundle` dry-run build without publishing. Manual runs
 can keep the automatic version calculation or override the SemVer bump level.
 
+Publishing requires a Tauri updater key pair generated outside the repository.
+Store the private key in GitHub Secrets as `TAURI_SIGNING_PRIVATE_KEY` and, when
+used, its password as `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Replace the updater
+`pubkey` placeholder in `src-tauri/tauri.conf.json` with the generated public
+key before enabling public releases. The publish job uploads the platform
+installers, signed updater artifacts, and a generated `latest.json` for GitHub
+Releases; AppImage supports in-app updates, while `.deb` users should install
+new versions from the release page.
+
 ## Commit Convention
 
 Use Conventional Commits in English, for example:

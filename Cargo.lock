@@ -127,6 +127,7 @@ dependencies = [
  "artistic-git-core",
  "artistic-git-git-runner",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

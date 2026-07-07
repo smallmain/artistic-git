@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
+import {
+  buildLatestJson as buildTauriLatestJson,
+  selectUpdaterAssets,
+} from "./generate-tauri-latest-json.mjs";
 import {
   analyzeCommits,
   buildLatestJson,
@@ -129,4 +136,79 @@ test("detects scopes, bang breaking markers, and latest.json shape", () => {
       platforms: {},
     },
   );
+});
+
+test("selects one updater asset per Tauri platform", () => {
+  assert.deepEqual(
+    selectUpdaterAssets([
+      "Artistic Git_0.1.0_x64.dmg",
+      "Artistic Git.app.tar.gz",
+      "Artistic Git.app.tar.gz.sig",
+      "Artistic Git_0.1.0_x64-setup.exe",
+      "Artistic Git_0.1.0_x64-setup.exe.sig",
+      "artistic-git_0.1.0_amd64.deb",
+      "artistic-git_0.1.0_amd64.AppImage",
+      "artistic-git_0.1.0_amd64.AppImage.sig",
+    ]),
+    [
+      "Artistic Git.app.tar.gz",
+      "Artistic Git_0.1.0_x64-setup.exe",
+      "artistic-git_0.1.0_amd64.AppImage",
+    ],
+  );
+
+  assert.throws(
+    () =>
+      selectUpdaterAssets([
+        "Artistic Git.app.tar.gz",
+        "other.app.tar.gz",
+        "Artistic Git_0.1.0_x64-setup.exe",
+        "artistic-git_0.1.0_amd64.AppImage",
+      ]),
+    /multiple macOS/,
+  );
+});
+
+test("builds Tauri latest.json from signed release artifacts", async () => {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "artistic-git-release-"));
+
+  try {
+    await writeFile(path.join(tmpDir, "Artistic Git.app.tar.gz"), "");
+    await writeFile(
+      path.join(tmpDir, "Artistic Git.app.tar.gz.sig"),
+      "macsig\n",
+    );
+    await writeFile(path.join(tmpDir, "Artistic Git_0.1.0_x64-setup.exe"), "");
+    await writeFile(
+      path.join(tmpDir, "Artistic Git_0.1.0_x64-setup.exe.sig"),
+      "winsig\n",
+    );
+    await writeFile(path.join(tmpDir, "artistic-git_0.1.0_amd64.AppImage"), "");
+    await writeFile(
+      path.join(tmpDir, "artistic-git_0.1.0_amd64.AppImage.sig"),
+      "linuxsig\n",
+    );
+
+    const latestJson = await buildTauriLatestJson({
+      assetsDir: tmpDir,
+      version: "v0.1.0",
+      notes: "Release notes",
+      pubDate: "2026-07-07T00:00:00.000Z",
+      repo: "smallmain/artistic-git",
+      tag: "v0.1.0",
+    });
+
+    assert.equal(latestJson.version, "0.1.0");
+    assert.equal(latestJson.pub_date, "2026-07-07T00:00:00.000Z");
+    assert.equal(latestJson.platforms["darwin-x86_64"].signature, "macsig");
+    assert.equal(latestJson.platforms["darwin-aarch64"].signature, "macsig");
+    assert.equal(latestJson.platforms["windows-x86_64"].signature, "winsig");
+    assert.equal(latestJson.platforms["linux-x86_64"].signature, "linuxsig");
+    assert.match(
+      latestJson.platforms["darwin-x86_64"].url,
+      /Artistic%20Git\.app\.tar\.gz$/,
+    );
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
 });

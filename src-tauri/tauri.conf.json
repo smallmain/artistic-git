@@ -79,5 +79,16 @@
         }
       }
     }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "REPLACE_WITH_TAURI_UPDATER_PUBLIC_KEY_FROM_TAURI_SIGNER_GENERATE",
+      "endpoints": [
+        "https://github.com/smallmain/artistic-git/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "quiet"
+      }
+    }
   }
 }

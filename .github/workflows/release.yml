@@ -164,14 +164,17 @@ jobs:
         include:
           - os: macos-latest
             bundles: app,dmg
+            target: universal-apple-darwin
             gitDistTarget: macos-universal
             artifactName: artistic-git-macos
           - os: windows-latest
             bundles: nsis
+            target: x86_64-pc-windows-msvc
             gitDistTarget: windows-x86_64
             artifactName: artistic-git-windows
           - os: ubuntu-22.04
             bundles: appimage,deb
+            target: x86_64-unknown-linux-gnu
             gitDistTarget: linux-x86_64
             artifactName: artistic-git-linux
 
@@ -204,12 +207,43 @@ jobs:
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.os == 'macos-latest' && 'x86_64-apple-darwin,aarch64-apple-darwin' || matrix.target }}
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
       - name: Check release scripts and bundle resources
         run: pnpm release:check
+
+      - name: Apply release version to package manifests
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from "node:fs/promises";
+
+          const version = process.env.RELEASE_VERSION;
+          for (const file of ["package.json", "src-tauri/tauri.conf.json"]) {
+            const json = JSON.parse(await readFile(file, "utf8"));
+            json.version = version;
+            await writeFile(file, `${JSON.stringify(json, null, 2)}\n`);
+          }
+          NODE
+
+      - name: Verify updater signing secrets
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+            echo "TAURI_SIGNING_PRIVATE_KEY must be configured in GitHub Secrets before publishing updater artifacts." >&2
+            exit 1
+          fi
 
       - name: Validate staged embedded Git resources
         shell: bash
@@ -224,7 +258,7 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: pnpm tauri build --ci --bundles "${{ matrix.bundles }}"
+        run: pnpm tauri build --ci --target "${{ matrix.target }}" --bundles "${{ matrix.bundles }}"
 
       - name: Stage release assets
         shell: bash
@@ -263,6 +297,14 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
       - name: Download release plan
         uses: actions/download-artifact@v4
         with:
@@ -276,6 +318,24 @@ jobs:
           pattern: artistic-git-*
           merge-multiple: true
 
+      - name: Generate updater latest.json
+        shell: bash
+        env:
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ needs.plan.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          PUB_DATE="$(node -e "console.log(JSON.parse(require('node:fs').readFileSync('release-plan/release-plan.json', 'utf8')).generatedAt)")"
+          node scripts/generate-tauri-latest-json.mjs \
+            --assets-dir release-assets \
+            --version "$RELEASE_VERSION" \
+            --tag "$TAG_NAME" \
+            --repo "$GH_REPO" \
+            --notes-file release-plan/RELEASE_NOTES.md \
+            --pub-date "$PUB_DATE" \
+            --output release-assets/latest.json
+
       - name: Publish release
         shell: bash
         env:
@@ -284,7 +344,7 @@ jobs:
           TAG_NAME: ${{ needs.plan.outputs.tag }}
         run: |
           set -euo pipefail
-          cp release-plan/latest.json release-assets/latest.json
           gh release create "$TAG_NAME" release-assets/* \
             --title "Artistic Git $TAG_NAME" \
+            --target "$GITHUB_SHA" \
             --notes-file release-plan/RELEASE_NOTES.md
