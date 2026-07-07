@@ -101,7 +101,7 @@ pub fn create_branch(
     let base_branch = normalized_input(&request.base_branch, CREATE_BRANCH_OPERATION, &root)?;
     let base_ref = resolve_start_point(runner, &root, &base_branch, CREATE_BRANCH_OPERATION)?;
 
-    if request.checkout_immediately {
+    let response = if request.checkout_immediately {
         let checkout_args = vec![
             OsString::from("checkout"),
             OsString::from("-b"),
@@ -126,8 +126,20 @@ pub fn create_branch(
             ["branch", name.as_str(), base_ref.as_str()],
             CREATE_BRANCH_OPERATION,
         )?;
-        Ok(completed_response(&root, name))
+        Ok(completed_response(&root, name.clone()))
+    }?;
+
+    if request.create_remote && matches!(response, BranchOperationResponse::Completed { .. }) {
+        ensure_origin(runner, &root, CREATE_BRANCH_OPERATION)?;
+        crate::repository::git_stdout(
+            runner,
+            Some(&root),
+            ["push", "-u", "origin", name.as_str()],
+            CREATE_BRANCH_OPERATION,
+        )?;
     }
+
+    Ok(response)
 }
 
 pub fn checkout_branch(
@@ -195,7 +207,8 @@ pub fn delete_branch(
         ));
     }
 
-    match branch_target(runner, &root, &branch_name, DELETE_BRANCH_OPERATION)? {
+    let target = branch_target(runner, &root, &branch_name, DELETE_BRANCH_OPERATION)?;
+    match target {
         BranchTarget::Local | BranchTarget::LocalAndRemote => {
             ensure_branch_merged(runner, &root, &branch_name)?;
             crate::repository::git_stdout(
@@ -213,13 +226,6 @@ pub fn delete_branch(
                     &root,
                 ));
             }
-            let remote_ref = format!("refs/remotes/origin/{branch_name}");
-            crate::repository::git_stdout(
-                runner,
-                Some(&root),
-                ["update-ref", "-d", remote_ref.as_str()],
-                DELETE_BRANCH_OPERATION,
-            )?;
         }
         BranchTarget::Missing => {
             return Err(expected_repo_error(
@@ -228,6 +234,26 @@ pub fn delete_branch(
                 &root,
             ));
         }
+    }
+
+    if request.delete_remote || matches!(target, BranchTarget::RemoteOnly) {
+        ensure_origin(runner, &root, DELETE_BRANCH_OPERATION)?;
+        crate::repository::git_stdout(
+            runner,
+            Some(&root),
+            ["push", "origin", "--delete", branch_name.as_str()],
+            DELETE_BRANCH_OPERATION,
+        )?;
+    }
+
+    if matches!(target, BranchTarget::RemoteOnly) || request.delete_remote {
+        let remote_ref = format!("refs/remotes/origin/{branch_name}");
+        let _ = crate::repository::git_stdout(
+            runner,
+            Some(&root),
+            ["update-ref", "-d", remote_ref.as_str()],
+            DELETE_BRANCH_OPERATION,
+        );
     }
 
     Ok(completed_response(&root, branch_name))
@@ -549,6 +575,18 @@ fn ensure_committed_head(runner: &GitRunner, root: &Path, operation_name: &str) 
             root,
         )),
         Err(error) => Err(error),
+    }
+}
+
+fn ensure_origin(runner: &GitRunner, root: &Path, operation_name: &str) -> AppResult<()> {
+    if crate::remote::read_origin_url(runner, root, operation_name)?.is_some() {
+        Ok(())
+    } else {
+        Err(expected_repo_error(
+            "未配置远程仓库。",
+            operation_name,
+            root,
+        ))
     }
 }
 
@@ -958,6 +996,76 @@ mod tests {
     }
 
     #[test]
+    fn create_branch_can_publish_remote_branch() {
+        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
+            return;
+        };
+        let fixture = RemoteFixture::new(&runner);
+
+        create_branch(
+            &runner,
+            CreateBranchRequest {
+                repository_path: display_path(&fixture.local.path),
+                name: "feature/published".to_owned(),
+                base_branch: "main".to_owned(),
+                checkout_immediately: false,
+                create_remote: true,
+                local_changes_mode: CheckoutLocalChangesMode::RequireClean,
+                operation_id: None,
+            },
+        )
+        .expect("create and publish branch");
+
+        assert!(fixture
+            .remote
+            .git_output([
+                "for-each-ref",
+                "--format=%(refname)",
+                "refs/heads/feature/published",
+            ])
+            .contains("refs/heads/feature/published"));
+        assert_eq!(
+            fixture
+                .local
+                .git_output(["config", "--get", "branch.feature/published.remote",])
+                .trim(),
+            "origin"
+        );
+    }
+
+    #[test]
+    fn delete_branch_can_delete_remote_branch() {
+        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
+            return;
+        };
+        let fixture = RemoteFixture::new(&runner);
+        fixture.local.git(["branch", "feature/delete-me"]);
+        fixture
+            .local
+            .git(["push", "-u", "origin", "feature/delete-me"]);
+
+        delete_branch(
+            &runner,
+            DeleteBranchRequest {
+                repository_path: display_path(&fixture.local.path),
+                branch_name: "feature/delete-me".to_owned(),
+                delete_remote: true,
+                force_remote_only: false,
+            },
+        )
+        .expect("delete local and remote branch");
+
+        assert!(!fixture
+            .remote
+            .git_output([
+                "for-each-ref",
+                "--format=%(refname)",
+                "refs/heads/feature/delete-me",
+            ])
+            .contains("refs/heads/feature/delete-me"));
+    }
+
+    #[test]
     fn branch_write_operations_reject_unborn_head() {
         let Some((runner, _dist_temp)) = real_runner_or_skip() else {
             return;
@@ -1019,7 +1127,7 @@ mod tests {
 
     struct RemoteFixture {
         local: TestRepo,
-        _remote: TestRepo,
+        remote: TestRepo,
     }
 
     impl RemoteFixture {
@@ -1055,10 +1163,7 @@ mod tests {
             )
             .expect("clone");
 
-            Self {
-                local,
-                _remote: remote,
-            }
+            Self { local, remote }
         }
     }
 

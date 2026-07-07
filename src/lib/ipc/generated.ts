@@ -870,6 +870,22 @@ export type StashRestoreStateEvent = {
 export type StashRestoreStatus =
   "applying" | "applied" | "conflicted" | "cancelled";
 
+export type SyncCurrentBranchRequest = {
+  repositoryPath: string;
+  operationId: OperationId | null;
+};
+
+export type SyncCurrentBranchResponse = {
+  repositoryPath: string;
+  branchName: string;
+  upstream: string | null;
+  status: SyncCurrentBranchStatus;
+  attempts: number;
+};
+
+export type SyncCurrentBranchStatus =
+  "alreadyUpToDate" | "pulled" | "pushed" | "pulledAndPushed" | "published";
+
 export type ThemePreference = "system" | "light" | "dark";
 
 export type ToolGitIdentity = {

@@ -23,7 +23,7 @@ use artistic_git_contracts::{
     OpenRepositoryResponse, RemoteSettingsResponse, RepositoryPathRequest, RepositorySummary,
     RestoreChangesRequest, RestoreChangesResponse, RestoreStashRequest, RestoreStashResponse,
     RevertCommitRequest, RevertCommitResponse, SaveRemoteSettingsRequest, StashDetailsRequest,
-    StashDetailsResponse, StashListResponse,
+    StashDetailsResponse, StashListResponse, SyncCurrentBranchRequest, SyncCurrentBranchResponse,
 };
 use artistic_git_core::config::{
     AppSettings, ConfigChangeEvent, ProjectSettings, ProjectsDocument,
@@ -45,6 +45,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register::<RepositorySummary>()
         .register::<FetchRepositoryRequest>()
         .register::<FetchRepositoryResponse>()
+        .register::<SyncCurrentBranchRequest>()
+        .register::<SyncCurrentBranchResponse>()
         .register::<RemoteSettingsResponse>()
         .register::<SaveRemoteSettingsRequest>()
         .register::<BranchListResponse>()

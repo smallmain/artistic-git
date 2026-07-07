@@ -46,6 +46,7 @@ import {
   saveConflictResolution,
   selectConflictSide,
   stashDetails,
+  syncCurrentBranch,
   validateBranchName,
 } from "@/lib/ipc/commands";
 import type {
@@ -140,6 +141,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   const [restoreBusy, setRestoreBusy] = React.useState(false);
   const [branchActionBusy, setBranchActionBusy] = React.useState(false);
   const [fetchBusy, setFetchBusy] = React.useState(false);
+  const [syncBusy, setSyncBusy] = React.useState(false);
   const [liveFetchState, setLiveFetchState] =
     React.useState<FetchStateEvent | null>(null);
   const fetchInFlightRef = React.useRef(false);
@@ -158,6 +160,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     React.useState<BranchNameValidationResponse | null>(null);
   const [branchToDelete, setBranchToDelete] =
     React.useState<BranchListItem | null>(null);
+  const [deleteRemoteBranch, setDeleteRemoteBranch] = React.useState(false);
   const [stashActionBusy, setStashActionBusy] = React.useState(false);
   const [stashIds, setStashIds] = React.useState<string[] | null>(null);
   const [stashMessage, setStashMessage] = React.useState("");
@@ -353,6 +356,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   const busy =
     activeOperation !== null ||
     fetchBusy ||
+    syncBusy ||
     commitBusy ||
     restoreBusy ||
     branchActionBusy ||
@@ -361,15 +365,17 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     ? activeOperation.label
     : fetchBusy
       ? t("repository.sync")
-      : commitBusy
-        ? t("localChanges.commitBusy")
-        : restoreBusy
-          ? t("localChanges.restoreBusy")
-          : branchActionBusy
-            ? t("repository.branchBusy")
-            : stashActionBusy
-              ? t("repository.stashBusy")
-              : t("repository.ready");
+      : syncBusy
+        ? t("repository.sync")
+        : commitBusy
+          ? t("localChanges.commitBusy")
+          : restoreBusy
+            ? t("localChanges.restoreBusy")
+            : branchActionBusy
+              ? t("repository.branchBusy")
+              : stashActionBusy
+                ? t("repository.stashBusy")
+                : t("repository.ready");
   const selectedCommitPaths = React.useMemo(
     () => pathsForChangeIds(commitIds ?? [], localChanges),
     [commitIds, localChanges],
@@ -432,6 +438,37 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       setFetchBusy(false);
     }
   }, [queryClient, repository.hasRemote, repositoryPath]);
+
+  const runSyncCurrentBranch = React.useCallback(async () => {
+    if (syncBusy || !repository.hasRemote) {
+      return;
+    }
+
+    setSyncBusy(true);
+    try {
+      await syncCurrentBranch({ operationId: null, repositoryPath });
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: repoQueryKeys.summary(repositoryPath),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: repoQueryKeys.branches(repositoryPath),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: repoQueryKeys.history(repositoryPath),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: repoQueryKeys.localChanges(repositoryPath),
+        }),
+      ]);
+    } catch (error) {
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:error", { detail: error }),
+      );
+    } finally {
+      setSyncBusy(false);
+    }
+  }, [queryClient, repository.hasRemote, repositoryPath, syncBusy]);
 
   React.useEffect(() => {
     if (
@@ -591,7 +628,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       const response = await createBranch({
         baseBranch: branchCreateBase.name,
         checkoutImmediately: newBranchCheckout,
-        createRemote: false,
+        createRemote: newBranchCreateRemote,
         localChangesMode: checkoutMode,
         name,
         operationId: null,
@@ -622,6 +659,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     handleBranchCompleted,
     rememberBranchStashRecovery,
     newBranchCheckout,
+    newBranchCreateRemote,
     newBranchName,
     repositoryPath,
     setConflictEntered,
@@ -636,7 +674,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     try {
       const response = await deleteBranch({
         branchName: branchToDelete.name,
-        deleteRemote: false,
+        deleteRemote: Boolean(branchToDelete.remoteOnly) || deleteRemoteBranch,
         forceRemoteOnly: Boolean(branchToDelete.remoteOnly),
         repositoryPath,
       });
@@ -647,6 +685,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         handleBranchCompleted(response.branchName);
       }
       setBranchToDelete(null);
+      setDeleteRemoteBranch(false);
     } catch (error) {
       window.dispatchEvent(
         new CustomEvent("artistic-git:error", { detail: error }),
@@ -656,6 +695,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     }
   }, [
     branchToDelete,
+    deleteRemoteBranch,
     handleBranchCompleted,
     repositoryPath,
     setConflictEntered,
@@ -941,11 +981,13 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         onCreateBranchFromBase={openCreateBranchDialog}
         onDeleteBranch={(branch) => {
           setBranchToDelete(branch);
+          setDeleteRemoteBranch(Boolean(branch.remoteOnly));
         }}
         onDeleteStash={setStashToDelete}
-        onFetch={() => void runFetch()}
+        onFetch={() => void runSyncCurrentBranch()}
         onOpenSettings={() => openSettings("general")}
         onShowStashDetails={(stash) => void showStashDetails(stash)}
+        onSyncBranch={() => void runSyncCurrentBranch()}
         repository={repository}
         stashes={stashes}
       />
@@ -1090,10 +1132,13 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       <DeleteBranchDialog
         branch={branchToDelete}
         busy={branchActionBusy}
+        deleteRemote={deleteRemoteBranch}
         onConfirm={() => void runDeleteBranch()}
+        onDeleteRemoteChange={setDeleteRemoteBranch}
         onOpenChange={(open) => {
           if (!open && !branchActionBusy) {
             setBranchToDelete(null);
+            setDeleteRemoteBranch(false);
           }
         }}
       />
@@ -1237,12 +1282,16 @@ function mapLocalChangeToItem(change: LocalChange): LocalChangeItem {
 function DeleteBranchDialog({
   branch,
   busy,
+  deleteRemote,
   onConfirm,
+  onDeleteRemoteChange,
   onOpenChange,
 }: {
   branch: BranchListItem | null;
   busy: boolean;
+  deleteRemote: boolean;
   onConfirm: () => void;
+  onDeleteRemoteChange: (deleteRemote: boolean) => void;
   onOpenChange: (open: boolean) => void;
 }) {
   const { t } = useTranslation();
@@ -1304,10 +1353,10 @@ function DeleteBranchDialog({
       <div className="grid gap-2 rounded-md border bg-background p-3 text-sm">
         <label className="flex items-center gap-2">
           <input
-            checked={Boolean(branch.remoteOnly)}
+            checked={branch.remoteOnly || deleteRemote}
             className="size-4"
-            disabled
-            readOnly
+            disabled={busy || Boolean(branch.remoteOnly)}
+            onChange={(event) => onDeleteRemoteChange(event.target.checked)}
             type="checkbox"
           />
           <span>{t("repository.deleteRemoteBranch")}</span>
@@ -1315,7 +1364,9 @@ function DeleteBranchDialog({
         <p className="text-muted-foreground">
           {branch.remoteOnly
             ? t("repository.deleteRemoteOnlyBranchRequired")
-            : t("repository.deleteRemoteBranchUnavailable")}
+            : t("repository.deleteRemoteBranchUnavailable", {
+                name: branch.name,
+              })}
         </p>
       </div>
     </DialogFrame>
@@ -1462,7 +1513,7 @@ function CreateBranchDialog({
           <input
             checked={createRemote}
             className="mt-0.5 size-4"
-            disabled
+            disabled={busy}
             onChange={(event) => onCreateRemoteChange(event.target.checked)}
             type="checkbox"
           />

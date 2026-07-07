@@ -175,6 +175,13 @@ impl RepositoryBackend {
         crate::fetch::fetch_repository(&self.runner, &self.fetch_states, request)
     }
 
+    pub fn sync_current_branch(
+        &self,
+        request: artistic_git_contracts::SyncCurrentBranchRequest,
+    ) -> AppResult<artistic_git_contracts::SyncCurrentBranchResponse> {
+        crate::sync_current_branch(&self.runner, request)
+    }
+
     pub fn load_remote_settings(
         &self,
         request: RepositoryPathRequest,

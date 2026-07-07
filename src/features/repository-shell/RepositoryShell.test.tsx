@@ -40,6 +40,7 @@ const commandMocks = vi.hoisted(() => ({
   selectConflictSide: vi.fn(),
   settingsSnapshot: vi.fn(),
   stashDetails: vi.fn(),
+  syncCurrentBranch: vi.fn(),
   validateBranchName: vi.fn(),
 }));
 
@@ -116,6 +117,13 @@ beforeEach(() => {
     created: true,
     stash: null,
     stdout: "",
+  });
+  commandMocks.syncCurrentBranch.mockResolvedValue({
+    attempts: 1,
+    branchName: "main",
+    repositoryPath: "/repo/art",
+    status: "alreadyUpToDate",
+    upstream: "origin/main",
   });
   commandMocks.restoreStash.mockResolvedValue({
     oid: "stashoid",
@@ -382,7 +390,7 @@ describe("RepositoryShell branch flow", () => {
     expect(commandMocks.fetchRepository).not.toHaveBeenCalled();
   });
 
-  it("validates and creates a branch from the selected base without connecting remote creation", async () => {
+  it("validates and creates a branch from the selected base with remote creation", async () => {
     mockBranchList();
     commandMocks.validateBranchName.mockResolvedValueOnce({
       exists: false,
@@ -417,7 +425,7 @@ describe("RepositoryShell branch flow", () => {
       name: "Create remote branch during sync",
     });
     expect(remoteCheckbox).toBeChecked();
-    expect(remoteCheckbox).toBeDisabled();
+    expect(remoteCheckbox).toBeEnabled();
 
     fireEvent.click(
       within(dialog).getByRole("button", { name: "Create branch" }),
@@ -427,7 +435,7 @@ describe("RepositoryShell branch flow", () => {
     expect(commandMocks.createBranch).toHaveBeenCalledWith({
       baseBranch: "concept-pass",
       checkoutImmediately: true,
-      createRemote: false,
+      createRemote: true,
       localChangesMode: "autoStash",
       name: "feature/new-art-pass",
       operationId: null,
@@ -581,7 +589,7 @@ describe("RepositoryShell branch flow", () => {
       name: "Delete remote branch",
     });
     expect(remoteCheckbox).not.toBeChecked();
-    expect(remoteCheckbox).toBeDisabled();
+    expect(remoteCheckbox).toBeEnabled();
 
     fireEvent.click(
       within(dialog).getByRole("button", { name: "Delete branch" }),
@@ -596,7 +604,28 @@ describe("RepositoryShell branch flow", () => {
     });
   });
 
-  it("requires the remote delete confirmation for remote-only branches without executing remote push wiring", async () => {
+  it("can request remote deletion for a local branch", async () => {
+    mockBranchList();
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    const dialog = await openDeleteBranchDialog("feature/lookdev");
+    fireEvent.click(
+      within(dialog).getByRole("checkbox", { name: "Delete remote branch" }),
+    );
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Delete branch" }),
+    );
+
+    await waitFor(() => expect(commandMocks.deleteBranch).toHaveBeenCalled());
+    expect(commandMocks.deleteBranch).toHaveBeenCalledWith({
+      branchName: "feature/lookdev",
+      deleteRemote: true,
+      forceRemoteOnly: false,
+      repositoryPath: "/repo/art",
+    });
+  });
+
+  it("requires remote deletion for remote-only branches", async () => {
     mockBranchList();
     commandMocks.deleteBranch.mockResolvedValueOnce({
       branchName: "concept-pass",
@@ -622,10 +651,27 @@ describe("RepositoryShell branch flow", () => {
     await waitFor(() => expect(commandMocks.deleteBranch).toHaveBeenCalled());
     expect(commandMocks.deleteBranch).toHaveBeenCalledWith({
       branchName: "concept-pass",
-      deleteRemote: false,
+      deleteRemote: true,
       forceRemoteOnly: true,
       repositoryPath: "/repo/art",
     });
+  });
+
+  it("syncs the current branch from the project sync button", async () => {
+    mockBranchList();
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    const syncButtons = await screen.findAllByRole("button", {
+      name: "Sync",
+    });
+    fireEvent.click(syncButtons[0]);
+
+    await waitFor(() =>
+      expect(commandMocks.syncCurrentBranch).toHaveBeenCalledWith({
+        operationId: null,
+        repositoryPath: "/repo/art",
+      }),
+    );
   });
 });
 

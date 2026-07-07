@@ -1,5 +1,6 @@
 use artistic_git_contracts::{
     AppError, AppErrorCategory, AppResult, CommitRequest, CommitResponse, OperationContext,
+    SyncCurrentBranchRequest, SyncCurrentBranchResponse,
 };
 use artistic_git_core::AppInfo;
 use artistic_git_git_runner::{
@@ -24,6 +25,7 @@ pub mod settings;
 pub mod ssh_auth;
 #[path = "stash.rs"]
 mod stash_impl;
+pub mod sync;
 pub mod stash {
     use artistic_git_contracts::{
         AppResult, CreateAutoStashRequest, CreateStashRequest, CreateStashResponse,
@@ -103,6 +105,15 @@ pub use stash::{
     cancel_stash_restore, create_auto_stash, create_stash, delete_stash, restore_stash,
     stash_details,
 };
+
+pub fn sync_current_branch(
+    runner: &GitRunner,
+    request: SyncCurrentBranchRequest,
+) -> AppResult<SyncCurrentBranchResponse> {
+    let _permit =
+        begin_identity_write(runner, "syncCurrentBranch", &request.repository_path, false)?;
+    sync::sync_current_branch(runner, request)
+}
 
 pub fn commit_changes(runner: &GitRunner, request: CommitRequest) -> AppResult<CommitResponse> {
     let _permit = begin_identity_write(runner, "commitChanges", &request.repository_path, true)?;

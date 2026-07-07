@@ -61,6 +61,7 @@ interface RepositorySidebarProps {
   onFetch?: () => void;
   onOpenSettings?: () => void;
   onShowStashDetails?: (stash: StashListItem) => void;
+  onSyncBranch?: (branch: BranchListItem) => void;
   repository: RepositorySummary;
   stashes: StashListItem[];
 }
@@ -84,6 +85,7 @@ export function RepositorySidebar({
   onFetch,
   onOpenSettings,
   onShowStashDetails,
+  onSyncBranch,
   repository,
   stashes,
 }: RepositorySidebarProps) {
@@ -267,6 +269,7 @@ export function RepositorySidebar({
                 onCreateFromBase={onCreateBranchFromBase}
                 onDelete={onDeleteBranch}
                 onFocus={onBranchFocus}
+                onSync={onSyncBranch}
               />
             ))}
           </ul>
@@ -459,6 +462,7 @@ interface BranchRowProps {
   onCreateFromBase?: (branch: BranchListItem) => void;
   onDelete?: (branch: BranchListItem) => void;
   onFocus: (branch: BranchListItem) => void;
+  onSync?: (branch: BranchListItem) => void;
 }
 
 function BranchRow({
@@ -470,6 +474,7 @@ function BranchRow({
   onCreateFromBase,
   onDelete,
   onFocus,
+  onSync,
 }: BranchRowProps) {
   const { t } = useTranslation();
   const [menuOpen, setMenuOpen] = React.useState(false);
@@ -483,6 +488,8 @@ function BranchRow({
   const canCreateFromBase = !branchActionsDisabled && Boolean(onCreateFromBase);
   const canDelete =
     !branch.current && !branchActionsDisabled && Boolean(onDelete);
+  const canSync =
+    hasRemote && branch.current && !branchActionsDisabled && Boolean(onSync);
 
   return (
     <li
@@ -530,10 +537,14 @@ function BranchRow({
       </button>
       <div className="absolute right-1 top-1 hidden items-center gap-0.5 rounded bg-card group-hover:flex group-focus-within:flex">
         {hasRemote ? (
-          <DisabledActionButton
+          <OptionalActionButton
             busy={busy}
+            disabledTooltip={
+              branch.current ? undefined : t("repository.syncCurrentOnly")
+            }
             icon={<RefreshCw className="size-3.5" aria-hidden="true" />}
             label={t("repository.sync")}
+            onClick={canSync ? () => onSync?.(branch) : undefined}
           />
         ) : null}
         <OptionalActionButton
@@ -562,7 +573,14 @@ function BranchRow({
           role="menu"
         >
           {hasRemote ? (
-            <MenuButton disabled label={t("repository.sync")} />
+            <MenuButton
+              disabled={!canSync || busy}
+              label={t("repository.sync")}
+              onClick={() => {
+                setMenuOpen(false);
+                onSync?.(branch);
+              }}
+            />
           ) : null}
           <MenuButton
             disabled={!canCheckout || busy}
@@ -700,32 +718,6 @@ function OptionalActionButton({
           : onClick
             ? label
             : (disabledTooltip ?? t("repository.disabledWrite"))
-      }
-      type="button"
-      variant="ghost"
-    >
-      {icon}
-    </IconButton>
-  );
-}
-
-function DisabledActionButton({
-  busy,
-  icon,
-  label,
-}: {
-  busy: boolean;
-  icon: React.ReactNode;
-  label: string;
-}) {
-  const { t } = useTranslation();
-
-  return (
-    <IconButton
-      disabled
-      label={label}
-      tooltip={
-        busy ? t("repository.busyTooltip") : t("repository.disabledWrite")
       }
       type="button"
       variant="ghost"

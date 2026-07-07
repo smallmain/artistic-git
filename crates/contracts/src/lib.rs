@@ -266,6 +266,33 @@ pub struct FetchRepositoryResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
+pub struct SyncCurrentBranchRequest {
+    pub repository_path: String,
+    pub operation_id: Option<OperationId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum SyncCurrentBranchStatus {
+    AlreadyUpToDate,
+    Pulled,
+    Pushed,
+    PulledAndPushed,
+    Published,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncCurrentBranchResponse {
+    pub repository_path: String,
+    pub branch_name: String,
+    pub upstream: Option<String>,
+    pub status: SyncCurrentBranchStatus,
+    pub attempts: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
 pub struct ConflictEnteredEvent {
     pub operation_id: OperationId,
     pub repository_path: String,

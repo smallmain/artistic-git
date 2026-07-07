@@ -85,14 +85,14 @@ export const resources = {
         deleteBranchTitle: "Delete branch?",
         deleteRemoteBranch: "Delete remote branch",
         deleteRemoteBranchUnavailable:
-          "Remote branch deletion is connected in sync phase; this checkbox is shown for intent only.",
+          "Also delete origin/{{name}} on the remote.",
         deleteRemoteOnlyBranchDescription:
           "Delete remote-only branch “{{name}}”? This cannot be undone.",
         deleteCurrentBranchDisabled: "Cannot delete the current branch",
         deleteRemoteOnlyBranchDisabled:
-          "Remote branch deletion is handled by sync in a later phase",
+          "Remote-only branches are deleted on origin",
         deleteRemoteOnlyBranchRequired:
-          "This is a remote-only branch, so the remote deletion choice is required and cannot be changed here. Server-side deletion is connected in sync phase.",
+          "This is a remote-only branch, so the remote deletion choice is required and cannot be changed here.",
         deleteStash: "Delete stash",
         deleteStashDescription:
           "Delete stash “{{name}}”? This cannot be undone.",
@@ -130,6 +130,7 @@ export const resources = {
         stashes: "Stashes",
         sync: "Sync",
         syncBadge: "↑{{ahead}} to push ↓{{behind}} to pull",
+        syncCurrentOnly: "Only the current branch can be synced in this phase",
         tabs: "Repository tabs",
         untitledProject: "Untitled project",
         unbornBranchActionsDisabled:
@@ -581,14 +582,13 @@ export const resources = {
           "包含 {{count}} 个未合并的提交，删除后将丢失。",
         deleteBranchTitle: "删除分支？",
         deleteRemoteBranch: "删除远程分支",
-        deleteRemoteBranchUnavailable:
-          "远程分支删除将在同步阶段接入；此复选框仅表达意图。",
+        deleteRemoteBranchUnavailable: "同时删除远程 origin/{{name}}。",
         deleteRemoteOnlyBranchDescription:
           "删除仅远程分支“{{name}}”？此操作无法撤销。",
         deleteCurrentBranchDisabled: "无法删除当前所在的分支",
-        deleteRemoteOnlyBranchDisabled: "远程分支删除将在同步阶段接入",
+        deleteRemoteOnlyBranchDisabled: "仅远程分支会从 origin 删除",
         deleteRemoteOnlyBranchRequired:
-          "这是仅远程分支，远程删除选项必须勾选且无法在此处修改。服务端删除将在同步阶段接入。",
+          "这是仅远程分支，远程删除选项必须勾选且无法在此处修改。",
         deleteStash: "删除储藏",
         deleteStashDescription: "删除储藏“{{name}}”？此操作无法撤销。",
         deleteStashTitle: "删除储藏？",
@@ -624,6 +624,7 @@ export const resources = {
         stashes: "储藏",
         sync: "同步",
         syncBadge: "↑{{ahead}} 待推送 ↓{{behind}} 待拉取",
+        syncCurrentOnly: "本阶段仅可同步当前分支",
         tabs: "仓库选项卡",
         untitledProject: "未命名项目",
         unbornBranchActionsDisabled: "创建首次提交后才能管理分支",

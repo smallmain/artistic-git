@@ -306,6 +306,26 @@ fn fetch_repository(
 }
 
 #[tauri::command]
+fn sync_current_branch(
+    app_handle: tauri::AppHandle,
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::SyncCurrentBranchRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::SyncCurrentBranchResponse> {
+    let response = backend.sync_current_branch(request)?;
+    emit_repo_changed(
+        &app_handle,
+        response.repository_path.clone(),
+        vec![
+            artistic_git_contracts::RepoQueryKind::Summary,
+            artistic_git_contracts::RepoQueryKind::Branches,
+            artistic_git_contracts::RepoQueryKind::History,
+            artistic_git_contracts::RepoQueryKind::LocalChanges,
+        ],
+    );
+    Ok(response)
+}
+
+#[tauri::command]
 fn load_remote_settings(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::RepositoryPathRequest,
@@ -804,6 +824,7 @@ pub fn run() {
             cancel_clone_repository,
             repository_summary,
             fetch_repository,
+            sync_current_branch,
             load_remote_settings,
             save_remote_settings,
             list_branches,
