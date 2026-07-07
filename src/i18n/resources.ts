@@ -79,6 +79,14 @@ export const resources = {
         branchNameInvalid: "Enter a valid branch name.",
         branchNamePlaceholder: "feature/new-art-pass",
         busyTooltip: "An operation is running",
+        closeGuardBusyBlocked:
+          "This operation cannot be safely canceled yet. Wait for it to finish, then close again.",
+        closeGuardConfirm: "Close and recover",
+        closeGuardDescription:
+          "An operation is in progress. Closing will cancel it and restore the pre-operation state.",
+        closeGuardRecoveryConflict:
+          "Recovery needs conflict resolution before the window can close.",
+        closeGuardTitle: "Close window?",
         checkout: "Switch branch",
         checkoutAutoStash: "Move changes with me",
         checkoutAutoStashDescription:
@@ -656,6 +664,12 @@ export const resources = {
         branchNameInvalid: "请输入有效分支名称。",
         branchNamePlaceholder: "feature/new-art-pass",
         busyTooltip: "有操作正在进行",
+        closeGuardBusyBlocked: "当前操作尚无法安全取消。请等待它结束后再关闭。",
+        closeGuardConfirm: "关闭并恢复",
+        closeGuardDescription:
+          "有操作正在进行，关闭将取消该操作并恢复到操作前状态",
+        closeGuardRecoveryConflict: "恢复时需要先解决冲突，窗口暂不能关闭。",
+        closeGuardTitle: "关闭窗口？",
         checkout: "切换分支",
         checkoutAutoStash: "更改跟随我",
         checkoutAutoStashDescription:

@@ -1,5 +1,6 @@
 import { AlertTriangle, FileText, History } from "lucide-react";
 import * as React from "react";
+import { listen } from "@tauri-apps/api/event";
 import { useTranslation } from "react-i18next";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -25,8 +26,10 @@ import {
 import { useLocalizedFormatters } from "@/i18n/format";
 import {
   checkoutBranch,
+  cancelPendingWindowExit,
   cancelConflictResolution,
   cancelStashRestore,
+  closeCurrentWindow,
   commitChanges,
   completeConflictResolution,
   conflictDetail,
@@ -85,6 +88,11 @@ import { ReviewModeOverlay } from "@/features/review/ReviewModeOverlay";
 
 type MainTab = "history" | "localChanges";
 type StashScope = "all" | "selected";
+type WindowCloseBlockedReason = "closeWindow" | "quit";
+
+interface WindowCloseBlockedEvent {
+  reason?: WindowCloseBlockedReason;
+}
 
 const demoBranches: BranchListItem[] = [
   {
@@ -156,10 +164,15 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   const [branchActionBusy, setBranchActionBusy] = React.useState(false);
   const [fetchBusy, setFetchBusy] = React.useState(false);
   const [syncBusy, setSyncBusy] = React.useState(false);
+  const [historyWriteBusy, setHistoryWriteBusy] = React.useState(false);
   const [reviewBusy, setReviewBusy] = React.useState(false);
   const [reviewModeState, setReviewModeState] =
     React.useState<ReviewModeState | null>(null);
   const [reviewRecoveryPrompt, setReviewRecoveryPrompt] = React.useState(false);
+  const [closeRequest, setCloseRequest] = React.useState<{
+    reason: WindowCloseBlockedReason;
+  } | null>(null);
+  const [closeRecoveryBusy, setCloseRecoveryBusy] = React.useState(false);
   const [liveFetchState, setLiveFetchState] =
     React.useState<FetchStateEvent | null>(null);
   const fetchInFlightRef = React.useRef(false);
@@ -418,8 +431,22 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     restoreBusy ||
     branchActionBusy ||
     stashActionBusy ||
+    historyWriteBusy ||
     reviewBusy;
   const reviewActive = reviewModeState !== null;
+  const writeOperationBusy =
+    syncBusy ||
+    commitBusy ||
+    restoreBusy ||
+    branchActionBusy ||
+    stashActionBusy ||
+    historyWriteBusy ||
+    reviewBusy;
+  const closeGuardActive =
+    writeOperationBusy ||
+    conflict !== null ||
+    reviewActive ||
+    reviewRecoveryPrompt;
   const interactionBusy = busy || reviewActive;
   const busyLabel = activeOperation
     ? activeOperation.label
@@ -435,9 +462,11 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
               ? t("repository.branchBusy")
               : stashActionBusy
                 ? t("repository.stashBusy")
-                : reviewBusy
-                  ? t("review.busy")
-                  : t("repository.ready");
+                : historyWriteBusy
+                  ? t("history.revert.busy")
+                  : reviewBusy
+                    ? t("review.busy")
+                    : t("repository.ready");
   const selectedCommitPaths = React.useMemo(
     () => pathsForChangeIds(commitIds ?? [], localChanges),
     [commitIds, localChanges],
@@ -732,7 +761,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   }, [repositoryPath]);
 
   React.useEffect(() => {
-    if (!reviewActive) {
+    if (!closeGuardActive) {
       void setWindowCloseGuard({ active: false }).catch(() => undefined);
       return;
     }
@@ -753,7 +782,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       void setWindowCloseGuard({ active: false }).catch(() => undefined);
       window.removeEventListener("beforeunload", blockClose);
     };
-  }, [reviewActive]);
+  }, [closeGuardActive]);
 
   React.useEffect(() => {
     if (
@@ -1293,6 +1322,137 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     [clearConflict, conflict],
   );
 
+  const cancelPendingQuit = React.useCallback(() => {
+    void cancelPendingWindowExit().catch((error) => {
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:error", { detail: error }),
+      );
+    });
+  }, []);
+
+  const recoverCloseGuardedState = React.useCallback(async () => {
+    if (writeOperationBusy) {
+      throw new Error(t("repository.closeGuardBusyBlocked"));
+    }
+
+    if (conflict) {
+      await conflictApi.cancelConflictResolution({
+        operationId: conflict.operationId,
+        repositoryPath: conflict.repositoryPath,
+      });
+      closeConflictOverlay(conflict.repositoryPath);
+    }
+
+    if (reviewRecoveryPrompt && !reviewModeState) {
+      setReviewBusy(true);
+      try {
+        const response = await recoverReviewModeStash({ repositoryPath });
+        await handleReviewExitResponse(response);
+        if (response.status === "conflicts") {
+          throw new Error(t("repository.closeGuardRecoveryConflict"));
+        }
+      } finally {
+        setReviewBusy(false);
+      }
+    } else if (reviewModeState) {
+      setReviewBusy(true);
+      try {
+        const response = await exitReviewMode({ repositoryPath });
+        await handleReviewExitResponse(response);
+        if (response.status === "conflicts") {
+          throw new Error(t("repository.closeGuardRecoveryConflict"));
+        }
+      } finally {
+        setReviewBusy(false);
+      }
+    }
+  }, [
+    closeConflictOverlay,
+    conflict,
+    conflictApi,
+    handleReviewExitResponse,
+    repositoryPath,
+    reviewModeState,
+    reviewRecoveryPrompt,
+    t,
+    writeOperationBusy,
+  ]);
+
+  const performGuardedClose = React.useCallback(
+    async (reason: WindowCloseBlockedReason) => {
+      setCloseRecoveryBusy(true);
+      try {
+        await recoverCloseGuardedState();
+        setCloseRequest(null);
+        await setWindowCloseGuard({ active: false });
+        await closeCurrentWindow();
+      } catch (error) {
+        if (reason === "quit") {
+          cancelPendingQuit();
+        }
+        setCloseRequest(null);
+        window.dispatchEvent(
+          new CustomEvent("artistic-git:error", { detail: error }),
+        );
+      } finally {
+        setCloseRecoveryBusy(false);
+      }
+    },
+    [cancelPendingQuit, recoverCloseGuardedState],
+  );
+
+  const handleCloseRequestOpenChange = React.useCallback(
+    (open: boolean) => {
+      if (open || closeRecoveryBusy) {
+        return;
+      }
+      if (closeRequest?.reason === "quit") {
+        cancelPendingQuit();
+      }
+      setCloseRequest(null);
+    },
+    [cancelPendingQuit, closeRecoveryBusy, closeRequest?.reason],
+  );
+
+  React.useEffect(() => {
+    let active = true;
+    let unlisten: (() => void) | undefined;
+
+    void listen<WindowCloseBlockedEvent | WindowCloseBlockedReason>(
+      "window-close-blocked",
+      (event) => {
+        if (!active) {
+          return;
+        }
+
+        const reason = closeBlockedReasonFromPayload(event.payload);
+        if (!closeGuardActive) {
+          void setWindowCloseGuard({ active: false })
+            .then(() => closeCurrentWindow())
+            .catch((error) => {
+              window.dispatchEvent(
+                new CustomEvent("artistic-git:error", { detail: error }),
+              );
+            });
+          return;
+        }
+
+        setCloseRequest({ reason });
+      },
+    ).then((resolvedUnlisten) => {
+      if (active) {
+        unlisten = resolvedUnlisten;
+      } else {
+        resolvedUnlisten();
+      }
+    });
+
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, [closeGuardActive]);
+
   return (
     <main className="flex h-screen min-h-0 bg-background text-foreground">
       <RepositorySidebar
@@ -1414,6 +1574,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
                       [operationId]: recovery,
                     }));
                   }}
+                  onWriteBusyChange={setHistoryWriteBusy}
                 />
               </div>
             </div>
@@ -1462,6 +1623,20 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         }}
         open={reviewRecoveryPrompt}
         title={t("review.recoveryTitle")}
+      />
+      <ConfirmDialog
+        busy={closeRecoveryBusy}
+        confirmLabel={t("repository.closeGuardConfirm")}
+        description={t("repository.closeGuardDescription")}
+        onConfirm={() => {
+          if (closeRequest) {
+            void performGuardedClose(closeRequest.reason);
+          }
+        }}
+        onOpenChange={handleCloseRequestOpenChange}
+        open={closeRequest !== null}
+        title={t("repository.closeGuardTitle")}
+        variant="danger"
       />
       <CreateBranchDialog
         baseBranch={branchCreateBase}
@@ -1603,6 +1778,25 @@ function pathsForChangeIds(
   return ids
     .map((id) => byId.get(id)?.payload.newPath)
     .filter((path): path is string => Boolean(path));
+}
+
+function closeBlockedReasonFromPayload(
+  payload: WindowCloseBlockedEvent | WindowCloseBlockedReason | unknown,
+): WindowCloseBlockedReason {
+  if (payload === "quit") {
+    return "quit";
+  }
+
+  if (
+    typeof payload === "object" &&
+    payload !== null &&
+    "reason" in payload &&
+    (payload as WindowCloseBlockedEvent).reason === "quit"
+  ) {
+    return "quit";
+  }
+
+  return "closeWindow";
 }
 
 function mapBranchSummaryToItem(branch: BranchSummary): BranchListItem {

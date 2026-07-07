@@ -1,4 +1,5 @@
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -6,6 +7,7 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
+import { listen } from "@tauri-apps/api/event";
 import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -17,13 +19,16 @@ import type {
   DiffPayload,
   LocalChange,
 } from "@/lib/ipc/generated";
+import type { WindowStoreState } from "@/store/window-store";
 
 import { RepositoryShell } from "./RepositoryShell";
 
 const commandMocks = vi.hoisted(() => ({
   cancelConflictResolution: vi.fn(),
+  cancelPendingWindowExit: vi.fn(),
   cancelStashRestore: vi.fn(),
   checkoutBranch: vi.fn(),
+  closeCurrentWindow: vi.fn(),
   commitChanges: vi.fn(),
   completeConflictResolution: vi.fn(),
   conflictDetail: vi.fn(),
@@ -60,17 +65,35 @@ const commandMocks = vi.hoisted(() => ({
 
 vi.mock("@/lib/ipc/commands", () => commandMocks);
 
-function renderWithProviders(ui: ReactElement) {
+const tauriEventListeners = new Map<
+  string,
+  (event: { payload: unknown }) => void
+>();
+
+function renderWithProviders(
+  ui: ReactElement,
+  initialWindowState?: Partial<WindowStoreState>,
+) {
   return render(
     <AppProviders
       i18n={createI18n("en")}
       initialLanguagePreference="en"
       initialThemePreference="light"
+      initialWindowState={initialWindowState}
       queryClient={createAppQueryClient()}
     >
       {ui}
     </AppProviders>,
   );
+}
+
+async function emitWindowCloseBlocked(payload: unknown) {
+  await waitFor(() =>
+    expect(tauriEventListeners.has("window-close-blocked")).toBe(true),
+  );
+  await act(async () => {
+    tauriEventListeners.get("window-close-blocked")?.({ payload });
+  });
 }
 
 function createLocalChange({
@@ -161,6 +184,16 @@ function createConflictEvent(): ConflictEnteredEvent {
 beforeEach(() => {
   window.localStorage.clear();
   vi.clearAllMocks();
+  tauriEventListeners.clear();
+  vi.mocked(listen).mockImplementation(async (event, handler) => {
+    tauriEventListeners.set(
+      event,
+      handler as (event: { payload: unknown }) => void,
+    );
+    return () => undefined;
+  });
+  commandMocks.cancelPendingWindowExit.mockResolvedValue(undefined);
+  commandMocks.closeCurrentWindow.mockResolvedValue(undefined);
   commandMocks.saveWindowGeometry.mockResolvedValue({});
   commandMocks.loadProjectSettings.mockResolvedValue({
     largeFileCheck: { enabled: true, thresholdMb: 50 },
@@ -232,6 +265,9 @@ beforeEach(() => {
     ],
   });
   commandMocks.listStashes.mockResolvedValue({ stashes: [] });
+  commandMocks.cancelConflictResolution.mockResolvedValue({
+    aborted: "merge",
+  });
   commandMocks.commitChanges.mockResolvedValue({
     committedPaths: ["src/app.ts"],
     lfsTrackedPaths: [],
@@ -673,6 +709,82 @@ describe("RepositoryShell review mode", () => {
         repositoryPath: "/repo/art",
       }),
     );
+  });
+});
+
+describe("RepositoryShell close guard", () => {
+  it("cancels unresolved conflicts before closing the guarded window", async () => {
+    const conflict = createConflictEvent();
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />, {
+      conflictsByRepository: {
+        "/repo/art": conflict,
+      },
+    });
+
+    await waitFor(() =>
+      expect(commandMocks.setWindowCloseGuard).toHaveBeenCalledWith({
+        active: true,
+      }),
+    );
+
+    await emitWindowCloseBlocked({ reason: "closeWindow" });
+
+    const dialog = await screen.findByRole("dialog", {
+      name: "Close window?",
+    });
+    expect(dialog).toHaveTextContent(
+      "An operation is in progress. Closing will cancel it and restore the pre-operation state.",
+    );
+
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Close and recover" }),
+    );
+
+    await waitFor(() =>
+      expect(commandMocks.cancelConflictResolution).toHaveBeenCalledWith({
+        operationId: "commit-conflict-test",
+        repositoryPath: "/repo/art",
+      }),
+    );
+    expect(commandMocks.closeCurrentWindow).toHaveBeenCalledTimes(1);
+  });
+
+  it("exits review mode before closing the guarded window", async () => {
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Review Mode" }));
+    await screen.findByRole("dialog", { name: "Review mode" });
+
+    await emitWindowCloseBlocked({ reason: "closeWindow" });
+    fireEvent.click(
+      within(
+        await screen.findByRole("dialog", { name: "Close window?" }),
+      ).getByRole("button", { name: "Close and recover" }),
+    );
+
+    await waitFor(() =>
+      expect(commandMocks.exitReviewMode).toHaveBeenCalledWith({
+        repositoryPath: "/repo/art",
+      }),
+    );
+    expect(commandMocks.closeCurrentWindow).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels pending app quit when a guarded close prompt is dismissed", async () => {
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Review Mode" }));
+    await screen.findByRole("dialog", { name: "Review mode" });
+
+    await emitWindowCloseBlocked({ reason: "quit" });
+    fireEvent.click(
+      within(
+        await screen.findByRole("dialog", { name: "Close window?" }),
+      ).getByRole("button", { name: "Cancel" }),
+    );
+
+    expect(commandMocks.cancelPendingWindowExit).toHaveBeenCalledTimes(1);
+    expect(commandMocks.closeCurrentWindow).not.toHaveBeenCalled();
   });
 });
 

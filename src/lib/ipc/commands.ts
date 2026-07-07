@@ -101,6 +101,7 @@ export interface AppCommandArgs {
   save_window_geometry: { request: OpenRepositoryWindowRequest };
   close_current_window: undefined;
   set_window_close_guard: { request: WindowCloseGuardRequest };
+  cancel_pending_window_exit: undefined;
   open_log_dir: undefined;
   open_repository: { request: OpenRepositoryRequest };
   clone_repository: { request: CloneRepositoryRequest };
@@ -168,6 +169,7 @@ export interface AppCommandResponses {
   save_window_geometry: ProjectSettings;
   close_current_window: void;
   set_window_close_guard: void;
+  cancel_pending_window_exit: void;
   open_log_dir: OpenLogDirResponse;
   open_repository: OpenRepositoryResponse;
   clone_repository: CloneRepositoryResponse;
@@ -315,6 +317,10 @@ export function setWindowCloseGuard(
   request: WindowCloseGuardRequest,
 ): Promise<void> {
   return invokeAppCommand("set_window_close_guard", { request });
+}
+
+export function cancelPendingWindowExit(): Promise<void> {
+  return invokeAppCommand("cancel_pending_window_exit");
 }
 
 export function openLogDir(): Promise<OpenLogDirResponse> {

@@ -6,6 +6,7 @@ import { DialogFrame } from "@/components/dialogs/DialogFrame";
 import { Button } from "@/components/ui/button";
 
 interface ConfirmDialogProps {
+  busy?: boolean;
   cancelLabel?: string;
   confirmLabel?: string;
   description: string;
@@ -17,6 +18,7 @@ interface ConfirmDialogProps {
 }
 
 export function ConfirmDialog({
+  busy = false,
   cancelLabel,
   confirmLabel,
   description,
@@ -37,10 +39,12 @@ export function ConfirmDialog({
 
   return (
     <DialogFrame
+      closeOnEscape={!busy}
       description={description}
       footer={
         <div className="flex justify-end gap-2">
           <Button
+            disabled={busy}
             onClick={() => {
               onOpenChange(false);
             }}
@@ -50,6 +54,7 @@ export function ConfirmDialog({
             {resolvedCancelLabel}
           </Button>
           <Button
+            disabled={busy}
             onClick={() => {
               void onConfirm();
             }}
@@ -60,6 +65,7 @@ export function ConfirmDialog({
           </Button>
         </div>
       }
+      hideCloseButton={busy}
       onOpenChange={onOpenChange}
       title={title}
     >

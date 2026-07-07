@@ -6,7 +6,7 @@ use std::{
 };
 use tauri::{
     menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu},
-    Emitter, Manager, PhysicalPosition, PhysicalSize, State, WebviewUrl, WindowEvent,
+    Emitter, Manager, PhysicalPosition, PhysicalSize, RunEvent, State, WebviewUrl, WindowEvent,
 };
 
 mod updater_runtime;
@@ -31,6 +31,7 @@ struct WindowRegistryInner {
     label_to_repository: BTreeMap<String, String>,
     repository_to_label: BTreeMap<String, String>,
     close_guard_labels: BTreeSet<String>,
+    pending_exit_after_close_guards: bool,
     next_window_id: u64,
 }
 
@@ -44,6 +45,19 @@ struct OpenRepositoryWindowRequest {
 #[serde(rename_all = "camelCase")]
 struct WindowCloseGuardRequest {
     active: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WindowCloseBlockedEvent {
+    reason: WindowCloseBlockedReason,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+enum WindowCloseBlockedReason {
+    CloseWindow,
+    Quit,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -242,6 +256,13 @@ fn set_window_close_guard(
     request: WindowCloseGuardRequest,
 ) -> artistic_git_contracts::AppResult<()> {
     registry_set_close_guard(&registry, window.label(), request.active)
+}
+
+#[tauri::command]
+fn cancel_pending_window_exit(
+    registry: State<'_, WindowRegistry>,
+) -> artistic_git_contracts::AppResult<()> {
+    registry_set_pending_exit_after_close_guards(&registry, false)
 }
 
 #[tauri::command]
@@ -939,6 +960,7 @@ pub fn run() {
             save_window_geometry,
             close_current_window,
             set_window_close_guard,
+            cancel_pending_window_exit,
             open_log_dir,
             open_repository,
             clone_repository,
@@ -996,8 +1018,9 @@ pub fn run() {
             updater_runtime::update_install_gate,
             updater_runtime::install_ready_update
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to run Artistic Git");
+        .build(tauri::generate_context!())
+        .expect("failed to build Artistic Git")
+        .run(handle_run_event);
 }
 
 fn build_app_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
@@ -1319,6 +1342,41 @@ fn registry_close_guarded(registry: &WindowRegistry, label: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn registry_close_guard_labels(registry: &WindowRegistry) -> Vec<String> {
+    registry
+        .inner
+        .lock()
+        .map(|inner| inner.close_guard_labels.iter().cloned().collect())
+        .unwrap_or_default()
+}
+
+fn registry_set_pending_exit_after_close_guards(
+    registry: &WindowRegistry,
+    pending: bool,
+) -> artistic_git_contracts::AppResult<()> {
+    let mut inner = registry.inner.lock().map_err(|_| {
+        window_command_error("window registry lock poisoned", "cancelPendingWindowExit")
+    })?;
+    inner.pending_exit_after_close_guards = pending;
+    Ok(())
+}
+
+fn registry_pending_exit_after_close_guards(registry: &WindowRegistry) -> bool {
+    registry
+        .inner
+        .lock()
+        .map(|inner| inner.pending_exit_after_close_guards)
+        .unwrap_or(false)
+}
+
+fn registry_has_close_guards(registry: &WindowRegistry) -> bool {
+    registry
+        .inner
+        .lock()
+        .map(|inner| !inner.close_guard_labels.is_empty())
+        .unwrap_or(false)
+}
+
 fn registry_label_for_repository(
     registry: &WindowRegistry,
     repository_path: &str,
@@ -1446,7 +1504,12 @@ fn handle_window_event(window: &tauri::Window, event: &WindowEvent) {
             if let Some(registry) = app.try_state::<WindowRegistry>() {
                 if registry_close_guarded(&registry, window.label()) {
                     api.prevent_close();
-                    let _ = window.emit("window-close-blocked", "reviewMode");
+                    let _ = window.emit(
+                        "window-close-blocked",
+                        WindowCloseBlockedEvent {
+                            reason: WindowCloseBlockedReason::CloseWindow,
+                        },
+                    );
                 }
             }
         }
@@ -1454,10 +1517,48 @@ fn handle_window_event(window: &tauri::Window, event: &WindowEvent) {
             let label = window.label().to_owned();
             if let Some(registry) = app.try_state::<WindowRegistry>() {
                 registry_unregister(&registry, &label);
+                if registry_pending_exit_after_close_guards(&registry)
+                    && !registry_has_close_guards(&registry)
+                {
+                    app.exit(0);
+                    return;
+                }
             }
             exit_if_last_window_closed(app, &label);
         }
         _ => {}
+    }
+}
+
+fn handle_run_event(app: &tauri::AppHandle, event: RunEvent) {
+    if let RunEvent::ExitRequested { api, .. } = event {
+        if let Some(registry) = app.try_state::<WindowRegistry>() {
+            let guarded_labels = registry_close_guard_labels(&registry);
+            if guarded_labels.is_empty() {
+                return;
+            }
+
+            api.prevent_exit();
+            let _ = registry_set_pending_exit_after_close_guards(&registry, true);
+            emit_close_guard_request(app, guarded_labels, WindowCloseBlockedReason::Quit);
+        }
+    }
+}
+
+fn emit_close_guard_request(
+    app: &tauri::AppHandle,
+    labels: Vec<String>,
+    reason: WindowCloseBlockedReason,
+) {
+    for label in labels {
+        if let Some(window) = app.get_webview_window(&label) {
+            let _ = window.emit(
+                "window-close-blocked",
+                WindowCloseBlockedEvent {
+                    reason: reason.clone(),
+                },
+            );
+        }
     }
 }
 
@@ -1731,5 +1832,33 @@ mod tests {
         registry_set_close_guard(&registry, "repo-2", true).expect("set guard");
         registry_unregister(&registry, "repo-2");
         assert!(!registry_close_guarded(&registry, "repo-2"));
+    }
+
+    #[test]
+    fn window_menu_close_guard_lists_guarded_labels() {
+        let registry = WindowRegistry::default();
+        registry_set_close_guard(&registry, "repo-2", true).expect("set guard");
+        registry_set_close_guard(&registry, "repo-1", true).expect("set guard");
+
+        assert_eq!(
+            registry_close_guard_labels(&registry),
+            vec!["repo-1".to_owned(), "repo-2".to_owned()]
+        );
+    }
+
+    #[test]
+    fn window_menu_pending_exit_waits_for_explicit_cancel() {
+        let registry = WindowRegistry::default();
+        assert!(!registry_pending_exit_after_close_guards(&registry));
+
+        registry_set_pending_exit_after_close_guards(&registry, true).expect("set pending exit");
+        assert!(registry_pending_exit_after_close_guards(&registry));
+
+        registry_unregister(&registry, "repo-1");
+        assert!(registry_pending_exit_after_close_guards(&registry));
+
+        registry_set_pending_exit_after_close_guards(&registry, false)
+            .expect("cancel pending exit");
+        assert!(!registry_pending_exit_after_close_guards(&registry));
     }
 }

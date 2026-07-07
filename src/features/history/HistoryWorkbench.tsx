@@ -79,6 +79,7 @@ interface HistoryWorkbenchProps {
     operationId: string,
     recovery: StashRecoveryPoint,
   ) => void;
+  onWriteBusyChange?: (busy: boolean) => void;
   rows?: HistoryRow[];
   searchSource?: HistorySearchSource;
 }
@@ -215,6 +216,7 @@ export function HistoryWorkbench({
   onBeforeRevert,
   onRevertAutoStash,
   onRevertStashRecovery,
+  onWriteBusyChange,
   rows = mockHistoryRows,
   searchSource,
 }: HistoryWorkbenchProps) {
@@ -600,6 +602,7 @@ export function HistoryWorkbench({
         }}
         onRevertAutoStash={onRevertAutoStash}
         onRevertStashRecovery={onRevertStashRecovery}
+        onWriteBusyChange={onWriteBusyChange}
         repositoryPath={repositoryPath}
         setConflictEntered={setConflictEntered}
       />
@@ -907,6 +910,7 @@ function CommitDetailPanel({
   onOpenChange,
   onRevertAutoStash,
   onRevertStashRecovery,
+  onWriteBusyChange,
   repositoryPath,
   setConflictEntered,
 }: {
@@ -921,6 +925,7 @@ function CommitDetailPanel({
     operationId: string,
     recovery: StashRecoveryPoint,
   ) => void;
+  onWriteBusyChange?: (busy: boolean) => void;
   repositoryPath: string | null;
   setConflictEntered: (event: ConflictEnteredEvent) => void;
 }) {
@@ -940,6 +945,17 @@ function CommitDetailPanel({
   const [revertStatus, setRevertStatus] = React.useState<string | null>(null);
   const activeRevertTarget =
     revertTarget && revertTarget.id === commit?.id ? revertTarget : null;
+
+  React.useEffect(() => {
+    onWriteBusyChange?.(revertBusy);
+  }, [onWriteBusyChange, revertBusy]);
+
+  React.useEffect(
+    () => () => {
+      onWriteBusyChange?.(false);
+    },
+    [onWriteBusyChange],
+  );
 
   const closeRevertDialog = React.useCallback(
     (open: boolean) => {
