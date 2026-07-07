@@ -678,6 +678,14 @@ fn list_local_changes(
 }
 
 #[tauri::command]
+fn preview_renormalize(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::RenormalizePreviewRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::RenormalizePreviewResponse> {
+    backend.preview_renormalize(request)
+}
+
+#[tauri::command]
 fn list_stashes(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::RepositoryPathRequest,
@@ -1113,6 +1121,7 @@ pub fn run() {
             delete_branch,
             delete_safety_backup,
             list_local_changes,
+            preview_renormalize,
             list_stashes,
             create_stash,
             create_auto_stash,

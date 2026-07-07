@@ -115,6 +115,34 @@ describe("LocalChangesPanel", () => {
       within(menu as HTMLElement).getByText("Check selected (1)"),
     ).toBeInTheDocument();
   });
+
+  it("shows a renormalize preview prompt without checking files", () => {
+    const onPreviewRenormalize = vi.fn();
+
+    renderWithProviders(
+      <LocalChangesPanel
+        changes={createChanges()}
+        onPreviewRenormalize={onPreviewRenormalize}
+        renormalizePreviewStatus="Preview found 1 paths: src/main.ts"
+        renormalizeSuggestion={{
+          modifiedChanges: 1_000,
+          samplePaths: ["src/main.ts"],
+          threshold: 1_000,
+          totalChanges: 1_200,
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Many files changed")).toBeInTheDocument();
+    expect(screen.getAllByText("src/main.ts").length).toBeGreaterThan(0);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Preview renormalization" }),
+    );
+
+    expect(onPreviewRenormalize).toHaveBeenCalled();
+    expect(screen.getByText("0 selected")).toBeInTheDocument();
+  });
 });
 
 function createChanges(): LocalChangeItem[] {

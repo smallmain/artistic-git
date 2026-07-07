@@ -55,6 +55,7 @@ import {
   listSafetyBackups,
   listStashes,
   loadProjectSettings,
+  previewRenormalize,
   restoreChanges,
   restoreStash,
   recoverReviewModeStash,
@@ -178,6 +179,10 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     files: LargeFileWarning[];
     thresholdMb: number;
   } | null>(null);
+  const [renormalizePreviewBusy, setRenormalizePreviewBusy] =
+    React.useState(false);
+  const [renormalizePreviewStatus, setRenormalizePreviewStatus] =
+    React.useState<string | null>(null);
   const [restoreIds, setRestoreIds] = React.useState<string[] | null>(null);
   const [restoreBusy, setRestoreBusy] = React.useState(false);
   const [branchActionBusy, setBranchActionBusy] = React.useState(false);
@@ -293,6 +298,11 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       demoLocalChanges,
     [localChangesQuery.data],
   );
+
+  React.useEffect(() => {
+    setRenormalizePreviewStatus(null);
+  }, [localChangesQuery.data?.renormalizeSuggestion?.totalChanges]);
+
   const currentBranch = React.useMemo(
     () => branches.find((branch) => branch.current) ?? branches[0],
     [branches],
@@ -1257,6 +1267,40 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     setLargeFileWarning(null);
   }, [commitBusy]);
 
+  const runPreviewRenormalize = React.useCallback(async () => {
+    if (renormalizePreviewBusy) {
+      return;
+    }
+
+    setRenormalizePreviewBusy(true);
+    setRenormalizePreviewStatus(null);
+    try {
+      const response = await previewRenormalize({
+        repositoryPath,
+        sampleLimit: 8,
+      });
+      if (response.totalPaths === 0) {
+        setRenormalizePreviewStatus(t("localChanges.renormalizePreviewEmpty"));
+      } else {
+        setRenormalizePreviewStatus(
+          t("localChanges.renormalizePreviewResult", {
+            count: response.totalPaths,
+            sample: response.samplePaths.join(", "),
+            truncated: response.truncated
+              ? t("localChanges.renormalizePreviewTruncated")
+              : "",
+          }),
+        );
+      }
+    } catch (error) {
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:error", { detail: error }),
+      );
+    } finally {
+      setRenormalizePreviewBusy(false);
+    }
+  }, [renormalizePreviewBusy, repositoryPath, t]);
+
   const runCommit = React.useCallback(
     async (
       largeFileDecision:
@@ -1817,6 +1861,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
               initialCheckedIds={localChangeCheckedIds}
               onCheckedChange={setLocalChangeCheckedIds}
               onCommit={setCommitIds}
+              onPreviewRenormalize={runPreviewRenormalize}
               onRestore={setRestoreIds}
               onStash={openCreateStashDialog}
               onViewModeChange={(viewMode) => {
@@ -1824,6 +1869,11 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
                   localChangesViewMode: viewMode,
                 });
               }}
+              renormalizePreviewBusy={renormalizePreviewBusy}
+              renormalizePreviewStatus={renormalizePreviewStatus}
+              renormalizeSuggestion={
+                localChangesQuery.data?.renormalizeSuggestion ?? null
+              }
               viewMode={effectiveProjectSettings.localChangesViewMode}
             />
           )}

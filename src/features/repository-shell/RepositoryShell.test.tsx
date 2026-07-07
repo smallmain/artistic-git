@@ -48,6 +48,7 @@ const commandMocks = vi.hoisted(() => ({
   listSafetyBackups: vi.fn(),
   listStashes: vi.fn(),
   loadProjectSettings: vi.fn(),
+  previewRenormalize: vi.fn(),
   repositorySummary: vi.fn(),
   restoreChanges: vi.fn(),
   restoreStash: vi.fn(),
@@ -269,6 +270,12 @@ beforeEach(() => {
         worktreeStatus: "?",
       }),
     ],
+    renormalizeSuggestion: null,
+  });
+  commandMocks.previewRenormalize.mockResolvedValue({
+    samplePaths: [],
+    totalPaths: 0,
+    truncated: false,
   });
   commandMocks.listStashes.mockResolvedValue({ stashes: [] });
   commandMocks.cancelConflictResolution.mockResolvedValue({
@@ -513,6 +520,54 @@ describe("RepositoryShell session preferences", () => {
         }),
       ),
     );
+  });
+
+  it("previews renormalization from the large local changes prompt", async () => {
+    commandMocks.listLocalChanges.mockResolvedValueOnce({
+      changes: [
+        createLocalChange({
+          changeKind: "modified",
+          fileKind: "text",
+          indexStatus: " ",
+          newPath: "src/renormalized.ts",
+          newText: "const value = 2;\n",
+          oldText: "const value = 1;\n",
+          worktreeStatus: "M",
+        }),
+      ],
+      renormalizeSuggestion: {
+        modifiedChanges: 1_000,
+        samplePaths: ["src/renormalized.ts"],
+        threshold: 1_000,
+        totalChanges: 1_200,
+      },
+    });
+    commandMocks.previewRenormalize.mockResolvedValueOnce({
+      samplePaths: ["src/renormalized.ts"],
+      totalPaths: 1,
+      truncated: false,
+    });
+
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: /Local Changes/ }),
+    );
+    expect(await screen.findByText("Many files changed")).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Preview renormalization" }),
+    );
+
+    await waitFor(() =>
+      expect(commandMocks.previewRenormalize).toHaveBeenCalledWith({
+        repositoryPath: "/repo/art",
+        sampleLimit: 8,
+      }),
+    );
+    expect(
+      await screen.findByText("Preview found 1 paths: src/renormalized.ts"),
+    ).toBeInTheDocument();
   });
 });
 

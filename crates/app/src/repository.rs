@@ -8,14 +8,15 @@ use artistic_git_contracts::{
     DeleteBranchRequest, DeleteSafetyBackupRequest, DeleteSafetyBackupResponse, DeleteStashRequest,
     DeleteStashResponse, DiffAsset, DiffChangeKind, DiffContent, DiffFileKind, DiffPayload,
     FetchRepositoryRequest, FetchRepositoryResponse, FetchStateEvent, GitCommandError,
-    IndexLockInfo, LfsContentStatus, LocalChange, LocalChangesResponse, LogPageRequest,
-    LogPageResponse, LogSearchRequest, OpenRepositoryRequest, OpenRepositoryResponse, OperationId,
-    OperationProgressEvent, ProgressState, RemoteSettingsResponse, RepositoryHeadState,
-    RepositoryHealth, RepositoryMiddleState, RepositoryMiddleStateKind, RepositoryOpenWarning,
-    RepositoryOpenWarningKind, RepositoryPathRequest, RepositoryRemote, RepositoryRemoteMode,
-    RepositorySummary, RestoreStashRequest, RestoreStashResponse, SafetyBackupListResponse,
-    SaveRemoteSettingsRequest, StashDetailsRequest, StashDetailsResponse, StashEntry,
-    StashListResponse,
+    IndexLockInfo, LfsContentStatus, LocalChange, LocalChangesRenormalizeSuggestion,
+    LocalChangesResponse, LogPageRequest, LogPageResponse, LogSearchRequest, OpenRepositoryRequest,
+    OpenRepositoryResponse, OperationId, OperationProgressEvent, ProgressState,
+    RemoteSettingsResponse, RenormalizePreviewRequest, RenormalizePreviewResponse,
+    RepositoryHeadState, RepositoryHealth, RepositoryMiddleState, RepositoryMiddleStateKind,
+    RepositoryOpenWarning, RepositoryOpenWarningKind, RepositoryPathRequest, RepositoryRemote,
+    RepositoryRemoteMode, RepositorySummary, RestoreStashRequest, RestoreStashResponse,
+    SafetyBackupListResponse, SaveRemoteSettingsRequest, StashDetailsRequest, StashDetailsResponse,
+    StashEntry, StashListResponse,
 };
 use artistic_git_core::config::{
     AppSettings, ConfigActor, GitUserSettings, ProjectSettings, WindowGeometry,
@@ -43,6 +44,9 @@ use std::{
 const DEFAULT_LOG_LIMIT: usize = 200;
 const MAX_LOG_LIMIT: usize = 200;
 const TOOL_WORKTREE_PREFIX: &str = "artistic-git-";
+const RENORMALIZE_SUGGESTION_THRESHOLD: usize = 1_000;
+const RENORMALIZE_SUGGESTION_MIN_MODIFIED_PERCENT: usize = 80;
+const RENORMALIZE_SUGGESTION_SAMPLE_LIMIT: usize = 8;
 
 #[derive(Clone)]
 pub struct RepositoryBackend {
@@ -353,6 +357,13 @@ impl RepositoryBackend {
         request: RepositoryPathRequest,
     ) -> AppResult<LocalChangesResponse> {
         list_local_changes(&self.runner, request)
+    }
+
+    pub fn preview_renormalize(
+        &self,
+        request: RenormalizePreviewRequest,
+    ) -> AppResult<RenormalizePreviewResponse> {
+        preview_renormalize(&self.runner, request)
     }
 
     pub fn list_stashes(&self, request: RepositoryPathRequest) -> AppResult<StashListResponse> {
@@ -839,7 +850,88 @@ pub fn list_local_changes(
         index += 1;
     }
 
-    Ok(LocalChangesResponse { changes })
+    let renormalize_suggestion = renormalize_suggestion_for_changes(&changes);
+    Ok(LocalChangesResponse {
+        changes,
+        renormalize_suggestion,
+    })
+}
+
+pub fn preview_renormalize(
+    runner: &GitRunner,
+    request: RenormalizePreviewRequest,
+) -> AppResult<RenormalizePreviewResponse> {
+    let root = canonical_repository_path(&request.repository_path, "previewRenormalize")?;
+    let output = git_stdout(
+        runner,
+        Some(&root),
+        ["add", "--renormalize", "--dry-run", "--", "."],
+        "previewRenormalize",
+    )?;
+    let paths = parse_renormalize_dry_run_paths(&output);
+    let sample_limit = request
+        .sample_limit
+        .unwrap_or(RENORMALIZE_SUGGESTION_SAMPLE_LIMIT as u32)
+        .max(1) as usize;
+    let total_paths = paths.len() as u32;
+    let sample_paths = paths.into_iter().take(sample_limit).collect::<Vec<_>>();
+    let truncated = total_paths as usize > sample_paths.len();
+    Ok(RenormalizePreviewResponse {
+        total_paths,
+        sample_paths,
+        truncated,
+    })
+}
+
+fn renormalize_suggestion_for_changes(
+    changes: &[LocalChange],
+) -> Option<LocalChangesRenormalizeSuggestion> {
+    let total = changes.len();
+    let modified = changes
+        .iter()
+        .filter(|change| {
+            change.change_kind == DiffChangeKind::Modified
+                && change.index_status.trim().is_empty()
+                && change.worktree_status == "M"
+        })
+        .count();
+
+    if !should_suggest_renormalize(total, modified) {
+        return None;
+    }
+
+    Some(LocalChangesRenormalizeSuggestion {
+        total_changes: total as u32,
+        modified_changes: modified as u32,
+        threshold: RENORMALIZE_SUGGESTION_THRESHOLD as u32,
+        sample_paths: changes
+            .iter()
+            .take(RENORMALIZE_SUGGESTION_SAMPLE_LIMIT)
+            .map(|change| change.path.clone())
+            .collect(),
+    })
+}
+
+fn should_suggest_renormalize(total: usize, modified: usize) -> bool {
+    total >= RENORMALIZE_SUGGESTION_THRESHOLD
+        && modified * 100 >= total * RENORMALIZE_SUGGESTION_MIN_MODIFIED_PERCENT
+}
+
+fn parse_renormalize_dry_run_paths(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            let (_, path) = trimmed.split_once(' ')?;
+            Some(
+                path.trim()
+                    .trim_matches('\'')
+                    .trim_matches('"')
+                    .replace("\\'", "'"),
+            )
+        })
+        .filter(|path| !path.is_empty())
+        .collect()
 }
 
 pub fn list_stashes(
@@ -3197,6 +3289,22 @@ mod tests {
     fn log_pagination_is_capped_at_phase_batch_size() {
         assert_eq!(log_limit_and_skip(None, None), (200, 0));
         assert_eq!(log_limit_and_skip(Some(500), Some("12")), (200, 12));
+    }
+
+    #[test]
+    fn renormalize_suggestion_requires_large_modified_majority() {
+        assert!(!should_suggest_renormalize(999, 999));
+        assert!(!should_suggest_renormalize(1_000, 799));
+        assert!(should_suggest_renormalize(1_000, 800));
+        assert!(should_suggest_renormalize(2_000, 1_900));
+    }
+
+    #[test]
+    fn parses_renormalize_dry_run_paths() {
+        assert_eq!(
+            parse_renormalize_dry_run_paths("add 'src/main.ts'\nadd \"assets/space name.png\"\n"),
+            vec!["src/main.ts", "assets/space name.png"]
+        );
     }
 
     #[test]

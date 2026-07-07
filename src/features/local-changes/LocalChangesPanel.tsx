@@ -5,6 +5,7 @@ import {
   GitCommit,
   List,
   MoreHorizontal,
+  RefreshCw,
   Search,
   Square,
   Undo2,
@@ -42,9 +43,13 @@ export function LocalChangesPanel({
   onCheckedChange,
   onCommit,
   onSelectedChange,
+  onPreviewRenormalize,
   onRestore,
   onStash,
   onViewModeChange,
+  renormalizePreviewBusy = false,
+  renormalizePreviewStatus = null,
+  renormalizeSuggestion = null,
   selectedId,
   storageKey = defaultStorageKey,
   viewMode,
@@ -167,6 +172,44 @@ export function LocalChangesPanel({
               value={searchTerm}
             />
           </label>
+          {renormalizeSuggestion ? (
+            <div className="space-y-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-sm">
+              <div className="space-y-1">
+                <p className="font-medium text-warning">
+                  {t("localChanges.renormalizeTitle")}
+                </p>
+                <p className="text-muted-foreground">
+                  {t("localChanges.renormalizeDescription", {
+                    count: renormalizeSuggestion.totalChanges,
+                  })}
+                </p>
+              </div>
+              {renormalizeSuggestion.samplePaths.length > 0 ? (
+                <p className="truncate font-mono text-xs text-muted-foreground">
+                  {renormalizeSuggestion.samplePaths.join(", ")}
+                </p>
+              ) : null}
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  className="gap-2"
+                  disabled={busy || renormalizePreviewBusy}
+                  onClick={onPreviewRenormalize}
+                  type="button"
+                  variant="secondary"
+                >
+                  <RefreshCw className="size-4" aria-hidden="true" />
+                  {renormalizePreviewBusy
+                    ? t("localChanges.renormalizePreviewBusy")
+                    : t("localChanges.renormalizePreview")}
+                </Button>
+                {renormalizePreviewStatus ? (
+                  <span className="text-xs text-muted-foreground">
+                    {renormalizePreviewStatus}
+                  </span>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
         </header>
 
         <div className="min-h-0 flex-1 overflow-auto">
@@ -329,9 +372,14 @@ function TreeNodeRow({
   onToggle: (ids: string[], checked: boolean) => void;
   selectedId: string | null;
 }) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = React.useState(true);
   const itemIds = collectTreeItemIds(node);
   const checkState = getCheckState(itemIds, checkedIds);
+  const toggleLabel = t(
+    expanded ? "localChanges.collapseFolder" : "localChanges.expandFolder",
+    { path: node.path },
+  );
 
   if (node.item) {
     return (
@@ -357,8 +405,10 @@ function TreeNodeRow({
       >
         <button
           aria-expanded={expanded}
+          aria-label={toggleLabel}
           className="flex size-6 items-center justify-center rounded-sm hover:bg-background"
           onClick={() => setExpanded((current) => !current)}
+          title={toggleLabel}
           type="button"
         >
           <ChevronRight
@@ -424,6 +474,16 @@ function ChangeRow({
       )}
       onClick={onSelect}
       onContextMenu={onContextMenu}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) {
+          return;
+        }
+
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onSelect();
+        }
+      }}
       role="button"
       tabIndex={0}
     >

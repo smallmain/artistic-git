@@ -652,6 +652,7 @@ function BranchRow({
       </div>
       {menuOpen ? (
         <div
+          aria-label={t("repository.moreActions")}
           className="absolute left-8 top-8 z-30 w-56 rounded-md border bg-card p-1 text-sm shadow-floating"
           role="menu"
         >

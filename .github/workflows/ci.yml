@@ -66,6 +66,9 @@ jobs:
       - name: Audit i18n coverage
         run: pnpm i18n:audit
 
+      - name: Audit accessibility baseline
+        run: pnpm accessibility:audit
+
       - name: Audit privacy network surface
         run: pnpm privacy:audit
 

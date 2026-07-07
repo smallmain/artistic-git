@@ -608,6 +608,8 @@ export const resources = {
         defaultStashName: "Stash at {{date}}",
         disableSigningAndRetry: "Disable signing for this repository and retry",
         empty: "No matching changes",
+        collapseFolder: "Collapse {{path}}",
+        expandFolder: "Expand {{path}}",
         flatView: "Flat view",
         largeFilesTitle:
           "Files over {{threshold}} MB are not covered by LFS rules.",
@@ -615,6 +617,15 @@ export const resources = {
         noSelection: "Select a changed file to preview it.",
         nothingToCommit: "Nothing to commit.",
         pushImmediately: "Push immediately",
+        renormalizeDescription:
+          "{{count}} files look modified at once. This often happens after line ending or attributes changes. Preview renormalization before committing.",
+        renormalizePreview: "Preview renormalization",
+        renormalizePreviewBusy: "Previewing...",
+        renormalizePreviewEmpty: "No paths would be staged by renormalization.",
+        renormalizePreviewResult:
+          "Preview found {{count}} paths: {{sample}}{{truncated}}",
+        renormalizePreviewTruncated: " and more",
+        renormalizeTitle: "Many files changed",
         repositoryRoot: "Repository root",
         revertPlaceholder: "Revert changes (coming later)",
         restoreConfirm: "Restore changes",
@@ -1226,6 +1237,8 @@ export const resources = {
         defaultStashName: "储藏于 {{date}}",
         disableSigningAndRetry: "为此仓库关闭签名并重试",
         empty: "没有匹配的更改",
+        collapseFolder: "收起 {{path}}",
+        expandFolder: "展开 {{path}}",
         flatView: "平铺视图",
         largeFilesTitle:
           "存在超过 {{threshold}} MB 且未被 LFS 规则覆盖的文件。",
@@ -1233,6 +1246,15 @@ export const resources = {
         noSelection: "选择一个变更文件以预览。",
         nothingToCommit: "没有可提交内容。",
         pushImmediately: "立即推送",
+        renormalizeDescription:
+          "一次出现 {{count}} 个文件修改，常见于换行符或属性规则变化。提交前可先预览规范化结果。",
+        renormalizePreview: "预览规范化",
+        renormalizePreviewBusy: "正在预览...",
+        renormalizePreviewEmpty: "规范化不会暂存任何路径。",
+        renormalizePreviewResult:
+          "预览发现 {{count}} 个路径：{{sample}}{{truncated}}",
+        renormalizePreviewTruncated: " 等",
+        renormalizeTitle: "大量文件已修改",
         repositoryRoot: "仓库根目录",
         revertPlaceholder: "还原更改（后续实现）",
         restoreConfirm: "还原更改",

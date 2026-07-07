@@ -1,4 +1,7 @@
-import type { DiffPayload } from "@/lib/ipc/generated";
+import type {
+  DiffPayload,
+  LocalChangesRenormalizeSuggestion,
+} from "@/lib/ipc/generated";
 
 import type { DiffViewerContent } from "@/features/diff";
 
@@ -18,10 +21,14 @@ export interface LocalChangesPanelProps {
   onCheckedChange?: (checkedIds: string[]) => void;
   onCommit?: (checkedIds: string[]) => void;
   onOperationComplete?: () => void;
+  onPreviewRenormalize?: () => void;
   onRestore?: (checkedIds: string[]) => void;
   onSelectedChange?: (change: LocalChangeItem | null) => void;
   onStash?: (checkedIds: string[]) => void;
   onViewModeChange?: (viewMode: LocalChangesViewMode) => void;
+  renormalizePreviewBusy?: boolean;
+  renormalizePreviewStatus?: string | null;
+  renormalizeSuggestion?: LocalChangesRenormalizeSuggestion | null;
   repositoryPath?: string;
   selectedId?: string | null;
   storageKey?: string;

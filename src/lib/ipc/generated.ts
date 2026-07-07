@@ -613,8 +613,16 @@ export type LocalChange = {
   diff: DiffContent;
 };
 
+export type LocalChangesRenormalizeSuggestion = {
+  totalChanges: number;
+  modifiedChanges: number;
+  threshold: number;
+  samplePaths: string[];
+};
+
 export type LocalChangesResponse = {
   changes: LocalChange[];
+  renormalizeSuggestion?: LocalChangesRenormalizeSuggestion | null;
 };
 
 export type LocalChangesViewMode = "flat" | "tree";
@@ -732,6 +740,17 @@ export type RemoteSettingsResponse = {
   repositoryPath: string;
   remoteMode: RepositoryRemoteMode;
   originUrl: string | null;
+};
+
+export type RenormalizePreviewRequest = {
+  repositoryPath: string;
+  sampleLimit: number | null;
+};
+
+export type RenormalizePreviewResponse = {
+  totalPaths: number;
+  samplePaths: string[];
+  truncated: boolean;
 };
 
 export type RepoChangedEvent = {

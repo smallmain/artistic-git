@@ -997,6 +997,32 @@ pub enum BranchExistence {
 #[serde(rename_all = "camelCase")]
 pub struct LocalChangesResponse {
     pub changes: Vec<LocalChange>,
+    #[serde(default)]
+    pub renormalize_suggestion: Option<LocalChangesRenormalizeSuggestion>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalChangesRenormalizeSuggestion {
+    pub total_changes: u32,
+    pub modified_changes: u32,
+    pub threshold: u32,
+    pub sample_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RenormalizePreviewRequest {
+    pub repository_path: String,
+    pub sample_limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RenormalizePreviewResponse {
+    pub total_paths: u32,
+    pub sample_paths: Vec<String>,
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]

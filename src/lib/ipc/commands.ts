@@ -62,6 +62,8 @@ import type {
   ProjectSettings,
   ProjectSettingsRequest,
   RemoteSettingsResponse,
+  RenormalizePreviewRequest,
+  RenormalizePreviewResponse,
   RepositoryPathRequest,
   RepositorySummary,
   RestoreChangesRequest,
@@ -136,6 +138,7 @@ export interface AppCommandArgs {
   delete_branch: { request: DeleteBranchRequest };
   delete_safety_backup: { request: DeleteSafetyBackupRequest };
   list_local_changes: { request: RepositoryPathRequest };
+  preview_renormalize: { request: RenormalizePreviewRequest };
   list_stashes: { request: RepositoryPathRequest };
   create_stash: { request: CreateStashRequest };
   create_auto_stash: { request: CreateAutoStashRequest };
@@ -209,6 +212,7 @@ export interface AppCommandResponses {
   delete_branch: BranchOperationResponse;
   delete_safety_backup: DeleteSafetyBackupResponse;
   list_local_changes: LocalChangesResponse;
+  preview_renormalize: RenormalizePreviewResponse;
   list_stashes: StashListResponse;
   create_stash: CreateStashResponse;
   create_auto_stash: CreateStashResponse;
@@ -510,6 +514,12 @@ export function listLocalChanges(
   request: RepositoryPathRequest,
 ): Promise<LocalChangesResponse> {
   return invokeAppCommand("list_local_changes", { request });
+}
+
+export function previewRenormalize(
+  request: RenormalizePreviewRequest,
+): Promise<RenormalizePreviewResponse> {
+  return invokeAppCommand("preview_renormalize", { request });
 }
 
 export function listStashes(
