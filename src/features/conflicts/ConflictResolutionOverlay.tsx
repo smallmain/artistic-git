@@ -15,6 +15,7 @@ import { useTranslation } from "react-i18next";
 import { ConfirmDialog } from "@/components/dialogs/ConfirmDialog";
 import { Button } from "@/components/ui/button";
 import { DiffViewer } from "@/features/diff";
+import { useLocalizedFormatters } from "@/i18n/format";
 import {
   cancelConflictResolution,
   completeConflictResolution,
@@ -516,6 +517,7 @@ function ConflictDetailPanel({
       file={file}
       key={`${file.path}:${detail.currentText}`}
       onSave={onSave}
+      onSelectSide={onSelectSide}
       saving={saving}
     />
   );
@@ -525,11 +527,13 @@ function TextConflictDetail({
   detail,
   file,
   onSave,
+  onSelectSide,
   saving,
 }: {
   detail: Extract<ConflictFileDetail, { kind: "text" }>;
   file: ConflictFile;
   onSave: (content: string, pendingHunks: number) => void;
+  onSelectSide: (side: ConflictSide) => void;
   saving: boolean;
 }) {
   const { t } = useTranslation();
@@ -573,6 +577,22 @@ function TextConflictDetail({
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          <Button
+            disabled={saving}
+            onClick={() => onSelectSide("own")}
+            type="button"
+            variant="ghost"
+          >
+            {t("conflicts.useOwn")}
+          </Button>
+          <Button
+            disabled={saving}
+            onClick={() => onSelectSide("other")}
+            type="button"
+            variant="ghost"
+          >
+            {t("conflicts.useOther")}
+          </Button>
           <label className="flex items-center gap-2 text-sm">
             <input
               checked={manualMode}
@@ -620,16 +640,22 @@ function TextConflictDetail({
       ) : null}
 
       <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_22rem]">
-        <DiffViewer
-          content={{
-            kind: "text",
-            language: detail.language ?? undefined,
-            newText: detail.otherText,
-            oldText: detail.ownText,
-          }}
-          payload={payload}
-          source="conflictResolution"
-        />
+        <div className="flex min-h-0 flex-col">
+          <div className="grid shrink-0 grid-cols-2 border-b bg-card px-3 py-2 text-xs font-medium text-muted-foreground">
+            <span>{t("conflicts.ownVersion")}</span>
+            <span>{t("conflicts.otherVersion")}</span>
+          </div>
+          <DiffViewer
+            content={{
+              kind: "text",
+              language: detail.language ?? undefined,
+              newText: detail.otherText,
+              oldText: detail.ownText,
+            }}
+            payload={payload}
+            source="conflictResolution"
+          />
+        </div>
         <div className="flex min-h-0 flex-col border-l">
           <div className="grid shrink-0 gap-2 border-b p-3">
             {detail.hunks.length === 0 ? (
@@ -744,6 +770,12 @@ function BinarySideCard({
   side: Extract<ConflictFileDetail, { kind: "binary" }>["own"];
 }) {
   const { t } = useTranslation();
+  const formatters = useLocalizedFormatters();
+  const modifiedLabel = formatModifiedTime(
+    side?.modifiedUnixSeconds,
+    formatters.formatDate,
+    t("conflicts.unavailable"),
+  );
 
   return (
     <section className="flex min-h-0 flex-col rounded-md border bg-card">
@@ -758,16 +790,24 @@ function BinarySideCard({
           {t("conflicts.chooseSide")}
         </Button>
       </header>
-      <div className="grid gap-2 p-3 text-sm">
-        <p className="text-muted-foreground">
-          {side?.mimeType ?? t("conflicts.unknownType")}
-        </p>
-        <p className="text-numeric text-muted-foreground">
-          {side?.sizeBytes != null
-            ? t("conflicts.bytes", { count: side.sizeBytes })
-            : "-"}
-        </p>
-      </div>
+      <dl className="grid gap-2 p-3 text-sm">
+        <BinaryInfoRow
+          label={t("conflicts.typeLabel")}
+          value={side?.mimeType ?? t("conflicts.unknownType")}
+        />
+        <BinaryInfoRow
+          label={t("conflicts.sizeLabel")}
+          value={
+            side?.sizeBytes != null
+              ? formatters.formatFileSize(side.sizeBytes)
+              : t("conflicts.unavailable")
+          }
+        />
+        <BinaryInfoRow
+          label={t("conflicts.modifiedLabel")}
+          value={modifiedLabel}
+        />
+      </dl>
       <div className="min-h-0 flex-1 p-3">
         {side?.preview ? (
           <div className="diff-checkerboard flex h-full min-h-64 items-center justify-center overflow-auto rounded-md border">
@@ -785,6 +825,38 @@ function BinarySideCard({
       </div>
     </section>
   );
+}
+
+function BinaryInfoRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="grid grid-cols-[7rem_minmax(0,1fr)] gap-2">
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd className="min-w-0 truncate text-foreground">{value}</dd>
+    </div>
+  );
+}
+
+function formatModifiedTime(
+  unixSeconds: string | null | undefined,
+  formatDate: (
+    value: Date | number | string,
+    options?: Intl.DateTimeFormatOptions,
+  ) => string,
+  fallback: string,
+): string {
+  if (!unixSeconds) {
+    return fallback;
+  }
+
+  const seconds = Number(unixSeconds);
+  if (!Number.isFinite(seconds)) {
+    return fallback;
+  }
+
+  return formatDate(seconds * 1000, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
 }
 
 function applyHunkSelections(

@@ -12,7 +12,10 @@ import {
 import { ConfirmDialog } from "@/components/dialogs/ConfirmDialog";
 import { DialogFrame } from "@/components/dialogs/DialogFrame";
 import { Button } from "@/components/ui/button";
-import { ConflictResolutionOverlay } from "@/features/conflicts";
+import {
+  ConflictResolutionOverlay,
+  type ConflictResolutionApi,
+} from "@/features/conflicts";
 import { HistoryWorkbench } from "@/features/history/HistoryWorkbench";
 import {
   demoLocalChanges,
@@ -22,17 +25,24 @@ import {
 import { useLocalizedFormatters } from "@/i18n/format";
 import {
   checkoutBranch,
+  cancelConflictResolution,
+  cancelStashRestore,
   commitChanges,
+  completeConflictResolution,
+  conflictDetail,
   createBranch,
   createStash,
   deleteBranch,
   deleteStash,
   listBranches,
+  listConflicts,
   listLocalChanges,
   listStashes,
   restoreChanges,
   restoreStash,
   repositorySummary,
+  saveConflictResolution,
+  selectConflictSide,
   stashDetails,
   validateBranchName,
 } from "@/lib/ipc/commands";
@@ -44,12 +54,14 @@ import type {
   LocalChange,
   StashEntry,
   StashDetailsResponse,
+  StashRecoveryPoint,
 } from "@/lib/ipc/generated";
 import { repoQueryKeys } from "@/lib/realtime/query-keys";
 import { cn } from "@/lib/utils";
 import { useWindowStore } from "@/store/window-store";
 
 type MainTab = "history" | "localChanges";
+type StashScope = "all" | "selected";
 
 const demoBranches: BranchListItem[] = [
   {
@@ -124,6 +136,8 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     React.useState<BranchListItem | null>(null);
   const [newBranchName, setNewBranchName] = React.useState("");
   const [newBranchCheckout, setNewBranchCheckout] = React.useState(true);
+  const [newBranchCreateRemote, setNewBranchCreateRemote] =
+    React.useState(false);
   const [branchNameValidation, setBranchNameValidation] =
     React.useState<BranchNameValidationResponse | null>(null);
   const [branchToDelete, setBranchToDelete] =
@@ -131,10 +145,13 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   const [stashActionBusy, setStashActionBusy] = React.useState(false);
   const [stashIds, setStashIds] = React.useState<string[] | null>(null);
   const [stashMessage, setStashMessage] = React.useState("");
+  const [stashScope, setStashScope] = React.useState<StashScope>("all");
   const [stashToDelete, setStashToDelete] =
     React.useState<StashListItem | null>(null);
   const [stashDetail, setStashDetail] =
     React.useState<StashDetailsResponse | null>(null);
+  const [stashRecoveryByOperation, setStashRecoveryByOperation] =
+    React.useState<Record<string, StashRecoveryPoint>>({});
   const [focusedBranch, setFocusedBranch] = React.useState<BranchListItem>(
     demoBranches[0],
   );
@@ -258,6 +275,9 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     ],
   );
   const localChangeCount = localChanges.length;
+  const branchActionsDisabledReason = summaryQuery.data?.isUnborn
+    ? t("repository.unbornBranchActionsDisabled")
+    : undefined;
   const busy =
     activeOperation !== null ||
     commitBusy ||
@@ -287,6 +307,16 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     () => pathsForChangeIds(stashIds ?? [], localChanges),
     [stashIds, localChanges],
   );
+  const defaultStashMessage = React.useCallback(
+    () =>
+      t("localChanges.defaultStashName", {
+        date: formatters.formatDate(new Date(), {
+          dateStyle: "medium",
+          timeStyle: "short",
+        }),
+      }),
+    [formatters, t],
+  );
 
   const handleBranchCompleted = React.useCallback(
     (branchName: string) => {
@@ -302,13 +332,26 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     [branches],
   );
 
-  const openCreateBranchDialog = React.useCallback((base: BranchListItem) => {
-    setBranchCreateBase(base);
-    setNewBranchName("");
-    setNewBranchCheckout(true);
-    setBranchNameValidation(null);
-    setCheckoutMode("autoStash");
-  }, []);
+  const openCreateBranchDialog = React.useCallback(
+    (base: BranchListItem) => {
+      setBranchCreateBase(base);
+      setNewBranchName("");
+      setNewBranchCheckout(true);
+      setNewBranchCreateRemote(Boolean(summaryQuery.data?.hasOrigin));
+      setBranchNameValidation(null);
+      setCheckoutMode("autoStash");
+    },
+    [summaryQuery.data?.hasOrigin],
+  );
+
+  const openCreateStashDialog = React.useCallback(
+    (ids: string[]) => {
+      setStashIds(ids);
+      setStashScope("all");
+      setStashMessage(defaultStashMessage());
+    },
+    [defaultStashMessage],
+  );
 
   const updateNewBranchName = React.useCallback((name: string) => {
     setNewBranchName(name);
@@ -380,6 +423,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       }
       setBranchCreateBase(null);
       setNewBranchName("");
+      setNewBranchCreateRemote(false);
       setBranchNameValidation(null);
     } catch (error) {
       window.dispatchEvent(
@@ -527,8 +571,13 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
           repositoryPath,
           selector: stash.id,
         });
-        if (response.outcome.status === "conflicts") {
-          setConflictEntered(response.outcome.conflict);
+        const outcome = response.outcome;
+        if (outcome.status === "conflicts") {
+          setStashRecoveryByOperation((current) => ({
+            ...current,
+            [outcome.conflict.operationId]: response.recovery,
+          }));
+          setConflictEntered(outcome.conflict);
         }
       } catch (error) {
         window.dispatchEvent(
@@ -541,8 +590,16 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     [repositoryPath, setConflictEntered],
   );
 
-  const createSelectedStash = React.useCallback(async () => {
-    if (!stashIds || selectedStashPaths.length === 0) {
+  const createStashFromDialog = React.useCallback(async () => {
+    if (!stashIds) {
+      return;
+    }
+
+    const paths = stashScope === "selected" ? selectedStashPaths : [];
+    if (
+      (stashScope === "selected" && paths.length === 0) ||
+      (stashScope === "all" && localChanges.length === 0)
+    ) {
       return;
     }
 
@@ -550,16 +607,13 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     try {
       await createStash({
         includeUntracked: true,
-        message:
-          stashMessage.trim() ||
-          t("localChanges.defaultStashName", {
-            date: new Date().toLocaleString(),
-          }),
-        paths: selectedStashPaths,
+        message: stashMessage.trim() || defaultStashMessage(),
+        paths,
         repositoryPath,
       });
       setStashIds(null);
       setStashMessage("");
+      setStashScope("all");
     } catch (error) {
       window.dispatchEvent(
         new CustomEvent("artistic-git:error", { detail: error }),
@@ -567,7 +621,15 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     } finally {
       setStashActionBusy(false);
     }
-  }, [repositoryPath, selectedStashPaths, stashIds, stashMessage, t]);
+  }, [
+    defaultStashMessage,
+    localChanges.length,
+    repositoryPath,
+    selectedStashPaths,
+    stashIds,
+    stashMessage,
+    stashScope,
+  ]);
 
   const confirmDeleteStash = React.useCallback(async () => {
     if (!stashToDelete) {
@@ -609,9 +671,57 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     [repositoryPath],
   );
 
+  const conflictApi = React.useMemo<ConflictResolutionApi>(
+    () => ({
+      cancelConflictResolution: async (request) => {
+        const recovery = stashRecoveryByOperation[request.operationId];
+
+        if (!recovery) {
+          return cancelConflictResolution(request);
+        }
+
+        await cancelStashRestore({
+          recovery,
+          repositoryPath: request.repositoryPath,
+        });
+        setStashRecoveryByOperation((current) => {
+          const next = { ...current };
+          delete next[request.operationId];
+          return next;
+        });
+
+        return { aborted: "merge" };
+      },
+      completeConflictResolution,
+      conflictDetail,
+      listConflicts,
+      saveConflictResolution,
+      selectConflictSide,
+    }),
+    [stashRecoveryByOperation],
+  );
+
+  const closeConflictOverlay = React.useCallback(
+    (conflictRepositoryPath: string) => {
+      if (conflict) {
+        setStashRecoveryByOperation((current) => {
+          if (!current[conflict.operationId]) {
+            return current;
+          }
+          const next = { ...current };
+          delete next[conflict.operationId];
+          return next;
+        });
+      }
+      clearConflict(conflictRepositoryPath);
+    },
+    [clearConflict, conflict],
+  );
+
   return (
     <main className="flex h-screen min-h-0 bg-background text-foreground">
       <RepositorySidebar
+        branchActionsDisabledReason={branchActionsDisabledReason}
         branches={branches}
         busy={busy}
         onApplyStash={(stash) => void applyStash(stash)}
@@ -713,28 +823,36 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
               changes={localChanges}
               onCommit={setCommitIds}
               onRestore={setRestoreIds}
-              onStash={setStashIds}
+              onStash={openCreateStashDialog}
             />
           )}
         </div>
       </section>
       {conflict ? (
-        <ConflictResolutionOverlay event={conflict} onClose={clearConflict} />
+        <ConflictResolutionOverlay
+          api={conflictApi}
+          event={conflict}
+          onClose={closeConflictOverlay}
+        />
       ) : null}
       <CreateBranchDialog
         baseBranch={branchCreateBase}
         busy={branchActionBusy}
         checkoutImmediately={newBranchCheckout}
+        createRemote={newBranchCreateRemote}
+        hasRemote={repository.hasRemote}
         localChangesMode={checkoutMode}
         name={newBranchName}
         onCheckoutImmediatelyChange={setNewBranchCheckout}
         onCreate={() => void runCreateBranch()}
+        onCreateRemoteChange={setNewBranchCreateRemote}
         onLocalChangesModeChange={setCheckoutMode}
         onNameChange={updateNewBranchName}
         onOpenChange={(open) => {
           if (!open && !branchActionBusy) {
             setBranchCreateBase(null);
             setNewBranchName("");
+            setNewBranchCreateRemote(false);
             setBranchNameValidation(null);
           }
         }}
@@ -754,9 +872,12 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       />
       <ConfirmDialog
         confirmLabel={t("repository.deleteBranch")}
-        description={t("repository.deleteBranchDescription", {
-          name: branchToDelete?.name ?? "",
-        })}
+        description={[
+          t("repository.deleteBranchDescription", {
+            name: branchToDelete?.name ?? "",
+          }),
+          t("repository.deleteBranchProtectionDescription"),
+        ].join(" ")}
         onConfirm={() => void runDeleteBranch()}
         onOpenChange={(open) => {
           if (!open && !branchActionBusy) {
@@ -818,17 +939,22 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       />
       <CreateStashDialog
         busy={stashActionBusy}
-        fileCount={selectedStashPaths.length}
+        defaultMessage={defaultStashMessage()}
         message={stashMessage}
-        onCreate={() => void createSelectedStash()}
+        onCreate={() => void createStashFromDialog()}
         onMessageChange={setStashMessage}
         onOpenChange={(open) => {
           if (!open && !stashActionBusy) {
             setStashIds(null);
             setStashMessage("");
+            setStashScope("all");
           }
         }}
+        onScopeChange={setStashScope}
         open={stashIds !== null}
+        scope={stashScope}
+        selectedCount={selectedStashPaths.length}
+        totalCount={localChanges.length}
       />
       <StashDetailsDialog
         details={stashDetail}
@@ -903,10 +1029,13 @@ function CreateBranchDialog({
   baseBranch,
   busy,
   checkoutImmediately,
+  createRemote,
+  hasRemote,
   localChangesMode,
   name,
   onCheckoutImmediatelyChange,
   onCreate,
+  onCreateRemoteChange,
   onLocalChangesModeChange,
   onNameChange,
   onOpenChange,
@@ -915,10 +1044,13 @@ function CreateBranchDialog({
   baseBranch: BranchListItem | null;
   busy: boolean;
   checkoutImmediately: boolean;
+  createRemote: boolean;
+  hasRemote: boolean;
   localChangesMode: CheckoutLocalChangesMode;
   name: string;
   onCheckoutImmediatelyChange: (checkoutImmediately: boolean) => void;
   onCreate: () => void;
+  onCreateRemoteChange: (createRemote: boolean) => void;
   onLocalChangesModeChange: (mode: CheckoutLocalChangesMode) => void;
   onNameChange: (name: string) => void;
   onOpenChange: (open: boolean) => void;
@@ -995,6 +1127,19 @@ function CreateBranchDialog({
         />
         <span>{t("repository.checkoutImmediately")}</span>
       </label>
+
+      {hasRemote ? (
+        <label className="flex items-start gap-2 text-sm text-muted-foreground">
+          <input
+            checked={createRemote}
+            className="mt-0.5 size-4"
+            disabled
+            onChange={(event) => onCreateRemoteChange(event.target.checked)}
+            type="checkbox"
+          />
+          <span>{t("repository.createRemoteBranchDisabled")}</span>
+        </label>
+      ) : null}
 
       {checkoutImmediately ? (
         <LocalChangesModePicker
@@ -1274,7 +1419,17 @@ function StashDetailsDialog({
       onOpenChange={onOpenChange}
       title={details.entry.message}
     >
-      <div className="grid min-h-0 gap-4 md:grid-cols-[260px_minmax(0,1fr)]">
+      <div className="grid gap-3">
+        {details.entry.isAutoStash ? (
+          <div className="rounded-md border bg-secondary px-3 py-2 text-sm">
+            {t("repository.autoStashOrigin", {
+              origin:
+                details.entry.origin ?? t("repository.autoStashUnknownOrigin"),
+            })}
+          </div>
+        ) : null}
+      </div>
+      <div className="mt-4 grid min-h-0 gap-4 md:grid-cols-[260px_minmax(0,1fr)]">
         <div className="min-h-0 rounded-md border bg-background">
           <div className="border-b px-3 py-2 text-sm font-medium">
             {t("repository.stashFiles", { count: details.files.length })}
@@ -1300,20 +1455,28 @@ function StashDetailsDialog({
 
 function CreateStashDialog({
   busy,
-  fileCount,
+  defaultMessage,
   message,
   onCreate,
   onMessageChange,
   onOpenChange,
+  onScopeChange,
   open,
+  scope,
+  selectedCount,
+  totalCount,
 }: {
   busy: boolean;
-  fileCount: number;
+  defaultMessage: string;
   message: string;
   onCreate: () => void;
   onMessageChange: (message: string) => void;
   onOpenChange: (open: boolean) => void;
+  onScopeChange: (scope: StashScope) => void;
   open: boolean;
+  scope: StashScope;
+  selectedCount: number;
+  totalCount: number;
 }) {
   const { t } = useTranslation();
 
@@ -1321,9 +1484,16 @@ function CreateStashDialog({
     return null;
   }
 
+  const canCreate =
+    !busy && (scope === "all" ? totalCount > 0 : selectedCount > 0);
+  const description =
+    scope === "all"
+      ? t("localChanges.stashDescriptionAll", { count: totalCount })
+      : t("localChanges.stashDescriptionSelected", { count: selectedCount });
+
   return (
     <DialogFrame
-      description={t("localChanges.stashDescription", { count: fileCount })}
+      description={description}
       footer={
         <div className="flex justify-end gap-2">
           <Button
@@ -1334,11 +1504,7 @@ function CreateStashDialog({
           >
             {t("actions.cancel")}
           </Button>
-          <Button
-            disabled={busy || fileCount === 0}
-            onClick={onCreate}
-            type="button"
-          >
+          <Button disabled={!canCreate} onClick={onCreate} type="button">
             {t("localChanges.createStash")}
           </Button>
         </div>
@@ -1351,11 +1517,56 @@ function CreateStashDialog({
         <input
           className="h-9 rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
           onChange={(event) => onMessageChange(event.target.value)}
-          placeholder={t("localChanges.defaultStashName", {
-            date: new Date().toLocaleString(),
-          })}
+          placeholder={defaultMessage}
           value={message}
         />
+      </label>
+
+      <fieldset className="grid gap-2 text-sm">
+        <legend className="font-medium">{t("localChanges.stashScope")}</legend>
+        <label className="flex items-start gap-2 rounded-md border bg-background p-3">
+          <input
+            checked={scope === "all"}
+            className="mt-0.5 size-4"
+            disabled={busy}
+            onChange={() => onScopeChange("all")}
+            type="radio"
+          />
+          <span className="grid gap-1">
+            <span className="font-medium">
+              {t("localChanges.stashAllChanges")}
+            </span>
+            <span className="text-muted-foreground">
+              {t("localChanges.stashAllChangesDescription", {
+                count: totalCount,
+              })}
+            </span>
+          </span>
+        </label>
+        <label className="flex items-start gap-2 rounded-md border bg-background p-3">
+          <input
+            checked={scope === "selected"}
+            className="mt-0.5 size-4"
+            disabled={busy}
+            onChange={() => onScopeChange("selected")}
+            type="radio"
+          />
+          <span className="grid gap-1">
+            <span className="font-medium">
+              {t("localChanges.stashSelectedChanges")}
+            </span>
+            <span className="text-muted-foreground">
+              {t("localChanges.stashSelectedChangesDescription", {
+                count: selectedCount,
+              })}
+            </span>
+          </span>
+        </label>
+      </fieldset>
+
+      <label className="flex items-center gap-2 text-sm text-muted-foreground">
+        <input checked className="size-4" disabled readOnly type="checkbox" />
+        <span>{t("localChanges.stashIncludeUntracked")}</span>
       </label>
     </DialogFrame>
   );

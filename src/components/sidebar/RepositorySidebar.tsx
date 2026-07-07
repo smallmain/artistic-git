@@ -45,6 +45,7 @@ export interface StashListItem {
 }
 
 interface RepositorySidebarProps {
+  branchActionsDisabledReason?: string;
   branches: BranchListItem[];
   busy: boolean;
   onApplyStash?: (stash: StashListItem) => void;
@@ -65,6 +66,7 @@ const minBranchRatio = 35;
 const maxBranchRatio = 78;
 
 export function RepositorySidebar({
+  branchActionsDisabledReason,
   branches,
   busy,
   onApplyStash,
@@ -226,6 +228,7 @@ export function RepositorySidebar({
             {filteredBranches.map((branch) => (
               <BranchRow
                 branch={branch}
+                branchActionsDisabledReason={branchActionsDisabledReason}
                 busy={busy}
                 key={branch.name}
                 onCheckout={onCheckoutBranch}
@@ -360,6 +363,7 @@ function SidebarSection({
 
 interface BranchRowProps {
   branch: BranchListItem;
+  branchActionsDisabledReason?: string;
   busy: boolean;
   onCheckout?: (branch: BranchListItem) => void;
   onCreateFromBase?: (branch: BranchListItem) => void;
@@ -369,6 +373,7 @@ interface BranchRowProps {
 
 function BranchRow({
   branch,
+  branchActionsDisabledReason,
   busy,
   onCheckout,
   onCreateFromBase,
@@ -381,8 +386,15 @@ function BranchRow({
     ahead: branch.ahead,
     behind: branch.behind,
   });
-  const canCheckout = !branch.current && Boolean(onCheckout);
-  const canDelete = !branch.current && !branch.remoteOnly && Boolean(onDelete);
+  const branchActionsDisabled = Boolean(branchActionsDisabledReason);
+  const canCheckout =
+    !branch.current && !branchActionsDisabled && Boolean(onCheckout);
+  const canCreateFromBase = !branchActionsDisabled && Boolean(onCreateFromBase);
+  const canDelete =
+    !branch.current &&
+    !branch.remoteOnly &&
+    !branchActionsDisabled &&
+    Boolean(onDelete);
 
   return (
     <li
@@ -438,16 +450,18 @@ function BranchRow({
           busy={busy}
           icon={<UploadCloud className="size-3.5" aria-hidden="true" />}
           label={t("repository.checkout")}
+          disabledTooltip={branchActionsDisabledReason}
           onClick={canCheckout ? () => onCheckout?.(branch) : undefined}
         />
         <OptionalActionButton
           busy={busy}
           disabledTooltip={
-            branch.current
+            branchActionsDisabledReason ??
+            (branch.current
               ? t("repository.deleteCurrentBranchDisabled")
               : branch.remoteOnly
                 ? t("repository.deleteRemoteOnlyBranchDisabled")
-                : undefined
+                : undefined)
           }
           icon={<Trash2 className="size-3.5" aria-hidden="true" />}
           label={t("repository.deleteBranch")}
@@ -469,7 +483,7 @@ function BranchRow({
             }}
           />
           <MenuButton
-            disabled={!onCreateFromBase || busy}
+            disabled={!canCreateFromBase || busy}
             label={t("repository.createFromBase")}
             onClick={() => {
               setMenuOpen(false);

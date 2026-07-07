@@ -231,6 +231,17 @@ pub fn complete_conflict_resolution(
     let root = canonical_repository_path(&request.repository_path, OP_COMPLETE)?;
     let operation = require_operation(runner, &root, OP_COMPLETE)?;
     let paths = validate_conflict_paths(&request.paths, OP_COMPLETE)?;
+    let unresolved_paths = unresolved_conflict_paths(runner, &root, &paths, OP_COMPLETE)?;
+
+    if !unresolved_paths.is_empty() {
+        return Err(logged(AppError::expected(
+            format!(
+                "cannot complete while conflicts remain unresolved: {}",
+                unresolved_paths.join(", ")
+            ),
+            OP_COMPLETE,
+        )));
+    }
 
     for path in &paths {
         assert_no_worktree_markers(&root, path, OP_COMPLETE)?;
@@ -465,9 +476,65 @@ fn stage_side_file(
         side,
         oid: Some(entry.oid.clone()),
         size_bytes,
+        modified_unix_seconds: side_modified_unix_seconds(
+            runner,
+            root,
+            path,
+            operation,
+            side,
+            operation_name,
+        ),
         mime_type,
         preview,
     }))
+}
+
+fn side_modified_unix_seconds(
+    runner: &GitRunner,
+    root: &Path,
+    path: &Path,
+    operation: Option<&ConflictOperation>,
+    side: ConflictSide,
+    operation_name: &str,
+) -> Option<String> {
+    let revision = revision_for_side(operation, side)?;
+    let output = git_stdout(
+        runner,
+        root,
+        [
+            OsString::from("log"),
+            OsString::from("-1"),
+            OsString::from("--format=%ct"),
+            OsString::from(revision),
+            OsString::from("--"),
+            path.as_os_str().to_owned(),
+        ],
+        operation_name,
+    )
+    .ok()?;
+
+    output
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(str::to_owned)
+}
+
+fn revision_for_side(
+    operation: Option<&ConflictOperation>,
+    side: ConflictSide,
+) -> Option<&'static str> {
+    let operation = operation?;
+    Some(match (operation.kind, side) {
+        (ConflictOperationKind::Rebase, ConflictSide::Own) => "REBASE_HEAD",
+        (ConflictOperationKind::Rebase, ConflictSide::Other) => "HEAD",
+        (ConflictOperationKind::Merge, ConflictSide::Own)
+        | (ConflictOperationKind::CherryPick, ConflictSide::Own)
+        | (ConflictOperationKind::Revert, ConflictSide::Own) => "HEAD",
+        (ConflictOperationKind::Merge, ConflictSide::Other) => "MERGE_HEAD",
+        (ConflictOperationKind::CherryPick, ConflictSide::Other) => "CHERRY_PICK_HEAD",
+        (ConflictOperationKind::Revert, ConflictSide::Other) => "REVERT_HEAD",
+    })
 }
 
 fn stage_for_side(operation: Option<&ConflictOperation>, side: ConflictSide) -> u8 {
@@ -547,6 +614,36 @@ fn assert_no_worktree_markers(root: &Path, path: &Path, operation_name: &str) ->
         )));
     }
     Ok(())
+}
+
+fn unresolved_conflict_paths(
+    runner: &GitRunner,
+    root: &Path,
+    paths: &[PathBuf],
+    operation_name: &str,
+) -> AppResult<Vec<String>> {
+    let entries = unmerged_entries(runner, root, operation_name)?;
+
+    Ok(unresolved_paths_from_entries(root, paths, &entries))
+}
+
+fn unresolved_paths_from_entries(
+    root: &Path,
+    paths: &[PathBuf],
+    entries: &BTreeMap<PathBuf, BTreeMap<u8, StageEntry>>,
+) -> Vec<String> {
+    let mut unresolved = BTreeSet::new();
+
+    for path in entries.keys() {
+        unresolved.insert(display_path(path));
+    }
+    for path in paths {
+        if worktree_has_markers(root, path) {
+            unresolved.insert(display_path(path));
+        }
+    }
+
+    unresolved.into_iter().collect()
 }
 
 fn worktree_has_markers(root: &Path, path: &Path) -> bool {
@@ -922,6 +1019,10 @@ enum ParseState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use artistic_git_contracts::OperationId;
+    use artistic_git_git_runner::{GitDistribution, GitRunner};
+    use artistic_git_test_support::{require_git_dist, GitDistError, TestTempDir};
+    use std::process::Output;
 
     #[test]
     fn parses_conflict_markers_without_exposing_marker_lines() {
@@ -957,9 +1058,286 @@ mod tests {
     }
 
     #[test]
+    fn maps_conflict_sides_to_revision_names_for_modified_times() {
+        let merge = ConflictOperation {
+            kind: ConflictOperationKind::Merge,
+            label: "Merge".to_owned(),
+        };
+        let rebase = ConflictOperation {
+            kind: ConflictOperationKind::Rebase,
+            label: "Rebase".to_owned(),
+        };
+        let cherry_pick = ConflictOperation {
+            kind: ConflictOperationKind::CherryPick,
+            label: "Cherry-pick".to_owned(),
+        };
+        let revert = ConflictOperation {
+            kind: ConflictOperationKind::Revert,
+            label: "Revert".to_owned(),
+        };
+
+        assert_eq!(
+            revision_for_side(Some(&merge), ConflictSide::Own),
+            Some("HEAD")
+        );
+        assert_eq!(
+            revision_for_side(Some(&merge), ConflictSide::Other),
+            Some("MERGE_HEAD")
+        );
+        assert_eq!(
+            revision_for_side(Some(&rebase), ConflictSide::Own),
+            Some("REBASE_HEAD")
+        );
+        assert_eq!(
+            revision_for_side(Some(&rebase), ConflictSide::Other),
+            Some("HEAD")
+        );
+        assert_eq!(
+            revision_for_side(Some(&cherry_pick), ConflictSide::Other),
+            Some("CHERRY_PICK_HEAD")
+        );
+        assert_eq!(
+            revision_for_side(Some(&revert), ConflictSide::Other),
+            Some("REVERT_HEAD")
+        );
+    }
+
+    #[test]
+    fn unresolved_paths_include_unmerged_entries_and_marker_files() {
+        let temp = TestTempDir::new("ag-conflict-gate").expect("temp repo");
+        let marker_path = PathBuf::from("src/conflict.txt");
+        let absolute_marker_path = temp.path().join(&marker_path);
+        fs::create_dir_all(absolute_marker_path.parent().expect("parent")).expect("parent dir");
+        fs::write(
+            &absolute_marker_path,
+            "<<<<<<< HEAD\nown\n=======\nother\n>>>>>>> other\n",
+        )
+        .expect("marker file");
+
+        let mut entries = BTreeMap::new();
+        entries.insert(
+            PathBuf::from("assets/conflict.png"),
+            BTreeMap::from([(2, StageEntry { oid: "abc".into() })]),
+        );
+
+        assert_eq!(
+            unresolved_paths_from_entries(temp.path(), &[marker_path], &entries),
+            vec![
+                "assets/conflict.png".to_owned(),
+                "src/conflict.txt".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn encodes_binary_preview_bytes_as_base64() {
+        assert_eq!(base64_encode(&[0, 0, 0]), "AAAA");
+        assert_eq!(base64_encode(&[255]), "/w==");
+    }
+
+    #[test]
     fn rejects_absolute_or_parent_conflict_paths() {
         assert!(validate_conflict_path("/tmp/file", "test").is_err());
         assert!(validate_conflict_path("../file", "test").is_err());
         assert!(validate_conflict_path("src/file.txt", "test").is_ok());
+    }
+
+    #[test]
+    fn complete_rejects_unresolved_merge_conflicts() {
+        let Some((runner, _home)) = real_runner_or_skip() else {
+            return;
+        };
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        repo.start_text_merge_conflict();
+
+        let error = complete_conflict_resolution(
+            &runner,
+            ConflictCompleteRequest {
+                operation_id: OperationId("test-operation".to_owned()),
+                paths: vec!["tracked.txt".to_owned()],
+                repository_path: display_path(&repo.path),
+            },
+        )
+        .expect_err("unresolved conflicts should block complete");
+
+        assert!(error.summary.contains("conflicts remain unresolved"));
+        assert!(repo.git_output(["ls-files", "-u"]).contains("tracked.txt"));
+    }
+
+    #[test]
+    fn cancel_aborts_merge_conflicts() {
+        let Some((runner, _home)) = real_runner_or_skip() else {
+            return;
+        };
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        repo.start_text_merge_conflict();
+
+        let response = cancel_conflict_resolution(
+            &runner,
+            ConflictCancelRequest {
+                operation_id: OperationId("test-operation".to_owned()),
+                repository_path: display_path(&repo.path),
+            },
+        )
+        .expect("cancel conflict resolution");
+
+        assert_eq!(response.aborted, ConflictOperationKind::Merge);
+        assert!(!repo.path.join(".git").join("MERGE_HEAD").exists());
+        assert!(!repo.git_output(["status", "--porcelain"]).contains("UU "));
+    }
+
+    #[test]
+    fn binary_detail_includes_side_info_and_image_preview() {
+        let Some((runner, _home)) = real_runner_or_skip() else {
+            return;
+        };
+        let repo = TestRepo::new(&runner);
+        repo.init_with_binary_commit();
+        repo.start_binary_merge_conflict();
+
+        let response = conflict_detail(
+            &runner,
+            ConflictPathRequest {
+                path: "asset.png".to_owned(),
+                repository_path: display_path(&repo.path),
+            },
+        )
+        .expect("binary conflict detail");
+
+        assert_eq!(response.file.file_kind, DiffFileKind::Image);
+        let ConflictFileDetail::Binary { own, other } = response.detail else {
+            panic!("expected binary conflict detail");
+        };
+        let own = own.expect("own side");
+        let other = other.expect("other side");
+
+        assert_eq!(own.mime_type.as_deref(), Some("image/png"));
+        assert_eq!(own.size_bytes, Some(4));
+        assert!(own.modified_unix_seconds.is_some());
+        assert!(own
+            .preview
+            .expect("own preview")
+            .data_url
+            .starts_with("data:image/png;base64,"));
+        assert_eq!(other.mime_type.as_deref(), Some("image/png"));
+        assert_eq!(other.size_bytes, Some(4));
+        assert!(other.modified_unix_seconds.is_some());
+    }
+
+    fn real_runner_or_skip() -> Option<(GitRunner, TestTempDir)> {
+        let dist = match require_git_dist() {
+            Ok(dist) => dist,
+            Err(GitDistError::MissingEnvironment) => return None,
+            Err(error) => panic!("invalid embedded git distribution: {error}"),
+        };
+        let distribution = GitDistribution::from_manifest(dist.root, dist.manifest)
+            .expect("load embedded git distribution");
+        let temp = TestTempDir::new("ag-conflict-runner-home").expect("temp home");
+        let runner = GitRunner::from_distribution(distribution, temp.path().join("home"));
+        Some((runner, temp))
+    }
+
+    struct TestRepo {
+        path: PathBuf,
+        _temp: TestTempDir,
+        runner: GitRunner,
+    }
+
+    impl TestRepo {
+        fn new(runner: &GitRunner) -> Self {
+            let temp = TestTempDir::new("ag-conflict-repo").expect("temp repo");
+            Self {
+                path: temp.path().to_path_buf(),
+                _temp: temp,
+                runner: runner.clone(),
+            }
+        }
+
+        fn init_with_commit(&self) {
+            self.git(["init", "-b", "main"]);
+            self.git(["config", "user.name", "Tester"]);
+            self.git(["config", "user.email", "tester@example.test"]);
+            self.write("tracked.txt", "base\n");
+            self.git(["add", "."]);
+            self.git(["commit", "-m", "initial"]);
+        }
+
+        fn init_with_binary_commit(&self) {
+            self.git(["init", "-b", "main"]);
+            self.git(["config", "user.name", "Tester"]);
+            self.git(["config", "user.email", "tester@example.test"]);
+            self.write_bytes("asset.png", &[0, 1, 2, 3]);
+            self.git(["add", "."]);
+            self.git(["commit", "-m", "initial"]);
+        }
+
+        fn start_text_merge_conflict(&self) {
+            self.git(["checkout", "-b", "other"]);
+            self.write("tracked.txt", "other\n");
+            self.git(["commit", "-am", "other"]);
+            self.git(["checkout", "main"]);
+            self.write("tracked.txt", "own\n");
+            self.git(["commit", "-am", "own"]);
+
+            let output = self.git_output_result(["merge", "other"]);
+            assert!(
+                !output.status.success(),
+                "merge should conflict instead of succeeding"
+            );
+        }
+
+        fn start_binary_merge_conflict(&self) {
+            self.git(["checkout", "-b", "other"]);
+            self.write_bytes("asset.png", &[0, 2, 3, 4]);
+            self.git(["commit", "-am", "other binary"]);
+            self.git(["checkout", "main"]);
+            self.write_bytes("asset.png", &[0, 5, 6, 7]);
+            self.git(["commit", "-am", "own binary"]);
+
+            let output = self.git_output_result(["merge", "other"]);
+            assert!(
+                !output.status.success(),
+                "merge should conflict instead of succeeding"
+            );
+        }
+
+        fn git<I, S>(&self, args: I)
+        where
+            I: IntoIterator<Item = S>,
+            S: Into<OsString>,
+        {
+            self.git_output(args);
+        }
+
+        fn git_output<I, S>(&self, args: I) -> String
+        where
+            I: IntoIterator<Item = S>,
+            S: Into<OsString>,
+        {
+            git_stdout(&self.runner, &self.path, args, "test").expect("git command")
+        }
+
+        fn git_output_result<I, S>(&self, args: I) -> Output
+        where
+            I: IntoIterator<Item = S>,
+            S: Into<OsString>,
+        {
+            let plan = plan_git(&self.runner, &self.path, args).build();
+            plan.to_command().output().expect("run git")
+        }
+
+        fn write(&self, relative: &str, content: &str) {
+            self.write_bytes(relative, content.as_bytes());
+        }
+
+        fn write_bytes(&self, relative: &str, content: &[u8]) {
+            let path = self.path.join(relative);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).expect("parent dir");
+            }
+            fs::write(path, content).expect("write file");
+        }
     }
 }

@@ -280,6 +280,7 @@ export type ConflictSideFile = {
   side: ConflictSide;
   oid: string | null;
   sizeBytes: number | null;
+  modifiedUnixSeconds: string | null;
   mimeType: string | null;
   preview: ConflictImagePreview | null;
 };

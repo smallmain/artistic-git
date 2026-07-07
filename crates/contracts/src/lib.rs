@@ -331,6 +331,7 @@ pub struct ConflictSideFile {
     pub side: ConflictSide,
     pub oid: Option<String>,
     pub size_bytes: Option<u32>,
+    pub modified_unix_seconds: Option<String>,
     pub mime_type: Option<String>,
     pub preview: Option<ConflictImagePreview>,
 }

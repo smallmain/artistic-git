@@ -85,25 +85,93 @@ describe("RepositorySidebar", () => {
     ).toBeDisabled();
     expect(onDeleteBranch).not.toHaveBeenCalled();
   });
+
+  it("disables branch write actions when the repository has no commits", () => {
+    const onCheckoutBranch = vi.fn();
+    const onCreateBranchFromBase = vi.fn();
+    const onDeleteBranch = vi.fn();
+
+    renderSidebar({
+      branchActionsDisabledReason:
+        "Create the first commit before managing branches",
+      onCheckoutBranch,
+      onCreateBranchFromBase,
+      onDeleteBranch,
+    });
+
+    fireEvent.contextMenu(screen.getByText("feature/lookdev"));
+
+    expect(
+      screen.getByRole("menuitem", { name: "Switch branch" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("menuitem", { name: "Create new branch from base" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("menuitem", { name: "Delete branch" }),
+    ).toBeDisabled();
+    expect(onCheckoutBranch).not.toHaveBeenCalled();
+    expect(onCreateBranchFromBase).not.toHaveBeenCalled();
+    expect(onDeleteBranch).not.toHaveBeenCalled();
+  });
+
+  it("exposes manual stash action callbacks", () => {
+    const onApplyStash = vi.fn();
+    const onDeleteStash = vi.fn();
+    const onShowStashDetails = vi.fn();
+
+    renderSidebar({
+      onApplyStash,
+      onDeleteStash,
+      onShowStashDetails,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Apply stash" }));
+    expect(onApplyStash).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "stash@{0}" }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete stash" }));
+    expect(onDeleteStash).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "stash@{0}" }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Stash details" }));
+    expect(onShowStashDetails).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "stash@{0}" }),
+    );
+  });
 });
 
 function renderSidebar({
+  branchActionsDisabledReason,
+  onApplyStash,
   onCheckoutBranch,
   onCreateBranchFromBase,
   onDeleteBranch,
+  onDeleteStash,
+  onShowStashDetails,
 }: {
+  branchActionsDisabledReason?: string;
+  onApplyStash?: (stash: StashListItem) => void;
   onCheckoutBranch?: (branch: BranchListItem) => void;
   onCreateBranchFromBase?: (branch: BranchListItem) => void;
   onDeleteBranch?: (branch: BranchListItem) => void;
+  onDeleteStash?: (stash: StashListItem) => void;
+  onShowStashDetails?: (stash: StashListItem) => void;
 }) {
   return renderWithProviders(
     <RepositorySidebar
+      branchActionsDisabledReason={branchActionsDisabledReason}
       branches={branches}
       busy={false}
+      onApplyStash={onApplyStash}
       onBranchFocus={vi.fn()}
       onCheckoutBranch={onCheckoutBranch}
       onCreateBranchFromBase={onCreateBranchFromBase}
       onDeleteBranch={onDeleteBranch}
+      onDeleteStash={onDeleteStash}
+      onShowStashDetails={onShowStashDetails}
       repository={{
         branchName: "main",
         hasRemote: true,
