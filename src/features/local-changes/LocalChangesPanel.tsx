@@ -504,9 +504,25 @@ function ChangeRow({
             {formatChangePath(change)}
           </span>
         </div>
-        <p className="truncate text-xs text-muted-foreground">
-          {folder || t("localChanges.repositoryRoot")}
-        </p>
+        <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5">
+          <p className="min-w-0 truncate text-xs text-muted-foreground">
+            {folder || t("localChanges.repositoryRoot")}
+          </p>
+          {change.submodule ? (
+            <span
+              className="inline-flex max-w-full shrink rounded-sm border border-primary/20 bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-foreground"
+              title={t("localChanges.submoduleBadge", {
+                name: change.submodule.name,
+              })}
+            >
+              <span className="truncate">
+                {t("localChanges.submoduleBadge", {
+                  name: change.submodule.name,
+                })}
+              </span>
+            </span>
+          ) : null}
+        </div>
       </div>
       <IconButton
         label={t("localChanges.moreActions")}

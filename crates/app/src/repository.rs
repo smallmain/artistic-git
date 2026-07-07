@@ -8,15 +8,15 @@ use artistic_git_contracts::{
     DeleteBranchRequest, DeleteSafetyBackupRequest, DeleteSafetyBackupResponse, DeleteStashRequest,
     DeleteStashResponse, DiffAsset, DiffChangeKind, DiffContent, DiffFileKind, DiffPayload,
     FetchRepositoryRequest, FetchRepositoryResponse, FetchStateEvent, GitCommandError,
-    IndexLockInfo, LfsContentStatus, LocalChange, LocalChangesRenormalizeSuggestion,
-    LocalChangesResponse, LogPageRequest, LogPageResponse, LogSearchRequest, OpenRepositoryRequest,
-    OpenRepositoryResponse, OperationId, OperationProgressEvent, ProgressState,
-    RemoteSettingsResponse, RenormalizePreviewRequest, RenormalizePreviewResponse,
-    RepositoryHeadState, RepositoryHealth, RepositoryMiddleState, RepositoryMiddleStateKind,
-    RepositoryOpenWarning, RepositoryOpenWarningKind, RepositoryPathRequest, RepositoryRemote,
-    RepositoryRemoteMode, RepositorySummary, RestoreStashRequest, RestoreStashResponse,
-    SafetyBackupListResponse, SaveRemoteSettingsRequest, StashDetailsRequest, StashDetailsResponse,
-    StashEntry, StashListResponse,
+    IndexLockInfo, LfsContentStatus, LocalChange, LocalChangeSubmodule,
+    LocalChangesRenormalizeSuggestion, LocalChangesResponse, LogPageRequest, LogPageResponse,
+    LogSearchRequest, OpenRepositoryRequest, OpenRepositoryResponse, OperationId,
+    OperationProgressEvent, ProgressState, RemoteSettingsResponse, RenormalizePreviewRequest,
+    RenormalizePreviewResponse, RepositoryHeadState, RepositoryHealth, RepositoryMiddleState,
+    RepositoryMiddleStateKind, RepositoryOpenWarning, RepositoryOpenWarningKind,
+    RepositoryPathRequest, RepositoryRemote, RepositoryRemoteMode, RepositorySummary,
+    RestoreStashRequest, RestoreStashResponse, SafetyBackupListResponse, SaveRemoteSettingsRequest,
+    StashDetailsRequest, StashDetailsResponse, StashEntry, StashListResponse,
 };
 use artistic_git_core::config::{
     AppSettings, ConfigActor, GitUserSettings, ProjectSettings, WindowGeometry,
@@ -797,9 +797,42 @@ pub fn list_local_changes(
     request: RepositoryPathRequest,
 ) -> AppResult<LocalChangesResponse> {
     let root = canonical_repository_path(&request.repository_path, "listLocalChanges")?;
+    let mut changes = list_local_changes_for_repository(runner, &root, None)?;
+
+    if repository_has_submodules(&root) {
+        for submodule_root in initialized_submodule_paths(runner, &root, "listLocalChanges")? {
+            let Some(submodule_path) = repository_relative_display_path(&root, &submodule_root)
+            else {
+                continue;
+            };
+            let submodule = LocalChangeSubmodule {
+                name: submodule_path.clone(),
+                path: submodule_path,
+            };
+            changes.extend(list_local_changes_for_repository(
+                runner,
+                &submodule_root,
+                Some(submodule),
+            )?);
+        }
+    }
+
+    sort_local_changes(&mut changes);
+    let renormalize_suggestion = renormalize_suggestion_for_changes(&changes);
+    Ok(LocalChangesResponse {
+        changes,
+        renormalize_suggestion,
+    })
+}
+
+fn list_local_changes_for_repository(
+    runner: &GitRunner,
+    root: &Path,
+    submodule: Option<LocalChangeSubmodule>,
+) -> AppResult<Vec<LocalChange>> {
     let output = git_output_bytes(
         runner,
-        Some(&root),
+        Some(root),
         ["status", "--porcelain=v1", "-z", "--find-renames"],
         "listLocalChanges",
     )?;
@@ -828,9 +861,21 @@ pub fn list_local_changes(
         }
 
         let change_kind = local_change_kind(&index_status, &worktree_status);
+        if should_skip_uncommitted_submodule_directory_change(
+            runner,
+            root,
+            &path,
+            old_path.as_deref(),
+            &index_status,
+            &worktree_status,
+        )? {
+            index += 1;
+            continue;
+        }
+
         let (payload, diff) = local_change_diff(
             runner,
-            &root,
+            root,
             &path,
             old_path.as_deref(),
             change_kind,
@@ -838,7 +883,7 @@ pub fn list_local_changes(
             &worktree_status,
         )?;
 
-        changes.push(LocalChange {
+        let mut change = LocalChange {
             change_kind,
             diff,
             path,
@@ -846,15 +891,114 @@ pub fn list_local_changes(
             payload,
             index_status,
             worktree_status,
-        });
+            submodule: None,
+        };
+        if let Some(submodule) = submodule.as_ref() {
+            qualify_submodule_local_change(&mut change, submodule);
+        }
+        changes.push(change);
         index += 1;
     }
 
-    let renormalize_suggestion = renormalize_suggestion_for_changes(&changes);
-    Ok(LocalChangesResponse {
-        changes,
-        renormalize_suggestion,
-    })
+    Ok(changes)
+}
+
+fn qualify_submodule_local_change(change: &mut LocalChange, submodule: &LocalChangeSubmodule) {
+    let inner_path = change.path.clone();
+    let inner_old_path = change.old_path.clone();
+
+    change.path = prefix_submodule_path(&submodule.path, &change.path);
+    change.old_path = change
+        .old_path
+        .as_deref()
+        .map(|path| prefix_submodule_path(&submodule.path, path));
+    change.payload.new_path = prefix_submodule_path(&submodule.path, &change.payload.new_path);
+    change.payload.old_path = change
+        .payload
+        .old_path
+        .as_deref()
+        .map(|path| prefix_submodule_path(&submodule.path, path));
+    change
+        .payload
+        .metadata
+        .insert("submodulePath".to_owned(), submodule.path.clone());
+    change
+        .payload
+        .metadata
+        .insert("submoduleName".to_owned(), submodule.name.clone());
+    change
+        .payload
+        .metadata
+        .insert("submoduleInnerPath".to_owned(), inner_path);
+    if let Some(inner_old_path) = inner_old_path {
+        change
+            .payload
+            .metadata
+            .insert("submoduleInnerOldPath".to_owned(), inner_old_path);
+    }
+    change.submodule = Some(submodule.clone());
+}
+
+fn prefix_submodule_path(submodule_path: &str, path: &str) -> String {
+    let submodule_path = submodule_path.trim_end_matches('/');
+    let path = path.trim_start_matches('/');
+    if path.is_empty() {
+        submodule_path.to_owned()
+    } else {
+        format!("{submodule_path}/{path}")
+    }
+}
+
+fn repository_relative_display_path(root: &Path, path: &Path) -> Option<String> {
+    let relative = path.strip_prefix(root).ok()?;
+    let parts = relative
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    (!parts.is_empty()).then(|| parts.join("/"))
+}
+
+fn sort_local_changes(changes: &mut [LocalChange]) {
+    changes.sort_by(|left, right| {
+        left.path
+            .cmp(&right.path)
+            .then_with(|| left.old_path.cmp(&right.old_path))
+            .then_with(|| left.index_status.cmp(&right.index_status))
+            .then_with(|| left.worktree_status.cmp(&right.worktree_status))
+    });
+}
+
+fn should_skip_uncommitted_submodule_directory_change(
+    runner: &GitRunner,
+    root: &Path,
+    path: &str,
+    old_path: Option<&str>,
+    index_status: &str,
+    worktree_status: &str,
+) -> AppResult<bool> {
+    let Some(old_gitlink) = gitlink_at_head(runner, root, old_path.unwrap_or(path))? else {
+        return Ok(false);
+    };
+
+    if index_status != " " && index_status != "?" {
+        match gitlink_at_index(runner, root, path)? {
+            Some(index_gitlink) if index_gitlink.oid != old_gitlink.oid => return Ok(false),
+            None => return Ok(false),
+            _ => {}
+        }
+    }
+
+    if worktree_status != " " {
+        match gitlink_at_worktree_head(runner, root, path, "listLocalChanges")? {
+            Some(worktree_gitlink) if worktree_gitlink.oid == old_gitlink.oid => {}
+            _ => return Ok(false),
+        }
+    }
+
+    Ok(true)
 }
 
 pub fn preview_renormalize(
@@ -886,11 +1030,13 @@ pub fn preview_renormalize(
 fn renormalize_suggestion_for_changes(
     changes: &[LocalChange],
 ) -> Option<LocalChangesRenormalizeSuggestion> {
-    let total = changes.len();
+    let root_changes = changes.iter().filter(|change| change.submodule.is_none());
+    let total = root_changes.clone().count();
     let modified = changes
         .iter()
         .filter(|change| {
-            change.change_kind == DiffChangeKind::Modified
+            change.submodule.is_none()
+                && change.change_kind == DiffChangeKind::Modified
                 && change.index_status.trim().is_empty()
                 && change.worktree_status == "M"
         })
@@ -906,6 +1052,12 @@ fn renormalize_suggestion_for_changes(
         threshold: RENORMALIZE_SUGGESTION_THRESHOLD as u32,
         sample_paths: changes
             .iter()
+            .filter(|change| {
+                change.submodule.is_none()
+                    && change.change_kind == DiffChangeKind::Modified
+                    && change.index_status.trim().is_empty()
+                    && change.worktree_status == "M"
+            })
             .take(RENORMALIZE_SUGGESTION_SAMPLE_LIMIT)
             .map(|change| change.path.clone())
             .collect(),
@@ -3690,7 +3842,96 @@ mod tests {
         assert_eq!(change.payload.metadata["oldOid"], old_oid);
         assert_eq!(change.payload.metadata["newOid"], new_oid);
         assert_eq!(change.payload.file_kind, DiffFileKind::Binary);
+        assert!(change.submodule.is_none());
         assert!(matches!(change.diff, DiffContent::Moved { .. }));
+    }
+
+    #[test]
+    fn list_local_changes_includes_submodule_workspace_changes() {
+        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
+            return;
+        };
+        allow_file_protocol_for_local_submodule_fixtures(&runner);
+        let child = TestRepo::new(&runner);
+        child.init_with_commit();
+
+        let repo = TestRepo::new(&runner);
+        repo.git(["init"]);
+        repo.git(["config", "user.name", "Tester"]);
+        repo.git(["config", "user.email", "tester@example.test"]);
+        repo.write("root.txt", "one\n");
+        repo.git(["add", "root.txt"]);
+        repo.git(["commit", "-m", "root"]);
+        repo.git(vec![
+            OsString::from("-c"),
+            OsString::from("protocol.file.allow=always"),
+            OsString::from("submodule"),
+            OsString::from("add"),
+            OsString::from(display_path(&child.path)),
+            OsString::from("deps/lib"),
+        ]);
+        repo.git(["commit", "-m", "add submodule"]);
+
+        repo.write("root.txt", "two\n");
+        fs::write(repo.path.join("deps/lib/tracked.txt"), "two\n").expect("modify submodule file");
+        fs::write(repo.path.join("deps/lib/new.txt"), "new\n").expect("write submodule file");
+
+        let changes = list_local_changes(
+            &runner,
+            RepositoryPathRequest {
+                repository_path: display_path(&repo.path),
+            },
+        )
+        .expect("local changes");
+
+        assert!(changes
+            .changes
+            .iter()
+            .any(|change| change.path == "root.txt" && change.submodule.is_none()));
+        assert!(!changes
+            .changes
+            .iter()
+            .any(|change| change.path == "deps/lib"));
+
+        let tracked = changes
+            .changes
+            .iter()
+            .find(|change| change.path == "deps/lib/tracked.txt")
+            .expect("submodule tracked change");
+        let submodule = tracked.submodule.as_ref().expect("submodule metadata");
+        assert_eq!(submodule.path, "deps/lib");
+        assert_eq!(submodule.name, "deps/lib");
+        assert_eq!(tracked.payload.new_path, "deps/lib/tracked.txt");
+        assert_eq!(tracked.payload.metadata["submodulePath"], "deps/lib");
+        assert_eq!(tracked.payload.metadata["submoduleName"], "deps/lib");
+        assert_eq!(
+            tracked.payload.metadata["submoduleInnerPath"],
+            "tracked.txt"
+        );
+        assert_eq!(tracked.payload.metadata.get("submodule"), None);
+        match &tracked.diff {
+            DiffContent::Text {
+                old_text, new_text, ..
+            } => {
+                assert_eq!(old_text.as_deref(), Some("one\n"));
+                assert_eq!(new_text.as_deref(), Some("two\n"));
+            }
+            other => panic!("expected text diff, got {other:?}"),
+        }
+
+        let added = changes
+            .changes
+            .iter()
+            .find(|change| change.path == "deps/lib/new.txt")
+            .expect("submodule added change");
+        assert_eq!(added.change_kind, DiffChangeKind::Added);
+        assert_eq!(
+            added
+                .submodule
+                .as_ref()
+                .map(|submodule| submodule.path.as_str()),
+            Some("deps/lib")
+        );
     }
 
     #[test]
@@ -4131,7 +4372,9 @@ size 16\n"
         let distribution = GitDistribution::from_manifest(dist.root, dist.manifest)
             .expect("load embedded git distribution");
         let temp = TestTempDir::new("ag-app-runner-home").expect("temp home");
-        let runner = GitRunner::from_distribution(distribution, temp.path().join("home"));
+        let home = temp.path().join("home");
+        fs::create_dir_all(&home).expect("create runner home");
+        let runner = GitRunner::from_distribution(distribution, home);
         Some((runner, temp))
     }
 

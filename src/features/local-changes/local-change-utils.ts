@@ -24,6 +24,8 @@ export function filterChanges(
     [
       change.payload.newPath,
       change.payload.oldPath ?? "",
+      change.submodule?.name ?? "",
+      change.submodule?.path ?? "",
       change.searchableText ?? "",
     ]
       .join("\n")

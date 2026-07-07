@@ -44,10 +44,13 @@ afterEach(() => {
 
 describe("local change utilities", () => {
   it("filters paths and searchable content", () => {
-    const changes = createChanges();
+    const changes = [...createChanges(), createSubmoduleChange()];
 
     expect(filterChanges(changes, "console")).toHaveLength(1);
     expect(filterChanges(changes, "roughness")).toHaveLength(1);
+    expect(filterChanges(changes, "deps/lib")).toEqual([
+      createSubmoduleChange(),
+    ]);
     expect(formatChangePath(changes[2])).toBe(
       "assets/old-name.png -> assets/new-name.png",
     );
@@ -143,6 +146,39 @@ describe("LocalChangesPanel", () => {
     expect(onPreviewRenormalize).toHaveBeenCalled();
     expect(screen.getByText("0 selected")).toBeInTheDocument();
   });
+
+  it("shows submodule badges while search and tree checks keep working", () => {
+    const onCheckedChange = vi.fn();
+    const changes = [...createChanges(), createSubmoduleChange()];
+
+    renderWithProviders(
+      <LocalChangesPanel
+        changes={changes}
+        onCheckedChange={onCheckedChange}
+        storageKey="submodule-test-view-mode"
+      />,
+    );
+
+    expect(screen.getByText("Submodule: deps/lib")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Search files and contents"), {
+      target: { value: "deps/lib" },
+    });
+
+    expect(screen.getAllByText("deps/lib/src/shader.ts").length).toBeGreaterThan(
+      0,
+    );
+    expect(screen.queryByText("src/main.ts")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("Toggle deps/lib/src/shader.ts"));
+    expect(onCheckedChange).toHaveBeenLastCalledWith(["4"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Tree view" }));
+    fireEvent.click(screen.getByLabelText("deps"));
+
+    expect(screen.getByText("0 selected")).toBeInTheDocument();
+    expect(onCheckedChange).toHaveBeenLastCalledWith([]);
+  });
 });
 
 function createChanges(): LocalChangeItem[] {
@@ -192,5 +228,31 @@ function createPayload(overrides: Partial<DiffPayload>): DiffPayload {
     newPath: "file.txt",
     oldPath: null,
     ...overrides,
+  };
+}
+
+function createSubmoduleChange(): LocalChangeItem {
+  return {
+    diff: {
+      kind: "text",
+      newText: "export const shader = 'new';\n",
+      oldText: "export const shader = 'old';\n",
+    },
+    id: "4",
+    payload: createPayload({
+      changeKind: "modified",
+      fileKind: "text",
+      metadata: {
+        submoduleInnerPath: "src/shader.ts",
+        submoduleName: "deps/lib",
+        submodulePath: "deps/lib",
+      },
+      newPath: "deps/lib/src/shader.ts",
+    }),
+    searchableText: "shader deps lib",
+    submodule: {
+      name: "deps/lib",
+      path: "deps/lib",
+    },
   };
 }
