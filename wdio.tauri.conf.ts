@@ -1,6 +1,6 @@
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -9,7 +9,7 @@ const driverHost = process.env.TAURI_DRIVER_HOST ?? "127.0.0.1";
 const driverPort = Number.parseInt(process.env.TAURI_DRIVER_PORT ?? "4444", 10);
 const appBinaryPath =
   process.env.ARTISTIC_GIT_E2E_APP ?? defaultTauriBinaryPath();
-const tauriDriverCommand = process.env.TAURI_DRIVER ?? "tauri-driver";
+const tauriDriverPath = process.env.TAURI_DRIVER ?? defaultTauriDriverPath();
 const gitDistFixturePath =
   process.env.ARTISTIC_GIT_DIST_DIR ?? prepareGitDistFixture();
 
@@ -43,7 +43,7 @@ export const config = {
           ARTISTIC_GIT_DIST_DIR: gitDistFixturePath,
         },
         logLevel: process.env.CI ? "warn" : "info",
-        tauriDriverPath: tauriDriverCommand,
+        tauriDriverPath,
         tauriDriverPort: driverPort,
       },
     ],
@@ -80,6 +80,14 @@ function defaultTauriBinaryPath() {
   return path.join(rootDir, "target", "debug", binaryName);
 }
 
+function defaultTauriDriverPath() {
+  const executableName =
+    process.platform === "win32" ? "tauri-driver.exe" : "tauri-driver";
+  const cargoHome = process.env.CARGO_HOME ?? path.join(homedir(), ".cargo");
+  const cargoDriverPath = path.join(cargoHome, "bin", executableName);
+  return findExecutableOnPath(executableName) ?? cargoDriverPath;
+}
+
 function ensureTauriBinary() {
   if (process.env.ARTISTIC_GIT_E2E_SKIP_BUILD !== "1") {
     const result = runPnpm(["tauri", "build", "--debug", "--no-bundle"]);
@@ -95,12 +103,45 @@ function ensureTauriBinary() {
 }
 
 function runPnpm(args: string[]) {
-  const command = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+  const pnpmExecPath = process.env.npm_execpath;
+  if (pnpmExecPath && existsSync(pnpmExecPath) && isNodeScript(pnpmExecPath)) {
+    return spawnSync(process.execPath, [pnpmExecPath, ...args], {
+      cwd: rootDir,
+      env: process.env,
+      stdio: "inherit",
+    });
+  }
+
+  const executableName = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+  const command =
+    pnpmExecPath && existsSync(pnpmExecPath)
+      ? pnpmExecPath
+      : (findExecutableOnPath(executableName) ?? executableName);
   return spawnSync(command, args, {
     cwd: rootDir,
     env: process.env,
+    shell: process.platform === "win32",
     stdio: "inherit",
   });
+}
+
+function isNodeScript(filePath: string) {
+  return /\.[cm]?js$/i.test(filePath);
+}
+
+function findExecutableOnPath(executableName: string) {
+  for (const entry of (process.env.PATH ?? "").split(path.delimiter)) {
+    if (!entry) {
+      continue;
+    }
+
+    const candidate = path.join(entry, executableName);
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
 }
 
 function assertSuccessfulProcess(
