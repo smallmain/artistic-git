@@ -18,6 +18,7 @@ interface RealtimeEventBridgeProps {
   onConflictEntered?: (event: ConflictEnteredEvent) => void;
   onFetchState?: (event: FetchStateEvent) => void;
   onOperationProgress?: (event: OperationProgressEvent) => void;
+  operationProgressFilter?: (event: OperationProgressEvent) => boolean;
   onRepoChanged?: (event: RepoChangedEvent) => void;
 }
 
@@ -26,6 +27,7 @@ export function RealtimeEventBridge({
   onConflictEntered,
   onFetchState,
   onOperationProgress,
+  operationProgressFilter,
   onRepoChanged,
 }: RealtimeEventBridgeProps) {
   const queryClient = useQueryClient();
@@ -39,6 +41,7 @@ export function RealtimeEventBridge({
       onConflictEntered,
       onFetchState,
       onOperationProgress,
+      operationProgressFilter,
       onRepoChanged,
       queryClient,
     })
@@ -63,6 +66,7 @@ export function RealtimeEventBridge({
     onConflictEntered,
     onFetchState,
     onOperationProgress,
+    operationProgressFilter,
     onRepoChanged,
     queryClient,
   ]);

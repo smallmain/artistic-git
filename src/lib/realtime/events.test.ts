@@ -5,6 +5,7 @@ import type { AppEventName } from "@/lib/ipc/events";
 import type {
   ConflictEnteredEvent,
   FetchStateEvent,
+  OperationProgressEvent,
   RepoChangedEvent,
 } from "@/lib/ipc/generated";
 import {
@@ -134,6 +135,8 @@ describe("realtime query invalidation", () => {
       label: "Updating submodules",
       operationId: "op-progress",
       progress: { kind: "indeterminate" as const },
+      repositoryPath: "/repo/art",
+      windowLabel: "repo-1",
     };
 
     const unsubscribe = await installRealtimeEventBridge({
@@ -171,5 +174,47 @@ describe("realtime query invalidation", () => {
     unsubscribe();
 
     expect(unlisten).toHaveBeenCalledTimes(4);
+  });
+
+  it("filters operation-progress events before notifying listeners", async () => {
+    const queryClient = new QueryClient();
+    const onOperationProgress = vi.fn();
+    const handlers = new Map<
+      AppEventName,
+      (event: { payload: unknown }) => void
+    >();
+    const listen = vi.fn(async (name, handler) => {
+      handlers.set(name, handler);
+      return vi.fn();
+    });
+    const ownProgress: OperationProgressEvent = {
+      cancellable: false,
+      label: "Own sync",
+      operationId: "op-own",
+      progress: { kind: "indeterminate" },
+      repositoryPath: "/repo/art",
+      windowLabel: "repo-1",
+    };
+    const otherProgress: OperationProgressEvent = {
+      cancellable: false,
+      label: "Other sync",
+      operationId: "op-other",
+      progress: { kind: "indeterminate" },
+      repositoryPath: "/repo/other",
+      windowLabel: "repo-2",
+    };
+
+    await installRealtimeEventBridge({
+      listen,
+      onOperationProgress,
+      operationProgressFilter: (event) => event.repositoryPath === "/repo/art",
+      queryClient,
+    });
+
+    handlers.get("operation-progress")?.({ payload: otherProgress });
+    handlers.get("operation-progress")?.({ payload: ownProgress });
+
+    expect(onOperationProgress).toHaveBeenCalledTimes(1);
+    expect(onOperationProgress).toHaveBeenCalledWith(ownProgress);
   });
 });

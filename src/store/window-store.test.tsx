@@ -42,6 +42,8 @@ describe("window store", () => {
       label: "Fetching",
       operationId: "op-1",
       progress: { kind: "indeterminate" },
+      repositoryPath: "/repo/art",
+      windowLabel: "repo-1",
     });
     store.getState().setRepoChanged({
       changedQueries: ["summary", "localChanges"],
@@ -74,6 +76,40 @@ describe("window store", () => {
     store.getState().clearConflict("/repo/art");
 
     expect(store.getState().conflictsByRepository["/repo/art"]).toBeUndefined();
+  });
+
+  it("filters operation progress to the active repository and window", () => {
+    const store = createWindowStore({
+      activeRepositoryPath: "/repo/art",
+      windowLabel: "repo-1",
+    });
+
+    store.getState().setOperationProgress({
+      cancellable: false,
+      label: "Other repository",
+      operationId: "op-other-repo",
+      progress: { kind: "indeterminate" },
+      repositoryPath: "/repo/other",
+      windowLabel: "repo-1",
+    });
+    store.getState().setOperationProgress({
+      cancellable: false,
+      label: "Other window",
+      operationId: "op-other-window",
+      progress: { kind: "indeterminate" },
+      repositoryPath: "/repo/art",
+      windowLabel: "repo-2",
+    });
+    store.getState().setOperationProgress({
+      cancellable: false,
+      label: "Own operation",
+      operationId: "op-own",
+      progress: { kind: "indeterminate" },
+      repositoryPath: "/repo/art",
+      windowLabel: "repo-1",
+    });
+
+    expect(Object.keys(store.getState().operationsById)).toEqual(["op-own"]);
   });
 });
 

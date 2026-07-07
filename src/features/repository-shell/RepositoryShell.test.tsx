@@ -830,6 +830,8 @@ describe("RepositoryShell close guard", () => {
       label: "sync",
       operationId: "sync-active",
       progress: { kind: "indeterminate" },
+      repositoryPath: "/repo/art",
+      windowLabel: "repo-1",
     };
 
     try {
@@ -878,6 +880,8 @@ describe("RepositoryShell close guard", () => {
       label: "sync",
       operationId: "sync-active",
       progress: { kind: "indeterminate" },
+      repositoryPath: "/repo/art",
+      windowLabel: "repo-1",
     };
     renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />, {
       operationsById: {
@@ -894,6 +898,38 @@ describe("RepositoryShell close guard", () => {
 
     expect(commandMocks.cancelPendingWindowExit).toHaveBeenCalledTimes(1);
     expect(commandMocks.closeCurrentWindow).not.toHaveBeenCalled();
+  });
+
+  it("ignores backend operations owned by another repository and window when closing", async () => {
+    const otherOperation: OperationProgressEvent = {
+      cancellable: false,
+      label: "sync",
+      operationId: "sync-other",
+      progress: { kind: "indeterminate" },
+      repositoryPath: "/repo/other",
+      windowLabel: "repo-2",
+    };
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />, {
+      operationsById: {
+        [otherOperation.operationId]: otherOperation,
+      },
+      windowLabel: "repo-1",
+    });
+
+    await waitFor(() =>
+      expect(commandMocks.setWindowCloseGuard).toHaveBeenCalledWith({
+        active: false,
+      }),
+    );
+
+    await emitWindowCloseBlocked({ reason: "closeWindow" });
+
+    await waitFor(() =>
+      expect(commandMocks.closeCurrentWindow).toHaveBeenCalledTimes(1),
+    );
+    expect(
+      screen.queryByRole("dialog", { name: "Close window?" }),
+    ).not.toBeInTheDocument();
   });
 
   it("cancels unresolved conflicts before closing the guarded window", async () => {

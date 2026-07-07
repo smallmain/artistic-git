@@ -242,6 +242,8 @@ describe("App", () => {
             label: "Fetching branches",
             operationId: "op-1",
             progress: { kind: "indeterminate" },
+            repositoryPath: "/repo/art-project",
+            windowLabel: "repo-1",
           },
         },
       },
