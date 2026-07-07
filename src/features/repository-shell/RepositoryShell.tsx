@@ -447,8 +447,9 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   const branchActionsDisabledReason = summaryQuery.data?.isUnborn
     ? t("repository.unbornBranchActionsDisabled")
     : undefined;
+  const activeOperationBusy = activeOperation !== null;
   const busy =
-    activeOperation !== null ||
+    activeOperationBusy ||
     fetchBusy ||
     syncBusy ||
     commitBusy ||
@@ -460,6 +461,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     reviewBusy;
   const reviewActive = reviewModeState !== null;
   const writeOperationBusy =
+    activeOperationBusy ||
     syncBusy ||
     commitBusy ||
     restoreBusy ||

@@ -48,7 +48,7 @@ struct WindowCloseGuardRequest {
     active: bool,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WindowCloseBlockedEvent {
     reason: WindowCloseBlockedReason,
@@ -76,7 +76,7 @@ struct RendererCrashInjectionRequest {
     summary: Option<String>,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 enum WindowCloseBlockedReason {
     CloseWindow,
@@ -1278,6 +1278,16 @@ fn handle_menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
         }
         "close-window" => {
             if let Some(window) = focused_webview_window(app) {
+                if let Some(registry) = app.try_state::<WindowRegistry>() {
+                    if let Some(event) = close_guard_block_event(
+                        &registry,
+                        window.label(),
+                        WindowCloseBlockedReason::CloseWindow,
+                    ) {
+                        let _ = window.emit("window-close-blocked", event);
+                        return;
+                    }
+                }
                 let _ = window.close();
             }
         }
@@ -1468,6 +1478,14 @@ fn registry_close_guarded(registry: &WindowRegistry, label: &str) -> bool {
         .lock()
         .map(|inner| inner.close_guard_labels.contains(label))
         .unwrap_or(false)
+}
+
+fn close_guard_block_event(
+    registry: &WindowRegistry,
+    label: &str,
+    reason: WindowCloseBlockedReason,
+) -> Option<WindowCloseBlockedEvent> {
+    registry_close_guarded(registry, label).then_some(WindowCloseBlockedEvent { reason })
 }
 
 fn registry_close_guard_labels(registry: &WindowRegistry) -> Vec<String> {
@@ -1709,14 +1727,13 @@ fn handle_window_event(window: &tauri::Window, event: &WindowEvent) {
     match event {
         WindowEvent::CloseRequested { api, .. } => {
             if let Some(registry) = app.try_state::<WindowRegistry>() {
-                if registry_close_guarded(&registry, window.label()) {
+                if let Some(event) = close_guard_block_event(
+                    &registry,
+                    window.label(),
+                    WindowCloseBlockedReason::CloseWindow,
+                ) {
                     api.prevent_close();
-                    let _ = window.emit(
-                        "window-close-blocked",
-                        WindowCloseBlockedEvent {
-                            reason: WindowCloseBlockedReason::CloseWindow,
-                        },
-                    );
+                    let _ = window.emit("window-close-blocked", event);
                 }
             }
         }
@@ -2050,6 +2067,23 @@ mod tests {
         assert_eq!(
             registry_close_guard_labels(&registry),
             vec!["repo-1".to_owned(), "repo-2".to_owned()]
+        );
+    }
+
+    #[test]
+    fn window_menu_close_guard_builds_block_event_for_guarded_window() {
+        let registry = WindowRegistry::default();
+        registry_set_close_guard(&registry, "repo-1", true).expect("set guard");
+
+        assert_eq!(
+            close_guard_block_event(&registry, "repo-1", WindowCloseBlockedReason::CloseWindow),
+            Some(WindowCloseBlockedEvent {
+                reason: WindowCloseBlockedReason::CloseWindow,
+            })
+        );
+        assert_eq!(
+            close_guard_block_event(&registry, "repo-2", WindowCloseBlockedReason::CloseWindow),
+            None
         );
     }
 

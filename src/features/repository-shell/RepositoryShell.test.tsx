@@ -18,6 +18,7 @@ import type {
   ConflictEnteredEvent,
   DiffPayload,
   LocalChange,
+  OperationProgressEvent,
 } from "@/lib/ipc/generated";
 import type { WindowStoreState } from "@/store/window-store";
 
@@ -763,6 +764,46 @@ describe("RepositoryShell review mode", () => {
 });
 
 describe("RepositoryShell close guard", () => {
+  it("guards active backend operations and refuses to close without a recovery path", async () => {
+    const errors: unknown[] = [];
+    const handleError = (event: Event) => {
+      errors.push((event as CustomEvent<unknown>).detail);
+    };
+    window.addEventListener("artistic-git:error", handleError);
+    const activeOperation: OperationProgressEvent = {
+      cancellable: false,
+      label: "sync",
+      operationId: "sync-active",
+      progress: { kind: "indeterminate" },
+    };
+
+    try {
+      renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />, {
+        operationsById: {
+          [activeOperation.operationId]: activeOperation,
+        },
+      });
+
+      await waitFor(() =>
+        expect(commandMocks.setWindowCloseGuard).toHaveBeenCalledWith({
+          active: true,
+        }),
+      );
+
+      await emitWindowCloseBlocked({ reason: "closeWindow" });
+      fireEvent.click(
+        within(
+          await screen.findByRole("dialog", { name: "Close window?" }),
+        ).getByRole("button", { name: "Close and recover" }),
+      );
+
+      await waitFor(() => expect(errors.length).toBeGreaterThan(0));
+      expect(commandMocks.closeCurrentWindow).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener("artistic-git:error", handleError);
+    }
+  });
+
   it("cancels unresolved conflicts before closing the guarded window", async () => {
     const conflict = createConflictEvent();
     renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />, {
