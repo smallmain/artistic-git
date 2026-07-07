@@ -1,4 +1,6 @@
 import * as React from "react";
+import { useStore } from "zustand";
+import { createStore, type StoreApi } from "zustand/vanilla";
 
 import type {
   FetchStateEvent,
@@ -12,23 +14,15 @@ export interface WindowStoreState {
   windowLabel: string | null;
 }
 
-export type WindowStoreAction =
-  | {
-      type: "set-active-repository";
-      repositoryPath: string | null;
-    }
-  | {
-      type: "set-fetch-state";
-      event: FetchStateEvent;
-    }
-  | {
-      type: "set-operation-progress";
-      event: OperationProgressEvent;
-    }
-  | {
-      type: "set-window-label";
-      windowLabel: string | null;
-    };
+export interface WindowStoreActions {
+  setActiveRepositoryPath: (repositoryPath: string | null) => void;
+  setFetchState: (event: FetchStateEvent) => void;
+  setOperationProgress: (event: OperationProgressEvent) => void;
+  setWindowLabel: (windowLabel: string | null) => void;
+}
+
+export type WindowStore = WindowStoreState & WindowStoreActions;
+export type WindowStoreApi = StoreApi<WindowStore>;
 
 const initialWindowStoreState: WindowStoreState = {
   activeRepositoryPath: null,
@@ -37,51 +31,86 @@ const initialWindowStoreState: WindowStoreState = {
   windowLabel: null,
 };
 
-interface WindowStoreContextValue {
-  dispatch: React.Dispatch<WindowStoreAction>;
-  state: WindowStoreState;
-}
-
-const WindowStoreContext = React.createContext<WindowStoreContextValue | null>(
-  null,
-);
+const WindowStoreContext = React.createContext<WindowStoreApi | null>(null);
+const identityWindowStoreSelector = (state: WindowStore) => state;
 
 interface WindowStoreProviderProps {
   children: React.ReactNode;
   initialState?: Partial<WindowStoreState>;
+  store?: WindowStoreApi;
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function createWindowStore(
+  initialState?: Partial<WindowStoreState>,
+): WindowStoreApi {
+  const resolvedInitialState = createInitialWindowStoreState(initialState);
+
+  return createStore<WindowStore>((set) => ({
+    ...resolvedInitialState,
+    setActiveRepositoryPath: (repositoryPath) => {
+      set({ activeRepositoryPath: repositoryPath });
+    },
+    setFetchState: (event) => {
+      set((state) => ({
+        fetchStatesByRepository: {
+          ...state.fetchStatesByRepository,
+          [event.repositoryPath]: event,
+        },
+      }));
+    },
+    setOperationProgress: (event) => {
+      set((state) => ({
+        operationsById: {
+          ...state.operationsById,
+          [event.operationId]: event,
+        },
+      }));
+    },
+    setWindowLabel: (windowLabel) => {
+      set({ windowLabel });
+    },
+  }));
 }
 
 export function WindowStoreProvider({
   children,
   initialState,
+  store,
 }: WindowStoreProviderProps) {
-  const [state, dispatch] = React.useReducer(
-    windowStoreReducer,
-    initialState,
-    createInitialWindowStoreState,
-  );
-
-  const value = React.useMemo<WindowStoreContextValue>(
-    () => ({ dispatch, state }),
-    [state],
+  const [storeApi] = React.useState(
+    () => store ?? createWindowStore(initialState),
   );
 
   return (
-    <WindowStoreContext.Provider value={value}>
+    <WindowStoreContext.Provider value={storeApi}>
       {children}
     </WindowStoreContext.Provider>
   );
 }
 
+export function useWindowStore<T>(selector: (state: WindowStore) => T): T;
+export function useWindowStore(): WindowStore;
 // eslint-disable-next-line react-refresh/only-export-components
-export function useWindowStore() {
-  const context = React.useContext(WindowStoreContext);
+export function useWindowStore<T>(
+  selector?: (state: WindowStore) => T,
+): T | WindowStore {
+  const store = useWindowStoreApi();
+  const resolvedSelector = (selector ?? identityWindowStoreSelector) as (
+    state: WindowStore,
+  ) => T | WindowStore;
 
-  if (!context) {
+  return useStore(store, resolvedSelector);
+}
+
+function useWindowStoreApi(): WindowStoreApi {
+  const store = React.useContext(WindowStoreContext);
+
+  if (!store) {
     throw new Error("useWindowStore must be used within WindowStoreProvider.");
   }
 
-  return context;
+  return store;
 }
 
 function createInitialWindowStoreState(
@@ -99,38 +128,4 @@ function createInitialWindowStoreState(
       ...initialState?.operationsById,
     },
   };
-}
-
-function windowStoreReducer(
-  state: WindowStoreState,
-  action: WindowStoreAction,
-): WindowStoreState {
-  switch (action.type) {
-    case "set-active-repository":
-      return {
-        ...state,
-        activeRepositoryPath: action.repositoryPath,
-      };
-    case "set-fetch-state":
-      return {
-        ...state,
-        fetchStatesByRepository: {
-          ...state.fetchStatesByRepository,
-          [action.event.repositoryPath]: action.event,
-        },
-      };
-    case "set-operation-progress":
-      return {
-        ...state,
-        operationsById: {
-          ...state.operationsById,
-          [action.event.operationId]: action.event,
-        },
-      };
-    case "set-window-label":
-      return {
-        ...state,
-        windowLabel: action.windowLabel,
-      };
-  }
 }

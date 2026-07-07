@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App";
 import { AppProviders } from "./AppProviders";
+import { ConfirmDialog } from "./components/dialogs/ConfirmDialog";
+import { CrashDetailsDialog } from "./components/dialogs/CrashDetailsDialog";
 import { ErrorDetailsDialog } from "./components/dialogs/ErrorDetailsDialog";
 import { createI18n } from "./i18n/i18n";
 import type { LanguagePreference } from "./i18n/resources";
@@ -129,6 +131,72 @@ describe("ErrorDetailsDialog", () => {
     expect(
       screen.queryByText(/"summary": "Merge failed"/),
     ).not.toBeInTheDocument();
+  });
+
+  it("closes with Escape and opens the log directory", () => {
+    const onOpenChange = vi.fn();
+    const onOpenLogDir = vi.fn();
+
+    renderWithProviders(
+      <ErrorDetailsDialog
+        error={createAppError()}
+        onOpenChange={onOpenChange}
+        onOpenLogDir={onOpenLogDir}
+        open
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Open log folder" }));
+    expect(onOpenLogDir).toHaveBeenCalledTimes(1);
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+});
+
+describe("CrashDetailsDialog", () => {
+  it("renders a restart action placeholder", () => {
+    const onRestart = vi.fn();
+
+    renderWithProviders(
+      <CrashDetailsDialog
+        crash="Renderer crashed"
+        onOpenChange={vi.fn()}
+        onRestart={onRestart}
+        open
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Restart app" }));
+
+    expect(onRestart).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ConfirmDialog", () => {
+  it("confirms, cancels, and closes with Escape", () => {
+    const onConfirm = vi.fn();
+    const onOpenChange = vi.fn();
+
+    renderWithProviders(
+      <ConfirmDialog
+        description="Delete this branch?"
+        onConfirm={onConfirm}
+        onOpenChange={onOpenChange}
+        open
+        title="Confirm delete"
+        variant="danger"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 });
 

@@ -9,6 +9,7 @@ import type { LanguagePreference } from "@/i18n/resources";
 import { createAppQueryClient } from "@/lib/query/client";
 import {
   WindowStoreProvider,
+  type WindowStoreApi,
   type WindowStoreState,
 } from "@/store/window-store";
 import { ThemeProvider, type ThemePreference } from "@/theme/ThemeProvider";
@@ -20,6 +21,7 @@ interface AppProvidersProps {
   initialThemePreference?: ThemePreference;
   initialWindowState?: Partial<WindowStoreState>;
   queryClient?: QueryClient;
+  windowStore?: WindowStoreApi;
 }
 
 export function AppProviders({
@@ -29,7 +31,9 @@ export function AppProviders({
   initialThemePreference,
   initialWindowState,
   queryClient,
+  windowStore,
 }: AppProvidersProps) {
+  // Each mounted app root owns its client and UI store unless tests inject them.
   const [client] = React.useState(() => queryClient ?? createAppQueryClient());
 
   return (
@@ -40,7 +44,10 @@ export function AppProviders({
           initialPreference={initialLanguagePreference}
         >
           <ThemeProvider initialPreference={initialThemePreference}>
-            <WindowStoreProvider initialState={initialWindowState}>
+            <WindowStoreProvider
+              initialState={initialWindowState}
+              store={windowStore}
+            >
               {children}
             </WindowStoreProvider>
           </ThemeProvider>

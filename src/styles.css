@@ -17,9 +17,23 @@
   --accent-foreground: 0 0% 9%;
   --destructive: 0 84% 60%;
   --destructive-foreground: 0 0% 98%;
+  --success: 142 69% 36%;
+  --success-foreground: 0 0% 100%;
+  --warning: 42 91% 48%;
+  --warning-foreground: 0 0% 9%;
+  --danger: 0 84% 60%;
+  --danger-foreground: 0 0% 98%;
+  --sync: 24 95% 53%;
+  --sync-foreground: 0 0% 9%;
+  --review-cyan-start: 188 95% 43%;
+  --review-cyan-end: 174 72% 45%;
   --border: 0 0% 90%;
   --input: 0 0% 90%;
   --ring: 0 0% 9%;
+  --shadow-floating-value: 0 18px 50px hsl(0 0% 0% / 0.14);
+  --duration-fast-value: 150ms;
+  --duration-panel-value: 220ms;
+  --ease-out-value: cubic-bezier(0.16, 1, 0.3, 1);
   font-family:
     ui-sans-serif,
     system-ui,
@@ -45,9 +59,20 @@
   --accent-foreground: 0 0% 98%;
   --destructive: 0 62% 50%;
   --destructive-foreground: 0 0% 98%;
+  --success: 142 61% 45%;
+  --success-foreground: 0 0% 7%;
+  --warning: 45 91% 58%;
+  --warning-foreground: 0 0% 7%;
+  --danger: 0 72% 56%;
+  --danger-foreground: 0 0% 98%;
+  --sync: 28 92% 58%;
+  --sync-foreground: 0 0% 7%;
+  --review-cyan-start: 188 86% 54%;
+  --review-cyan-end: 174 72% 49%;
   --border: 0 0% 18%;
   --input: 0 0% 18%;
   --ring: 0 0% 80%;
+  --shadow-floating-value: 0 18px 50px hsl(0 0% 0% / 0.42);
 }
 
 @theme inline {
@@ -65,9 +90,21 @@
   --color-accent-foreground: hsl(var(--accent-foreground));
   --color-destructive: hsl(var(--destructive));
   --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-success: hsl(var(--success));
+  --color-success-foreground: hsl(var(--success-foreground));
+  --color-warning: hsl(var(--warning));
+  --color-warning-foreground: hsl(var(--warning-foreground));
+  --color-danger: hsl(var(--danger));
+  --color-danger-foreground: hsl(var(--danger-foreground));
+  --color-sync: hsl(var(--sync));
+  --color-sync-foreground: hsl(var(--sync-foreground));
   --color-border: hsl(var(--border));
   --color-input: hsl(var(--input));
   --color-ring: hsl(var(--ring));
+  --shadow-floating: var(--shadow-floating-value);
+  --duration-fast: var(--duration-fast-value);
+  --duration-panel: var(--duration-panel-value);
+  --ease-out: var(--ease-out-value);
 }
 
 * {
@@ -78,4 +115,40 @@ body {
   min-width: 960px;
   min-height: 600px;
   margin: 0;
+}
+
+:where(
+  button,
+  [href],
+  input,
+  select,
+  textarea,
+  [tabindex]:not([tabindex="-1"])
+):focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
+.bg-review-gradient {
+  background-image: linear-gradient(
+    135deg,
+    hsl(var(--review-cyan-start)),
+    hsl(var(--review-cyan-end))
+  );
+}
+
+.text-numeric {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 1ms !important;
+  }
 }

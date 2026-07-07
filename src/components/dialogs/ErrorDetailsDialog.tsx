@@ -1,11 +1,15 @@
+import { FolderOpen } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { DetailsDialog } from "@/components/dialogs/DetailsDialog";
+import { Button } from "@/components/ui/button";
+import { openLogDir } from "@/lib/ipc/commands";
 import type { AppError } from "@/lib/ipc/generated";
 
 interface ErrorDetailsDialogProps {
   error: AppError | Error | string;
   onCopyDetails?: (details: string) => Promise<void> | void;
+  onOpenLogDir?: () => Promise<void> | void;
   onOpenChange: (open: boolean) => void;
   open: boolean;
 }
@@ -13,15 +17,30 @@ interface ErrorDetailsDialogProps {
 export function ErrorDetailsDialog({
   error,
   onCopyDetails,
+  onOpenLogDir,
   onOpenChange,
   open,
 }: ErrorDetailsDialogProps) {
   const { t } = useTranslation();
+  const handleOpenLogDir = onOpenLogDir ?? openLogDir;
 
   return (
     <DetailsDialog
       description={t("dialogs.error.description")}
       details={formatErrorDetails(error)}
+      extraActions={
+        <Button
+          className="gap-2"
+          onClick={() => {
+            void handleOpenLogDir();
+          }}
+          type="button"
+          variant="ghost"
+        >
+          <FolderOpen className="size-4" aria-hidden="true" />
+          {t("actions.openLogDir")}
+        </Button>
+      }
       onCopyDetails={onCopyDetails}
       onOpenChange={onOpenChange}
       open={open}

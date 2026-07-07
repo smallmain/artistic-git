@@ -1,0 +1,100 @@
+import { X } from "lucide-react";
+import * as React from "react";
+import { useTranslation } from "react-i18next";
+
+import { IconButton } from "@/components/ui/icon-button";
+import { cn } from "@/lib/utils";
+
+interface DialogFrameProps {
+  children: React.ReactNode;
+  className?: string;
+  closeOnEscape?: boolean;
+  description: string;
+  footer?: React.ReactNode;
+  hideCloseButton?: boolean;
+  onOpenChange: (open: boolean) => void;
+  title: string;
+}
+
+export function DialogFrame({
+  children,
+  className,
+  closeOnEscape = true,
+  description,
+  footer,
+  hideCloseButton = false,
+  onOpenChange,
+  title,
+}: DialogFrameProps) {
+  const { t } = useTranslation();
+  const descriptionId = React.useId();
+  const titleId = React.useId();
+  const dialogRef = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    dialogRef.current?.focus();
+  }, []);
+
+  React.useEffect(() => {
+    if (!closeOnEscape) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onOpenChange(false);
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [closeOnEscape, onOpenChange]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-6">
+      <div
+        aria-describedby={descriptionId}
+        aria-labelledby={titleId}
+        aria-modal="true"
+        className={cn(
+          "flex max-h-full w-full max-w-2xl flex-col rounded-xl border bg-card text-card-foreground shadow-floating focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          className,
+        )}
+        ref={dialogRef}
+        role="dialog"
+        tabIndex={-1}
+      >
+        <div className="flex items-start justify-between gap-4 border-b p-5">
+          <div className="min-w-0">
+            <h2 className="text-lg font-semibold" id={titleId}>
+              {title}
+            </h2>
+            <p
+              className="mt-1 text-sm text-muted-foreground"
+              id={descriptionId}
+            >
+              {description}
+            </p>
+          </div>
+          {hideCloseButton ? null : (
+            <IconButton
+              label={t("actions.close")}
+              onClick={() => {
+                onOpenChange(false);
+              }}
+              tooltip={t("actions.close")}
+              variant="ghost"
+            >
+              <X className="size-4" aria-hidden="true" />
+            </IconButton>
+          )}
+        </div>
+
+        <div className="flex flex-col gap-4 overflow-auto p-5">{children}</div>
+        {footer ? <div className="border-t p-5">{footer}</div> : null}
+      </div>
+    </div>
+  );
+}
