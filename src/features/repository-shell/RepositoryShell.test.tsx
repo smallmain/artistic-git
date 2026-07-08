@@ -735,7 +735,7 @@ describe("RepositoryShell review mode", () => {
 
     const overlay = await screen.findByRole("dialog", { name: "Review mode" });
     expect(commandMocks.startReviewMode).toHaveBeenCalledWith({
-      operationId: null,
+      operationId: expect.stringMatching(/^review-start-/),
       repositoryPath: "/repo/art",
     });
     expect(overlay).toHaveTextContent("Branch main");
@@ -1200,7 +1200,7 @@ describe("RepositoryShell branch flow", () => {
       createRemote: true,
       localChangesMode: "autoStash",
       name: "feature/new-art-pass",
-      operationId: null,
+      operationId: expect.stringMatching(/^create-branch-/),
       repositoryPath: "/repo/art",
     });
   });
@@ -1292,7 +1292,7 @@ describe("RepositoryShell branch flow", () => {
     expect(commandMocks.checkoutBranch).toHaveBeenCalledWith({
       branchName: "feature/lookdev",
       localChangesMode: "discard",
-      operationId: null,
+      operationId: expect.stringMatching(/^checkout-branch-/),
       repositoryPath: "/repo/art",
     });
   });
@@ -1460,7 +1460,7 @@ describe("RepositoryShell branch flow", () => {
 
     await waitFor(() =>
       expect(commandMocks.syncAllBranches).toHaveBeenCalledWith({
-        operationId: null,
+        operationId: expect.stringMatching(/^sync-all-/),
         repositoryPath: "/repo/art",
       }),
     );
@@ -1537,7 +1537,7 @@ describe("RepositoryShell branch flow", () => {
 
     await waitFor(() =>
       expect(commandMocks.syncAllBranches).toHaveBeenCalledWith({
-        operationId: null,
+        operationId: expect.stringMatching(/^sync-all-/),
         repositoryPath: "/repo/art",
       }),
     );
@@ -1588,7 +1588,7 @@ describe("RepositoryShell branch flow", () => {
     await waitFor(() =>
       expect(commandMocks.syncBranch).toHaveBeenCalledWith({
         branchName: "feature/lookdev",
-        operationId: null,
+        operationId: expect.stringMatching(/^sync-branch-/),
         repositoryPath: "/repo/art",
       }),
     );
@@ -1642,7 +1642,7 @@ describe("RepositoryShell branch flow", () => {
     await waitFor(() =>
       expect(commandMocks.syncBranch).toHaveBeenCalledWith({
         branchName: "feature/unpublished",
-        operationId: null,
+        operationId: expect.stringMatching(/^sync-branch-/),
         repositoryPath: "/repo/art",
       }),
     );
@@ -1708,7 +1708,7 @@ describe("RepositoryShell branch flow", () => {
     await waitFor(() =>
       expect(commandMocks.acceptRemoteHistory).toHaveBeenCalledWith({
         branchName: "main",
-        operationId: null,
+        operationId: expect.stringMatching(/^accept-remote-history-/),
         repositoryPath: "/repo/art",
       }),
     );

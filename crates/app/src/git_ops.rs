@@ -1,23 +1,31 @@
 use artistic_git_contracts::{AppError, AppResult, GitCommandError};
-use artistic_git_git_runner::{GitCommandPlan, GitRunner};
+use artistic_git_git_runner::{CancelToken, GitCommandPlan, GitRunner};
 use std::{
     cell::RefCell,
     ffi::OsString,
     fs, io,
     path::{Component, Path, PathBuf},
-    process::{Command, Output},
+    process::{Command, Output, Stdio},
+    thread,
+    time::Duration,
 };
 
 pub(crate) const DEFAULT_LARGE_FILE_THRESHOLD_MB: u32 = 50;
 
 thread_local! {
     static AUTH_CONTEXT: RefCell<Vec<AuthCommandContext>> = const { RefCell::new(Vec::new()) };
+    static CANCEL_CONTEXT: RefCell<Vec<CancelCommandContext>> = const { RefCell::new(Vec::new()) };
 }
 
 #[derive(Clone)]
 struct AuthCommandContext {
     runtime: crate::auth_ipc::AuthRuntime,
     operation_id: artistic_git_contracts::OperationId,
+}
+
+#[derive(Clone)]
+struct CancelCommandContext {
+    token: CancelToken,
 }
 
 pub(crate) fn with_auth_runtime_for_operation<T>(
@@ -57,6 +65,29 @@ struct AuthContextGuard;
 impl Drop for AuthContextGuard {
     fn drop(&mut self) {
         AUTH_CONTEXT.with(|contexts| {
+            contexts.borrow_mut().pop();
+        });
+    }
+}
+
+pub(crate) fn with_cancel_token_for_operation<T>(
+    cancel_token: &CancelToken,
+    action: impl FnOnce() -> T,
+) -> T {
+    CANCEL_CONTEXT.with(|contexts| {
+        contexts.borrow_mut().push(CancelCommandContext {
+            token: cancel_token.clone(),
+        });
+    });
+    let _guard = CancelContextGuard;
+    action()
+}
+
+struct CancelContextGuard;
+
+impl Drop for CancelContextGuard {
+    fn drop(&mut self) {
+        CANCEL_CONTEXT.with(|contexts| {
             contexts.borrow_mut().pop();
         });
     }
@@ -178,10 +209,7 @@ where
 {
     let plan = plan_git(runner, root, args);
     let plan = apply_auth_context_to_plan(plan, root, operation_name)?;
-    let output = plan
-        .to_command()
-        .output()
-        .map_err(|source| spawn_error(&plan, source, operation_name))?;
+    let output = command_output(plan.to_command(), &plan, operation_name)?;
     Ok((plan, output))
 }
 
@@ -200,10 +228,7 @@ where
     let plan = plan_git(runner, root, args);
     let plan =
         apply_auth_runtime_to_plan(plan, auth_runtime, interaction_policy, root, operation_name)?;
-    let output = plan
-        .to_command()
-        .output()
-        .map_err(|source| spawn_error(&plan, source, operation_name))?;
+    let output = command_output(plan.to_command(), &plan, operation_name)?;
     Ok((plan, output))
 }
 
@@ -282,18 +307,64 @@ pub(crate) fn display_path(path: &Path) -> String {
 }
 
 fn command_to_output(
-    mut command: Command,
+    command: Command,
     plan: &GitCommandPlan,
     operation_name: &str,
 ) -> AppResult<CommandOutput> {
-    let output = command
-        .output()
-        .map_err(|source| spawn_error(plan, source, operation_name))?;
+    let output = command_output(command, plan, operation_name)?;
     if output.status.success() {
         Ok(CommandOutput::from_output(output))
     } else {
         Err(command_failure(plan, output, operation_name))
     }
+}
+
+fn command_output(
+    mut command: Command,
+    plan: &GitCommandPlan,
+    operation_name: &str,
+) -> AppResult<Output> {
+    let cancel_token = active_cancel_token();
+    let Some(cancel_token) = cancel_token else {
+        return command
+            .output()
+            .map_err(|source| spawn_error(plan, source, operation_name));
+    };
+
+    if cancel_token.is_cancelled() {
+        return Err(cancelled_error(operation_name));
+    }
+
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|source| spawn_error(plan, source, operation_name))?;
+
+    loop {
+        if cancel_token.is_cancelled() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(cancelled_error(operation_name));
+        }
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => thread::sleep(Duration::from_millis(20)),
+            Err(source) => return Err(spawn_error(plan, source, operation_name)),
+        }
+    }
+
+    child
+        .wait_with_output()
+        .map_err(|source| spawn_error(plan, source, operation_name))
+}
+
+fn active_cancel_token() -> Option<CancelToken> {
+    CANCEL_CONTEXT.with(|contexts| {
+        contexts
+            .borrow()
+            .last()
+            .map(|context| context.token.clone())
+    })
 }
 
 fn plan_git<I, S>(runner: &GitRunner, root: Option<&Path>, args: I) -> GitCommandPlan
@@ -329,6 +400,10 @@ fn spawn_error(plan: &GitCommandPlan, source: io::Error, operation_name: &str) -
             stderr: source.to_string(),
         }),
     )
+}
+
+fn cancelled_error(operation_name: &str) -> AppError {
+    logged(AppError::expected("operation cancelled", operation_name))
 }
 
 fn auth_ipc_error(source: crate::auth_ipc::AuthIpcError, operation_name: &str) -> AppError {

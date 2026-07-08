@@ -288,6 +288,24 @@ impl RepositoryBackend {
         })
     }
 
+    fn run_cancellable_operation<T>(
+        &self,
+        operation_id: Option<OperationId>,
+        operation_name: &str,
+        action: impl FnOnce() -> AppResult<T>,
+    ) -> AppResult<T> {
+        let token = CancelToken::new();
+        let _operation_guard = operation_id
+            .as_ref()
+            .map(|operation_id| {
+                self.cancellable_operations
+                    .register(operation_id, token.clone(), operation_name)
+            })
+            .transpose()?;
+
+        crate::git_ops::with_cancel_token_for_operation(&token, action)
+    }
+
     pub fn repository_summary(
         &self,
         request: RepositoryPathRequest,
@@ -320,14 +338,17 @@ impl RepositoryBackend {
         request: artistic_git_contracts::SyncCurrentBranchRequest,
     ) -> AppResult<artistic_git_contracts::SyncCurrentBranchResponse> {
         let operation_id = request.operation_id.clone();
+        let cancellable_operation_id = operation_id.clone();
         let repository_path = Some(PathBuf::from(request.repository_path.clone()));
-        crate::git_ops::with_auth_runtime_for_operation(
-            self.auth_runtime.as_ref(),
-            crate::auth_ipc::InteractionPolicy::interactive(),
-            operation_id,
-            repository_path,
-            || crate::sync_current_branch(&self.runner, request),
-        )
+        self.run_cancellable_operation(cancellable_operation_id, "syncCurrentBranch", || {
+            crate::git_ops::with_auth_runtime_for_operation(
+                self.auth_runtime.as_ref(),
+                crate::auth_ipc::InteractionPolicy::interactive(),
+                operation_id,
+                repository_path,
+                || crate::sync_current_branch(&self.runner, request),
+            )
+        })
     }
 
     pub fn sync_current_branch_with_progress<F>(
@@ -339,14 +360,17 @@ impl RepositoryBackend {
         F: Fn(OperationProgressEvent),
     {
         let operation_id = request.operation_id.clone();
+        let cancellable_operation_id = operation_id.clone();
         let repository_path = Some(PathBuf::from(request.repository_path.clone()));
-        crate::git_ops::with_auth_runtime_for_operation(
-            self.auth_runtime.as_ref(),
-            crate::auth_ipc::InteractionPolicy::interactive(),
-            operation_id,
-            repository_path,
-            || crate::sync_current_branch_with_progress(&self.runner, request, progress),
-        )
+        self.run_cancellable_operation(cancellable_operation_id, "syncCurrentBranch", || {
+            crate::git_ops::with_auth_runtime_for_operation(
+                self.auth_runtime.as_ref(),
+                crate::auth_ipc::InteractionPolicy::interactive(),
+                operation_id,
+                repository_path,
+                || crate::sync_current_branch_with_progress(&self.runner, request, progress),
+            )
+        })
     }
 
     pub fn sync_branch(
@@ -354,14 +378,17 @@ impl RepositoryBackend {
         request: artistic_git_contracts::SyncBranchRequest,
     ) -> AppResult<artistic_git_contracts::SyncBranchResponse> {
         let operation_id = request.operation_id.clone();
+        let cancellable_operation_id = operation_id.clone();
         let repository_path = Some(PathBuf::from(request.repository_path.clone()));
-        crate::git_ops::with_auth_runtime_for_operation(
-            self.auth_runtime.as_ref(),
-            crate::auth_ipc::InteractionPolicy::interactive(),
-            operation_id,
-            repository_path,
-            || crate::sync_branch(&self.runner, request),
-        )
+        self.run_cancellable_operation(cancellable_operation_id, "syncBranch", || {
+            crate::git_ops::with_auth_runtime_for_operation(
+                self.auth_runtime.as_ref(),
+                crate::auth_ipc::InteractionPolicy::interactive(),
+                operation_id,
+                repository_path,
+                || crate::sync_branch(&self.runner, request),
+            )
+        })
     }
 
     pub fn sync_branch_with_progress<F>(
@@ -373,14 +400,17 @@ impl RepositoryBackend {
         F: Fn(OperationProgressEvent),
     {
         let operation_id = request.operation_id.clone();
+        let cancellable_operation_id = operation_id.clone();
         let repository_path = Some(PathBuf::from(request.repository_path.clone()));
-        crate::git_ops::with_auth_runtime_for_operation(
-            self.auth_runtime.as_ref(),
-            crate::auth_ipc::InteractionPolicy::interactive(),
-            operation_id,
-            repository_path,
-            || crate::sync_branch_with_progress(&self.runner, request, progress),
-        )
+        self.run_cancellable_operation(cancellable_operation_id, "syncBranch", || {
+            crate::git_ops::with_auth_runtime_for_operation(
+                self.auth_runtime.as_ref(),
+                crate::auth_ipc::InteractionPolicy::interactive(),
+                operation_id,
+                repository_path,
+                || crate::sync_branch_with_progress(&self.runner, request, progress),
+            )
+        })
     }
 
     pub fn sync_all_branches_with_progress<F>(
@@ -392,21 +422,24 @@ impl RepositoryBackend {
         F: Fn(OperationProgressEvent),
     {
         let operation_id = request.operation_id.clone();
+        let cancellable_operation_id = operation_id.clone();
         let repository_path = Some(PathBuf::from(request.repository_path.clone()));
-        crate::git_ops::with_auth_runtime_for_operation(
-            self.auth_runtime.as_ref(),
-            crate::auth_ipc::InteractionPolicy::interactive(),
-            operation_id,
-            repository_path,
-            || {
-                crate::sync_all_branches_with_config(
-                    &self.runner,
-                    self.config.as_ref(),
-                    request,
-                    progress,
-                )
-            },
-        )
+        self.run_cancellable_operation(cancellable_operation_id, "syncAllBranches", || {
+            crate::git_ops::with_auth_runtime_for_operation(
+                self.auth_runtime.as_ref(),
+                crate::auth_ipc::InteractionPolicy::interactive(),
+                operation_id,
+                repository_path,
+                || {
+                    crate::sync_all_branches_with_config(
+                        &self.runner,
+                        self.config.as_ref(),
+                        request,
+                        progress,
+                    )
+                },
+            )
+        })
     }
 
     pub fn accept_remote_history(
@@ -414,21 +447,27 @@ impl RepositoryBackend {
         request: AcceptRemoteHistoryRequest,
     ) -> AppResult<AcceptRemoteHistoryResponse> {
         let operation_id = request.operation_id.clone();
+        let cancellable_operation_id = operation_id.clone();
         let repository_path = Some(PathBuf::from(request.repository_path.clone()));
-        crate::git_ops::with_auth_runtime_for_operation(
-            self.auth_runtime.as_ref(),
-            crate::auth_ipc::InteractionPolicy::interactive(),
-            operation_id,
-            repository_path,
-            || crate::accept_remote_history(&self.runner, request),
-        )
+        self.run_cancellable_operation(cancellable_operation_id, "acceptRemoteHistory", || {
+            crate::git_ops::with_auth_runtime_for_operation(
+                self.auth_runtime.as_ref(),
+                crate::auth_ipc::InteractionPolicy::interactive(),
+                operation_id,
+                repository_path,
+                || crate::accept_remote_history(&self.runner, request),
+            )
+        })
     }
 
     pub fn start_review_mode(
         &self,
         request: artistic_git_contracts::StartReviewModeRequest,
     ) -> AppResult<artistic_git_contracts::StartReviewModeResponse> {
-        crate::start_review_mode_with_config(&self.runner, self.config.as_ref(), request)
+        let operation_id = request.operation_id.clone();
+        self.run_cancellable_operation(operation_id, "startReviewMode", || {
+            crate::start_review_mode_with_config(&self.runner, self.config.as_ref(), request)
+        })
     }
 
     pub fn sync_review_mode(
@@ -502,14 +541,20 @@ impl RepositoryBackend {
         &self,
         request: CreateBranchRequest,
     ) -> AppResult<BranchOperationResponse> {
-        crate::branches::create_branch(&self.runner, request)
+        let operation_id = request.operation_id.clone();
+        self.run_cancellable_operation(operation_id, "createBranch", || {
+            crate::branches::create_branch(&self.runner, request)
+        })
     }
 
     pub fn checkout_branch(
         &self,
         request: CheckoutBranchRequest,
     ) -> AppResult<BranchOperationResponse> {
-        crate::branches::checkout_branch(&self.runner, request)
+        let operation_id = request.operation_id.clone();
+        self.run_cancellable_operation(operation_id, "checkoutBranch", || {
+            crate::branches::checkout_branch(&self.runner, request)
+        })
     }
 
     pub fn delete_branch(
@@ -3832,8 +3877,8 @@ mod tests {
     use artistic_git_git_runner::GitDistribution;
     use artistic_git_helpers::HelperIpcResponse;
     use artistic_git_test_support::{
-        git_dist_manifest_fixture, require_git_dist, write_executable_script,
-        write_git_dist_manifest, GitDistError, TestTempDir,
+        git_dist_manifest_fixture, require_git_dist, write_executable_file,
+        write_executable_script, write_git_dist_manifest, GitDistError, TestTempDir,
     };
     use std::{io::Write, sync::Mutex};
 
@@ -3878,6 +3923,44 @@ mod tests {
             .expect_err("duplicate operation id rejected");
 
         assert_eq!(error.summary, "operation is already registered");
+    }
+
+    #[test]
+    fn backend_cancellable_operation_registers_token_during_action() {
+        let (runner, _temp) = fake_runner();
+        let backend = RepositoryBackend::new(runner, None);
+        let operation_id = OperationId::new("operation-1");
+
+        let response = backend
+            .run_cancellable_operation(Some(operation_id.clone()), "testOperation", || {
+                backend.cancel_operation(CancelOperationRequest {
+                    operation_id: operation_id.clone(),
+                })
+            })
+            .expect("cancel registered operation");
+
+        assert!(response.cancelled);
+        assert!(
+            !backend
+                .cancel_operation(CancelOperationRequest { operation_id })
+                .expect("operation guard should unregister after action")
+                .cancelled
+        );
+    }
+
+    fn fake_runner() -> (GitRunner, TestTempDir) {
+        let temp = TestTempDir::new("ag-repository-cancel").expect("temp");
+        let manifest = git_dist_manifest_fixture();
+        write_git_dist_manifest(temp.path(), &manifest).expect("manifest");
+        write_executable_file(&temp.path().join(&manifest.paths.git_executable)).expect("git");
+        write_executable_file(&temp.path().join(&manifest.paths.git_lfs_executable))
+            .expect("git-lfs");
+        write_executable_file(&temp.path().join(&manifest.paths.credential_helper))
+            .expect("credential helper");
+        write_executable_file(&temp.path().join(&manifest.paths.ssh_askpass)).expect("ssh askpass");
+        let distribution = GitDistribution::from_root(temp.path()).expect("distribution");
+        let runner = GitRunner::from_distribution(distribution, temp.path().join("home"));
+        (runner, temp)
     }
 
     #[derive(Debug)]

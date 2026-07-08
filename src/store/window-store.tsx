@@ -194,7 +194,11 @@ export function createWindowStore(
         ) {
           delete operationsById[event.operationId];
         } else {
-          operationsById[event.operationId] = event;
+          const previous = operationsById[event.operationId];
+          operationsById[event.operationId] = {
+            ...event,
+            cancellable: previous?.cancellable === true || event.cancellable,
+          };
         }
         return { operationsById };
       });

@@ -692,8 +692,9 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     setSyncFeedback(null);
     setSyncStatus(null);
     try {
+      const operationId = createRepositoryOperationId("sync-all");
       const response = await syncAllBranches({
-        operationId: null,
+        operationId,
         repositoryPath,
       });
       handleSyncAllResponse(response);
@@ -736,9 +737,10 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       setSyncFeedback(null);
       setSyncStatus(null);
       try {
+        const operationId = createRepositoryOperationId("sync-branch");
         const response = await syncBranch({
           branchName: branch.name,
-          operationId: null,
+          operationId,
           repositoryPath,
         });
         handleSyncBranchResponse(response);
@@ -780,9 +782,10 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
 
     setSyncBusy(true);
     try {
+      const operationId = createRepositoryOperationId("accept-remote-history");
       const response = await acceptRemoteHistory({
         branchName: remoteHistoryChange.branchName,
-        operationId: null,
+        operationId,
         repositoryPath,
       });
       if (response.conflict) {
@@ -904,8 +907,9 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
 
     setReviewBusy(true);
     try {
+      const operationId = createRepositoryOperationId("review-start");
       const response = await startReviewMode({
-        operationId: null,
+        operationId,
         repositoryPath,
       });
       setReviewModeState(response.state);
@@ -1126,10 +1130,11 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
 
     setBranchActionBusy(true);
     try {
+      const operationId = createRepositoryOperationId("checkout-branch");
       const response = await checkoutBranch({
         branchName: branchToCheckout.name,
         localChangesMode: checkoutMode,
-        operationId: null,
+        operationId,
         repositoryPath,
       });
 
@@ -1169,13 +1174,14 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
 
     setBranchActionBusy(true);
     try {
+      const operationId = createRepositoryOperationId("create-branch");
       const response = await createBranch({
         baseBranch: branchCreateBase.name,
         checkoutImmediately: newBranchCheckout,
         createRemote: newBranchCreateRemote,
         localChangesMode: checkoutMode,
         name,
-        operationId: null,
+        operationId,
         repositoryPath,
       });
 
@@ -2031,6 +2037,13 @@ function isRepositoryShellOperation(
 
 function operationLabel(label: string, t: (key: string) => string): string {
   switch (label) {
+    case "Syncing":
+    case "Accepting remote history":
+      return t("repository.sync");
+    case "Updating branch":
+      return t("repository.branchBusy");
+    case "Starting review mode":
+      return t("repository.reviewMode");
     case "Updating submodules":
       return t("repository.updatingSubmodules");
     case "Downloading submodule LFS objects":
@@ -2050,6 +2063,10 @@ function operationLabel(label: string, t: (key: string) => string): string {
     default:
       return label;
   }
+}
+
+function createRepositoryOperationId(prefix: string): string {
+  return `${prefix}-${globalThis.crypto?.randomUUID?.() ?? Date.now().toString(36)}`;
 }
 
 function formatSyncAllStatus(

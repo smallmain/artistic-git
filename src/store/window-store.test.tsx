@@ -111,6 +111,35 @@ describe("window store", () => {
 
     expect(Object.keys(store.getState().operationsById)).toEqual(["op-own"]);
   });
+
+  it("preserves cancellability when substep progress updates the same operation", () => {
+    const store = createWindowStore({
+      activeRepositoryPath: "/repo/art",
+      windowLabel: "repo-1",
+    });
+
+    store.getState().setOperationProgress({
+      cancellable: true,
+      label: "Syncing",
+      operationId: "sync-1",
+      progress: { kind: "indeterminate" },
+      repositoryPath: "/repo/art",
+      windowLabel: "repo-1",
+    });
+    store.getState().setOperationProgress({
+      cancellable: false,
+      label: "Updating submodules",
+      operationId: "sync-1",
+      progress: { kind: "indeterminate" },
+      repositoryPath: "/repo/art",
+      windowLabel: "repo-1",
+    });
+
+    expect(store.getState().operationsById["sync-1"]).toMatchObject({
+      cancellable: true,
+      label: "Updating submodules",
+    });
+  });
 });
 
 function WindowStoreProbe({ label }: { label: string }) {
