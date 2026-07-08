@@ -8,9 +8,9 @@
 schema_version = 1
 
 [meta]
-last_verified = "2026-07-08"
+last_verified = "2026-07-09"
 version_source_policy = "official release pages or official source mirrors only"
-notes = "Win32-OpenSSH currently has no modern stable GitHub release; GitHub API latest release metadata reports 10.0.0.0p2-Preview and it remains a rejected placeholder."
+notes = "Win32-OpenSSH currently has no modern stable GitHub release; GitHub API metadata scan reports 10.0.0.0p2-Preview as latest and zero stable OpenSSH-Win64.zip releases, so it remains a rejected placeholder."
 
 [versions]
 git = "2.55.0"
@@ -128,7 +128,7 @@ checksum.value = "23f50f3458c4c5d0b12217c6a5ddfde0137210a30fa870e98b29827f7b43ab
 checksum.source = "github-release-asset-digest"
 checksum.url = "https://github.com/PowerShell/Win32-OpenSSH/releases/tag/10.0.0.0p2-Preview"
 placeholder = true
-placeholder_reason = "Official latest release metadata reports 10.0.0.0p2-Preview, which is preview/non-production ready even though GitHub prerelease=false; no modern stable Win32-OpenSSH GitHub release was found on 2026-07-08."
+placeholder_reason = "Official release metadata scan reports 10.0.0.0p2-Preview as latest, with preview/non-production ready release notes even though GitHub prerelease=false; no stable OpenSSH-Win64.zip Win32-OpenSSH GitHub release was found on 2026-07-09."
 resources_path = "openssh/"
 
 [sources.macos.universal.git]

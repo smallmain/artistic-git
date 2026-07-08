@@ -74,9 +74,10 @@ Git 仓库。当前版本钉死、CI artifact/cache 策略与构建限制见
 - 与 Ubuntu 22.04 WebKitGTK 4.1 运行栈兼容的 Linux 发行版（`.AppImage` 与
   `.deb`）
 
-正式发布必须签名；macOS 正式发布还必须完成 notarization。对于未签名的开发产物，
-macOS 请先移动到 `/Applications`，再右键选择「打开」并确认一次；Windows
-SmartScreen 可能需要选择「更多信息」→「仍要运行」。
+updater 产物使用 Tauri updater 密钥签名。初始 `0.1.x` 发布线不要求 Apple
+notarization 或 Windows OS 级代码签名；这些证书作为后续发布硬化工作跟进。macOS
+请先移动到 `/Applications`，再右键选择「打开」并确认一次；Windows SmartScreen
+可能需要选择「更多信息」→「仍要运行」。
 
 release workflow 会在 `main` push 与 `workflow_dispatch` 运行，但只有在
 `ENABLE_MAIN_RELEASE=true` 且 GitHub `release` Environment 放行时才发布。闸门未

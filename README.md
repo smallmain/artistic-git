@@ -82,10 +82,11 @@ Minimum supported release targets:
 - Linux distributions compatible with the Ubuntu 22.04 WebKitGTK 4.1 stack
   (`.AppImage` and `.deb`)
 
-Official releases must be signed and, on macOS, notarized. For unsigned
-development artifacts, move the macOS app to `/Applications` and use
-right-click → Open once to approve it in Gatekeeper. On Windows, SmartScreen may
-require More info → Run anyway for unsigned CI artifacts.
+Updater artifacts are signed with the Tauri updater key. The initial `0.1.x`
+release line does not require Apple notarization or OS-level Windows code
+signing; those certificates are tracked as future release-hardening work. Move
+the macOS app to `/Applications` and use right-click → Open once to approve it
+in Gatekeeper. On Windows, SmartScreen may require More info → Run anyway.
 
 The release workflow runs on `main` pushes and `workflow_dispatch`, but it
 publishes only when `ENABLE_MAIN_RELEASE=true` and the `release` GitHub

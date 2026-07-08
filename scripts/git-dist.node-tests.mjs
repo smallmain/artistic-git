@@ -476,6 +476,93 @@ test("Win32-OpenSSH release gate treats Preview tags as non-stable even when Git
   }
 });
 
+test("Win32-OpenSSH release gate treats non-production release notes as non-stable", async () => {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-git-dist-"));
+  try {
+    const metadataPath = path.join(tmpDir, "openssh-releases.json");
+    await writeFile(
+      metadataPath,
+      JSON.stringify([
+        {
+          tag_name: "v10.0.0.0p2",
+          name: "v10.0.0.0p2",
+          body: "This is a preview-release (non-production ready).",
+          draft: false,
+          prerelease: false,
+          published_at: "2025-10-27T18:58:57Z",
+          assets: [{ name: "OpenSSH-Win64.zip" }],
+        },
+      ]),
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        opensshReleaseCheckPath,
+        "--expect-no-stable-release",
+        `--metadata=${metadataPath}`,
+      ],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+      },
+    );
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /latest release remains non-stable/);
+    assert.match(result.stdout, /preview release notes/);
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("Win32-OpenSSH release gate scans all non-draft releases for stable Win64 assets", async () => {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-git-dist-"));
+  try {
+    const metadataPath = path.join(tmpDir, "openssh-releases.json");
+    await writeFile(
+      metadataPath,
+      JSON.stringify([
+        {
+          tag_name: "10.0.0.0p2-Preview",
+          name: "10.0.0.0p2-Preview",
+          draft: false,
+          prerelease: false,
+          published_at: "2026-07-08T00:00:00Z",
+          assets: [{ name: "OpenSSH-Win64.zip" }],
+        },
+        {
+          tag_name: "v9.9.0.0p1",
+          name: "v9.9.0.0p1",
+          draft: false,
+          prerelease: false,
+          published_at: "2025-01-01T00:00:00Z",
+          assets: [{ name: "OpenSSH-Win64.zip" }],
+        },
+      ]),
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        opensshReleaseCheckPath,
+        "--expect-no-stable-release",
+        `--metadata=${metadataPath}`,
+      ],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+      },
+    );
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /found stable Win32-OpenSSH release/);
+    assert.match(result.stderr, /v9\.9\.0\.0p1/);
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test("Win32-OpenSSH release gate fails when the latest release is stable", async () => {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-git-dist-"));
   try {
@@ -516,7 +603,7 @@ test("Win32-OpenSSH release gate fails when the latest release is stable", async
     );
 
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /latest Win32-OpenSSH release appears stable/);
+    assert.match(result.stderr, /found stable Win32-OpenSSH release/);
     assert.match(result.stderr, /Update git-dist.toml/);
   } finally {
     await rm(tmpDir, { recursive: true, force: true });
@@ -580,6 +667,8 @@ test("readiness report marks Windows blocked without blocking macOS and Linux", 
     );
     assert.equal(report.opensshRelease.status, "non-stable");
     assert.equal(report.opensshRelease.latest.hasRequiredAsset, true);
+    assert.equal(report.opensshRelease.scan.checkedReleaseCount, 1);
+    assert.equal(report.opensshRelease.scan.stableWithRequiredAssetCount, 0);
   } finally {
     await rm(tmpDir, { recursive: true, force: true });
   }

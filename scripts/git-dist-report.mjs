@@ -15,6 +15,8 @@ import {
 
 const defaultRepo = "PowerShell/Win32-OpenSSH";
 const defaultAsset = "OpenSSH-Win64.zip";
+const releasesPerPage = 100;
+const maxReleasePages = 10;
 const args = parseArgs(process.argv.slice(2));
 
 const usage = `Usage:
@@ -354,7 +356,7 @@ function sourceCacheValidation(sourceCacheHit, distCacheHit, targetName) {
 }
 
 function assembledCacheValidation(distCacheHit, targetName) {
-  const command = `node scripts/check-git-dist.mjs --target="${targetName}" --no-exec`;
+  const command = `node scripts/check-git-dist.mjs --target="${targetName}"`;
   if (distCacheHit === true) {
     return {
       status: "passed",
@@ -454,10 +456,16 @@ async function openSshReleaseReadiness() {
   }
 
   const stability = classifyRelease(latest, args.asset);
+  const releaseScan = scanReleases(releases, args.asset);
+  const stableWithRequiredAssetCount =
+    releaseScan.stableWithRequiredAsset.length;
   return {
     repo: args.repo,
     requiredAsset: args.asset,
-    status: stability.stable ? "stable-release-available" : "non-stable",
+    status:
+      stability.stable || stableWithRequiredAssetCount > 0
+        ? "stable-release-available"
+        : "non-stable",
     latest: {
       tagName: latest.tag_name ?? null,
       name: latest.name ?? null,
@@ -465,6 +473,19 @@ async function openSshReleaseReadiness() {
       prerelease: latest.prerelease === true,
       draft: latest.draft === true,
       hasRequiredAsset: stability.hasRequiredAsset,
+    },
+    scan: {
+      checkedReleaseCount: releaseScan.checkedReleaseCount,
+      stableWithRequiredAssetCount,
+      stableWithRequiredAsset: releaseScan.stableWithRequiredAsset.map(
+        (entry) => ({
+          tagName: entry.release.tag_name ?? null,
+          name: entry.release.name ?? null,
+          publishedAt: entry.release.published_at ?? null,
+          hasRequiredAsset: entry.stability.hasRequiredAsset,
+          reason: entry.stability.reason,
+        }),
+      ),
     },
     reason: stability.reason,
   };
@@ -481,25 +502,33 @@ async function loadReleaseMetadata() {
     return parsed;
   }
 
-  const url = new URL(`https://api.github.com/repos/${args.repo}/releases`);
-  url.searchParams.set("per_page", "20");
-  const response = await fetch(url, {
-    headers: {
-      Accept: "application/vnd.github+json",
-      "User-Agent": "artistic-git-dist-readiness-report",
-    },
-    signal: AbortSignal.timeout(args.timeoutMs),
-  });
+  const releases = [];
+  for (let page = 1; page <= maxReleasePages; page += 1) {
+    const url = new URL(`https://api.github.com/repos/${args.repo}/releases`);
+    url.searchParams.set("per_page", String(releasesPerPage));
+    url.searchParams.set("page", String(page));
+    const response = await fetch(url, {
+      headers: {
+        Accept: "application/vnd.github+json",
+        "User-Agent": "artistic-git-dist-readiness-report",
+      },
+      signal: AbortSignal.timeout(args.timeoutMs),
+    });
 
-  if (!response.ok) {
-    fail(
-      `GitHub releases API returned HTTP ${response.status} ${response.statusText}`,
-    );
-  }
+    if (!response.ok) {
+      fail(
+        `GitHub releases API returned HTTP ${response.status} ${response.statusText}`,
+      );
+    }
 
-  const releases = await response.json();
-  if (!Array.isArray(releases)) {
-    fail("GitHub releases API response was not an array");
+    const pageReleases = await response.json();
+    if (!Array.isArray(pageReleases)) {
+      fail("GitHub releases API response was not an array");
+    }
+    releases.push(...pageReleases);
+    if (pageReleases.length < releasesPerPage) {
+      break;
+    }
   }
   return releases;
 }
@@ -514,6 +543,27 @@ function latestPublishedRelease(releases) {
     )[0];
 }
 
+function scanReleases(releases, requiredAssetName) {
+  const checked = releases
+    .filter((release) => release && release.draft !== true)
+    .sort((left, right) =>
+      String(right.published_at ?? "").localeCompare(
+        String(left.published_at ?? ""),
+      ),
+    )
+    .map((release) => ({
+      release,
+      stability: classifyRelease(release, requiredAssetName),
+    }));
+
+  return {
+    checkedReleaseCount: checked.length,
+    stableWithRequiredAsset: checked.filter(
+      (entry) => entry.stability.stable && entry.stability.hasRequiredAsset,
+    ),
+  };
+}
+
 function classifyRelease(release, requiredAssetName) {
   if (release.prerelease === true) {
     return {
@@ -524,11 +574,29 @@ function classifyRelease(release, requiredAssetName) {
   }
 
   const label = `${release.tag_name ?? ""} ${release.name ?? ""}`;
+  const body = String(release.body ?? "");
   const channel = label.match(/\b(preview|beta|rc|alpha)\b/i)?.[1];
   if (channel) {
     return {
       stable: false,
       reason: `${channel.toLowerCase()} label`,
+      hasRequiredAsset: hasAsset(release, requiredAssetName),
+    };
+  }
+
+  const bodyChannel = body.match(/\b(preview|beta|rc|alpha)\b/i)?.[1];
+  if (bodyChannel) {
+    return {
+      stable: false,
+      reason: `${bodyChannel.toLowerCase()} release notes`,
+      hasRequiredAsset: hasAsset(release, requiredAssetName),
+    };
+  }
+
+  if (/\bnon[- ]production ready\b/i.test(body)) {
+    return {
+      stable: false,
+      reason: "release notes say non-production ready",
       hasRequiredAsset: hasAsset(release, requiredAssetName),
     };
   }
@@ -578,6 +646,10 @@ function renderMarkdown(report) {
         `Published: ${latest.publishedAt ?? "unknown"}`,
         "",
         `Reason: ${report.opensshRelease.reason}`,
+        "",
+        `Non-draft releases scanned: ${report.opensshRelease.scan?.checkedReleaseCount ?? "unknown"}`,
+        "",
+        `Stable releases with ${report.opensshRelease.requiredAsset}: ${report.opensshRelease.scan?.stableWithRequiredAssetCount ?? "unknown"}`,
         "",
         `Required asset present: ${latest.hasRequiredAsset ? "yes" : "no"}`,
       );

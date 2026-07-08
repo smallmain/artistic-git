@@ -257,7 +257,9 @@ modes:
 
 - `contract` validates config, source layout, SHA-256 fields, placeholder
   rejection, Win32-OpenSSH release metadata, and Tauri bundle resource mapping
-  without downloading binaries.
+  without downloading binaries. The Win32-OpenSSH gate pages through release
+  metadata and rejects Preview/Beta/RC/Alpha labels or release notes, including
+  notes that say non-production ready.
 - `build` runs a target matrix and prepares reusable git-dist artifacts.
 
 Build mode uses this policy:
@@ -288,9 +290,9 @@ Build mode uses this policy:
   scripts, lockfiles, and a manual `GIT_DIST_CACHE_VERSION`.
 - assembled distribution cache key includes target, `git-dist.toml`, fetch/check
   scripts, helper crate sources, lockfiles, and `GIT_DIST_CACHE_VERSION`.
-- cache hit still runs `scripts/check-git-dist.mjs --no-exec` against the
-  restored `ARTISTIC_GIT_DIST_DIR`, and the build evidence records that command
-  as the cache-hit validation gate.
+- cache hit still runs `scripts/check-git-dist.mjs --target=<target>` against
+  the restored `ARTISTIC_GIT_DIST_DIR`, including runtime smoke checks, and the
+  build evidence records that command as the cache-hit validation gate.
 - cache miss builds the helper binaries, then runs
   `scripts/fetch-git-dist.mjs --target=<target>` with explicit output,
   source-cache, and staging directories.
@@ -318,8 +320,9 @@ must be `true` before a downstream job consumes
 
 Current limitation: Windows build mode intentionally skips artifact generation
 while the Win32-OpenSSH entry remains `placeholder = true` / `stable = false`.
-macOS and Linux now have executable source-build plumbing, but the phase 1A
-checkbox should remain open until CI has produced and validated real artifacts.
+macOS and Linux have produced and validated reusable artifacts; the phase 1A
+Windows and all-platform checkboxes stay open until a stable Win32-OpenSSH pin
+allows `artistic-git-dist-windows-x86_64` to be built.
 
 Downstream jobs should consume an artifact like this:
 
@@ -328,7 +331,7 @@ Downstream jobs should consume an artifact like this:
   with:
     name: artistic-git-dist-linux-x86_64
     path: src-tauri/resources/git-dist
-- run: node scripts/check-git-dist.mjs --target=linux-x86_64 --no-exec
+- run: node scripts/check-git-dist.mjs --target=linux-x86_64
   env:
     ARTISTIC_GIT_DIST_DIR: src-tauri/resources/git-dist
 ```
