@@ -11,7 +11,7 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
-    sync::{Arc, Mutex},
+    sync::{mpsc, Arc, Mutex},
     thread,
     time::Duration,
 };
@@ -19,6 +19,7 @@ use std::{
 static INVOCATION_COUNTER: AtomicU64 = AtomicU64::new(1);
 static OPERATION_COUNTER: AtomicU64 = AtomicU64::new(1);
 const AUTH_IPC_IO_TIMEOUT: Duration = Duration::from_secs(30);
+const AUTH_IPC_SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InteractionMode {
@@ -674,10 +675,23 @@ impl AuthIpcServiceHandle {
 
     pub fn shutdown(&self) {
         self.shutdown.store(true, Ordering::Release);
-        let _ = wake_listener(&self.endpoint);
+        let wake_error = wake_listener(&self.endpoint).err();
         if let Ok(mut thread) = self.thread.lock() {
             if let Some(thread) = thread.take() {
-                let _ = thread.join();
+                let (done_tx, done_rx) = mpsc::channel();
+                std::thread::spawn(move || {
+                    let _ = thread.join();
+                    let _ = done_tx.send(());
+                });
+                if done_rx
+                    .recv_timeout(AUTH_IPC_SHUTDOWN_JOIN_TIMEOUT)
+                    .is_err()
+                {
+                    tracing::warn!(
+                        wake_error = ?wake_error,
+                        "auth IPC listener did not stop before shutdown timeout"
+                    );
+                }
             }
         }
     }
