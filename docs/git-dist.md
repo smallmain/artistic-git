@@ -8,7 +8,7 @@ failure.
 
 ## Pinned Versions
 
-The current pins were verified from official sources on 2026-07-07:
+The current pins were verified from official sources on 2026-07-08:
 
 | Component              | Version              | Official URL                                                                  | Status      |
 | ---------------------- | -------------------- | ----------------------------------------------------------------------------- | ----------- |
@@ -22,6 +22,9 @@ pin. The latest official package is explicitly marked preview/non-production
 ready, so it is recorded in `git-dist.toml` with its real SHA-256 but remains
 `placeholder = true` and `stable = false`. Real build mode rejects it until a
 stable source is selected or a separate risk exception is documented.
+`scripts/check-git-dist-openssh-release.mjs` checks GitHub release metadata and
+treats `Preview`, `Beta`, `RC`, or `Alpha` in the tag/name as non-stable even
+when GitHub reports `prerelease=false`.
 
 ## Configuration
 
@@ -60,6 +63,19 @@ pnpm git-dist:check:real
 It succeeds only when real build mode rejects the documented placeholder. Once
 all pins are release-ready, this command will fail and tell the caller to
 remove the expected-placeholder mode.
+
+The Win32-OpenSSH release metadata gate is separate so the placeholder decision
+is regularly rechecked against GitHub API data:
+
+```sh
+node scripts/check-git-dist-openssh-release.mjs --expect-no-stable-release
+```
+
+It passes only while the latest non-draft release is still marked by channel
+text such as `Preview`. If the latest release becomes stable, it fails with the
+required next steps: update `git-dist.toml`, remove the placeholder gate, and
+run real artifact validation before checking Windows or three-platform 1A
+items.
 
 ## Fetch Pipeline
 
@@ -228,7 +244,8 @@ that touch the git-dist pipeline. Manual `workflow_dispatch` runs expose two
 modes:
 
 - `contract` validates config, source layout, SHA-256 fields, placeholder
-  rejection, and Tauri bundle resource mapping without downloading binaries.
+  rejection, Win32-OpenSSH release metadata, and Tauri bundle resource mapping
+  without downloading binaries.
 - `build` runs a target matrix and prepares reusable git-dist artifacts.
 
 Build mode uses this policy:

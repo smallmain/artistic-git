@@ -61,6 +61,7 @@ const allowedUrlPatterns = [
   /^https:\/\/github\.com\/git-lfs\/git-lfs\/releases\/download\/[^/]+\/[^"'`\s)]+$/,
   /^https:\/\/github\.com\/PowerShell\/Win32-OpenSSH\/releases\/tag\/[^/]+$/,
   /^https:\/\/github\.com\/PowerShell\/Win32-OpenSSH\/releases\/download\/[^/]+\/[^"'`\s)]+$/,
+  /^https:\/\/api\.github\.com\/repos\/\$\{args\.repo\}\/releases$/,
   /^https:\/\/github\.com\/studio\/[^"'`\s)]+$/,
   /^git@github\.com:studio\/[^"'`\s)]+$/,
   /^https:\/\/www\.kernel\.org\/pub\/software\/scm\/git\/[^"'`\s)]+$/,
@@ -88,7 +89,10 @@ const analyticsTerms = [
   "sentry",
 ];
 
-const allowedFetchFiles = new Set(["scripts/fetch-git-dist.mjs"]);
+const allowedFetchFiles = new Set([
+  "scripts/fetch-git-dist.mjs",
+  "scripts/check-git-dist-openssh-release.mjs",
+]);
 
 const urlPattern = /\b(?:https?:\/\/|git@github\.com:)[^"'`\s<>)]+/g;
 

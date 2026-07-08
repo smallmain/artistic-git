@@ -33,6 +33,11 @@ const workflowPath = path.join(
   "workflows",
   "git-dist.yml",
 );
+const opensshReleaseCheckPath = path.join(
+  repoRoot,
+  "scripts",
+  "check-git-dist-openssh-release.mjs",
+);
 
 async function loadConfig() {
   const { data } = await loadGitDistConfig(configPath);
@@ -336,9 +341,100 @@ test("real Windows fetch still rejects the Win32-OpenSSH placeholder before down
   }
 });
 
+test("Win32-OpenSSH release gate treats Preview tags as non-stable even when GitHub prerelease is false", async () => {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-git-dist-"));
+  try {
+    const metadataPath = path.join(tmpDir, "openssh-releases.json");
+    await writeFile(
+      metadataPath,
+      JSON.stringify([
+        {
+          tag_name: "10.0.0.0p2-Preview",
+          name: "10.0.0.0p2-Preview",
+          draft: false,
+          prerelease: false,
+          published_at: "2025-10-27T18:58:57Z",
+          assets: [{ name: "OpenSSH-Win64.zip" }],
+        },
+      ]),
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        opensshReleaseCheckPath,
+        "--expect-no-stable-release",
+        `--metadata=${metadataPath}`,
+      ],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+      },
+    );
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /latest release remains non-stable/);
+    assert.match(result.stdout, /preview label/);
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("Win32-OpenSSH release gate fails when the latest release is stable", async () => {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-git-dist-"));
+  try {
+    const metadataPath = path.join(tmpDir, "openssh-releases.json");
+    await writeFile(
+      metadataPath,
+      JSON.stringify([
+        {
+          tag_name: "v10.1.0.0p1",
+          name: "v10.1.0.0p1",
+          draft: false,
+          prerelease: false,
+          published_at: "2026-07-08T00:00:00Z",
+          assets: [{ name: "OpenSSH-Win64.zip" }],
+        },
+        {
+          tag_name: "10.0.0.0p2-Preview",
+          name: "10.0.0.0p2-Preview",
+          draft: false,
+          prerelease: false,
+          published_at: "2025-10-27T18:58:57Z",
+          assets: [{ name: "OpenSSH-Win64.zip" }],
+        },
+      ]),
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        opensshReleaseCheckPath,
+        "--expect-no-stable-release",
+        `--metadata=${metadataPath}`,
+      ],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+      },
+    );
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /latest Win32-OpenSSH release appears stable/);
+    assert.match(result.stderr, /Update git-dist.toml/);
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test("workflow validates restored assembled cache hits before reuse", async () => {
   const workflow = await readFile(workflowPath, "utf8");
   assert.match(workflow, /id: dist-cache/);
+  assert.match(workflow, /Check Win32-OpenSSH release gate/);
+  assert.match(
+    workflow,
+    /node scripts\/check-git-dist-openssh-release\.mjs --expect-no-stable-release/,
+  );
   assert.match(
     workflow,
     /Validate target real-build policy[\s\S]+node scripts\/check-git-dist\.mjs --schema-only --real-build --target="\$\{\{ matrix\.target \}\}"/,

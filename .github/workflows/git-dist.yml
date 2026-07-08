@@ -8,6 +8,7 @@ on:
       - "scripts/git-dist.node-tests.mjs"
       - "scripts/git-dist-lib.mjs"
       - "scripts/check-git-dist.mjs"
+      - "scripts/check-git-dist-openssh-release.mjs"
       - "scripts/check-tauri-bundle-resources.mjs"
       - "docs/git-dist.md"
       - "src-tauri/resources/git-dist/**"
@@ -59,6 +60,9 @@ jobs:
         run: |
           set -euo pipefail
           node scripts/check-git-dist.mjs --schema-only --real-build --expect-placeholder-rejection
+
+      - name: Check Win32-OpenSSH release gate
+        run: node scripts/check-git-dist-openssh-release.mjs --expect-no-stable-release
 
       - name: Validate bundle resource mapping
         run: node scripts/check-tauri-bundle-resources.mjs
