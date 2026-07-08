@@ -432,6 +432,8 @@ test("release workflow checks staged and packaged git-dist resources", () => {
 test("CI and git-dist workflows cover release and report contract checks", () => {
   assert.ok(ciWorkflow.includes("run: pnpm release:check"));
   assert.ok(ciWorkflow.includes("if: runner.os == 'Linux'"));
+  assert.ok(ciWorkflow.includes("node scripts/readiness-summary.mjs"));
+  assert.ok(ciWorkflow.includes("name: readiness-summary"));
   assert.ok(gitDistWorkflow.includes('"scripts/git-dist-report.mjs"'));
 });
 

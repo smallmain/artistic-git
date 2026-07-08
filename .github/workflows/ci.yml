@@ -636,11 +636,27 @@ jobs:
             --artifacts-dir="${{ runner.temp }}/phase12-evidence-input" \
             --report-dir="${{ runner.temp }}/phase12-evidence-summary"
 
+      - name: Generate readiness summary
+        run: |
+          node scripts/readiness-summary.mjs \
+            --artifacts-dir="${{ runner.temp }}/phase12-evidence-input" \
+            --artifacts-dir="${{ runner.temp }}/phase12-evidence-summary" \
+            --report-dir="${{ runner.temp }}/readiness-summary"
+
       - name: Upload phase 12 evidence summary
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: phase12-evidence-summary
           path: ${{ runner.temp }}/phase12-evidence-summary/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload readiness summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: readiness-summary
+          path: ${{ runner.temp }}/readiness-summary/
           if-no-files-found: warn
           retention-days: 14
