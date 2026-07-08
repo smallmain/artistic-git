@@ -465,8 +465,22 @@ impl RepositoryBackend {
         request: artistic_git_contracts::StartReviewModeRequest,
     ) -> AppResult<artistic_git_contracts::StartReviewModeResponse> {
         let operation_id = request.operation_id.clone();
-        self.run_cancellable_operation(operation_id, "startReviewMode", || {
-            crate::start_review_mode_with_config(&self.runner, self.config.as_ref(), request)
+        let cancellable_operation_id = operation_id.clone();
+        let repository_path = Some(PathBuf::from(request.repository_path.clone()));
+        self.run_cancellable_operation(cancellable_operation_id, "startReviewMode", || {
+            crate::git_ops::with_auth_runtime_for_operation(
+                self.auth_runtime.as_ref(),
+                crate::auth_ipc::InteractionPolicy::interactive(),
+                operation_id,
+                repository_path,
+                || {
+                    crate::start_review_mode_with_config(
+                        &self.runner,
+                        self.config.as_ref(),
+                        request,
+                    )
+                },
+            )
         })
     }
 
@@ -474,14 +488,28 @@ impl RepositoryBackend {
         &self,
         request: artistic_git_contracts::ReviewModeRequest,
     ) -> AppResult<artistic_git_contracts::SyncReviewModeResponse> {
-        crate::sync_review_mode_with_lock(&self.runner, request)
+        let operation_id = request.operation_id.clone();
+        let cancellable_operation_id = operation_id.clone();
+        let repository_path = Some(PathBuf::from(request.repository_path.clone()));
+        self.run_cancellable_operation(cancellable_operation_id, "syncReviewMode", || {
+            crate::git_ops::with_auth_runtime_for_operation(
+                self.auth_runtime.as_ref(),
+                crate::auth_ipc::InteractionPolicy::interactive(),
+                operation_id,
+                repository_path,
+                || crate::sync_review_mode_with_lock(&self.runner, request),
+            )
+        })
     }
 
     pub fn exit_review_mode(
         &self,
         request: artistic_git_contracts::ReviewModeRequest,
     ) -> AppResult<artistic_git_contracts::ExitReviewModeResponse> {
-        crate::exit_review_mode_with_config(&self.runner, self.config.as_ref(), request)
+        let operation_id = request.operation_id.clone();
+        self.run_cancellable_operation(operation_id, "exitReviewMode", || {
+            crate::exit_review_mode_with_config(&self.runner, self.config.as_ref(), request)
+        })
     }
 
     pub fn review_mode_recovery(
@@ -495,7 +523,14 @@ impl RepositoryBackend {
         &self,
         request: artistic_git_contracts::ReviewModeRecoveryRequest,
     ) -> AppResult<artistic_git_contracts::ExitReviewModeResponse> {
-        crate::recover_review_mode_stash_with_config(&self.runner, self.config.as_ref(), request)
+        let operation_id = request.operation_id.clone();
+        self.run_cancellable_operation(operation_id, "recoverReviewModeStash", || {
+            crate::recover_review_mode_stash_with_config(
+                &self.runner,
+                self.config.as_ref(),
+                request,
+            )
+        })
     }
 
     pub fn dismiss_review_mode_recovery(
@@ -561,14 +596,27 @@ impl RepositoryBackend {
         &self,
         request: DeleteBranchRequest,
     ) -> AppResult<BranchOperationResponse> {
-        crate::branches::delete_branch(&self.runner, request)
+        let operation_id = request.operation_id.clone();
+        let repository_path = Some(PathBuf::from(request.repository_path.clone()));
+        self.run_cancellable_operation(operation_id.clone(), "deleteBranch", || {
+            crate::git_ops::with_auth_runtime_for_operation(
+                self.auth_runtime.as_ref(),
+                crate::auth_ipc::InteractionPolicy::interactive(),
+                operation_id,
+                repository_path,
+                || crate::branches::delete_branch(&self.runner, request),
+            )
+        })
     }
 
     pub fn delete_safety_backup(
         &self,
         request: DeleteSafetyBackupRequest,
     ) -> AppResult<DeleteSafetyBackupResponse> {
-        crate::delete_safety_backup_with_lock(&self.runner, request)
+        let operation_id = request.operation_id.clone();
+        self.run_cancellable_operation(operation_id, "deleteSafetyBackup", || {
+            crate::delete_safety_backup_with_lock(&self.runner, request)
+        })
     }
 
     pub fn list_local_changes(
@@ -590,14 +638,20 @@ impl RepositoryBackend {
     }
 
     pub fn create_stash(&self, request: CreateStashRequest) -> AppResult<CreateStashResponse> {
-        crate::stash::create_stash(&self.runner, request)
+        let operation_id = request.operation_id.clone();
+        self.run_cancellable_operation(operation_id, "createStash", || {
+            crate::stash::create_stash(&self.runner, request)
+        })
     }
 
     pub fn create_auto_stash(
         &self,
         request: CreateAutoStashRequest,
     ) -> AppResult<CreateStashResponse> {
-        crate::stash::create_auto_stash(&self.runner, request)
+        let operation_id = request.operation_id.clone();
+        self.run_cancellable_operation(operation_id, "createAutoStash", || {
+            crate::stash::create_auto_stash(&self.runner, request)
+        })
     }
 
     pub fn stash_details(&self, request: StashDetailsRequest) -> AppResult<StashDetailsResponse> {
@@ -605,7 +659,10 @@ impl RepositoryBackend {
     }
 
     pub fn restore_stash(&self, request: RestoreStashRequest) -> AppResult<RestoreStashResponse> {
-        crate::stash::restore_stash(&self.runner, request)
+        let operation_id = request.operation_id.clone();
+        self.run_cancellable_operation(operation_id, "restoreStash", || {
+            crate::stash::restore_stash(&self.runner, request)
+        })
     }
 
     pub fn cancel_stash_restore(
@@ -616,7 +673,10 @@ impl RepositoryBackend {
     }
 
     pub fn delete_stash(&self, request: DeleteStashRequest) -> AppResult<DeleteStashResponse> {
-        crate::stash::delete_stash(&self.runner, request)
+        let operation_id = request.operation_id.clone();
+        self.run_cancellable_operation(operation_id, "deleteStash", || {
+            crate::stash::delete_stash(&self.runner, request)
+        })
     }
 
     pub fn log_page(&self, request: LogPageRequest) -> AppResult<LogPageResponse> {
@@ -631,7 +691,18 @@ impl RepositoryBackend {
         &self,
         request: artistic_git_contracts::CommitRequest,
     ) -> AppResult<artistic_git_contracts::CommitResponse> {
-        crate::commit_changes(&self.runner, request)
+        let operation_id = request.operation_id.clone();
+        let cancellable_operation_id = operation_id.clone();
+        let repository_path = Some(PathBuf::from(request.repository_path.clone()));
+        self.run_cancellable_operation(cancellable_operation_id, "commitChanges", || {
+            crate::git_ops::with_auth_runtime_for_operation(
+                self.auth_runtime.as_ref(),
+                crate::auth_ipc::InteractionPolicy::interactive(),
+                operation_id,
+                repository_path,
+                || crate::commit_changes(&self.runner, request),
+            )
+        })
     }
 
     pub fn restore_changes(
@@ -645,7 +716,18 @@ impl RepositoryBackend {
         &self,
         request: artistic_git_contracts::RevertCommitRequest,
     ) -> AppResult<artistic_git_contracts::RevertCommitResponse> {
-        crate::revert_commit(&self.runner, request)
+        let operation_id = request.operation_id.clone();
+        let cancellable_operation_id = operation_id.clone();
+        let repository_path = Some(PathBuf::from(request.repository_path.clone()));
+        self.run_cancellable_operation(cancellable_operation_id, "revertCommit", || {
+            crate::git_ops::with_auth_runtime_for_operation(
+                self.auth_runtime.as_ref(),
+                crate::auth_ipc::InteractionPolicy::interactive(),
+                operation_id,
+                repository_path,
+                || crate::revert_commit(&self.runner, request),
+            )
+        })
     }
 
     pub fn abort_revert(
@@ -3948,6 +4030,108 @@ mod tests {
         );
     }
 
+    #[test]
+    fn cancel_commit_operation_kills_git_child_and_restores_index_state() {
+        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
+            return;
+        };
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        let original_head = repo.git_output(["rev-parse", "HEAD"]).trim().to_owned();
+        let marker = repo.path.join(".git").join("ag-commit-hook-started");
+        install_sleeping_pre_commit_hook(&repo.path, &marker);
+        repo.write("tracked.txt", "two\n");
+
+        let backend = RepositoryBackend::new(runner.clone(), None);
+        let thread_backend = backend.clone();
+        let operation_id = OperationId::new("commit-cancel-test");
+        let thread_operation_id = operation_id.clone();
+        let repository_path = display_path(&repo.path);
+        let handle = thread::spawn(move || {
+            thread_backend.commit_changes(artistic_git_contracts::CommitRequest {
+                repository_path,
+                paths: vec!["tracked.txt".to_owned()],
+                message: "cancelled commit".to_owned(),
+                large_file_threshold_mb: None,
+                large_file_decision: artistic_git_contracts::LargeFileDecision::Prompt,
+                disable_repository_gpgsign: false,
+                push_immediately: false,
+                operation_id: Some(thread_operation_id),
+            })
+        });
+
+        wait_for_path(&marker);
+        let cancel = backend
+            .cancel_operation(CancelOperationRequest { operation_id })
+            .expect("cancel commit operation");
+        assert!(cancel.cancelled);
+        let error = handle
+            .join()
+            .expect("commit thread")
+            .expect_err("commit should be cancelled");
+
+        assert_eq!(error.summary, "operation cancelled");
+        assert_eq!(repo.git_output(["rev-parse", "HEAD"]).trim(), original_head);
+        assert_eq!(
+            repo.git_output(["status", "--short"]).trim(),
+            "M tracked.txt"
+        );
+        assert_eq!(repo.read("tracked.txt"), "two\n");
+    }
+
+    #[test]
+    fn cancel_revert_operation_kills_git_child_and_restores_auto_stash() {
+        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
+            return;
+        };
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        repo.write("tracked.txt", "target\n");
+        repo.git(["add", "."]);
+        repo.git(["commit", "-m", "target line"]);
+        let target = repo.git_output(["rev-parse", "HEAD"]).trim().to_owned();
+        repo.write("tracked.txt", "later\n");
+        repo.git(["add", "."]);
+        repo.git(["commit", "-m", "later line"]);
+        let original_head = repo.git_output(["rev-parse", "HEAD"]).trim().to_owned();
+        repo.write("draft.txt", "local draft\n");
+        let marker = repo.path.join(".git").join("ag-revert-hook-started");
+        install_sleeping_pre_commit_hook(&repo.path, &marker);
+
+        let backend = RepositoryBackend::new(runner.clone(), None);
+        let thread_backend = backend.clone();
+        let operation_id = OperationId::new("revert-cancel-test");
+        let thread_operation_id = operation_id.clone();
+        let repository_path = display_path(&repo.path);
+        let handle = thread::spawn(move || {
+            thread_backend.revert_commit(artistic_git_contracts::RevertCommitRequest {
+                repository_path,
+                oid: target,
+                push_after_revert: false,
+                operation_id: Some(thread_operation_id),
+            })
+        });
+
+        wait_for_path(&marker);
+        let cancel = backend
+            .cancel_operation(CancelOperationRequest { operation_id })
+            .expect("cancel revert operation");
+        assert!(cancel.cancelled);
+        let error = handle
+            .join()
+            .expect("revert thread")
+            .expect_err("revert should be cancelled");
+
+        assert_eq!(error.summary, "operation cancelled");
+        assert_eq!(repo.git_output(["rev-parse", "HEAD"]).trim(), original_head);
+        assert_eq!(repo.read("tracked.txt"), "later\n");
+        assert_eq!(repo.read("draft.txt"), "local draft\n");
+        assert!(repo
+            .git_output(["status", "--porcelain"])
+            .contains("?? draft.txt"));
+        assert!(!repo.path.join(".git").join("REVERT_HEAD").exists());
+    }
+
     fn fake_runner() -> (GitRunner, TestTempDir) {
         let temp = TestTempDir::new("ag-repository-cancel").expect("temp");
         let manifest = git_dist_manifest_fixture();
@@ -5055,6 +5239,10 @@ size 16\n"
             file.write_all(content.as_bytes()).expect("write file");
         }
 
+        fn read(&self, relative: &str) -> String {
+            fs::read_to_string(self.path.join(relative)).expect("read file")
+        }
+
         fn write_lfs_object(&self, oid: &str, contents: &[u8]) {
             let path = self
                 .path
@@ -5068,6 +5256,43 @@ size 16\n"
                 fs::create_dir_all(parent).expect("create lfs object dir");
             }
             fs::write(path, contents).expect("write lfs object");
+        }
+    }
+
+    fn install_sleeping_pre_commit_hook(repo: &Path, marker: &Path) {
+        let hook = repo.join(".git").join("hooks").join("pre-commit");
+        let script = format!(
+            "#!/bin/sh\nprintf started > {marker}\nsleep 30\n",
+            marker = shell_quote(marker),
+        );
+        fs::write(&hook, script).expect("write sleeping pre-commit hook");
+        make_executable(&hook);
+    }
+
+    fn wait_for_path(path: &Path) {
+        for _ in 0..100 {
+            if path.exists() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        panic!("timed out waiting for {}", path.display());
+    }
+
+    fn shell_quote(path: &Path) -> String {
+        let value = path.to_string_lossy();
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
+
+    fn make_executable(path: &Path) {
+        let _ = path;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mut permissions = fs::metadata(path).expect("hook metadata").permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(path, permissions).expect("mark hook executable");
         }
     }
 }

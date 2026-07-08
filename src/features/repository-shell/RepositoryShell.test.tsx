@@ -599,6 +599,7 @@ describe("RepositoryShell stash flow", () => {
     expect(commandMocks.createStash).toHaveBeenCalledWith(
       expect.objectContaining({
         includeUntracked: true,
+        operationId: expect.stringMatching(/^create-stash-/),
         paths: [],
         repositoryPath: "/repo/art",
       }),
@@ -620,6 +621,7 @@ describe("RepositoryShell stash flow", () => {
     expect(commandMocks.createStash).toHaveBeenCalledWith(
       expect.objectContaining({
         includeUntracked: true,
+        operationId: expect.stringMatching(/^create-stash-/),
         paths: ["src/app.ts"],
         repositoryPath: "/repo/art",
       }),
@@ -642,6 +644,7 @@ describe("RepositoryShell stash flow", () => {
     await waitFor(() => expect(commandMocks.restoreStash).toHaveBeenCalled());
     expect(commandMocks.restoreStash).toHaveBeenCalledWith({
       dropOnSuccess: false,
+      operationId: expect.stringMatching(/^restore-stash-/),
       operationName: null,
       repositoryPath: "/repo/art",
       selector: "stash@{0}",
@@ -674,6 +677,7 @@ describe("RepositoryShell stash flow", () => {
 
     await waitFor(() => expect(commandMocks.deleteStash).toHaveBeenCalled());
     expect(commandMocks.deleteStash).toHaveBeenCalledWith({
+      operationId: expect.stringMatching(/^delete-stash-/),
       repositoryPath: "/repo/art",
       selector: "stash@{0}",
     });
@@ -750,6 +754,7 @@ describe("RepositoryShell review mode", () => {
 
     await waitFor(() => expect(commandMocks.syncReviewMode).toHaveBeenCalled());
     expect(commandMocks.syncReviewMode).toHaveBeenCalledWith({
+      operationId: expect.stringMatching(/^review-sync-/),
       repositoryPath: "/repo/art",
     });
     expect(await screen.findByText("Remote sync")).toBeInTheDocument();
@@ -760,6 +765,7 @@ describe("RepositoryShell review mode", () => {
 
     await waitFor(() => expect(commandMocks.exitReviewMode).toHaveBeenCalled());
     expect(commandMocks.exitReviewMode).toHaveBeenCalledWith({
+      operationId: expect.stringMatching(/^review-exit-/),
       repositoryPath: "/repo/art",
     });
     await waitFor(() =>
@@ -818,6 +824,7 @@ describe("RepositoryShell review mode", () => {
 
     await waitFor(() =>
       expect(commandMocks.recoverReviewModeStash).toHaveBeenCalledWith({
+        operationId: expect.stringMatching(/^review-recover-/),
         repositoryPath: "/repo/art",
       }),
     );
@@ -1091,6 +1098,7 @@ describe("RepositoryShell close guard", () => {
     await waitFor(() =>
       expect(commandMocks.restoreStash).toHaveBeenCalledWith({
         dropOnSuccess: false,
+        operationId: expect.stringMatching(/^restore-stash-/),
         operationName: null,
         repositoryPath: "/repo/art",
         selector: "stash@{0}",
@@ -1129,6 +1137,7 @@ describe("RepositoryShell close guard", () => {
 
     await waitFor(() =>
       expect(commandMocks.exitReviewMode).toHaveBeenCalledWith({
+        operationId: expect.stringMatching(/^review-exit-/),
         repositoryPath: "/repo/art",
       }),
     );
@@ -1413,6 +1422,7 @@ describe("RepositoryShell branch flow", () => {
       branchName: "feature/lookdev",
       deleteRemote: false,
       forceRemoteOnly: false,
+      operationId: expect.stringMatching(/^delete-branch-/),
       repositoryPath: "/repo/art",
     });
   });
@@ -1434,6 +1444,7 @@ describe("RepositoryShell branch flow", () => {
       branchName: "feature/lookdev",
       deleteRemote: true,
       forceRemoteOnly: false,
+      operationId: expect.stringMatching(/^delete-branch-/),
       repositoryPath: "/repo/art",
     });
   });
@@ -1466,6 +1477,7 @@ describe("RepositoryShell branch flow", () => {
       branchName: "concept-pass",
       deleteRemote: true,
       forceRemoteOnly: true,
+      operationId: expect.stringMatching(/^delete-branch-/),
       repositoryPath: "/repo/art",
     });
   });
@@ -1810,6 +1822,7 @@ describe("RepositoryShell branch flow", () => {
     await waitFor(() =>
       expect(commandMocks.deleteSafetyBackup).toHaveBeenCalledWith({
         backupBranch: "backup/feature/lookdev-1760000000000",
+        operationId: expect.stringMatching(/^delete-safety-backup-/),
         repositoryPath: "/repo/art",
       }),
     );
@@ -1857,6 +1870,7 @@ describe("RepositoryShell commit flow", () => {
         largeFileDecision: "prompt",
         largeFileThresholdMb: null,
         message: "Update assets",
+        operationId: expect.stringMatching(/^commit-changes-/),
         paths: ["src/app.ts", "assets/texture.png"],
         pushImmediately: false,
         repositoryPath: "/repo/art",

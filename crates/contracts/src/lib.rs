@@ -412,6 +412,7 @@ pub struct SafetyBackupSummary {
 pub struct DeleteSafetyBackupRequest {
     pub repository_path: String,
     pub backup_branch: String,
+    pub operation_id: Option<OperationId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -432,12 +433,14 @@ pub struct StartReviewModeRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ReviewModeRequest {
     pub repository_path: String,
+    pub operation_id: Option<OperationId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewModeRecoveryRequest {
     pub repository_path: String,
+    pub operation_id: Option<OperationId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -964,6 +967,7 @@ pub struct DeleteBranchRequest {
     pub branch_name: String,
     pub delete_remote: bool,
     pub force_remote_only: bool,
+    pub operation_id: Option<OperationId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -1049,6 +1053,7 @@ pub struct CommitRequest {
     pub large_file_decision: LargeFileDecision,
     pub disable_repository_gpgsign: bool,
     pub push_immediately: bool,
+    pub operation_id: Option<OperationId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -1114,6 +1119,7 @@ pub struct RevertCommitRequest {
     pub repository_path: String,
     pub oid: String,
     pub push_after_revert: bool,
+    pub operation_id: Option<OperationId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -1258,6 +1264,7 @@ pub struct CreateStashRequest {
     pub message: String,
     pub include_untracked: bool,
     pub paths: Vec<String>,
+    pub operation_id: Option<OperationId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -1267,6 +1274,7 @@ pub struct CreateAutoStashRequest {
     pub reason: String,
     pub include_untracked: bool,
     pub paths: Vec<String>,
+    pub operation_id: Option<OperationId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -1282,6 +1290,7 @@ pub struct CreateStashResponse {
 pub struct DeleteStashRequest {
     pub repository_path: String,
     pub selector: String,
+    pub operation_id: Option<OperationId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -1323,6 +1332,7 @@ pub struct RestoreStashRequest {
     pub selector: String,
     pub drop_on_success: bool,
     pub operation_name: Option<String>,
+    pub operation_id: Option<OperationId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]

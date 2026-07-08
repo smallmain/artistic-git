@@ -185,6 +185,7 @@ export type CommitRequest = {
   largeFileDecision: LargeFileDecision;
   disableRepositoryGpgsign: boolean;
   pushImmediately: boolean;
+  operationId: OperationId | null;
 };
 
 export type CommitResponse =
@@ -353,6 +354,7 @@ export type CreateAutoStashRequest = {
   reason: string;
   includeUntracked: boolean;
   paths: string[];
+  operationId: OperationId | null;
 };
 
 export type CreateBranchRequest = {
@@ -370,6 +372,7 @@ export type CreateStashRequest = {
   message: string;
   includeUntracked: boolean;
   paths: string[];
+  operationId: OperationId | null;
 };
 
 export type CreateStashResponse = {
@@ -383,6 +386,7 @@ export type DeleteBranchRequest = {
   branchName: string;
   deleteRemote: boolean;
   forceRemoteOnly: boolean;
+  operationId: OperationId | null;
 };
 
 export type DeleteHttpsCredentialRequest = {
@@ -395,6 +399,7 @@ export type DeleteHttpsCredentialRequest = {
 export type DeleteSafetyBackupRequest = {
   repositoryPath: string;
   backupBranch: string;
+  operationId: OperationId | null;
 };
 
 export type DeleteSafetyBackupResponse = {
@@ -405,6 +410,7 @@ export type DeleteSafetyBackupResponse = {
 export type DeleteStashRequest = {
   repositoryPath: string;
   selector: string;
+  operationId: OperationId | null;
 };
 
 export type DeleteStashResponse = {
@@ -860,6 +866,7 @@ export type RestoreStashRequest = {
   selector: string;
   dropOnSuccess: boolean;
   operationName: string | null;
+  operationId: OperationId | null;
 };
 
 export type RestoreStashResponse = {
@@ -873,6 +880,7 @@ export type RevertCommitRequest = {
   repositoryPath: string;
   oid: string;
   pushAfterRevert: boolean;
+  operationId: OperationId | null;
 };
 
 export type RevertCommitResponse =
@@ -910,6 +918,7 @@ export type ReviewModePullStatus =
 
 export type ReviewModeRecoveryRequest = {
   repositoryPath: string;
+  operationId: OperationId | null;
 };
 
 export type ReviewModeRecoveryResponse = {
@@ -920,6 +929,7 @@ export type ReviewModeRecoveryResponse = {
 
 export type ReviewModeRequest = {
   repositoryPath: string;
+  operationId: OperationId | null;
 };
 
 export type ReviewModeState = {

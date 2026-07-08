@@ -338,6 +338,7 @@ describe("HistoryWorkbench", () => {
 
     expect(revertCommitMock).toHaveBeenCalledWith({
       oid: "d4512aa7e8fb9ec3f93a545cb658f7de71f18291",
+      operationId: expect.stringMatching(/^revert-commit-/),
       pushAfterRevert: true,
       repositoryPath: "/repo/art",
     });

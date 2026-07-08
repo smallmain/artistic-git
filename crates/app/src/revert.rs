@@ -22,6 +22,10 @@ pub fn revert_commit(
     let root = canonical_repository_path(&request.repository_path, OPERATION)?;
     let oid = validate_commit_oid(&request.oid)?;
     let git_common_dir = git_common_dir(runner, &root, OPERATION)?;
+    let operation_id = request
+        .operation_id
+        .clone()
+        .unwrap_or_else(|| OperationId(operation_id()));
 
     if operation_in_progress(&git_common_dir) {
         return Ok(RevertCommitResponse::Disabled {
@@ -56,13 +60,16 @@ pub fn revert_commit(
         });
     }
 
+    let pre_revert_head = git_stdout(runner, Some(&root), ["rev-parse", "HEAD"], OPERATION)?
+        .trim()
+        .to_owned();
     let has_remote = crate::remote::read_origin_url(runner, &root, OPERATION)?.is_some();
     if has_remote {
         let sync = crate::sync::sync_current_branch(
             runner,
             SyncCurrentBranchRequest {
                 repository_path: display_path(&root),
-                operation_id: Some(OperationId(operation_id())),
+                operation_id: Some(operation_id.clone()),
             },
         )?;
         if let Some(conflict) = sync.conflict {
@@ -70,7 +77,7 @@ pub fn revert_commit(
         }
     }
 
-    let auto_stash = create_revert_auto_stash(runner, &root)?;
+    let auto_stash = create_revert_auto_stash(runner, &root, &operation_id)?;
     let subject = commit_subject(runner, &root, oid)?;
     match run_revert_no_commit(runner, &root, oid) {
         Ok(()) => {}
@@ -78,7 +85,7 @@ pub fn revert_commit(
             let files = conflict_files(runner, &root)?;
             return Ok(conflicted_response(
                 ConflictEnteredEvent {
-                    operation_id: OperationId(operation_id()),
+                    operation_id: operation_id.clone(),
                     repository_path: display_path(&root),
                     operation_name: OPERATION.to_owned(),
                     files,
@@ -87,22 +94,42 @@ pub fn revert_commit(
                 auto_stash,
             ));
         }
-        Err(error) => return Err(error),
+        Err(error) => {
+            recover_revert_local_failure(
+                runner,
+                &root,
+                &pre_revert_head,
+                auto_stash.as_ref(),
+                &operation_id,
+            );
+            return Err(error);
+        }
     }
 
     let message = format!("Revert: {subject}");
-    git_commit_revert(runner, &root, &message)?;
+    if let Err(error) = git_commit_revert(runner, &root, &message) {
+        recover_revert_local_failure(
+            runner,
+            &root,
+            &pre_revert_head,
+            auto_stash.as_ref(),
+            &operation_id,
+        );
+        return Err(error);
+    }
     let revert_oid = git_stdout(runner, Some(&root), ["rev-parse", "HEAD"], OPERATION)?
         .trim()
         .to_owned();
     let mut pushed = false;
     if request.push_after_revert && has_remote {
-        match push_revert_with_sync_retry(runner, &root, auto_stash.clone())? {
+        match push_revert_with_sync_retry(runner, &root, auto_stash.clone(), &operation_id)? {
             RevertPushOutcome::Pushed => pushed = true,
             RevertPushOutcome::Conflicted(response) => return Ok(*response),
         }
     }
-    if let Some(response) = restore_revert_auto_stash_after_success(runner, &root, auto_stash)? {
+    if let Some(response) =
+        restore_revert_auto_stash_after_success(runner, &root, auto_stash, &operation_id)?
+    {
         return Ok(response);
     }
 
@@ -292,7 +319,11 @@ fn conflict_files(runner: &GitRunner, root: &Path) -> AppResult<Vec<ConflictFile
         .collect())
 }
 
-fn create_revert_auto_stash(runner: &GitRunner, root: &Path) -> AppResult<Option<StashEntry>> {
+fn create_revert_auto_stash(
+    runner: &GitRunner,
+    root: &Path,
+    operation_id: &OperationId,
+) -> AppResult<Option<StashEntry>> {
     Ok(crate::stash_impl::create_auto_stash(
         runner,
         CreateAutoStashRequest {
@@ -300,15 +331,46 @@ fn create_revert_auto_stash(runner: &GitRunner, root: &Path) -> AppResult<Option
             reason: "before reverting commit".to_owned(),
             include_untracked: true,
             paths: Vec::new(),
+            operation_id: Some(operation_id.clone()),
         },
     )?
     .stash)
+}
+
+fn recover_revert_local_failure(
+    runner: &GitRunner,
+    root: &Path,
+    pre_revert_head: &str,
+    auto_stash: Option<&StashEntry>,
+    operation_id: &OperationId,
+) {
+    crate::git_ops::without_cancel_token(|| {
+        let _ = run_git(runner, Some(root), ["revert", "--abort"], OPERATION);
+        let _ = run_git(
+            runner,
+            Some(root),
+            ["reset", "--hard", pre_revert_head],
+            OPERATION,
+        );
+        let _ = run_git(runner, Some(root), ["clean", "-fd"], OPERATION);
+        if let Some(stash) = auto_stash {
+            let _ = crate::stash_impl::restore_stash_for_root(
+                runner,
+                root,
+                &stash.selector,
+                true,
+                REVERT_STASH_RESTORE_OPERATION,
+                Some(operation_id),
+            );
+        }
+    });
 }
 
 fn restore_revert_auto_stash_after_success(
     runner: &GitRunner,
     root: &Path,
     auto_stash: Option<StashEntry>,
+    operation_id: &OperationId,
 ) -> AppResult<Option<RevertCommitResponse>> {
     let Some(auto_stash) = auto_stash else {
         return Ok(None);
@@ -320,7 +382,7 @@ fn restore_revert_auto_stash_after_success(
         &auto_stash.selector,
         true,
         REVERT_STASH_RESTORE_OPERATION,
-        None,
+        Some(operation_id),
     )?;
     match restore.outcome {
         StashRestoreOutcome::Applied { .. } => Ok(None),
@@ -336,6 +398,7 @@ fn push_revert_with_sync_retry(
     runner: &GitRunner,
     root: &Path,
     auto_stash: Option<StashEntry>,
+    operation_id: &OperationId,
 ) -> AppResult<RevertPushOutcome> {
     match push_once(runner, root) {
         PushAttempt::Success => Ok(RevertPushOutcome::Pushed),
@@ -345,7 +408,7 @@ fn push_revert_with_sync_retry(
                 runner,
                 SyncCurrentBranchRequest {
                     repository_path: display_path(root),
-                    operation_id: Some(OperationId(operation_id())),
+                    operation_id: Some(operation_id.clone()),
                 },
             )?;
             if let Some(conflict) = sync.conflict {
@@ -453,6 +516,7 @@ mod tests {
                 repository_path: display_path(&repo.path),
                 oid: target,
                 push_after_revert: false,
+                operation_id: None,
             },
         )
         .expect("revert commit");
@@ -505,6 +569,7 @@ mod tests {
                 repository_path: display_path(&repo.path),
                 oid: merge_oid,
                 push_after_revert: false,
+                operation_id: None,
             },
         )
         .expect("merge disabled");
@@ -541,6 +606,7 @@ mod tests {
                 repository_path: display_path(&repo.path),
                 oid: feature_oid,
                 push_after_revert: false,
+                operation_id: None,
             },
         )
         .expect("outside branch disabled");
@@ -577,6 +643,7 @@ mod tests {
                 repository_path: display_path(&repo.path),
                 oid: target,
                 push_after_revert: false,
+                operation_id: None,
             },
         )
         .expect("conflicted revert response");
@@ -648,6 +715,7 @@ mod tests {
                 repository_path: display_path(&fixture.local.path),
                 oid: target,
                 push_after_revert: true,
+                operation_id: None,
             },
         )
         .expect("revert and push");
@@ -694,6 +762,7 @@ mod tests {
                 repository_path: display_path(&fixture.local.path),
                 oid: target,
                 push_after_revert: true,
+                operation_id: None,
             },
         )
         .expect("sync unpublished commits, revert, and push");
@@ -743,6 +812,7 @@ mod tests {
                 repository_path: display_path(&fixture.local.path),
                 oid: target,
                 push_after_revert: true,
+                operation_id: None,
             },
         )
         .expect("revert push sync retry");
@@ -793,6 +863,7 @@ mod tests {
                 repository_path: display_path(&fixture.local.path),
                 oid: target,
                 push_after_revert: true,
+                operation_id: None,
             },
         )
         .expect("publish branch, revert, and push");
@@ -846,6 +917,7 @@ mod tests {
                 repository_path: display_path(&repo.path),
                 oid: target,
                 push_after_revert: false,
+                operation_id: None,
             },
         )
         .expect("conflicted revert response");

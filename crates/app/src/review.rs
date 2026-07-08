@@ -29,7 +29,7 @@ pub fn start_review_mode(
         .operation_id
         .clone()
         .unwrap_or_else(review_operation_id);
-    let auto_stash = create_review_auto_stash(runner, &root)?;
+    let auto_stash = create_review_auto_stash(runner, &root, &operation_id)?;
     write_review_marker(config, &root, auto_stash.as_ref(), &operation_id)?;
     let pull = pull_current_branch_ff_only(runner, &root);
     Ok(StartReviewModeResponse {
@@ -55,6 +55,10 @@ pub fn exit_review_mode(
     request: ReviewModeRequest,
 ) -> AppResult<ExitReviewModeResponse> {
     let root = canonical_repository_path(&request.repository_path, "exitReviewMode")?;
+    let operation_id = request
+        .operation_id
+        .clone()
+        .unwrap_or_else(review_operation_id);
     let Some(auto_stash) = review_stash_from_marker_or_latest(runner, config, &root)? else {
         clear_review_marker(config, &root)?;
         return Ok(ExitReviewModeResponse {
@@ -71,7 +75,7 @@ pub fn exit_review_mode(
         &auto_stash.selector,
         true,
         REVIEW_STASH_RESTORE_OPERATION,
-        None,
+        Some(&operation_id),
     )?;
     match restore.outcome {
         StashRestoreOutcome::Applied { .. } => {
@@ -116,6 +120,7 @@ pub fn recover_review_mode_stash(
         config,
         ReviewModeRequest {
             repository_path: request.repository_path,
+            operation_id: request.operation_id,
         },
     )
 }
@@ -133,7 +138,11 @@ pub fn dismiss_review_mode_recovery(
     })
 }
 
-fn create_review_auto_stash(runner: &GitRunner, root: &Path) -> AppResult<Option<StashEntry>> {
+fn create_review_auto_stash(
+    runner: &GitRunner,
+    root: &Path,
+    operation_id: &OperationId,
+) -> AppResult<Option<StashEntry>> {
     Ok(crate::stash_impl::create_auto_stash(
         runner,
         CreateAutoStashRequest {
@@ -141,6 +150,7 @@ fn create_review_auto_stash(runner: &GitRunner, root: &Path) -> AppResult<Option
             reason: REVIEW_STASH_REASON.to_owned(),
             include_untracked: true,
             paths: Vec::new(),
+            operation_id: Some(operation_id.clone()),
         },
     )?
     .stash)
@@ -572,6 +582,7 @@ mod tests {
             Some(&config),
             ReviewModeRequest {
                 repository_path: display_path(&fixture.local.path),
+                operation_id: None,
             },
         )
         .expect("exit review mode");
@@ -585,6 +596,7 @@ mod tests {
                 Some(&config),
                 ReviewModeRecoveryRequest {
                     repository_path: display_path(&fixture.local.path),
+                    operation_id: None,
                 },
             )
             .expect("recovery")
@@ -650,6 +662,7 @@ mod tests {
             Some(&config),
             ReviewModeRecoveryRequest {
                 repository_path: display_path(&repo.path),
+                operation_id: None,
             },
         )
         .expect("recovery status");

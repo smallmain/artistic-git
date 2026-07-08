@@ -916,10 +916,29 @@ fn start_review_mode(
 #[tauri::command]
 fn sync_review_mode(
     app_handle: tauri::AppHandle,
+    window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::ReviewModeRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::SyncReviewModeResponse> {
-    let response = backend.sync_review_mode(request)?;
+    let repository_path = request.repository_path.clone();
+    let window_label = window.label().to_owned();
+    let operation_id = request.operation_id.clone();
+    emit_operation_started(
+        &app_handle,
+        operation_id.as_ref(),
+        repository_path.as_str(),
+        window_label.as_str(),
+        "Syncing review mode",
+    );
+    let result = backend.sync_review_mode(request);
+    emit_operation_finished(
+        &app_handle,
+        operation_id.as_ref(),
+        repository_path.as_str(),
+        window_label.as_str(),
+        "Review mode synced",
+    );
+    let response = result?;
     emit_repo_changed(
         &app_handle,
         response.state.repository_path.clone(),
@@ -935,10 +954,29 @@ fn sync_review_mode(
 #[tauri::command]
 fn exit_review_mode(
     app_handle: tauri::AppHandle,
+    window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::ReviewModeRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::ExitReviewModeResponse> {
-    let response = backend.exit_review_mode(request)?;
+    let repository_path = request.repository_path.clone();
+    let window_label = window.label().to_owned();
+    let operation_id = request.operation_id.clone();
+    emit_operation_started(
+        &app_handle,
+        operation_id.as_ref(),
+        repository_path.as_str(),
+        window_label.as_str(),
+        "Exiting review mode",
+    );
+    let result = backend.exit_review_mode(request);
+    emit_operation_finished(
+        &app_handle,
+        operation_id.as_ref(),
+        repository_path.as_str(),
+        window_label.as_str(),
+        "Review mode exited",
+    );
+    let response = result?;
     emit_review_exit_events(&app_handle, &response);
     Ok(response)
 }
@@ -954,10 +992,29 @@ fn review_mode_recovery(
 #[tauri::command]
 fn recover_review_mode_stash(
     app_handle: tauri::AppHandle,
+    window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::ReviewModeRecoveryRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::ExitReviewModeResponse> {
-    let response = backend.recover_review_mode_stash(request)?;
+    let repository_path = request.repository_path.clone();
+    let window_label = window.label().to_owned();
+    let operation_id = request.operation_id.clone();
+    emit_operation_started(
+        &app_handle,
+        operation_id.as_ref(),
+        repository_path.as_str(),
+        window_label.as_str(),
+        "Recovering review mode",
+    );
+    let result = backend.recover_review_mode_stash(request);
+    emit_operation_finished(
+        &app_handle,
+        operation_id.as_ref(),
+        repository_path.as_str(),
+        window_label.as_str(),
+        "Review mode recovered",
+    );
+    let response = result?;
     emit_review_exit_events(&app_handle, &response);
     Ok(response)
 }
@@ -1084,10 +1141,29 @@ fn checkout_branch(
 #[tauri::command]
 fn delete_branch(
     app_handle: tauri::AppHandle,
+    window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::DeleteBranchRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::BranchOperationResponse> {
-    let response = backend.delete_branch(request)?;
+    let repository_path = request.repository_path.clone();
+    let window_label = window.label().to_owned();
+    let operation_id = request.operation_id.clone();
+    emit_operation_started(
+        &app_handle,
+        operation_id.as_ref(),
+        repository_path.as_str(),
+        window_label.as_str(),
+        "Updating branch",
+    );
+    let result = backend.delete_branch(request);
+    emit_operation_finished(
+        &app_handle,
+        operation_id.as_ref(),
+        repository_path.as_str(),
+        window_label.as_str(),
+        "Branch updated",
+    );
+    let response = result?;
     emit_branch_operation_events(&app_handle, &response);
     Ok(response)
 }
@@ -1095,10 +1171,29 @@ fn delete_branch(
 #[tauri::command]
 fn delete_safety_backup(
     app_handle: tauri::AppHandle,
+    window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::DeleteSafetyBackupRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::DeleteSafetyBackupResponse> {
-    let response = backend.delete_safety_backup(request)?;
+    let repository_path = request.repository_path.clone();
+    let window_label = window.label().to_owned();
+    let operation_id = request.operation_id.clone();
+    emit_operation_started(
+        &app_handle,
+        operation_id.as_ref(),
+        repository_path.as_str(),
+        window_label.as_str(),
+        "Deleting backup branch",
+    );
+    let result = backend.delete_safety_backup(request);
+    emit_operation_finished(
+        &app_handle,
+        operation_id.as_ref(),
+        repository_path.as_str(),
+        window_label.as_str(),
+        "Backup branch deleted",
+    );
+    let response = result?;
     emit_repo_changed(
         &app_handle,
         response.repository_path.clone(),
@@ -1134,11 +1229,29 @@ fn list_stashes(
 #[tauri::command]
 fn create_stash(
     app_handle: tauri::AppHandle,
+    window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::CreateStashRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::CreateStashResponse> {
     let repository_path = request.repository_path.clone();
-    let response = backend.create_stash(request)?;
+    let window_label = window.label().to_owned();
+    let operation_id = request.operation_id.clone();
+    emit_operation_started(
+        &app_handle,
+        operation_id.as_ref(),
+        repository_path.as_str(),
+        window_label.as_str(),
+        "Updating stash",
+    );
+    let result = backend.create_stash(request);
+    emit_operation_finished(
+        &app_handle,
+        operation_id.as_ref(),
+        repository_path.as_str(),
+        window_label.as_str(),
+        "Stash updated",
+    );
+    let response = result?;
     emit_repo_changed(
         &app_handle,
         repository_path,
@@ -1153,11 +1266,29 @@ fn create_stash(
 #[tauri::command]
 fn create_auto_stash(
     app_handle: tauri::AppHandle,
+    window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::CreateAutoStashRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::CreateStashResponse> {
     let repository_path = request.repository_path.clone();
-    let response = backend.create_auto_stash(request)?;
+    let window_label = window.label().to_owned();
+    let operation_id = request.operation_id.clone();
+    emit_operation_started(
+        &app_handle,
+        operation_id.as_ref(),
+        repository_path.as_str(),
+        window_label.as_str(),
+        "Updating stash",
+    );
+    let result = backend.create_auto_stash(request);
+    emit_operation_finished(
+        &app_handle,
+        operation_id.as_ref(),
+        repository_path.as_str(),
+        window_label.as_str(),
+        "Stash updated",
+    );
+    let response = result?;
     emit_repo_changed(
         &app_handle,
         repository_path,
@@ -1180,11 +1311,29 @@ fn stash_details(
 #[tauri::command]
 fn restore_stash(
     app_handle: tauri::AppHandle,
+    window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::RestoreStashRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::RestoreStashResponse> {
     let repository_path = request.repository_path.clone();
-    let response = backend.restore_stash(request)?;
+    let window_label = window.label().to_owned();
+    let operation_id = request.operation_id.clone();
+    emit_operation_started(
+        &app_handle,
+        operation_id.as_ref(),
+        repository_path.as_str(),
+        window_label.as_str(),
+        "Updating stash",
+    );
+    let result = backend.restore_stash(request);
+    emit_operation_finished(
+        &app_handle,
+        operation_id.as_ref(),
+        repository_path.as_str(),
+        window_label.as_str(),
+        "Stash updated",
+    );
+    let response = result?;
     if let artistic_git_contracts::StashRestoreOutcome::Conflicts { conflict } = &response.outcome {
         let _ = app_handle.emit("conflict-entered", conflict);
     }
@@ -1221,11 +1370,29 @@ fn cancel_stash_restore(
 #[tauri::command]
 fn delete_stash(
     app_handle: tauri::AppHandle,
+    window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::DeleteStashRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::DeleteStashResponse> {
     let repository_path = request.repository_path.clone();
-    let response = backend.delete_stash(request)?;
+    let window_label = window.label().to_owned();
+    let operation_id = request.operation_id.clone();
+    emit_operation_started(
+        &app_handle,
+        operation_id.as_ref(),
+        repository_path.as_str(),
+        window_label.as_str(),
+        "Updating stash",
+    );
+    let result = backend.delete_stash(request);
+    emit_operation_finished(
+        &app_handle,
+        operation_id.as_ref(),
+        repository_path.as_str(),
+        window_label.as_str(),
+        "Stash updated",
+    );
+    let response = result?;
     emit_repo_changed(
         &app_handle,
         repository_path,
@@ -1317,11 +1484,29 @@ fn cancel_conflict_resolution(
 #[tauri::command]
 fn commit_changes(
     app_handle: tauri::AppHandle,
+    window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::CommitRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::CommitResponse> {
     let repository_path = request.repository_path.clone();
-    let response = backend.commit_changes(request)?;
+    let window_label = window.label().to_owned();
+    let operation_id = request.operation_id.clone();
+    emit_operation_started(
+        &app_handle,
+        operation_id.as_ref(),
+        repository_path.as_str(),
+        window_label.as_str(),
+        "Committing changes",
+    );
+    let result = backend.commit_changes(request);
+    emit_operation_finished(
+        &app_handle,
+        operation_id.as_ref(),
+        repository_path.as_str(),
+        window_label.as_str(),
+        "Commit complete",
+    );
+    let response = result?;
     match &response {
         artistic_git_contracts::CommitResponse::Committed { .. }
         | artistic_git_contracts::CommitResponse::Conflicts { .. } => {
@@ -1362,11 +1547,29 @@ fn restore_changes(
 #[tauri::command]
 fn revert_commit(
     app_handle: tauri::AppHandle,
+    window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::RevertCommitRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::RevertCommitResponse> {
     let repository_path = request.repository_path.clone();
-    let response = backend.revert_commit(request)?;
+    let window_label = window.label().to_owned();
+    let operation_id = request.operation_id.clone();
+    emit_operation_started(
+        &app_handle,
+        operation_id.as_ref(),
+        repository_path.as_str(),
+        window_label.as_str(),
+        "Reverting commit",
+    );
+    let result = backend.revert_commit(request);
+    emit_operation_finished(
+        &app_handle,
+        operation_id.as_ref(),
+        repository_path.as_str(),
+        window_label.as_str(),
+        "Revert complete",
+    );
+    let response = result?;
     match &response {
         artistic_git_contracts::RevertCommitResponse::Reverted { .. } => {
             emit_repo_changed(

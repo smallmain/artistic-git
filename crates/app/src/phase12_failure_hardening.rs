@@ -75,6 +75,7 @@ fn phase12_commit_gpg_failure_restores_index_and_head() {
             large_file_decision: LargeFileDecision::Prompt,
             disable_repository_gpgsign: false,
             push_immediately: false,
+            operation_id: None,
         },
     )
     .expect("gpg failure is an expected commit response");
@@ -106,6 +107,7 @@ fn phase12_revert_conflict_abort_restores_pre_operation_snapshot() {
             repository_path: display_path(&repo.path),
             oid: target,
             push_after_revert: false,
+            operation_id: None,
         },
     )
     .expect("conflicted revert should return a response");
@@ -279,6 +281,7 @@ fn phase12_review_exit_stash_conflict_cancel_keeps_review_recovery() {
         Some(&config),
         ReviewModeRequest {
             repository_path: display_path(&fixture.local.path),
+            operation_id: None,
         },
     )
     .expect("exit review mode should report restore conflict in-band");
@@ -304,6 +307,7 @@ fn phase12_review_exit_stash_conflict_cancel_keeps_review_recovery() {
         Some(&config),
         ReviewModeRecoveryRequest {
             repository_path: display_path(&fixture.local.path),
+            operation_id: None,
         },
     )
     .expect("review recovery remains available");
@@ -368,6 +372,7 @@ fn phase12_submodule_commit_publish_guard_failure_preserves_super_and_submodule(
             large_file_decision: LargeFileDecision::Prompt,
             disable_repository_gpgsign: false,
             push_immediately: true,
+            operation_id: None,
         },
     )
     .expect_err("submodule without origin cannot be pushable");

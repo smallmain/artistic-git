@@ -447,6 +447,7 @@ fn checkout_with_auto_stash(
             reason: format!("before switching to {branch_name}"),
             include_untracked: true,
             paths: Vec::new(),
+            operation_id: Some(operation_id.clone()),
         },
     )?
     .stash;
@@ -455,14 +456,16 @@ fn checkout_with_auto_stash(
         crate::repository::git_stdout(runner, Some(root), checkout_args, operation_name)
     {
         if let Some(stash) = stash.as_ref() {
-            let _ = crate::stash_impl::restore_stash_for_root(
-                runner,
-                root,
-                &stash.selector,
-                true,
-                operation_name,
-                Some(&operation_id),
-            );
+            crate::git_ops::without_cancel_token(|| {
+                let _ = crate::stash_impl::restore_stash_for_root(
+                    runner,
+                    root,
+                    &stash.selector,
+                    true,
+                    operation_name,
+                    Some(&operation_id),
+                );
+            });
         }
         return Err(error);
     }
@@ -1174,6 +1177,7 @@ mod tests {
                 branch_name: "main".to_owned(),
                 delete_remote: false,
                 force_remote_only: false,
+                operation_id: None,
             },
         )
         .expect_err("current branch deletion should fail");
@@ -1184,6 +1188,7 @@ mod tests {
                 branch_name: "feature/unmerged".to_owned(),
                 delete_remote: false,
                 force_remote_only: false,
+                operation_id: None,
             },
         )
         .expect_err("unmerged branch deletion should fail");
@@ -1206,6 +1211,7 @@ mod tests {
                 branch_name: "feature/remote".to_owned(),
                 delete_remote: false,
                 force_remote_only: false,
+                operation_id: None,
             },
         )
         .expect_err("remote-only deletion should require confirmation");
@@ -1219,6 +1225,7 @@ mod tests {
                 branch_name: "feature/remote".to_owned(),
                 delete_remote: false,
                 force_remote_only: true,
+                operation_id: None,
             },
         )
         .expect("delete remote tracking ref");
@@ -1283,6 +1290,7 @@ mod tests {
             DeleteSafetyBackupRequest {
                 repository_path: display_path(&repo.path),
                 backup_branch: "feature/paint".to_owned(),
+                operation_id: None,
             },
         )
         .expect_err("normal branch is not a safety backup");
@@ -1293,6 +1301,7 @@ mod tests {
             DeleteSafetyBackupRequest {
                 repository_path: display_path(&repo.path),
                 backup_branch: created.name.clone(),
+                operation_id: None,
             },
         )
         .expect("delete safety backup");
@@ -1360,6 +1369,7 @@ mod tests {
                 branch_name: "feature/delete-me".to_owned(),
                 delete_remote: true,
                 force_remote_only: false,
+                operation_id: None,
             },
         )
         .expect("delete local and remote branch");
@@ -1412,6 +1422,7 @@ mod tests {
                 branch_name: "main".to_owned(),
                 delete_remote: false,
                 force_remote_only: false,
+                operation_id: None,
             },
         )
         .expect_err("delete branch should reject unborn head");

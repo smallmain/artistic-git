@@ -845,6 +845,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     try {
       await deleteSafetyBackup({
         backupBranch: safetyBackupToDelete.name,
+        operationId: createRepositoryOperationId("delete-safety-backup"),
         repositoryPath,
       });
       setSafetyBackupToDelete(null);
@@ -930,7 +931,10 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
 
     setReviewBusy(true);
     try {
-      const response = await syncReviewMode({ repositoryPath });
+      const response = await syncReviewMode({
+        operationId: createRepositoryOperationId("review-sync"),
+        repositoryPath,
+      });
       setReviewModeState(response.state);
       await invalidateReviewQueries();
     } catch (error) {
@@ -949,7 +953,10 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
 
     setReviewBusy(true);
     try {
-      const response = await exitReviewMode({ repositoryPath });
+      const response = await exitReviewMode({
+        operationId: createRepositoryOperationId("review-exit"),
+        repositoryPath,
+      });
       await handleReviewExitResponse(response);
     } catch (error) {
       window.dispatchEvent(
@@ -967,7 +974,10 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
 
     setReviewBusy(true);
     try {
-      const response = await recoverReviewModeStash({ repositoryPath });
+      const response = await recoverReviewModeStash({
+        operationId: createRepositoryOperationId("review-recover"),
+        repositoryPath,
+      });
       await handleReviewExitResponse(response);
     } catch (error) {
       window.dispatchEvent(
@@ -981,7 +991,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   const dismissReviewRecovery = React.useCallback(async () => {
     setReviewRecoveryPrompt(false);
     try {
-      await dismissReviewModeRecovery({ repositoryPath });
+      await dismissReviewModeRecovery({ operationId: null, repositoryPath });
     } catch (error) {
       window.dispatchEvent(
         new CustomEvent("artistic-git:error", { detail: error }),
@@ -991,7 +1001,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
 
   React.useEffect(() => {
     let cancelled = false;
-    void reviewModeRecovery({ repositoryPath })
+    void reviewModeRecovery({ operationId: null, repositoryPath })
       .then((response) => {
         if (!cancelled && response.shouldPrompt) {
           setReviewRecoveryPrompt(true);
@@ -1226,6 +1236,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         branchName: branchToDelete.name,
         deleteRemote: Boolean(branchToDelete.remoteOnly) || deleteRemoteBranch,
         forceRemoteOnly: Boolean(branchToDelete.remoteOnly),
+        operationId: createRepositoryOperationId("delete-branch"),
         repositoryPath,
       });
 
@@ -1321,6 +1332,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
           largeFileDecision,
           largeFileThresholdMb: null,
           message: commitMessage,
+          operationId: createRepositoryOperationId("commit-changes"),
           paths: selectedCommitPaths,
           pushImmediately: commitPushImmediately,
           repositoryPath,
@@ -1405,6 +1417,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       try {
         const response = await restoreStash({
           dropOnSuccess: false,
+          operationId: createRepositoryOperationId("restore-stash"),
           operationName: null,
           repositoryPath,
           selector: stash.id,
@@ -1446,6 +1459,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       await createStash({
         includeUntracked: true,
         message: stashMessage.trim() || defaultStashMessage(),
+        operationId: createRepositoryOperationId("create-stash"),
         paths,
         repositoryPath,
       });
@@ -1476,6 +1490,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     setStashActionBusy(true);
     try {
       await deleteStash({
+        operationId: createRepositoryOperationId("delete-stash"),
         repositoryPath,
         selector: stashToDelete.id,
       });
@@ -1533,6 +1548,9 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         if (revertAutoStash) {
           await restoreStash({
             dropOnSuccess: true,
+            operationId: createRepositoryOperationId(
+              "revert-cancel-restore-stash",
+            ),
             operationName: "revertCommit:restoreStash",
             repositoryPath: request.repositoryPath,
             selector: revertAutoStash.selector,
@@ -1551,6 +1569,9 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         if (revertAutoStash) {
           await restoreStash({
             dropOnSuccess: true,
+            operationId: createRepositoryOperationId(
+              "revert-complete-restore-stash",
+            ),
             operationName: "revertCommit:restoreStash",
             repositoryPath: request.repositoryPath,
             selector: revertAutoStash.selector,
@@ -1622,7 +1643,10 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     if (reviewRecoveryPrompt && !reviewModeState) {
       setReviewBusy(true);
       try {
-        const response = await recoverReviewModeStash({ repositoryPath });
+        const response = await recoverReviewModeStash({
+          operationId: createRepositoryOperationId("review-recover-close"),
+          repositoryPath,
+        });
         await handleReviewExitResponse(response);
         if (response.status === "conflicts") {
           throw new Error(t("repository.closeGuardRecoveryConflict"));
@@ -1633,7 +1657,10 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     } else if (reviewModeState) {
       setReviewBusy(true);
       try {
-        const response = await exitReviewMode({ repositoryPath });
+        const response = await exitReviewMode({
+          operationId: createRepositoryOperationId("review-exit-close"),
+          repositoryPath,
+        });
         await handleReviewExitResponse(response);
         if (response.status === "conflicts") {
           throw new Error(t("repository.closeGuardRecoveryConflict"));
@@ -2045,11 +2072,21 @@ function operationLabel(label: string, t: (key: string) => string): string {
   switch (label) {
     case "Syncing":
     case "Accepting remote history":
+    case "Syncing review mode":
       return t("repository.sync");
     case "Updating branch":
+    case "Deleting backup branch":
       return t("repository.branchBusy");
+    case "Updating stash":
+      return t("repository.stashBusy");
     case "Starting review mode":
+    case "Exiting review mode":
+    case "Recovering review mode":
       return t("repository.reviewMode");
+    case "Committing changes":
+      return t("localChanges.commitBusy");
+    case "Reverting commit":
+      return t("history.revert.busy");
     case "Updating submodules":
       return t("repository.updatingSubmodules");
     case "Downloading submodule LFS objects":

@@ -72,7 +72,10 @@ pub fn commit_changes(runner: &GitRunner, request: CommitRequest) -> AppResult<C
         | LargeFileDecision::CommitNormally => {}
     }
 
-    let operation_id = commit_operation_id();
+    let operation_id = request
+        .operation_id
+        .clone()
+        .unwrap_or_else(commit_operation_id);
     let rollback_points = plan.rollback_points(runner, &root)?;
     match commit_local_plan(runner, &root, &mut plan, &request.message, &operation_id) {
         Ok(()) => {}
@@ -980,34 +983,37 @@ fn rollback_point(runner: &GitRunner, root: &Path) -> AppResult<RollbackPoint> {
 }
 
 fn rollback_local_phase(runner: &GitRunner, points: &[RollbackPoint]) {
-    for point in points.iter().rev() {
-        let _ = run_git_raw(
-            runner,
-            Some(&point.root),
-            ["reset", "--mixed", point.head_oid.as_str()],
-            OPERATION,
-        );
-        match point.branch.as_deref() {
-            Some(branch) => {
-                if current_branch_optional(runner, &point.root)
-                    .ok()
-                    .flatten()
-                    .as_deref()
-                    != Some(branch)
-                {
-                    let _ = run_git_raw(runner, Some(&point.root), ["checkout", branch], OPERATION);
+    crate::git_ops::without_cancel_token(|| {
+        for point in points.iter().rev() {
+            let _ = run_git_raw(
+                runner,
+                Some(&point.root),
+                ["reset", "--mixed", point.head_oid.as_str()],
+                OPERATION,
+            );
+            match point.branch.as_deref() {
+                Some(branch) => {
+                    if current_branch_optional(runner, &point.root)
+                        .ok()
+                        .flatten()
+                        .as_deref()
+                        != Some(branch)
+                    {
+                        let _ =
+                            run_git_raw(runner, Some(&point.root), ["checkout", branch], OPERATION);
+                    }
+                }
+                None => {
+                    let _ = run_git_raw(
+                        runner,
+                        Some(&point.root),
+                        ["checkout", "--detach", point.head_oid.as_str()],
+                        OPERATION,
+                    );
                 }
             }
-            None => {
-                let _ = run_git_raw(
-                    runner,
-                    Some(&point.root),
-                    ["checkout", "--detach", point.head_oid.as_str()],
-                    OPERATION,
-                );
-            }
         }
-    }
+    });
 }
 
 fn git_commit_handled(runner: &GitRunner, root: &Path, message: &str) -> AppResult<CommitAttempt> {
@@ -1118,6 +1124,7 @@ mod tests {
                 large_file_decision: LargeFileDecision::Prompt,
                 disable_repository_gpgsign: false,
                 push_immediately: false,
+                operation_id: None,
             },
         )
         .expect("commit selected path");
@@ -1153,6 +1160,7 @@ mod tests {
                 large_file_decision: LargeFileDecision::Prompt,
                 disable_repository_gpgsign: false,
                 push_immediately: false,
+                operation_id: None,
             },
         )
         .expect("large file prompt");
@@ -1189,6 +1197,7 @@ mod tests {
                 large_file_decision: LargeFileDecision::TrackWithLfs,
                 disable_repository_gpgsign: false,
                 push_immediately: false,
+                operation_id: None,
             },
         )
         .expect("track large file with lfs");
@@ -1228,6 +1237,7 @@ mod tests {
                 large_file_decision: LargeFileDecision::CommitNormally,
                 disable_repository_gpgsign: false,
                 push_immediately: false,
+                operation_id: None,
             },
         )
         .expect("commit large file normally");
@@ -1260,6 +1270,7 @@ mod tests {
                 large_file_decision: LargeFileDecision::Prompt,
                 disable_repository_gpgsign: true,
                 push_immediately: false,
+                operation_id: None,
             },
         )
         .expect("disable repository gpgsign");
@@ -1295,6 +1306,7 @@ mod tests {
                 large_file_decision: LargeFileDecision::Prompt,
                 disable_repository_gpgsign: false,
                 push_immediately: true,
+                operation_id: None,
             },
         )
         .expect("commit with sync and push");
@@ -1346,6 +1358,7 @@ mod tests {
                 large_file_decision: LargeFileDecision::Prompt,
                 disable_repository_gpgsign: false,
                 push_immediately: true,
+                operation_id: None,
             },
         )
         .expect("commit publishes branch");
@@ -1381,6 +1394,7 @@ mod tests {
                 large_file_decision: LargeFileDecision::Prompt,
                 disable_repository_gpgsign: false,
                 push_immediately: true,
+                operation_id: None,
             },
         )
         .expect("commit push race self-heals");
@@ -1411,6 +1425,7 @@ mod tests {
                 large_file_decision: LargeFileDecision::Prompt,
                 disable_repository_gpgsign: false,
                 push_immediately: false,
+                operation_id: None,
             },
         )
         .expect("commit submodule workspace change");
@@ -1463,6 +1478,7 @@ mod tests {
                 large_file_decision: LargeFileDecision::Prompt,
                 disable_repository_gpgsign: false,
                 push_immediately: true,
+                operation_id: None,
             },
         )
         .expect_err("superproject push should fail after child push");
@@ -1528,6 +1544,7 @@ mod tests {
                 large_file_decision: LargeFileDecision::Prompt,
                 disable_repository_gpgsign: false,
                 push_immediately: false,
+                operation_id: None,
             },
         )
         .expect_err("unsafe detached submodule should be rejected");

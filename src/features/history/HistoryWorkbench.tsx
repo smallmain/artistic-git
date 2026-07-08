@@ -821,6 +821,10 @@ function Avatar({
   );
 }
 
+function createHistoryOperationId(prefix: string): string {
+  return `${prefix}-${globalThis.crypto?.randomUUID?.() ?? Date.now().toString(36)}`;
+}
+
 function RefBadge({ refItem }: { refItem: HistoryCommit["refs"][number] }) {
   const isTag = refItem.type === "tag";
   return (
@@ -984,8 +988,10 @@ function CommitDetailPanel({
     try {
       await onBeforeRevert?.();
 
+      const operationId = createHistoryOperationId("revert-commit");
       const response = await revertCommit({
         oid: activeRevertTarget.id,
+        operationId,
         pushAfterRevert: hasRemote && revertPushAfterRevert,
         repositoryPath,
       });

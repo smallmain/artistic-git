@@ -146,6 +146,7 @@ fn backend_full_chain_uses_real_temporary_remote_from_clone_to_revert() {
             repository_path: display_path(&local.path),
             oid: local_add_oid,
             push_after_revert: true,
+            operation_id: None,
         },
     )
     .expect("revert and push");
@@ -320,6 +321,7 @@ fn commit_path_with_app(
             large_file_decision: LargeFileDecision::Prompt,
             disable_repository_gpgsign: false,
             push_immediately,
+            operation_id: None,
         },
     )
     .expect("commit changes");

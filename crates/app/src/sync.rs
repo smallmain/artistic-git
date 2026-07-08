@@ -59,7 +59,7 @@ where
         .operation_id
         .clone()
         .unwrap_or_else(sync_operation_id);
-    let auto_stash = create_sync_auto_stash(runner, &root)?;
+    let auto_stash = create_sync_auto_stash(runner, &root, &operation_id)?;
 
     let sync_result = sync_current_branch_clean(
         runner,
@@ -305,7 +305,7 @@ pub fn accept_remote_history(
     let mut stash_recovery = None;
 
     if current_branch.as_deref() == Some(branch_name.as_str()) {
-        let auto_stash = create_accept_remote_history_auto_stash(runner, &root)?;
+        let auto_stash = create_accept_remote_history_auto_stash(runner, &root, &operation_id)?;
         let (plan, output) = run_git_raw(
             runner,
             Some(&root),
@@ -1107,7 +1107,7 @@ fn apply_current_auto_tracking_rule(
     target_ref: &str,
     operation_id: &OperationId,
 ) -> AppResult<AutoTrackingRuleResult> {
-    let auto_stash = create_auto_tracking_stash(runner, root)?;
+    let auto_stash = create_auto_tracking_stash(runner, root, operation_id)?;
     let before = rev_parse(runner, root, "HEAD")?;
     ensure_clean_worktree(runner, root)?;
     let (plan, output) = run_git_raw(
@@ -1350,7 +1350,11 @@ fn update_ref(runner: &GitRunner, root: &Path, ref_name: &str, oid: &str) -> App
     }
 }
 
-fn create_auto_tracking_stash(runner: &GitRunner, root: &Path) -> AppResult<Option<StashEntry>> {
+fn create_auto_tracking_stash(
+    runner: &GitRunner,
+    root: &Path,
+    operation_id: &OperationId,
+) -> AppResult<Option<StashEntry>> {
     Ok(crate::stash_impl::create_auto_stash(
         runner,
         CreateAutoStashRequest {
@@ -1358,6 +1362,7 @@ fn create_auto_tracking_stash(runner: &GitRunner, root: &Path) -> AppResult<Opti
             reason: "before applying automatic tracking".to_owned(),
             include_untracked: true,
             paths: Vec::new(),
+            operation_id: Some(operation_id.clone()),
         },
     )?
     .stash)
@@ -1687,7 +1692,11 @@ fn reset_to_start(runner: &GitRunner, root: &Path, oid: &str) {
     let _ = run_git_raw(runner, Some(root), ["reset", "--hard", oid], SYNC_OPERATION);
 }
 
-fn create_sync_auto_stash(runner: &GitRunner, root: &Path) -> AppResult<Option<StashEntry>> {
+fn create_sync_auto_stash(
+    runner: &GitRunner,
+    root: &Path,
+    operation_id: &OperationId,
+) -> AppResult<Option<StashEntry>> {
     Ok(crate::stash_impl::create_auto_stash(
         runner,
         CreateAutoStashRequest {
@@ -1695,6 +1704,7 @@ fn create_sync_auto_stash(runner: &GitRunner, root: &Path) -> AppResult<Option<S
             reason: "before syncing current branch".to_owned(),
             include_untracked: true,
             paths: Vec::new(),
+            operation_id: Some(operation_id.clone()),
         },
     )?
     .stash)
@@ -1703,6 +1713,7 @@ fn create_sync_auto_stash(runner: &GitRunner, root: &Path) -> AppResult<Option<S
 fn create_accept_remote_history_auto_stash(
     runner: &GitRunner,
     root: &Path,
+    operation_id: &OperationId,
 ) -> AppResult<Option<StashEntry>> {
     Ok(crate::stash_impl::create_auto_stash(
         runner,
@@ -1711,6 +1722,7 @@ fn create_accept_remote_history_auto_stash(
             reason: "before accepting remote history".to_owned(),
             include_untracked: true,
             paths: Vec::new(),
+            operation_id: Some(operation_id.clone()),
         },
     )?
     .stash)

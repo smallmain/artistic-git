@@ -83,6 +83,12 @@ pub(crate) fn with_cancel_token_for_operation<T>(
     action()
 }
 
+pub(crate) fn without_cancel_token<T>(action: impl FnOnce() -> T) -> T {
+    let saved = CANCEL_CONTEXT.with(|contexts| std::mem::take(&mut *contexts.borrow_mut()));
+    let _guard = CancelContextSuspendGuard { saved: Some(saved) };
+    action()
+}
+
 struct CancelContextGuard;
 
 impl Drop for CancelContextGuard {
@@ -90,6 +96,20 @@ impl Drop for CancelContextGuard {
         CANCEL_CONTEXT.with(|contexts| {
             contexts.borrow_mut().pop();
         });
+    }
+}
+
+struct CancelContextSuspendGuard {
+    saved: Option<Vec<CancelCommandContext>>,
+}
+
+impl Drop for CancelContextSuspendGuard {
+    fn drop(&mut self) {
+        if let Some(saved) = self.saved.take() {
+            CANCEL_CONTEXT.with(|contexts| {
+                *contexts.borrow_mut() = saved;
+            });
+        }
     }
 }
 

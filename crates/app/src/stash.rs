@@ -137,6 +137,7 @@ pub fn restore_stash(
     runner: &GitRunner,
     request: RestoreStashRequest,
 ) -> AppResult<RestoreStashResponse> {
+    let operation_id = request.operation_id.clone();
     let operation_name = request
         .operation_name
         .as_deref()
@@ -157,7 +158,7 @@ pub fn restore_stash(
         selector,
         request.drop_on_success,
         operation_name,
-        None,
+        operation_id.as_ref(),
     )
 }
 
@@ -224,7 +225,20 @@ pub(crate) fn restore_stash_for_root(
                 outcome: StashRestoreOutcome::Conflicts { conflict },
             })
         }
-        Err(error) => Err(error),
+        Err(error) => {
+            let repository_path = display_path(root);
+            let recovery = recovery.clone();
+            crate::git_ops::without_cancel_token(|| {
+                let _ = cancel_stash_restore(
+                    runner,
+                    CancelStashRestoreRequest {
+                        repository_path,
+                        recovery,
+                    },
+                );
+            });
+            Err(error)
+        }
     }
 }
 
@@ -1044,6 +1058,7 @@ mod tests {
                 message: "manual stash".to_owned(),
                 include_untracked: true,
                 paths: vec!["stash.txt".to_owned()],
+                operation_id: None,
             },
         )
         .expect("create partial stash");
@@ -1071,6 +1086,7 @@ mod tests {
                 message: "manual full stash".to_owned(),
                 include_untracked: true,
                 paths: Vec::new(),
+                operation_id: None,
             },
         )
         .expect("create full stash");
@@ -1108,6 +1124,7 @@ mod tests {
                 selector: stash.selector,
                 drop_on_success: false,
                 operation_name: None,
+                operation_id: None,
             },
         )
         .expect("manual apply stash");
@@ -1144,6 +1161,7 @@ mod tests {
                 reason: "Auto Stash: switch branch".to_owned(),
                 include_untracked: true,
                 paths: Vec::new(),
+                operation_id: None,
             },
         )
         .expect("create auto stash")
@@ -1167,6 +1185,7 @@ mod tests {
             DeleteStashRequest {
                 repository_path: display_path(&repo.path),
                 selector: stash.selector,
+                operation_id: None,
             },
         )
         .expect("delete stash");
@@ -1197,6 +1216,7 @@ mod tests {
                 reason: "switch branch".to_owned(),
                 include_untracked: true,
                 paths: Vec::new(),
+                operation_id: None,
             },
         )
         .expect("create auto stash")
@@ -1211,6 +1231,7 @@ mod tests {
                 selector: stash.selector,
                 drop_on_success: true,
                 operation_name: None,
+                operation_id: None,
             },
         )
         .expect("conflict keeps typed outcome");
@@ -1267,6 +1288,7 @@ mod tests {
                 reason: "switch branch".to_owned(),
                 include_untracked: true,
                 paths: Vec::new(),
+                operation_id: None,
             },
         )
         .expect("create auto stash")
@@ -1280,6 +1302,7 @@ mod tests {
                 selector: stash.selector,
                 drop_on_success: true,
                 operation_name: None,
+                operation_id: None,
             },
         )
         .expect("restore stash");
@@ -1317,6 +1340,7 @@ mod tests {
                 selector: "stash@{0}".to_owned(),
                 drop_on_success: false,
                 operation_name: None,
+                operation_id: None,
             },
         )
         .expect("conflict is a typed outcome");
