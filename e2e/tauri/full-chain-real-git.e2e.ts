@@ -26,6 +26,10 @@ type GitDistManifest = {
 const runRealGitE2e = process.env.ARTISTIC_GIT_E2E_REAL_GIT === "1";
 const describeRealGit = runRealGitE2e ? describe : describe.skip;
 const progressEvents: FullChainProgressEvent[] = [];
+const gitCommandTimeoutMs = readPositiveIntegerEnv(
+  "ARTISTIC_GIT_E2E_GIT_TIMEOUT_MS",
+  120_000,
+);
 
 describeRealGit("Artistic Git Tauri real-git full chain", () => {
   let fixture: RealGitFixture;
@@ -201,12 +205,14 @@ function writeFullChainProgress(
   status: FullChainProgressEvent["status"],
   fields: Pick<FullChainProgressEvent, "detail" | "error"> = {},
 ) {
-  progressEvents.push({
+  const event = {
     at: new Date().toISOString(),
     step,
     status,
     ...fields,
-  });
+  };
+  progressEvents.push(event);
+  console.log(`[phase12-full-chain] ${JSON.stringify(event)}`);
 
   const outputDir = path.resolve("artifacts");
   mkdirSync(outputDir, { recursive: true });
@@ -299,14 +305,27 @@ class RealGitFixture {
       cwd,
       env: this.env,
       encoding: "utf8",
+      timeout: gitCommandTimeoutMs,
     });
-    if (result.status !== 0) {
+    if (result.error || result.status !== 0) {
       throw new Error(
-        `git ${args.join(" ")} failed in ${cwd ?? process.cwd()}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+        `git ${args.join(" ")} failed in ${cwd ?? process.cwd()} after timeoutMs=${gitCommandTimeoutMs}\nstatus: ${result.status ?? "null"}\nsignal: ${result.signal ?? "null"}\nerror: ${result.error?.message ?? "none"}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
       );
     }
     return result.stdout;
   }
+}
+
+function readPositiveIntegerEnv(name: string, fallback: number) {
+  const raw = process.env[name];
+  if (typeof raw !== "string" || raw.trim() === "") {
+    return fallback;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`${name} must be a positive integer, got ${raw}`);
+  }
+  return parsed;
 }
 
 function createEmbeddedGitEnv({
