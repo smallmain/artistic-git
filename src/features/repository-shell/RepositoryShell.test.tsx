@@ -1070,6 +1070,31 @@ describe("RepositoryShell close guard", () => {
     expect(commandMocks.closeCurrentWindow).toHaveBeenCalledTimes(1);
   });
 
+  it("cancels unresolved conflicts before completing a pending app quit", async () => {
+    const conflict = createConflictEvent();
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />, {
+      conflictsByRepository: {
+        "/repo/art": conflict,
+      },
+    });
+
+    await emitWindowCloseBlocked({ reason: "quit" });
+    fireEvent.click(
+      within(
+        await screen.findByRole("dialog", { name: "Close window?" }),
+      ).getByRole("button", { name: "Close and recover" }),
+    );
+
+    await waitFor(() =>
+      expect(commandMocks.cancelConflictResolution).toHaveBeenCalledWith({
+        operationId: "commit-conflict-test",
+        repositoryPath: "/repo/art",
+      }),
+    );
+    expect(commandMocks.closeCurrentWindow).toHaveBeenCalledTimes(1);
+    expect(commandMocks.cancelPendingWindowExit).not.toHaveBeenCalled();
+  });
+
   it("cancels stash restore recovery before closing the guarded window", async () => {
     const conflict = createConflictEvent();
     const recovery = {
@@ -1142,6 +1167,29 @@ describe("RepositoryShell close guard", () => {
       }),
     );
     expect(commandMocks.closeCurrentWindow).toHaveBeenCalledTimes(1);
+  });
+
+  it("exits review mode before completing a pending app quit", async () => {
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Review Mode" }));
+    await screen.findByRole("dialog", { name: "Review mode" });
+
+    await emitWindowCloseBlocked({ reason: "quit" });
+    fireEvent.click(
+      within(
+        await screen.findByRole("dialog", { name: "Close window?" }),
+      ).getByRole("button", { name: "Close and recover" }),
+    );
+
+    await waitFor(() =>
+      expect(commandMocks.exitReviewMode).toHaveBeenCalledWith({
+        operationId: expect.stringMatching(/^review-exit-/),
+        repositoryPath: "/repo/art",
+      }),
+    );
+    expect(commandMocks.closeCurrentWindow).toHaveBeenCalledTimes(1);
+    expect(commandMocks.cancelPendingWindowExit).not.toHaveBeenCalled();
   });
 
   it("cancels pending app quit when a guarded close prompt is dismissed", async () => {

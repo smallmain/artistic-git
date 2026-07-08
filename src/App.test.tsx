@@ -268,6 +268,9 @@ describe("App", () => {
     fireEvent.keyDown(window, { key: "w", ctrlKey: true });
     expect(commandMocks.closeCurrentWindow).toHaveBeenCalledTimes(1);
 
+    fireEvent.keyDown(window, { key: "w", metaKey: true });
+    expect(commandMocks.closeCurrentWindow).toHaveBeenCalledTimes(2);
+
     fireEvent.keyDown(window, { key: "f", metaKey: true });
     expect(screen.getByLabelText("Search history")).toHaveFocus();
   });
@@ -375,6 +378,44 @@ describe("AppErrorBoundary", () => {
     );
 
     consoleError.mockRestore();
+  });
+
+  it("isolates React error boundary state per mounted root", () => {
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+
+    function BrokenView(): ReactElement {
+      throw new Error("Repository view failed");
+    }
+
+    try {
+      const firstRoot = renderWithProviders(
+        <AppErrorBoundary>
+          <BrokenView />
+        </AppErrorBoundary>,
+      );
+      expect(screen.getByRole("dialog")).toHaveTextContent(
+        "Repository view failed",
+      );
+
+      firstRoot.unmount();
+
+      renderWithProviders(
+        <AppErrorBoundary>
+          <div>Second repository window stays interactive</div>
+        </AppErrorBoundary>,
+      );
+
+      expect(
+        screen.getByText("Second repository window stays interactive"),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText("Repository view failed"),
+      ).not.toBeInTheDocument();
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 });
 

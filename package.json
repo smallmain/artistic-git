@@ -27,6 +27,7 @@
     "i18n:audit": "node scripts/check-i18n-audit.mjs",
     "privacy:audit": "node scripts/check-privacy-network.mjs",
     "phase9:close-guard:audit": "node scripts/check-phase9-close-guard-audit.mjs",
+    "phase9:crash-isolation:audit": "node scripts/check-phase9-crash-isolation-audit.mjs",
     "fetch:git-dist": "node scripts/fetch-git-dist.mjs",
     "release:version": "node scripts/release-version.mjs",
     "release:version:test": "node --test scripts/release-version.node-tests.mjs",

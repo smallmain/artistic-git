@@ -11,6 +11,8 @@ const repoRoot = path.resolve(
 );
 
 const source = {
+  app: read("src/App.tsx"),
+  appTest: read("src/App.test.tsx"),
   commands: read("src/lib/ipc/commands.ts"),
   generated: read("src/lib/ipc/generated.ts"),
   startScreen: read("src/features/start/StartScreen.tsx"),
@@ -24,6 +26,9 @@ const source = {
   tauriLib: read("src-tauri/src/lib.rs"),
   backend: read("crates/app/src/repository.rs"),
   fullChainE2e: read("e2e/tauri/full-chain-real-git.e2e.ts"),
+  windowCloseGuard: read(
+    "src/features/window-close-guard/WindowCloseGuard.tsx",
+  ),
 };
 
 const cancellableOperations = [
@@ -345,6 +350,76 @@ assertMatch(
   "RepositoryShell only cancels operations explicitly marked cancellable",
 );
 assertMatch(
+  source.repositoryShell,
+  /const writeOperationBusy\s*=[\s\S]*activeOperationBusy[\s\S]*reviewBusy;/,
+  "RepositoryShell write-operation close guard source set",
+);
+assertMatch(
+  source.repositoryShell,
+  /const closeGuardActive\s*=\s*[\s\S]*writeOperationBusy\s*\|\|[\s\S]*conflict !== null\s*\|\|[\s\S]*reviewActive\s*\|\|[\s\S]*reviewRecoveryPrompt;/,
+  "RepositoryShell close guard covers writes, conflicts, review mode, and recovery prompts",
+);
+assertMatch(
+  source.repositoryShell,
+  /await cancelOperation\(\{[\s\S]*operationId: closeGuardActiveOperation\.operationId,[\s\S]*\}\);/,
+  "RepositoryShell close guard cancels active cancellable backend writes",
+);
+assertMatch(
+  source.repositoryShell,
+  /cancelConflictResolution\(\{[\s\S]*operationId: conflict\.operationId,[\s\S]*repositoryPath: conflict\.repositoryPath,[\s\S]*\}\);/,
+  "RepositoryShell close guard cancels unresolved conflict mode",
+);
+assertMatch(
+  source.repositoryShell,
+  /exitReviewMode\(\{[\s\S]*createRepositoryOperationId\("review-exit-close"\)[\s\S]*repositoryPath,[\s\S]*\}\);/,
+  "RepositoryShell close guard exits active review mode",
+);
+assertMatch(
+  source.repositoryShell,
+  /recoverReviewModeStash\(\{[\s\S]*createRepositoryOperationId\("review-recover-close"\)[\s\S]*repositoryPath,[\s\S]*\}\);/,
+  "RepositoryShell close guard recovers review mode crash prompt",
+);
+assertMatch(
+  source.windowCloseGuard,
+  /await onRecover\(\);[\s\S]*await setWindowCloseGuard\(\{ active: false \}\);[\s\S]*await closeCurrentWindow\(\);/,
+  "WindowCloseGuard recovers, clears the backend guard, then closes the window",
+);
+assertMatch(
+  source.windowCloseGuard,
+  /if \(reason === "quit"\) \{[\s\S]*cancelPendingQuit\(\);[\s\S]*\}/,
+  "WindowCloseGuard cancels pending app quit when recovery fails",
+);
+assertMatch(
+  source.windowCloseGuard,
+  /closeRequest\?\.reason === "quit"[\s\S]*cancelPendingQuit\(\);/,
+  "WindowCloseGuard cancels pending app quit when the prompt is dismissed",
+);
+assertMatch(
+  source.app,
+  /key === "w"[\s\S]*event\.preventDefault\(\);[\s\S]*closeCurrentWindow\(\)/,
+  "App Cmd/Ctrl+W shortcut uses the same close_current_window command as menu close",
+);
+assertMatch(
+  source.appTest,
+  /ctrlKey: true[\s\S]*closeCurrentWindow\)\.toHaveBeenCalledTimes\(1\)[\s\S]*metaKey: true[\s\S]*closeCurrentWindow\)\.toHaveBeenCalledTimes\(2\)/,
+  "App shortcut test covers both Ctrl+W and Cmd+W",
+);
+assertMatch(
+  source.tauriLib,
+  /"close-window"[\s\S]*close_guard_block_event\([\s\S]*WindowCloseBlockedReason::CloseWindow[\s\S]*window\.emit\("window-close-blocked", event\)/,
+  "Tauri File > Close Window menu path uses the close guard",
+);
+assertMatch(
+  source.tauriLib,
+  /WindowEvent::CloseRequested \{ api,[\s\S]*api\.prevent_close\(\);[\s\S]*window\.emit\("window-close-blocked", event\)/,
+  "Tauri native X close request is blocked by the close guard",
+);
+assertMatch(
+  source.tauriLib,
+  /RunEvent::ExitRequested \{ api,[\s\S]*api\.prevent_exit\(\);[\s\S]*registry_set_pending_exit_after_close_guards\(&registry, true\)[\s\S]*emit_close_guard_request\(app, guarded_labels, WindowCloseBlockedReason::Quit\)/,
+  "Tauri Cmd/Ctrl+Q app quit path fans out close guard prompts per guarded window",
+);
+assertMatch(
   source.repositoryShellTest,
   /guards non-cancellable active backend operations as wait-only/,
   "RepositoryShell wait-only active operation test",
@@ -353,6 +428,26 @@ assertMatch(
   source.repositoryShellTest,
   /cancels a cancellable active backend operation before closing/,
   "RepositoryShell cancellable active operation test",
+);
+assertMatch(
+  source.repositoryShellTest,
+  /cancels unresolved conflicts before closing the guarded window/,
+  "RepositoryShell conflict close recovery test",
+);
+assertMatch(
+  source.repositoryShellTest,
+  /cancels unresolved conflicts before completing a pending app quit/,
+  "RepositoryShell conflict pending app quit recovery test",
+);
+assertMatch(
+  source.repositoryShellTest,
+  /exits review mode before closing the guarded window/,
+  "RepositoryShell review close recovery test",
+);
+assertMatch(
+  source.repositoryShellTest,
+  /exits review mode before completing a pending app quit/,
+  "RepositoryShell review pending app quit recovery test",
 );
 assertMatch(
   source.repositoryShellTest,
