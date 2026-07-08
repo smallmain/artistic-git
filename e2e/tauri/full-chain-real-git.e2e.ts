@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,6 +19,7 @@ import { waitForStartScreenReady } from "./start-screen";
 type GitDistManifest = {
   paths: {
     gitExecutable: string;
+    gitLfsExecutable?: string;
   };
 };
 
@@ -144,12 +146,7 @@ describeRealGit("Artistic Git Tauri real-git full chain", () => {
     });
 
     await recordStep("revert local.txt commit through UI", () =>
-      revertCommitThroughUi(
-        fixture,
-        localPath,
-        localAddOid,
-        "add local file",
-      ),
+      revertCommitThroughUi(fixture, localPath, localAddOid, "add local file"),
     );
 
     recordStepSync("verify revert reached peer", () => {
@@ -254,12 +251,12 @@ class RealGitFixture {
 
     const parentPath = mkdtempSync(path.join(tmpdir(), "ag-wdio-full-chain-"));
     const remotePath = path.join(parentPath, "remote.git");
-    const env = {
-      ...process.env,
-      GIT_CONFIG_NOSYSTEM: "1",
-      HOME: path.join(parentPath, "home"),
-      PATH: path.dirname(gitPath),
-    };
+    const env = createEmbeddedGitEnv({
+      gitDist,
+      gitPath,
+      home: path.join(parentPath, "home"),
+      manifest,
+    });
     const fixture = new RealGitFixture(parentPath, remotePath, gitPath, env);
     fixture.git(["init", "--bare", "-b", "main", remotePath]);
     fixture.git(["init", "-b", "main", fixture.repoPath("seed")]);
@@ -310,6 +307,76 @@ class RealGitFixture {
     }
     return result.stdout;
   }
+}
+
+function createEmbeddedGitEnv({
+  gitDist,
+  gitPath,
+  home,
+  manifest,
+}: {
+  gitDist: string;
+  gitPath: string;
+  home: string;
+  manifest: GitDistManifest;
+}) {
+  const gitExecPath = firstExistingDirectory(gitDist, [
+    "git/libexec/git-core",
+    "git/mingw64/libexec/git-core",
+    "git/usr/libexec/git-core",
+  ]);
+  if (!gitExecPath) {
+    throw new Error(`embedded git exec-path was not found under ${gitDist}`);
+  }
+
+  const gitLfsPath = manifest.paths.gitLfsExecutable
+    ? path.join(gitDist, manifest.paths.gitLfsExecutable)
+    : null;
+  const pathEntries = uniquePaths([
+    path.dirname(gitPath),
+    gitExecPath,
+    gitLfsPath ? path.dirname(gitLfsPath) : null,
+    path.join(gitDist, "git", "cmd"),
+    path.join(gitDist, "git", "mingw64", "bin"),
+    path.join(gitDist, "git", "usr", "bin"),
+  ]);
+
+  return {
+    ...process.env,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_EXEC_PATH: gitExecPath,
+    HOME: home,
+    PATH: pathEntries.join(path.delimiter),
+  };
+}
+
+function firstExistingDirectory(root: string, relativePaths: string[]) {
+  return relativePaths
+    .map((relativePath) => path.join(root, relativePath))
+    .find((candidate) => {
+      try {
+        return statSync(candidate).isDirectory();
+      } catch {
+        return false;
+      }
+    });
+}
+
+function uniquePaths(paths: Array<null | string | undefined>) {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const entry of paths) {
+    if (!entry) {
+      continue;
+    }
+    const normalized = path.resolve(entry);
+    if (seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    result.push(normalized);
+  }
+  return result;
 }
 
 async function cloneThroughUi(
@@ -502,7 +569,9 @@ async function revertCommitThroughUi(
   assert.ok(row, `history row for ${message} (${oid}) should exist`);
   await row.click();
   await $('[data-testid="history-revert-open"]').click();
-  const pushCheckbox = await $('[data-testid="history-revert-push-immediately"]');
+  const pushCheckbox = await $(
+    '[data-testid="history-revert-push-immediately"]',
+  );
   await pushCheckbox.waitForExist({
     timeout: 30_000,
     timeoutMsg: "revert push checkbox did not appear for remote repository",

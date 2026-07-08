@@ -187,7 +187,9 @@ const gates = [
       "ARTISTIC_GIT_DIST_DIR",
       "manifest.paths.gitExecutable",
       "spawnSync(this.gitPath",
-      "PATH: path.dirname(gitPath)",
+      "createEmbeddedGitEnv",
+      "GIT_EXEC_PATH",
+      "git/libexec/git-core",
     ],
   },
   {
