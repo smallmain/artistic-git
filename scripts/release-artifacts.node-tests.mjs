@@ -1,4 +1,8 @@
+/* global process */
+
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -23,6 +27,19 @@ const repoRoot = path.resolve(
 const releaseWorkflow = await readFile(
   path.join(repoRoot, ".github", "workflows", "release.yml"),
   "utf8",
+);
+const ciWorkflow = await readFile(
+  path.join(repoRoot, ".github", "workflows", "ci.yml"),
+  "utf8",
+);
+const gitDistWorkflow = await readFile(
+  path.join(repoRoot, ".github", "workflows", "git-dist.yml"),
+  "utf8",
+);
+const verifyGitDistBuildEvidenceScript = path.join(
+  repoRoot,
+  "scripts",
+  "verify-git-dist-build-evidence.mjs",
 );
 
 async function writeFixtureConfig(tmpDir, { writeManifest = true } = {}) {
@@ -59,6 +76,39 @@ async function writeFixtureConfig(tmpDir, { writeManifest = true } = {}) {
   );
 
   return { configPath, gitDistDir };
+}
+
+async function writeFixtureGitDist(gitDistDir) {
+  const files = new Map([
+    ["git/bin/git", "git fixture\n"],
+    ["git-lfs/git-lfs", "git-lfs fixture\n"],
+    ["helpers/artistic-git-credential-helper", "credential helper fixture\n"],
+    ["helpers/artistic-git-ssh-askpass", "ssh askpass fixture\n"],
+  ]);
+  const sha256 = {};
+  for (const [relativePath, contents] of files) {
+    const filePath = path.join(gitDistDir, relativePath);
+    await mkdir(path.dirname(filePath), { recursive: true });
+    await writeFile(filePath, contents);
+    sha256[relativePath] = createHash("sha256").update(contents).digest("hex");
+  }
+  await mkdir(gitDistDir, { recursive: true });
+  await writeFile(
+    path.join(gitDistDir, "manifest.json"),
+    `${JSON.stringify(
+      {
+        paths: {
+          gitExecutable: "git/bin/git",
+          gitLfsExecutable: "git-lfs/git-lfs",
+          credentialHelper: "helpers/artistic-git-credential-helper",
+          sshAskpass: "helpers/artistic-git-ssh-askpass",
+        },
+        sha256,
+      },
+      null,
+      2,
+    )}\n`,
+  );
 }
 
 test("builds latest.json with all signed Tauri updater platforms", async () => {
@@ -159,7 +209,7 @@ test("resource checker validates staged and packaged git-dist wiring", async () 
       "x86_64-unknown-linux-gnu",
       "release",
     );
-    const packagedManifest = path.join(
+    const packagedGitDist = path.join(
       bundleOutput,
       "bundle",
       "appimage",
@@ -168,10 +218,9 @@ test("resource checker validates staged and packaged git-dist wiring", async () 
       "lib",
       "artistic-git",
       "git-dist",
-      "manifest.json",
     );
-    await mkdir(path.dirname(packagedManifest), { recursive: true });
-    await writeFile(packagedManifest, "{}\n");
+    await writeFixtureGitDist(packagedGitDist);
+    const packagedManifest = path.join(packagedGitDist, "manifest.json");
 
     assert.deepEqual(await findBundledGitDistManifests(bundleOutput), [
       packagedManifest,
@@ -187,6 +236,41 @@ test("resource checker validates staged and packaged git-dist wiring", async () 
 
     assert.equal(result.bundledManifestPaths.length, 1);
     assert.equal(result.bundledManifestPaths[0], packagedManifest);
+    assert.equal(result.bundledManifestChecks[0].checked.length, 4);
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("resource checker rejects packaged git-dist sha mismatches", async () => {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-resources-"));
+
+  try {
+    const { configPath } = await writeFixtureConfig(tmpDir);
+    const bundleOutput = path.join(tmpDir, "target", "release");
+    const packagedGitDist = path.join(
+      bundleOutput,
+      "bundle",
+      "app",
+      "git-dist",
+    );
+    await writeFixtureGitDist(packagedGitDist);
+    await writeFile(
+      path.join(packagedGitDist, "git", "bin", "git"),
+      "tampered\n",
+    );
+
+    await assert.rejects(
+      () =>
+        checkTauriBundleResources({
+          configPath,
+          requireManifest: true,
+          releaseMode: true,
+          bundleOutput,
+          requireBundledResource: true,
+        }),
+      /sha256 mismatch/,
+    );
   } finally {
     await rm(tmpDir, { recursive: true, force: true });
   }
@@ -312,6 +396,24 @@ test("release workflow checks staged and packaged git-dist resources", () => {
       "node scripts/check-tauri-bundle-resources.mjs --require-manifest --release",
     ),
   );
+  assert.ok(
+    releaseWorkflow.includes(
+      'node scripts/check-git-dist.mjs --target="${{ matrix.gitDistTarget }}"',
+    ),
+  );
+  assert.ok(
+    !releaseWorkflow.includes(
+      'node scripts/check-git-dist.mjs --no-exec --target="${{ matrix.gitDistTarget }}"',
+    ),
+  );
+  assert.ok(
+    releaseWorkflow.includes(
+      "name: git-dist-build-evidence-${{ matrix.gitDistTarget }}",
+    ),
+  );
+  assert.ok(
+    releaseWorkflow.includes("node scripts/verify-git-dist-build-evidence.mjs"),
+  );
   assert.ok(releaseWorkflow.includes("Verify packaged embedded Git resources"));
   assert.ok(
     releaseWorkflow.includes(
@@ -326,3 +428,102 @@ test("release workflow checks staged and packaged git-dist resources", () => {
     ),
   );
 });
+
+test("CI and git-dist workflows cover release and report contract checks", () => {
+  assert.ok(ciWorkflow.includes("run: pnpm release:check"));
+  assert.ok(ciWorkflow.includes("if: runner.os == 'Linux'"));
+  assert.ok(gitDistWorkflow.includes('"scripts/git-dist-report.mjs"'));
+});
+
+test("git-dist build evidence verifier accepts only reusable artifacts from the expected run", async () => {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-git-dist-evidence-"));
+  const evidencePath = path.join(tmpDir, "git-dist-build-evidence.json");
+  const blockedPath = path.join(tmpDir, "git-dist-blocked-evidence.json");
+
+  try {
+    await writeFile(
+      evidencePath,
+      `${JSON.stringify(gitDistBuildEvidence(), null, 2)}\n`,
+    );
+    const ok = spawnSync(
+      process.execPath,
+      [
+        verifyGitDistBuildEvidenceScript,
+        `--evidence=${evidencePath}`,
+        "--target=linux-x86_64",
+        "--run-id=12345",
+      ],
+      { encoding: "utf8" },
+    );
+    assert.equal(ok.status, 0, ok.stderr || ok.stdout);
+
+    await writeFile(
+      blockedPath,
+      `${JSON.stringify(
+        gitDistBuildEvidence({
+          blocked: true,
+          reusableArtifactProduced: false,
+          status: "placeholder-blocked",
+          targetStatus: "blocked",
+        }),
+        null,
+        2,
+      )}\n`,
+    );
+    const blocked = spawnSync(
+      process.execPath,
+      [
+        verifyGitDistBuildEvidenceScript,
+        `--evidence=${blockedPath}`,
+        "--target=linux-x86_64",
+        "--run-id=12345",
+      ],
+      { encoding: "utf8" },
+    );
+    assert.notEqual(blocked.status, 0);
+    assert.match(blocked.stderr, /not reusable|reusableArtifactProduced/);
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+function gitDistBuildEvidence({
+  blocked = false,
+  reusableArtifactProduced = true,
+  status = "validated-fresh-build",
+  targetStatus = "ready",
+} = {}) {
+  return {
+    schemaVersion: 1,
+    workflowBuild: {
+      schemaVersion: 1,
+      mode: "build",
+      run: {
+        runId: "12345",
+      },
+      target: {
+        name: "linux-x86_64",
+        artifactName: "artistic-git-dist-linux-x86_64",
+        status: targetStatus,
+        blocked,
+      },
+      artifactIndex: [
+        {
+          kind: "reusable-git-dist",
+          name: "artistic-git-dist-linux-x86_64",
+          produced: reusableArtifactProduced,
+        },
+      ],
+      validationSummary: {
+        status,
+        reusableArtifactProduced,
+        commands: [
+          'node scripts/check-git-dist.mjs --schema-only --real-build --target="linux-x86_64"',
+          "cargo build -p artistic-git-helpers --bins --release",
+          'node scripts/fetch-git-dist.mjs --target="linux-x86_64" --output="$ARTISTIC_GIT_DIST_DIR" --cache-dir="$ARTISTIC_GIT_DIST_CACHE_DIR" --staging-dir="$ARTISTIC_GIT_DIST_STAGING_DIR"',
+          'node scripts/check-git-dist.mjs --target="linux-x86_64"',
+        ],
+      },
+    },
+  };
+}

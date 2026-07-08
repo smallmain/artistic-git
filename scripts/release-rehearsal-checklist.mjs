@@ -9,6 +9,9 @@ const toVersion = "0.1.1";
 const fromTag = `v${fromVersion}`;
 const toTag = `v${toVersion}`;
 const githubEvidenceBaseUrl = "https://github.com/smallmain/artistic-git";
+const githubEvidenceRepository = new URL(
+  githubEvidenceBaseUrl,
+).pathname.replace(/^\/|\/$/g, "");
 const dryRun = process.env.ARTISTIC_GIT_RELEASE_REHEARSAL_DRY_RUN !== "0";
 const reportDir =
   process.env.ARTISTIC_GIT_RELEASE_REHEARSAL_REPORT_DIR ??
@@ -377,6 +380,14 @@ function validateGithubUrl(rawValue, kind, expectedTag = null) {
   }
 
   const pathName = parsed.pathname.replace(/\/+$/, "");
+  if (!pathName.startsWith(`/${githubEvidenceRepository}/`)) {
+    return {
+      valid: false,
+      normalizedUrl: parsed.href,
+      reason: `URL must belong to ${githubEvidenceRepository}.`,
+    };
+  }
+
   const escapedTag = expectedTag?.replaceAll(".", "\\.");
   const checks = {
     "actions-run-url": /^\/[^/]+\/[^/]+\/actions\/runs\/\d+(?:\/.*)?$/,

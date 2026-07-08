@@ -159,6 +159,10 @@ jobs:
       - name: Audit privacy network surface
         run: pnpm privacy:audit
 
+      - name: Check release scripts and bundle resources
+        if: runner.os == 'Linux'
+        run: pnpm release:check
+
       - name: Audit phase 9 crash isolation
         env:
           ARTISTIC_GIT_PHASE9_CRASH_ISOLATION_AUDIT_REPORT: ${{ runner.temp }}/phase9-crash-isolation/phase9-crash-isolation-audit.json

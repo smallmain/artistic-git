@@ -7,6 +7,7 @@ on:
       - "scripts/fetch-git-dist.mjs"
       - "scripts/git-dist.node-tests.mjs"
       - "scripts/git-dist-lib.mjs"
+      - "scripts/git-dist-report.mjs"
       - "scripts/check-git-dist.mjs"
       - "scripts/check-git-dist-openssh-release.mjs"
       - "scripts/check-tauri-bundle-resources.mjs"

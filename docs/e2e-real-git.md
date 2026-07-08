@@ -20,7 +20,8 @@ system Git executable as a fallback.
 CI Evidence
 
 `pnpm e2e:real-git:report` writes
-`artifacts/e2e-real-git-report-<platform>.json` with one of these statuses:
+`artifacts/e2e-real-git-report-<platform>.json` with one of these availability
+statuses:
 
 - `ready`: a real embedded Git executable was found and `git --version`
   succeeded through the manifest path. CI sets `ARTISTIC_GIT_E2E_REAL_GIT=1`
@@ -30,6 +31,24 @@ CI Evidence
 - `failed`: `ARTISTIC_GIT_E2E_REAL_GIT=1` was requested without a usable
   `ARTISTIC_GIT_DIST_DIR`, or the configured distribution is malformed. CI
   fails and uploads the failed report.
+
+Phase 12 then writes
+`artifacts/phase12-e2e-full-chain-evidence-<platform>.json` via
+`pnpm phase12:e2e:finalize`. That runtime evidence is checkable for a platform
+only when all of these are true:
+
+- the availability report is `ready`
+- the selected WDIO full-chain outcome is `success`
+- the Git Distribution source is a downloaded workflow artifact with `runId`,
+  `artifactName`, and the expected target
+- `gitExecutable` and `gitLfsExecutable` have SHA-256 evidence and resolve
+  inside `ARTISTIC_GIT_DIST_DIR`
+
+`pnpm phase12:evidence:summary` combines the uploaded Linux and Windows runtime
+evidence. The TASKS.md full-chain E2E item can be checked only when
+`phase12-evidence-summary.json` reports
+`tasks.e2eFullChain.checkable=true`. A Windows `artifact-missing` or skipped
+report is valid blocker evidence, but it is not a full-chain pass.
 
 The full-chain WDIO spec is guarded by `pnpm e2e:check`, which rejects Tauri
 backend invoke calls in `e2e/tauri/full-chain-real-git.e2e.ts`. Repository

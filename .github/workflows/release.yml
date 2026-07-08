@@ -263,6 +263,23 @@ jobs:
           run-id: ${{ needs.plan.outputs.git_dist_run_id }}
           github-token: ${{ github.token }}
 
+      - name: Download git-dist build evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: git-dist-build-evidence-${{ matrix.gitDistTarget }}
+          path: ${{ runner.temp }}/git-dist-build-evidence/${{ matrix.gitDistTarget }}
+          run-id: ${{ needs.plan.outputs.git_dist_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Verify git-dist build evidence
+        shell: bash
+        env:
+          ARTISTIC_GIT_DIST_ARTIFACT_NAME: artistic-git-dist-${{ matrix.gitDistTarget }}
+          ARTISTIC_GIT_DIST_BUILD_EVIDENCE: ${{ runner.temp }}/git-dist-build-evidence/${{ matrix.gitDistTarget }}/git-dist-build-evidence.json
+          ARTISTIC_GIT_DIST_RUN_ID: ${{ needs.plan.outputs.git_dist_run_id }}
+          ARTISTIC_GIT_DIST_TARGET: ${{ matrix.gitDistTarget }}
+        run: node scripts/verify-git-dist-build-evidence.mjs
+
       - name: Apply release version to package manifests
         shell: bash
         env:
@@ -313,7 +330,7 @@ jobs:
         run: |
           set -euo pipefail
           node scripts/check-tauri-bundle-resources.mjs --require-manifest --release
-          node scripts/check-git-dist.mjs --no-exec --target="${{ matrix.gitDistTarget }}"
+          node scripts/check-git-dist.mjs --target="${{ matrix.gitDistTarget }}"
 
       - name: Build Tauri bundles
         env:

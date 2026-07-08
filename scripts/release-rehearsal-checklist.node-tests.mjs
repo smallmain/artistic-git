@@ -94,6 +94,24 @@ test("operator-confirmed mode rejects malformed update rehearsal records", async
   );
 });
 
+test("operator-confirmed mode rejects GitHub evidence from another repository", async () => {
+  const env = buildCompleteOperatorEnv();
+  env.ARTISTIC_GIT_RELEASE_010_RUN_URL =
+    "https://github.com/other/repo/actions/runs/100";
+
+  const result = await runChecklist(env);
+
+  assert.notEqual(result.status, 0);
+  assert.equal(result.report.status, "blocker");
+  assert.ok(
+    result.report.blockers.some(
+      (blocker) =>
+        blocker.id === "invalid-github-url" &&
+        blocker.message.includes("smallmain/artistic-git"),
+    ),
+  );
+});
+
 async function runChecklist(env = {}) {
   const reportDir = await mkdtemp(
     path.join(os.tmpdir(), "ag-release-rehearsal-"),

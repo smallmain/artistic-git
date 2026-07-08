@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /* global console, process */
 
+import { createHash } from "node:crypto";
 import { access, readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -119,7 +120,9 @@ export async function checkTauriBundleResources({
 
   const targets = bundle.targets === "all" ? requiredTargets : bundle.targets;
   if (!Array.isArray(targets)) {
-    fail("bundle.targets must be an explicit target array for release packaging.");
+    fail(
+      "bundle.targets must be an explicit target array for release packaging.",
+    );
   }
 
   const missingTargets = requiredTargets.filter(
@@ -190,12 +193,91 @@ export async function checkTauriBundleResources({
       )}`,
     );
   }
+  const bundledManifestChecks =
+    requireBundledResource || bundledManifestPaths.length > 0
+      ? await Promise.all(
+          bundledManifestPaths.map((currentManifestPath) =>
+            validateBundledGitDistManifest(currentManifestPath),
+          ),
+        )
+      : [];
 
   return {
     sourcePath,
     manifestPath,
     bundledManifestPaths,
+    bundledManifestChecks,
   };
+}
+
+async function validateBundledGitDistManifest(manifestPath) {
+  let manifest;
+  try {
+    manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  } catch (error) {
+    fail(
+      `packaged git-dist manifest is not valid JSON: ${manifestPath}: ${error.message}`,
+    );
+  }
+  const root = path.dirname(manifestPath);
+  const paths = requireObject(
+    manifest.paths,
+    `packaged git-dist manifest must contain paths: ${manifestPath}`,
+  );
+  const sha256 = requireObject(
+    manifest.sha256,
+    `packaged git-dist manifest must contain sha256: ${manifestPath}`,
+  );
+  const checked = [];
+  for (const [key, relativePath] of Object.entries(paths)) {
+    const normalized = assertRelativeManifestPath(
+      relativePath,
+      key,
+      manifestPath,
+    );
+    const filePath = path.join(root, normalized);
+    const fileStat = await stat(filePath).catch(() => null);
+    if (!fileStat?.isFile()) {
+      fail(`packaged git-dist executable is missing for ${key}: ${filePath}`);
+    }
+    const expectedSha = sha256[normalized];
+    if (typeof expectedSha !== "string" || expectedSha.trim() === "") {
+      fail(`packaged git-dist manifest.sha256 is missing ${normalized}`);
+    }
+    const actualSha = await sha256File(filePath);
+    if (actualSha !== expectedSha.toLowerCase()) {
+      fail(
+        `packaged git-dist sha256 mismatch for ${normalized}: expected ${expectedSha}, got ${actualSha}`,
+      );
+    }
+    checked.push({ key, path: normalized, sha256: actualSha });
+  }
+  return { manifestPath, checked };
+}
+
+function assertRelativeManifestPath(value, key, manifestPath) {
+  if (typeof value !== "string" || value.trim() === "") {
+    fail(
+      `packaged git-dist manifest path ${key} must be a non-empty string: ${manifestPath}`,
+    );
+  }
+  const normalized = value.replaceAll("\\", "/");
+  if (
+    normalized.startsWith("/") ||
+    normalized === "." ||
+    normalized.split("/").some((part) => part === ".." || part === "")
+  ) {
+    fail(
+      `packaged git-dist manifest path ${key} must stay inside git-dist: ${value}`,
+    );
+  }
+  return normalized;
+}
+
+async function sha256File(filePath) {
+  const hash = createHash("sha256");
+  hash.update(await readFile(filePath));
+  return hash.digest("hex");
 }
 
 function parseArgs(argv) {
@@ -229,7 +311,10 @@ function parseArgs(argv) {
       options.requireManifest = true;
     } else if (arg === "--release") {
       options.releaseMode = true;
-    } else if (arg === "--bundle-output" || arg.startsWith("--bundle-output=")) {
+    } else if (
+      arg === "--bundle-output" ||
+      arg.startsWith("--bundle-output=")
+    ) {
       options.bundleOutput = readValue("--bundle-output");
     } else if (arg === "--require-bundled-resource") {
       options.requireBundledResource = true;
@@ -252,7 +337,8 @@ Checks that Tauri bundles the embedded git-dist resource tree at the packaged
 resource path expected by release builds. --require-manifest is for real release
 jobs after the git-dist artifact has been staged. --release also requires the
 public updater configuration to be ready for publishing. --require-bundled-resource
-checks built output directories for git-dist/manifest.json.`;
+checks built output directories for git-dist/manifest.json and verifies every
+manifest-declared executable checksum.`;
 }
 
 async function main() {
@@ -273,7 +359,7 @@ async function main() {
   }
   if (options.requireBundledResource) {
     status.push(
-      `packaged git-dist manifests found: ${result.bundledManifestPaths.length}`,
+      `packaged git-dist manifests checked: ${result.bundledManifestChecks.length}`,
     );
   }
   info(`${status.join("; ")}.`);

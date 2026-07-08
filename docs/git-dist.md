@@ -156,7 +156,7 @@ The intended repository-local development resources flow is:
 cargo build -p artistic-git-helpers --bins --release
 pnpm fetch:git-dist -- --dev-resources --target=macos-universal --helper-profile=release
 export ARTISTIC_GIT_DIST_DIR="$PWD/src-tauri/resources/git-dist"
-node scripts/check-git-dist.mjs --target=macos-universal --no-exec
+node scripts/check-git-dist.mjs --target=macos-universal
 ```
 
 `--dev-resources` also builds the release helper binaries automatically, so the
@@ -165,7 +165,7 @@ short form is:
 ```sh
 pnpm fetch:git-dist -- --dev-resources --target=macos-universal
 export ARTISTIC_GIT_DIST_DIR="$PWD/src-tauri/resources/git-dist"
-node scripts/check-git-dist.mjs --target=macos-universal --no-exec
+node scripts/check-git-dist.mjs --target=macos-universal
 ```
 
 `src-tauri/resources/git-dist/README.md` is tracked as the mount point
@@ -241,13 +241,16 @@ bundling:
 
 ```sh
 ARTISTIC_GIT_DIST_DIR=src-tauri/resources/git-dist \
-  node scripts/check-git-dist.mjs --no-exec --target=linux-x86_64
+  node scripts/check-git-dist.mjs --target=linux-x86_64
 node scripts/check-tauri-bundle-resources.mjs --require-manifest
 ```
 
 The release workflow runs the config-only check during dry-run builds. The
 gated publish path additionally requires `manifest.json` and the target-specific
 embedded Git executables to be present under `src-tauri/resources/git-dist/`.
+After Tauri bundling, `--require-bundled-resource` scans the built output for
+packaged `git-dist/manifest.json` files and verifies every manifest-declared
+executable exists with the recorded SHA-256.
 
 ## CI Artifact And Cache Strategy
 
@@ -366,13 +369,19 @@ Manual dispatches may keep the automatic bump or override it with `patch`,
 Formal publishing also requires a completed Git Distribution workflow run id.
 Pass it as the `git_dist_run_id` manual-dispatch input or set the
 `GIT_DIST_RUN_ID` repository variable for main-push releases. The package matrix
-downloads `artistic-git-dist-<target>` from that workflow run into
-`src-tauri/resources/git-dist`, then runs:
+downloads both `artistic-git-dist-<target>` and
+`git-dist-build-evidence-<target>` from that workflow run. Before packaging, it
+requires the evidence to prove that the same run produced a reusable artifact for
+the same target, and then validates the staged resource tree with runtime smoke:
 
 ```sh
+node scripts/verify-git-dist-build-evidence.mjs \
+  --evidence=/path/to/git-dist-build-evidence.json \
+  --target=<target> \
+  --run-id=<git-dist-run-id>
 node scripts/check-tauri-bundle-resources.mjs --require-manifest --release
 ARTISTIC_GIT_DIST_DIR=src-tauri/resources/git-dist \
-  node scripts/check-git-dist.mjs --no-exec --target=<target>
+  node scripts/check-git-dist.mjs --target=<target>
 ```
 
 `--release` additionally rejects the placeholder Tauri updater public key and
