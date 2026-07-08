@@ -137,8 +137,13 @@ async function pathExists(filePath) {
 }
 
 async function startFixtureServer(files) {
+  const loopbackProtocol = "http";
+  const loopbackHost = "127.0.0.1";
   const server = createServer((request, response) => {
-    const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
+    const requestUrl = new URL(
+      request.url ?? "/",
+      `${loopbackProtocol}://${loopbackHost}`,
+    );
     const key = decodeURIComponent(requestUrl.pathname.replace(/^\//, ""));
     const body = files[key];
     if (!body) {
@@ -151,14 +156,14 @@ async function startFixtureServer(files) {
 
   await new Promise((resolve, reject) => {
     server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
+    server.listen(0, loopbackHost, () => {
       server.off("error", reject);
       resolve();
     });
   });
   const address = server.address();
   return {
-    baseUrl: `http://127.0.0.1:${address.port}`,
+    baseUrl: `${loopbackProtocol}://${loopbackHost}:${address.port}`,
     close: () =>
       new Promise((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
@@ -1101,7 +1106,7 @@ test("workflow build evidence records partial source checks for blocked Windows"
             checksum: { expectedSha256: "a".repeat(64) },
             actualSha256: "a".repeat(64),
             cachePath: ".cache/git-dist/MinGit.zip",
-            url: "https://example.invalid/MinGit.zip",
+            url: "https://example.test/MinGit.zip",
             assetName: "MinGit.zip",
           },
           {
@@ -1114,7 +1119,7 @@ test("workflow build evidence records partial source checks for blocked Windows"
             checksum: { expectedSha256: "b".repeat(64) },
             actualSha256: "b".repeat(64),
             cachePath: ".cache/git-dist/git-lfs.zip",
-            url: "https://example.invalid/git-lfs.zip",
+            url: "https://example.test/git-lfs.zip",
             assetName: "git-lfs.zip",
           },
           {
@@ -1125,7 +1130,7 @@ test("workflow build evidence records partial source checks for blocked Windows"
             placeholder: true,
             reason: "preview release",
             checksum: { expectedSha256: "c".repeat(64) },
-            url: "https://example.invalid/OpenSSH-Win64.zip",
+            url: "https://example.test/OpenSSH-Win64.zip",
             assetName: "OpenSSH-Win64.zip",
           },
         ],
