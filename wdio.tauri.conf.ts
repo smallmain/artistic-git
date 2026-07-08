@@ -13,11 +13,46 @@ const tauriDriverPath =
   readNonEmptyEnv("TAURI_DRIVER") ?? defaultTauriDriverPath();
 const gitDistFixturePath =
   readNonEmptyEnv("ARTISTIC_GIT_DIST_DIR") ?? defaultGitDistFixturePath();
+const e2eLogDir = readNonEmptyEnv("ARTISTIC_GIT_E2E_LOG_DIR");
+const connectionRetryTimeout = readPositiveIntegerEnv(
+  "ARTISTIC_GIT_E2E_CONNECTION_RETRY_TIMEOUT_MS",
+  240_000,
+);
+const connectionRetryCount = readPositiveIntegerEnv(
+  "ARTISTIC_GIT_E2E_CONNECTION_RETRY_COUNT",
+  process.env.CI ? 2 : 1,
+);
+const startTimeout = readPositiveIntegerEnv(
+  "ARTISTIC_GIT_E2E_START_TIMEOUT_MS",
+  90_000,
+);
+const commandTimeout = readPositiveIntegerEnv(
+  "ARTISTIC_GIT_E2E_COMMAND_TIMEOUT_MS",
+  60_000,
+);
+const wdioLogLevel = readNonEmptyEnv("ARTISTIC_GIT_E2E_WDIO_LOG_LEVEL") ?? "info";
 const runRealGitE2e = process.env.ARTISTIC_GIT_E2E_REAL_GIT === "1";
 const e2eSpecs = selectE2eSpecs(
   readNonEmptyEnv("ARTISTIC_GIT_E2E_SPEC_SET"),
   runRealGitE2e,
 );
+const tauriServiceOptions = {
+  appBinaryPath,
+  autoDownloadEdgeDriver: true,
+  autoInstallTauriDriver: false,
+  backendLogLevel: "debug",
+  captureBackendLogs: true,
+  captureFrontendLogs: true,
+  commandTimeout,
+  driverProvider: "external",
+  env: tauriDriverEnvironment(gitDistFixturePath),
+  frontendLogLevel: "debug",
+  logLevel: wdioLogLevel,
+  startTimeout,
+  tauriDriverPath,
+  tauriDriverPort: driverPort,
+  ...(e2eLogDir ? { logDir: e2eLogDir } : {}),
+} as const;
 
 process.env.ARTISTIC_GIT_DIST_DIR = gitDistFixturePath;
 
@@ -28,30 +63,17 @@ export const config = {
   hostname: driverHost,
   port: driverPort,
   path: "/",
-  logLevel: process.env.CI ? "warn" : "info",
+  logLevel: wdioLogLevel,
   bail: 1,
   waitforTimeout: 10_000,
-  connectionRetryTimeout: 120_000,
-  connectionRetryCount: 1,
+  connectionRetryTimeout,
+  connectionRetryCount,
   framework: "mocha",
   reporters: ["spec"],
   services: [
     [
       "@wdio/tauri-service",
-      {
-        appBinaryPath,
-        autoDownloadEdgeDriver: true,
-        autoInstallTauriDriver: false,
-        captureBackendLogs: true,
-        captureFrontendLogs: true,
-        driverProvider: "external",
-        env: {
-          ARTISTIC_GIT_DIST_DIR: gitDistFixturePath,
-        },
-        logLevel: process.env.CI ? "warn" : "info",
-        tauriDriverPath,
-        tauriDriverPort: driverPort,
-      },
+      tauriServiceOptions,
     ],
   ],
   capabilities: [
@@ -62,11 +84,7 @@ export const config = {
         application: appBinaryPath,
       },
       "wdio:tauriServiceOptions": {
-        appBinaryPath,
-        driverProvider: "external",
-        env: {
-          ARTISTIC_GIT_DIST_DIR: gitDistFixturePath,
-        },
+        ...tauriServiceOptions,
       },
     },
   ],
@@ -90,6 +108,47 @@ function defaultTauriBinaryPath() {
 function readNonEmptyEnv(name: string) {
   const value = process.env[name];
   return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
+}
+
+function readPositiveIntegerEnv(name: string, fallback: number) {
+  const raw = readNonEmptyEnv(name);
+  if (raw === null) {
+    return fallback;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`${name} must be a positive integer, got ${raw}`);
+  }
+  return parsed;
+}
+
+function tauriDriverEnvironment(gitDistPath: string) {
+  const env: NodeJS.ProcessEnv = {
+    ARTISTIC_GIT_DIST_DIR: gitDistPath,
+  };
+  for (const name of [
+    "CI",
+    "DISPLAY",
+    "GDK_BACKEND",
+    "HOME",
+    "NO_AT_BRIDGE",
+    "PATH",
+    "RUST_BACKTRACE",
+    "RUST_LOG",
+    "WEBKIT_DISABLE_COMPOSITING_MODE",
+    "XDG_RUNTIME_DIR",
+  ]) {
+    copyEnvIfSet(env, name);
+  }
+  return env;
+}
+
+function copyEnvIfSet(target: NodeJS.ProcessEnv, name: string) {
+  const value = readNonEmptyEnv(name);
+  if (value !== null) {
+    target[name] = value;
+  }
 }
 
 function selectE2eSpecs(specSet: string | null, realGitEnabled: boolean) {

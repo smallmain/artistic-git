@@ -111,6 +111,7 @@ jobs:
           sudo find /etc/apt/sources.list.d -type f \( -iname '*microsoft*' -o -iname '*azure*' \) -print -delete
           sudo apt-get update -o Acquire::Retries=3
           sudo apt-get install -y \
+            dbus-x11 \
             libwebkit2gtk-4.1-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
@@ -342,20 +343,57 @@ jobs:
       - name: Install tauri-driver
         run: cargo install tauri-driver --version 2.0.6 --locked
 
+      - name: Diagnose Tauri WebDriver tools
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "DISPLAY=${DISPLAY:-}"
+          command -v tauri-driver
+          tauri-driver --version || true
+          command -v WebKitWebDriver
+          WebKitWebDriver --version || true
+
       - name: Run Tauri E2E on Linux
         id: tauri_e2e_linux
         if: runner.os == 'Linux'
         shell: bash
         env:
           ARTISTIC_GIT_E2E_REAL_GIT: ${{ steps.real-git-e2e.outputs.ready == 'true' && '1' || '0' }}
+          ARTISTIC_GIT_E2E_CONNECTION_RETRY_TIMEOUT_MS: "240000"
+          ARTISTIC_GIT_E2E_LOG_DIR: ${{ runner.temp }}/tauri-e2e-logs/main
+          ARTISTIC_GIT_E2E_START_TIMEOUT_MS: "90000"
+          GDK_BACKEND: x11
+          NO_AT_BRIDGE: "1"
+          RUST_BACKTRACE: "1"
+          RUST_LOG: info,artistic_git=debug
+          TAURI_DRIVER_PORT: "4444"
+          WEBKIT_DISABLE_COMPOSITING_MODE: "1"
         run: |
           set -euo pipefail
+          export XDG_RUNTIME_DIR="${RUNNER_TEMP}/xdg-runtime"
+          mkdir -p "$XDG_RUNTIME_DIR" "$ARTISTIC_GIT_E2E_LOG_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
           if [ "${ARTISTIC_GIT_E2E_REAL_GIT}" = "1" ]; then
             export ARTISTIC_GIT_E2E_SPEC_SET=real
           else
             export ARTISTIC_GIT_E2E_SPEC_SET=smoke
           fi
-          xvfb-run --auto-servernum pnpm e2e:tauri:ci
+          dbus-run-session -- xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" pnpm e2e:tauri:ci
+
+      - name: Stop lingering Linux WebDriver processes
+        if: always() && runner.os == 'Linux'
+        shell: bash
+        run: |
+          set +e
+          pkill -TERM -x tauri-driver
+          pkill -TERM -x WebKitWebDriver
+          pkill -TERM -f '/artistic-git-shell($| )'
+          sleep 2
+          pkill -KILL -x tauri-driver
+          pkill -KILL -x WebKitWebDriver
+          pkill -KILL -f '/artistic-git-shell($| )'
+          exit 0
 
       - name: Run Tauri E2E on Windows
         id: tauri_e2e_windows
@@ -379,8 +417,22 @@ jobs:
           ARTISTIC_GIT_E2E_REAL_GIT: "0"
           ARTISTIC_GIT_E2E_SKIP_BUILD: "1"
           ARTISTIC_GIT_E2E_SPEC_SET: crash
+          ARTISTIC_GIT_E2E_CONNECTION_RETRY_TIMEOUT_MS: "240000"
+          ARTISTIC_GIT_E2E_LOG_DIR: ${{ runner.temp }}/tauri-e2e-logs/crash
+          ARTISTIC_GIT_E2E_START_TIMEOUT_MS: "90000"
           ARTISTIC_GIT_PHASE9_CRASH_ISOLATION_E2E_REPORT: ${{ runner.temp }}/phase9-crash-isolation-e2e/phase9-crash-isolation-e2e-${{ runner.os }}.json
-        run: xvfb-run --auto-servernum pnpm e2e:tauri:ci
+          GDK_BACKEND: x11
+          NO_AT_BRIDGE: "1"
+          RUST_BACKTRACE: "1"
+          RUST_LOG: info,artistic_git=debug
+          TAURI_DRIVER_PORT: "4454"
+          WEBKIT_DISABLE_COMPOSITING_MODE: "1"
+        run: |
+          set -euo pipefail
+          export XDG_RUNTIME_DIR="${RUNNER_TEMP}/xdg-runtime"
+          mkdir -p "$XDG_RUNTIME_DIR" "$ARTISTIC_GIT_E2E_LOG_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+          dbus-run-session -- xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" pnpm e2e:tauri:ci
 
       - name: Run phase 9 crash isolation E2E evidence on Windows
         id: phase9_crash_e2e_windows
@@ -418,6 +470,15 @@ jobs:
             artifacts/e2e-real-git-report-*
             artifacts/phase12-e2e-full-chain-evidence-*
           if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload Tauri E2E logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tauri-e2e-logs-${{ matrix.os }}
+          path: ${{ runner.temp }}/tauri-e2e-logs/
+          if-no-files-found: ignore
           retention-days: 14
 
   phase12-evidence-summary:
