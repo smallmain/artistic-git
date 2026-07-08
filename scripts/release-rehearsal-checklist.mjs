@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* global console, process */
+/* global URL, console, process */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";

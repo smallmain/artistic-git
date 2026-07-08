@@ -110,7 +110,6 @@ if (!gitDistDir) {
 let root = null;
 let repo = null;
 let gitPath = null;
-let gitLfsPath = null;
 let env = null;
 let exitCode = 0;
 
@@ -145,7 +144,7 @@ try {
   });
   report.gitDist.executableEvidence.push(gitEvidence, gitLfsEvidence);
   gitPath = gitEvidence.absolutePath;
-  gitLfsPath = gitLfsEvidence.absolutePath;
+  const gitLfsPath = gitLfsEvidence.absolutePath;
 
   root = mkdtempSync(path.join(tmpdir(), "ag-phase12-perf-"));
   repo = path.join(root, "repo");
@@ -556,6 +555,7 @@ function readManifest(filePath) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
       `git distribution manifest is not valid JSON at ${filePath}: ${message}`,
+      { cause: error },
     );
   }
 }
