@@ -535,7 +535,7 @@ impl RuntimeSelfCheckPlan {
                 SelfCheckCommandKind::GitLfsVersion => &self.expected_git_lfs_version,
             };
             let observed = stdout.trim().to_owned();
-            let version_matches = observed.starts_with(expected);
+            let version_matches = self_check_version_matches(command.kind, expected, &observed);
 
             if !version_matches {
                 return Err(self_check_command_error(
@@ -586,6 +586,30 @@ impl SelfCheckCommandKind {
             Self::GitLfsVersion => "git-lfs",
         }
     }
+}
+
+fn self_check_version_matches(kind: SelfCheckCommandKind, expected: &str, observed: &str) -> bool {
+    let expected = normalize_self_check_version(kind, expected);
+    let observed = normalize_self_check_version(kind, observed);
+
+    !expected.is_empty() && expected == observed
+}
+
+fn normalize_self_check_version(kind: SelfCheckCommandKind, version: &str) -> String {
+    let trimmed = version.trim();
+    let stripped = match kind {
+        SelfCheckCommandKind::GitVersion => trimmed.strip_prefix("git version ").unwrap_or(trimmed),
+        SelfCheckCommandKind::GitLfsVersion => trimmed
+            .strip_prefix("git-lfs/")
+            .or_else(|| trimmed.strip_prefix("git-lfs version "))
+            .unwrap_or(trimmed),
+    };
+
+    stripped
+        .split_whitespace()
+        .next()
+        .unwrap_or(stripped)
+        .to_owned()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1473,6 +1497,45 @@ mod tests {
             .all(|command| command.version_matches));
     }
 
+    #[test]
+    fn runtime_self_check_version_match_normalizes_tool_banners() {
+        assert!(self_check_version_matches(
+            SelfCheckCommandKind::GitVersion,
+            "2.55.0",
+            "git version 2.55.0"
+        ));
+        assert!(self_check_version_matches(
+            SelfCheckCommandKind::GitVersion,
+            "git version 2.55.0",
+            "git version 2.55.0"
+        ));
+        assert!(self_check_version_matches(
+            SelfCheckCommandKind::GitVersion,
+            "2.55.0.windows.2",
+            "git version 2.55.0.windows.2"
+        ));
+        assert!(self_check_version_matches(
+            SelfCheckCommandKind::GitLfsVersion,
+            "3.7.1",
+            "git-lfs/3.7.1 (GitHub; test)"
+        ));
+        assert!(self_check_version_matches(
+            SelfCheckCommandKind::GitLfsVersion,
+            "git-lfs/3.7.1",
+            "git-lfs/3.7.1"
+        ));
+        assert!(!self_check_version_matches(
+            SelfCheckCommandKind::GitVersion,
+            "2.55.0",
+            "git version 2.54.0"
+        ));
+        assert!(!self_check_version_matches(
+            SelfCheckCommandKind::GitLfsVersion,
+            "3.7.1",
+            "git-lfs/3.6.0"
+        ));
+    }
+
     #[cfg(unix)]
     #[test]
     fn runtime_self_check_version_mismatch_is_fatal_app_error() {
@@ -1945,7 +2008,9 @@ mod tests {
         lfs_version_output: &str,
     ) -> Result<TestTempDir, Box<dyn std::error::Error>> {
         let temp = TestTempDir::new("ag-git-dist-versioned")?;
-        let manifest = git_dist_manifest_fixture();
+        let mut manifest = git_dist_manifest_fixture();
+        manifest.git_version = "2.50.0".to_owned();
+        manifest.git_lfs_version = "3.6.0".to_owned();
 
         write_executable_script(
             &temp.path().join(&manifest.paths.git_executable),
