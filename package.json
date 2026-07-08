@@ -18,6 +18,7 @@
     "e2e:tauri": "pnpm e2e:check && wdio run ./wdio.tauri.conf.ts --tsConfigPath=./e2e/tsconfig.json",
     "e2e:tauri:ci": "pnpm e2e:check && wdio run ./wdio.tauri.conf.ts --tsConfigPath=./e2e/tsconfig.json",
     "e2e:real-git:report": "node scripts/e2e-real-git-report.mjs && pnpm -s phase12:e2e:audit",
+    "e2e:real-git:report:test": "node --test scripts/e2e-real-git-report.node-tests.mjs",
     "git-dist:check": "node scripts/check-git-dist.mjs --schema-only",
     "git-dist:check:real": "node scripts/check-git-dist.mjs --schema-only --real-build --expect-placeholder-rejection",
     "git-dist:report": "node scripts/git-dist-report.mjs",

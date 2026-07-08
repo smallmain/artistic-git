@@ -1748,6 +1748,7 @@ pub fn run() {
 
     builder
         .setup(|app| {
+            let _native_renderer_crash_hook_gate = native_renderer_crash_hook_gate();
             let log_dir = app.path().app_log_dir()?;
             let logging_config = artistic_git_core::logging::LoggingConfig::new(log_dir);
             let logging_guard = artistic_git_core::logging::initialize_logging(&logging_config)?;
@@ -1866,6 +1867,16 @@ fn handle_web_content_process_terminate(webview: &tauri::Webview<tauri::Wry>) {
     if let Some(registry) = app.try_state::<WindowRegistry>() {
         let _ = handle_renderer_crash(&app, &registry, &label, default_renderer_crash_summary());
     }
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+fn native_renderer_crash_hook_gate() -> &'static str {
+    "native-webview-process-terminate-hook:supported:macos-ios"
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+fn native_renderer_crash_hook_gate() -> &'static str {
+    "native-webview-process-terminate-hook:unsupported:windows-linux:requires-tauri-driver-crash-injection-evidence"
 }
 
 fn build_app_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
@@ -3071,5 +3082,21 @@ mod tests {
         assert_eq!(payload.summary, "Rust panic: panic payload");
         assert!(payload.details.contains("src-tauri/src/lib.rs:1:1"));
         assert!(payload.details.contains("panic payload"));
+    }
+
+    #[test]
+    fn window_menu_native_renderer_crash_hook_gate_is_platform_explicit() {
+        let gate = native_renderer_crash_hook_gate();
+
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        {
+            assert!(gate.contains("supported:macos-ios"));
+        }
+
+        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+        {
+            assert!(gate.contains("unsupported:windows-linux"));
+            assert!(gate.contains("requires-tauri-driver-crash-injection-evidence"));
+        }
     }
 }

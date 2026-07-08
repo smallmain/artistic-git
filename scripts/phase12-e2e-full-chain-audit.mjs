@@ -234,27 +234,35 @@ const gates = [
   {
     id: "ci-linux-windows",
     requirement:
-      "Linux and Windows CI run the Tauri E2E command and upload real-git evidence",
+      "Linux and Windows CI can stage Git Distribution artifacts, run the Tauri E2E command, and upload real-git evidence",
     source: "ci",
     tokens: [
-      "os: [ubuntu-22.04, windows-latest]",
+      "os: ubuntu-22.04",
+      "os: windows-latest",
+      "phase12_git_dist_run_id",
+      "phase12_e2e_require_real_git_dist",
+      "actions/download-artifact@v4",
+      "artistic-git-dist-${{ matrix.gitDistTarget }}",
+      "ARTISTIC_GIT_PHASE12_GIT_DIST_SOURCE",
       "pnpm e2e:real-git:report",
       "ARTISTIC_GIT_E2E_REAL_GIT",
       "pnpm e2e:tauri:ci",
       "e2e-real-git-report-${{ matrix.os }}",
-      "artifacts/e2e-real-git-report-*.json",
+      "artifacts/e2e-real-git-report-*",
     ],
   },
   {
     id: "no-system-git-fallback",
     requirement:
-      "real-git report fails malformed configuration and refuses system Git fallback",
+      "real-git report verifies manifest sha256 evidence and refuses system Git fallback",
     source: "realGitReport",
     tokens: [
       "Refusing to search PATH or use system Git",
       "manifest.paths.gitExecutable",
-      "isInside(gitDistDir, gitPath)",
-      "embedded git executable was not found",
+      "manifest.paths.gitLfsExecutable",
+      "manifest.sha256",
+      "resolves outside ARTISTIC_GIT_DIST_DIR",
+      "gitLfsViaGit",
     ],
   },
 ];
