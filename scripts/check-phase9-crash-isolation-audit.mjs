@@ -155,7 +155,7 @@ const evidenceChecks = [
       "tauri-driver E2E observes reload into CrashDetailsDialog, expands technical details, and verifies the start screen after dismissal",
     source: "crashInjectionE2e",
     pattern:
-      /state\.diagnostics\.hasCrashDialogTestId[\s\S]*showCrashTechnicalDetails\(\)[\s\S]*state\.detailsVisible[\s\S]*dismissCrashDialogIfOpen\(\)[\s\S]*startScreenStillInteractive/,
+      /state\.diagnostics\.hasCrashDialogTestId[\s\S]*state\.diagnostics\.navigationType === "reload"[\s\S]*showCrashTechnicalDetails\(\)[\s\S]*state\.detailsVisible[\s\S]*assert\.equal\(state\.diagnostics\.navigationType, "reload"\)[\s\S]*dismissCrashDialogIfOpen\(\)[\s\S]*startScreenStillInteractive/,
   },
   {
     id: "tauri-driver-crash-injection-runtime-report",

@@ -110,6 +110,7 @@ describe("Artistic Git Tauri crash isolation", () => {
           state.open &&
           state.diagnostics.hasCrashDialogTestId &&
           state.diagnostics.hasStartScreen &&
+          state.diagnostics.navigationType === "reload" &&
           state.text.includes(crashSummary) &&
           state.text.includes("Restart app")
         );
@@ -141,6 +142,7 @@ describe("Artistic Git Tauri crash isolation", () => {
     assert.equal(state.open, true);
     assert.equal(state.detailsVisible, true);
     assert.equal(state.diagnostics.hasStartScreen, true);
+    assert.equal(state.diagnostics.navigationType, "reload");
     assert.match(state.text, /Renderer process for window/);
 
     await dismissCrashDialogIfOpen();
