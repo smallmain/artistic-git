@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -22,12 +23,13 @@ type GitDistManifest = {
 
 const runRealGitE2e = process.env.ARTISTIC_GIT_E2E_REAL_GIT === "1";
 const describeRealGit = runRealGitE2e ? describe : describe.skip;
+const progressEvents: FullChainProgressEvent[] = [];
 
 describeRealGit("Artistic Git Tauri real-git full chain", () => {
   let fixture: RealGitFixture;
 
   before(() => {
-    fixture = RealGitFixture.create();
+    fixture = recordStepSync("create fixture", () => RealGitFixture.create());
   });
 
   after(() => {
@@ -35,79 +37,198 @@ describeRealGit("Artistic Git Tauri real-git full chain", () => {
   });
 
   it("drives clone/commit/sync/conflict/revert through UI controls with a real remote", async () => {
-    await waitForStartScreen();
-    await cloneThroughUi(fixture.remotePath, fixture.parentPath, "local");
+    await recordStep("wait for start screen", waitForStartScreen);
+    await recordStep("clone local repository through UI", () =>
+      cloneThroughUi(fixture.remotePath, fixture.parentPath, "local"),
+    );
     const localPath = path.join(fixture.parentPath, "local");
-    await waitForRepository(localPath);
+    await recordStep("wait for cloned repository", () =>
+      waitForRepository(localPath),
+    );
+    recordStepSync("configure local repository identity", () => {
+      fixture.configureIdentity(localPath);
+    });
 
-    fixture.write("local", "local.txt", "local\n");
-    await commitThroughUi("local.txt", "add local file", true);
+    recordStepSync("write local.txt", () => {
+      fixture.write("local", "local.txt", "local\n");
+    });
+    await recordStep("commit and push local.txt through UI", () =>
+      commitThroughUi("local.txt", "add local file", true),
+    );
     const localAddOid = fixture.git(["rev-parse", "HEAD"], localPath).trim();
-    assert.equal(
-      fixture.git(["show", "refs/heads/main:local.txt"], fixture.remotePath),
-      "local\n",
+    recordStepSync("verify local.txt reached remote", () => {
+      assert.equal(
+        fixture.git(["show", "refs/heads/main:local.txt"], fixture.remotePath),
+        "local\n",
+      );
+    });
+
+    recordStepSync("peer pushes peer.txt", () => {
+      fixture.clone("peer");
+      fixture.write("peer", "peer.txt", "peer\n");
+      fixture.git(["add", "peer.txt"], fixture.repoPath("peer"));
+      fixture.git(
+        ["commit", "-m", "peer pushes file"],
+        fixture.repoPath("peer"),
+      );
+      fixture.git(["push"], fixture.repoPath("peer"));
+    });
+
+    await recordStep("sync peer.txt through UI", async () => {
+      await syncAllThroughUi();
+    });
+    recordStepSync("verify peer.txt synced", () => {
+      assert.equal(
+        readFileSync(path.join(localPath, "peer.txt"), "utf8"),
+        "peer\n",
+      );
+      assertClean(fixture, localPath);
+    });
+
+    recordStepSync("write local conflict edit", () => {
+      fixture.write("local", "tracked.txt", "local conflicting edit\n");
+    });
+    await recordStep("commit local conflict edit through UI", () =>
+      commitThroughUi("tracked.txt", "local conflicting edit", false),
     );
 
-    fixture.clone("peer");
-    fixture.write("peer", "peer.txt", "peer\n");
-    fixture.git(["add", "peer.txt"], fixture.repoPath("peer"));
-    fixture.git(["commit", "-m", "peer pushes file"], fixture.repoPath("peer"));
-    fixture.git(["push"], fixture.repoPath("peer"));
+    recordStepSync("peer pushes conflicting edit", () => {
+      fixture.write("peer", "tracked.txt", "peer conflicting edit\n");
+      fixture.git(["add", "tracked.txt"], fixture.repoPath("peer"));
+      fixture.git(
+        ["commit", "-m", "peer conflicting edit"],
+        fixture.repoPath("peer"),
+      );
+      fixture.git(["push"], fixture.repoPath("peer"));
+    });
 
-    await syncAllThroughUi();
-    assert.equal(
-      readFileSync(path.join(localPath, "peer.txt"), "utf8"),
-      "peer\n",
+    await recordStep("sync conflicting edit through UI", async () => {
+      await syncAllThroughUi();
+    });
+    await recordStep("wait for conflict overlay", async () => {
+      await waitForConflictOverlay("tracked.txt");
+    });
+    await recordStep(
+      "assert close guard during conflict",
+      assertCloseGuardBlocksWindowShortcutDuringConflict,
     );
-    assertClean(fixture, localPath);
+    recordStepSync("verify repository has tracked.txt conflict", () => {
+      assert.match(
+        fixture.git(["status", "--porcelain=v1"], localPath),
+        /UU tracked\.txt/,
+      );
+    });
+    await recordStep("resolve conflict with local version", () =>
+      resolveConflictWithOwnVersion("tracked.txt"),
+    );
+    recordStepSync("verify conflict resolution", () => {
+      assert.equal(
+        readFileSync(path.join(localPath, "tracked.txt"), "utf8"),
+        "local conflicting edit\n",
+      );
+      assertClean(fixture, localPath);
+    });
 
-    fixture.write("local", "tracked.txt", "local conflicting edit\n");
-    await commitThroughUi("tracked.txt", "local conflicting edit", false);
+    await recordStep("sync resolved conflict through UI", async () => {
+      await syncAllThroughUi();
+    });
+    recordStepSync("verify peer can fast-forward resolved conflict", () => {
+      fixture.git(["pull", "--ff-only"], fixture.repoPath("peer"));
+      assert.equal(
+        readFileSync(
+          path.join(fixture.repoPath("peer"), "tracked.txt"),
+          "utf8",
+        ),
+        "local conflicting edit\n",
+      );
+    });
 
-    fixture.write("peer", "tracked.txt", "peer conflicting edit\n");
-    fixture.git(["add", "tracked.txt"], fixture.repoPath("peer"));
-    fixture.git(
-      ["commit", "-m", "peer conflicting edit"],
-      fixture.repoPath("peer"),
-    );
-    fixture.git(["push"], fixture.repoPath("peer"));
-
-    await syncAllThroughUi();
-    await waitForConflictOverlay("tracked.txt");
-    await assertCloseGuardBlocksWindowShortcutDuringConflict();
-    assert.match(
-      fixture.git(["status", "--porcelain=v1"], localPath),
-      /UU tracked\.txt/,
-    );
-    await resolveConflictWithOwnVersion("tracked.txt");
-    assert.equal(
-      readFileSync(path.join(localPath, "tracked.txt"), "utf8"),
-      "local conflicting edit\n",
-    );
-    assertClean(fixture, localPath);
-
-    await syncAllThroughUi();
-    fixture.git(["pull", "--ff-only"], fixture.repoPath("peer"));
-    assert.equal(
-      readFileSync(path.join(fixture.repoPath("peer"), "tracked.txt"), "utf8"),
-      "local conflicting edit\n",
+    await recordStep("revert local.txt commit through UI", () =>
+      revertCommitThroughUi(
+        fixture,
+        localPath,
+        localAddOid,
+        "add local file",
+      ),
     );
 
-    await revertCommitThroughUi(
-      fixture,
-      localPath,
-      localAddOid,
-      "add local file",
-    );
-
-    fixture.git(["pull", "--ff-only"], fixture.repoPath("peer"));
-    assert.equal(
-      existsSync(path.join(fixture.repoPath("peer"), "local.txt")),
-      false,
-    );
-    assertClean(fixture, localPath);
+    recordStepSync("verify revert reached peer", () => {
+      fixture.git(["pull", "--ff-only"], fixture.repoPath("peer"));
+      assert.equal(
+        existsSync(path.join(fixture.repoPath("peer"), "local.txt")),
+        false,
+      );
+      assertClean(fixture, localPath);
+    });
   });
 });
+
+type FullChainProgressEvent = {
+  at: string;
+  detail?: string;
+  error?: string;
+  step: string;
+  status: "start" | "pass" | "fail";
+};
+
+async function recordStep<T>(step: string, action: () => Promise<T>) {
+  writeFullChainProgress(step, "start");
+  try {
+    const value = await action();
+    writeFullChainProgress(step, "pass");
+    return value;
+  } catch (error) {
+    writeFullChainProgress(step, "fail", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
+}
+
+function recordStepSync<T>(step: string, action: () => T) {
+  writeFullChainProgress(step, "start");
+  try {
+    const value = action();
+    writeFullChainProgress(step, "pass");
+    return value;
+  } catch (error) {
+    writeFullChainProgress(step, "fail", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
+}
+
+function writeFullChainProgress(
+  step: string,
+  status: FullChainProgressEvent["status"],
+  fields: Pick<FullChainProgressEvent, "detail" | "error"> = {},
+) {
+  progressEvents.push({
+    at: new Date().toISOString(),
+    step,
+    status,
+    ...fields,
+  });
+
+  const outputDir = path.resolve("artifacts");
+  mkdirSync(outputDir, { recursive: true });
+  writeFileSync(
+    path.join(
+      outputDir,
+      `e2e-real-git-report-full-chain-progress-${process.env.RUNNER_OS ?? process.platform}.json`,
+    ),
+    `${JSON.stringify(
+      {
+        events: progressEvents,
+        kind: "phase12-e2e-full-chain-progress",
+        schemaVersion: 1,
+      },
+      null,
+      2,
+    )}\n`,
+  );
+}
 
 class RealGitFixture {
   private constructor(
