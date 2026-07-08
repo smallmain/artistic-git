@@ -215,7 +215,9 @@ test("resource checker fails when required release manifests are missing", async
 
 test("release workflow fails publishing when Tauri signing secrets are missing", () => {
   assert.ok(
-    releaseWorkflow.includes("if: needs.plan.outputs.publish_release == 'true'"),
+    releaseWorkflow.includes(
+      "if: needs.plan.outputs.publish_release == 'true'",
+    ),
   );
   assert.ok(
     releaseWorkflow.includes(
@@ -228,13 +230,32 @@ test("release workflow fails publishing when Tauri signing secrets are missing",
     ),
   );
   assert.ok(
-    releaseWorkflow.includes('if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then'),
+    releaseWorkflow.includes(
+      'if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then',
+    ),
   );
   assert.ok(
     releaseWorkflow.includes(
       "TAURI_SIGNING_PRIVATE_KEY must be configured in GitHub Secrets before publishing updater artifacts.",
     ),
   );
+});
+
+test("release workflow uploads dry-run rehearsal evidence with CI context", () => {
+  for (const token of [
+    "Generate release rehearsal dry-run checklist",
+    "ARTISTIC_GIT_RELEASE_REHEARSAL_REPORT_DIR: ${{ runner.temp }}/release-rehearsal",
+    "ARTISTIC_GIT_RELEASE_REHEARSAL_ARTIFACT_NAME: release-rehearsal-${{ runner.os }}",
+    "ARTISTIC_GIT_RELEASE_WORKFLOW_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+    "ARTISTIC_GIT_RELEASE_PLAN_VERSION: ${{ needs.plan.outputs.version }}",
+    "ARTISTIC_GIT_RELEASE_PLAN_TAG: ${{ needs.plan.outputs.tag }}",
+    "ARTISTIC_GIT_RELEASE_MODE_REASON: ${{ needs.plan.outputs.mode_reason }}",
+    "Upload release rehearsal dry-run checklist",
+    "if: always()",
+    "name: release-rehearsal-${{ runner.os }}",
+  ]) {
+    assert.ok(releaseWorkflow.includes(token), token);
+  }
 });
 
 test("release workflow uploads all platform assets and generated latest.json", () => {
@@ -262,12 +283,12 @@ test("release workflow uploads all platform assets and generated latest.json", (
   }
 
   assert.ok(
-    releaseWorkflow.includes(
-      "node scripts/generate-tauri-latest-json.mjs \\",
-    ),
+    releaseWorkflow.includes("node scripts/generate-tauri-latest-json.mjs \\"),
   );
   assert.ok(releaseWorkflow.includes("--output release-assets/latest.json"));
-  assert.ok(releaseWorkflow.includes('gh release create "$TAG_NAME" release-assets/*'));
+  assert.ok(
+    releaseWorkflow.includes('gh release create "$TAG_NAME" release-assets/*'),
+  );
 });
 
 test("release workflow checks staged and packaged git-dist resources", () => {
@@ -281,9 +302,7 @@ test("release workflow checks staged and packaged git-dist resources", () => {
       "node scripts/check-tauri-bundle-resources.mjs --require-manifest --release",
     ),
   );
-  assert.ok(
-    releaseWorkflow.includes("Verify packaged embedded Git resources"),
-  );
+  assert.ok(releaseWorkflow.includes("Verify packaged embedded Git resources"));
   assert.ok(
     releaseWorkflow.includes(
       '--bundle-output "src-tauri/target/${{ matrix.target }}/release"',

@@ -596,6 +596,7 @@ graph TD
   - 进展备注（2026-07-08）：新增 `pnpm release:rehearsal:checklist` 作为精确演练入口，列出 secrets、release workflow、三平台安装、0.1.0→0.1.1 更新验证与记录项；本地不能伪造签名 secrets、GitHub protected environment 与三平台安装/更新结果，未执行正式发布演练，不勾选。
   - 进展备注（2026-07-08）：release dry-run job 增加 `release-rehearsal-*` artifact，`pnpm release:rehearsal:checklist` 支持 `ARTISTIC_GIT_RELEASE_REHEARSAL_REPORT_DIR` 输出 Markdown + JSON dry-run verifier/checklist；secrets、protected environment、三平台安装和 0.1.0→0.1.1 更新演练仍未实际完成，不勾选。
   - 进展备注（2026-07-08）：release rehearsal JSON 升级为 schemaVersion=1，status/result 明确区分 `skipped`（CI dry-run checklist）、`blocker`（operator-confirmed 但缺 secrets 或三平台安装/更新 evidence）、`pass`（operator-confirmed evidence marker 均提供），并列出 missingSecrets/missingEvidence；release dry-run artifact 上传改为 always。本轮仍缺签名 secrets、三平台安装冒烟、0.1.0→0.1.1 真实升级证据，不勾选。
+  - 进展备注（2026-07-08）：release rehearsal evidence v2 将 JSON 升级为 schemaVersion=2，明确 `ARTISTIC_GIT_RELEASE_REHEARSAL_OPERATOR_CONFIRMED=1` 与 `ARTISTIC_GIT_RELEASE_PROTECTED_ENVIRONMENT_APPROVED=1` 才能进入 operator-confirmed 模式；新增 0.1.0/0.1.1 GitHub run、artifact/release URL 形状校验，并要求三平台 `0.1.0` 安装冒烟 marker 与 `0.1.0`→`0.1.1` 更新演练 JSON record schema（含每平台 before/discovered/after 版本、下载、重启门控、更新后冒烟、evidence URL、operator、recordedAt）。CI dry-run artifact 现在包含 workflow run/version/reason 上下文、blockers、record schema 与示例；本轮仍未取得真实签名 secrets、protected environment 审批、三平台安装冒烟和真实更新证据，不勾选。
 
 **验收**：三平台 CI（单元 + 集成）与 Linux/Windows E2E 全绿；发布演练成功。
 
