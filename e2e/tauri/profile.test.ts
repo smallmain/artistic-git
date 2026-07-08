@@ -47,7 +47,10 @@ describe("Tauri E2E profile", () => {
     });
 
     expect(profile.appConfigDir).toBe(
-      "/runner/temp/tauri-e2e-config/main/com.smallmain.artistic-git",
+      path.join(
+        "/runner/temp/tauri-e2e-config/main",
+        "com.smallmain.artistic-git",
+      ),
     );
     expect(profile.env.XDG_DATA_HOME).toBe(
       "/runner/temp/tauri-e2e-data/main",
