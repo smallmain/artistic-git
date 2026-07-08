@@ -18,13 +18,15 @@ const operations = [
       "Broken submodule gitlink during the local update phase",
       "phase12_sync_local_phase_failure_restores_pre_operation_snapshot",
     ),
-    gap(
+    covered(
       "fetch-network-failure",
       "Remote fetch/auth/network failure before local changes are touched",
+      "phase12_sync_fetch_network_failure_keeps_pre_operation_snapshot",
     ),
-    gap(
+    covered(
       "rebase-conflict-abort",
       "Diverged upstream rebase conflict plus explicit abort recovery",
+      "phase12_sync_rebase_conflict_cancel_restores_pre_operation_snapshot",
     ),
     gap(
       "push-race-retry-exhausted",
@@ -38,9 +40,11 @@ const operations = [
       "phase12_sync_non_current_publish_failure_keeps_repository_reusable",
       "current worktree snapshot is unchanged and reusable",
     ),
-    gap(
+    covered(
       "temporary-worktree-rebase-conflict",
       "Slow-path worktree rebase conflict and cleanup",
+      "phase12_sync_non_current_worktree_rebase_conflict_cancel_restores_snapshot",
+      "main worktree snapshot is unchanged, the conflicted tool worktree is removed, and git commands remain usable",
     ),
     gap(
       "temporary-worktree-cleanup-failure",
@@ -88,9 +92,10 @@ const operations = [
       "Conflicted revert returns an in-band conflict and git revert --abort restores the snapshot",
       "phase12_revert_conflict_abort_restores_pre_operation_snapshot",
     ),
-    gap(
+    covered(
       "pre-revert-sync-failure",
       "Pre-revert sync fails before the revert is attempted",
+      "phase12_revert_pre_sync_failure_restores_pre_operation_snapshot",
     ),
     gap(
       "push-after-revert-failure",
@@ -139,9 +144,11 @@ const operations = [
       "phase12_submodule_commit_publish_guard_failure_preserves_super_and_submodule",
       "superproject and submodule snapshots are both restored and reusable",
     ),
-    gap(
+    covered(
       "nested-commit-failure",
       "Submodule local commit fails after selected nested paths are staged",
+      "phase12_submodule_nested_commit_failure_restores_super_and_submodule",
+      "superproject and submodule snapshots are both restored and reusable",
     ),
     gap(
       "superproject-pointer-commit-failure",

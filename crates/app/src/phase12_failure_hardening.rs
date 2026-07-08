@@ -1,10 +1,10 @@
 use crate::git_ops::{display_path, git_stdout};
 use artistic_git_contracts::{
     AbortRevertRequest, BranchOperationResponse, CancelStashRestoreRequest, CheckoutBranchRequest,
-    CheckoutLocalChangesMode, CommitRequest, CommitResponse, LargeFileDecision, OperationId,
-    RevertCommitRequest, RevertCommitResponse, ReviewModeExitStatus, ReviewModeRecoveryRequest,
-    ReviewModeRequest, StartReviewModeRequest, SyncAllBranchesRequest, SyncBranchRequest,
-    SyncCurrentBranchRequest,
+    CheckoutLocalChangesMode, CommitRequest, CommitResponse, ConflictCancelRequest,
+    LargeFileDecision, OperationId, RevertCommitRequest, RevertCommitResponse,
+    ReviewModeExitStatus, ReviewModeRecoveryRequest, ReviewModeRequest, StartReviewModeRequest,
+    SyncAllBranchesRequest, SyncBranchRequest, SyncCurrentBranchRequest, SyncCurrentBranchStatus,
 };
 use artistic_git_core::config::{AutoTrackingRule, ConfigActor, ConfigPaths};
 use artistic_git_git_runner::{GitDistribution, GitRunner};
@@ -44,6 +44,78 @@ fn phase12_sync_local_phase_failure_restores_pre_operation_snapshot() {
         },
     )
     .expect_err("broken submodule should fail during local sync phase");
+
+    before.assert_restored(&fixture.local);
+    assert_repository_reusable(&fixture.local);
+}
+
+#[test]
+fn phase12_sync_fetch_network_failure_keeps_pre_operation_snapshot() {
+    let Some((runner, _home)) = real_runner_or_skip() else {
+        return;
+    };
+    let fixture = RemoteFixture::new(&runner, "ag-phase12-sync-fetch-failure");
+    fixture.local.git([
+        "remote",
+        "set-url",
+        "origin",
+        "/definitely/missing/artistic-git-remote.git",
+    ]);
+    let before = RepoSnapshot::capture(&fixture.local);
+
+    crate::sync_current_branch(
+        &runner,
+        SyncCurrentBranchRequest {
+            repository_path: display_path(&fixture.local.path),
+            operation_id: Some(OperationId("phase12-sync-fetch-failure".to_owned())),
+        },
+    )
+    .expect_err("fetching a missing origin should fail before local state changes");
+
+    before.assert_restored(&fixture.local);
+    assert_repository_reusable(&fixture.local);
+}
+
+#[test]
+fn phase12_sync_rebase_conflict_cancel_restores_pre_operation_snapshot() {
+    let Some((runner, _home)) = real_runner_or_skip() else {
+        return;
+    };
+    let fixture = RemoteFixture::new(&runner, "ag-phase12-sync-rebase-conflict");
+    fixture.local.write("tracked.txt", "local committed\n");
+    fixture.local.git(["add", "tracked.txt"]);
+    fixture
+        .local
+        .git(["commit", "-m", "local divergent change"]);
+    fixture.peer.write("tracked.txt", "remote committed\n");
+    fixture.peer.git(["add", "tracked.txt"]);
+    fixture
+        .peer
+        .git(["commit", "-m", "remote divergent change"]);
+    fixture.peer.git(["push"]);
+    let before = RepoSnapshot::capture(&fixture.local);
+
+    let response = crate::sync_current_branch(
+        &runner,
+        SyncCurrentBranchRequest {
+            repository_path: display_path(&fixture.local.path),
+            operation_id: Some(OperationId("phase12-sync-rebase-conflict".to_owned())),
+        },
+    )
+    .expect("rebase conflict should be reported in-band");
+
+    assert_eq!(response.status, SyncCurrentBranchStatus::Conflicts);
+    let conflict = response.conflict.expect("conflict payload");
+    assert!(conflict.files.iter().any(|file| file.path == "tracked.txt"));
+
+    crate::conflicts::cancel_conflict_resolution(
+        &runner,
+        ConflictCancelRequest {
+            repository_path: display_path(&fixture.local.path),
+            operation_id: OperationId("phase12-sync-rebase-conflict".to_owned()),
+        },
+    )
+    .expect("cancel conflicted sync rebase");
 
     before.assert_restored(&fixture.local);
     assert_repository_reusable(&fixture.local);
@@ -128,6 +200,46 @@ fn phase12_revert_conflict_abort_restores_pre_operation_snapshot() {
 }
 
 #[test]
+fn phase12_revert_pre_sync_failure_restores_pre_operation_snapshot() {
+    let Some((runner, _home)) = real_runner_or_skip() else {
+        return;
+    };
+    let fixture = RemoteFixture::new(&runner, "ag-phase12-revert-pre-sync-failure");
+    fixture.local.write("target.txt", "target\n");
+    fixture.local.git(["add", "target.txt"]);
+    fixture.local.git(["commit", "-m", "target commit"]);
+    let target = fixture
+        .local
+        .git_output(["rev-parse", "HEAD"])
+        .trim()
+        .to_owned();
+    fixture.local.write("later.txt", "later\n");
+    fixture.local.git(["add", "later.txt"]);
+    fixture.local.git(["commit", "-m", "later commit"]);
+    fixture.local.git([
+        "remote",
+        "set-url",
+        "origin",
+        "/definitely/missing/artistic-git-remote.git",
+    ]);
+    let before = RepoSnapshot::capture(&fixture.local);
+
+    crate::revert_commit(
+        &runner,
+        RevertCommitRequest {
+            repository_path: display_path(&fixture.local.path),
+            oid: target,
+            push_after_revert: false,
+            operation_id: Some(OperationId("phase12-revert-pre-sync-failure".to_owned())),
+        },
+    )
+    .expect_err("pre-revert sync should fail before revert starts");
+
+    before.assert_restored(&fixture.local);
+    assert_repository_reusable(&fixture.local);
+}
+
+#[test]
 fn phase12_sync_non_current_publish_failure_keeps_repository_reusable() {
     let Some((runner, _home)) = real_runner_or_skip() else {
         return;
@@ -157,6 +269,64 @@ fn phase12_sync_non_current_publish_failure_keeps_repository_reusable() {
     .expect_err("publishing to a missing origin should fail");
 
     before.assert_restored(&fixture.local);
+    assert_repository_reusable(&fixture.local);
+}
+
+#[test]
+fn phase12_sync_non_current_worktree_rebase_conflict_cancel_restores_snapshot() {
+    let Some((runner, _home)) = real_runner_or_skip() else {
+        return;
+    };
+    let fixture = RemoteFixture::new(&runner, "ag-phase12-sync-branch-conflict");
+    fixture.create_tracking_branch("feature/cancel-conflict");
+    fixture.local.git(["checkout", "feature/cancel-conflict"]);
+    fixture.local.write("tracked.txt", "local committed\n");
+    fixture.local.git(["add", "tracked.txt"]);
+    fixture.local.git(["commit", "-m", "local feature change"]);
+    let feature_head = fixture
+        .local
+        .git_output(["rev-parse", "feature/cancel-conflict"]);
+    fixture.local.git(["checkout", "main"]);
+    fixture.peer.write("tracked.txt", "remote committed\n");
+    fixture.peer.git(["add", "tracked.txt"]);
+    fixture.peer.git(["commit", "-m", "remote feature change"]);
+    fixture.peer.git(["push"]);
+    let before = RepoSnapshot::capture(&fixture.local);
+
+    let response = crate::sync_branch(
+        &runner,
+        SyncBranchRequest {
+            repository_path: display_path(&fixture.local.path),
+            branch_name: "feature/cancel-conflict".to_owned(),
+            operation_id: Some(OperationId("phase12-sync-branch-conflict".to_owned())),
+        },
+    )
+    .expect("non-current branch rebase conflict should be reported in-band");
+
+    assert_eq!(response.status, SyncCurrentBranchStatus::Conflicts);
+    let conflict = response.conflict.expect("conflict payload");
+    let conflict_worktree = PathBuf::from(&conflict.repository_path);
+    assert!(conflict_worktree.exists());
+    assert!(conflict.files.iter().any(|file| file.path == "tracked.txt"));
+
+    crate::conflicts::cancel_conflict_resolution(
+        &runner,
+        ConflictCancelRequest {
+            repository_path: display_path(&conflict_worktree),
+            operation_id: OperationId("phase12-sync-branch-conflict".to_owned()),
+        },
+    )
+    .expect("cancel non-current branch rebase conflict");
+
+    assert!(!conflict_worktree.exists());
+    assert_eq!(
+        fixture
+            .local
+            .git_output(["rev-parse", "feature/cancel-conflict"]),
+        feature_head
+    );
+    before.assert_restored(&fixture.local);
+    assert_no_sync_worktrees(&fixture.local);
     assert_repository_reusable(&fixture.local);
 }
 
@@ -328,35 +498,7 @@ fn phase12_submodule_commit_publish_guard_failure_preserves_super_and_submodule(
         return;
     };
     let fixture = RemoteFixture::new(&runner, "ag-phase12-submodule-commit-failure");
-    let submodule_source = TestRepo::at(&runner, fixture._parent.path().join("submodule-source"));
-    git_stdout(
-        &runner,
-        None::<&std::path::Path>,
-        [
-            OsString::from("init"),
-            OsString::from("-b"),
-            OsString::from("main"),
-            submodule_source.path.as_os_str().to_owned(),
-        ],
-        "phase12FailureHarness",
-    )
-    .expect("init submodule source");
-    submodule_source.configure_identity();
-    submodule_source.write("nested.txt", "initial\n");
-    submodule_source.git(["add", "nested.txt"]);
-    submodule_source.git(["commit", "-m", "submodule initial"]);
-    fixture.local.git([
-        "-c",
-        "protocol.file.allow=always",
-        "submodule",
-        "add",
-        display_path(&submodule_source.path).as_str(),
-        "module",
-    ]);
-    fixture.local.git(["commit", "-am", "add submodule"]);
-    fixture.local.git(["push"]);
-
-    let submodule = TestRepo::at(&runner, fixture.local.path.join("module"));
+    let submodule = add_local_submodule(&runner, &fixture, "module");
     submodule.git(["remote", "remove", "origin"]);
     submodule.write("nested.txt", "submodule draft\n");
     let before_super = RepoSnapshot::capture(&fixture.local);
@@ -377,6 +519,45 @@ fn phase12_submodule_commit_publish_guard_failure_preserves_super_and_submodule(
     )
     .expect_err("submodule without origin cannot be pushable");
 
+    before_super.assert_restored(&fixture.local);
+    before_submodule.assert_restored(&submodule);
+    assert_repository_reusable(&fixture.local);
+    assert_repository_reusable(&submodule);
+}
+
+#[test]
+fn phase12_submodule_nested_commit_failure_restores_super_and_submodule() {
+    let Some((runner, _home)) = real_runner_or_skip() else {
+        return;
+    };
+    let fixture = RemoteFixture::new(&runner, "ag-phase12-submodule-nested-commit-failure");
+    let submodule = add_local_submodule(&runner, &fixture, "module");
+    submodule.git(["config", "commit.gpgsign", "true"]);
+    submodule.git([
+        "config",
+        "gpg.program",
+        "/definitely/missing/artistic-git-submodule-gpg",
+    ]);
+    submodule.write("nested.txt", "submodule draft\n");
+    let before_super = RepoSnapshot::capture(&fixture.local);
+    let before_submodule = RepoSnapshot::capture(&submodule);
+
+    let response = crate::commit_changes(
+        &runner,
+        CommitRequest {
+            repository_path: display_path(&fixture.local.path),
+            paths: vec!["module/nested.txt".to_owned()],
+            message: "nested submodule commit should fail".to_owned(),
+            large_file_threshold_mb: None,
+            large_file_decision: LargeFileDecision::Prompt,
+            disable_repository_gpgsign: false,
+            push_immediately: false,
+            operation_id: None,
+        },
+    )
+    .expect("nested submodule gpg failure is an expected commit response");
+
+    assert!(matches!(response, CommitResponse::GpgSignFailed { .. }));
     before_super.assert_restored(&fixture.local);
     before_submodule.assert_restored(&submodule);
     assert_repository_reusable(&fixture.local);
@@ -494,6 +675,22 @@ impl RemoteFixture {
             _parent: parent,
         }
     }
+
+    fn create_tracking_branch(&self, branch_name: &str) {
+        self.local.git(["checkout", "-b", branch_name]);
+        self.local.write("branch.txt", "branch\n");
+        self.local.git(["add", "branch.txt"]);
+        self.local.git(["commit", "-m", "create feature branch"]);
+        self.local.git(["push", "-u", "origin", branch_name]);
+        self.local.git(["checkout", "main"]);
+        self.peer.git(["fetch", "origin"]);
+        self.peer.git([
+            OsString::from("checkout"),
+            OsString::from("-b"),
+            OsString::from(branch_name),
+            OsString::from(format!("origin/{branch_name}")),
+        ]);
+    }
 }
 
 struct TestRepo {
@@ -572,6 +769,59 @@ impl TestRepo {
 fn assert_repository_reusable(repo: &TestRepo) {
     repo.git(["rev-parse", "--verify", "HEAD"]);
     repo.git(["status", "--porcelain=v1"]);
+}
+
+fn assert_no_sync_worktrees(repo: &TestRepo) {
+    let listed_worktrees = repo.git_output(["worktree", "list", "--porcelain"]);
+    assert!(
+        !listed_worktrees.contains("artistic-git-sync-"),
+        "{listed_worktrees}"
+    );
+    let Some(parent) = repo.path.parent() else {
+        return;
+    };
+    for entry in fs::read_dir(parent).expect("read worktree parent") {
+        let entry = entry.expect("read worktree entry");
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        assert!(
+            !name.starts_with("artistic-git-sync-"),
+            "leftover sync worktree: {}",
+            entry.path().display()
+        );
+    }
+}
+
+fn add_local_submodule(runner: &GitRunner, fixture: &RemoteFixture, path: &str) -> TestRepo {
+    let source_name = format!("submodule-source-{}", path.replace('/', "-"));
+    let submodule_source = TestRepo::at(runner, fixture._parent.path().join(source_name));
+    git_stdout(
+        runner,
+        None::<&std::path::Path>,
+        [
+            OsString::from("init"),
+            OsString::from("-b"),
+            OsString::from("main"),
+            submodule_source.path.as_os_str().to_owned(),
+        ],
+        "phase12FailureHarness",
+    )
+    .expect("init submodule source");
+    submodule_source.configure_identity();
+    submodule_source.write("nested.txt", "initial\n");
+    submodule_source.git(["add", "nested.txt"]);
+    submodule_source.git(["commit", "-m", "submodule initial"]);
+    fixture.local.git([
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        display_path(&submodule_source.path).as_str(),
+        path,
+    ]);
+    fixture.local.git(["commit", "-am", "add submodule"]);
+    fixture.local.git(["push"]);
+    TestRepo::at(runner, fixture.local.path.join(path))
 }
 
 fn real_runner_or_skip() -> Option<(GitRunner, TestTempDir)> {
