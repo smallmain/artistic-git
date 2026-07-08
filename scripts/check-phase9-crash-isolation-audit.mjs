@@ -152,10 +152,10 @@ const evidenceChecks = [
     id: "tauri-driver-crash-injection-dialog-assertion",
     layer: "renderer",
     requirement:
-      "tauri-driver E2E observes reload into CrashDetailsDialog and keeps the start screen interactive",
+      "tauri-driver E2E observes reload into CrashDetailsDialog, expands technical details, and verifies the start screen after dismissal",
     source: "crashInjectionE2e",
     pattern:
-      /state\.text\.includes\(crashSummary\)[\s\S]*state\.text\.includes\("Renderer process for window"\)[\s\S]*startScreenStillInteractive/,
+      /state\.diagnostics\.hasCrashDialogTestId[\s\S]*showCrashTechnicalDetails\(\)[\s\S]*state\.detailsVisible[\s\S]*dismissCrashDialogIfOpen\(\)[\s\S]*startScreenStillInteractive/,
   },
   {
     id: "tauri-driver-crash-injection-runtime-report",

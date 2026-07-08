@@ -108,23 +108,47 @@ describe("Artistic Git Tauri crash isolation", () => {
         lastCrashState = state;
         return (
           state.open &&
-          state.detailsVisible &&
+          state.diagnostics.hasCrashDialogTestId &&
+          state.diagnostics.hasStartScreen &&
           state.text.includes(crashSummary) &&
-          state.text.includes("Renderer process for window")
+          state.text.includes("Restart app")
         );
       },
       {
         timeout: 30_000,
         timeoutMsg:
-          "renderer crash injection did not reload into CrashDetailsDialog",
+          "renderer crash injection did not reload into CrashDetailsDialog over the StartScreen",
+      },
+    );
+
+    await showCrashTechnicalDetails();
+    await browser.waitUntil(
+      async () => {
+        const nextState = await crashDialogState();
+        lastCrashState = nextState;
+        return (
+          nextState.detailsVisible &&
+          nextState.text.includes("Renderer process for window")
+        );
+      },
+      {
+        timeout: 10_000,
+        timeoutMsg: "crash dialog technical details did not expand",
       },
     );
 
     const state = await crashDialogState();
-    const startScreenStillInteractive = await startScreenControlsReady();
     assert.equal(state.open, true);
     assert.equal(state.detailsVisible, true);
+    assert.equal(state.diagnostics.hasStartScreen, true);
     assert.match(state.text, /Renderer process for window/);
+
+    await dismissCrashDialogIfOpen();
+    await browser.waitUntil(startScreenControlsReady, {
+      timeout: 10_000,
+      timeoutMsg: "start screen controls did not recover after crash dialog",
+    });
+    const startScreenStillInteractive = await startScreenControlsReady();
     assert.equal(startScreenStillInteractive, true);
 
     writeCrashInjectionRuntimeReport({
@@ -268,6 +292,38 @@ function crashDialogState() {
       text: crashDialog?.textContent ?? "",
     };
   }) as Promise<CrashDialogState>;
+}
+
+async function showCrashTechnicalDetails() {
+  const expanded = await browser.execute(() => {
+    const dialogs = Array.from(document.querySelectorAll('[role="dialog"]'));
+    const crashDialog =
+      document.querySelector('[data-testid="crash-details-dialog"]') ??
+      dialogs.find((dialog) => dialog.textContent?.includes("Restart app"));
+    if (!crashDialog) {
+      return false;
+    }
+    if (crashDialog.textContent?.includes("Renderer process for window")) {
+      return true;
+    }
+    const buttons = Array.from(crashDialog.querySelectorAll("button"));
+    const detailsButton = buttons.find(
+      (button) =>
+        button.getAttribute("aria-expanded") === "false" ||
+        button.textContent?.trim() === "Show technical details",
+    );
+    if (!(detailsButton instanceof HTMLButtonElement)) {
+      return false;
+    }
+    detailsButton.click();
+    return true;
+  });
+
+  assert.equal(
+    expanded,
+    true,
+    "crash dialog technical details control was not available",
+  );
 }
 
 async function dismissCrashDialogIfOpen() {
