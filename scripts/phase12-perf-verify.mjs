@@ -214,18 +214,22 @@ if (exitCode !== 0) {
 }
 
 function verifyHistoryPagination() {
-  const started = performance.now();
-  writeFileSync(path.join(repo, "history.txt"), "0\n");
-  runGit(["add", "history.txt"], repo);
-  runGit(["commit", "-m", "history 0"], repo);
+  const fixtureStarted = performance.now();
+  const historyDir = path.join(repo, "history");
+  mkdirSync(historyDir, { recursive: true });
 
-  for (let index = 1; index < report.profile.commitCount; index += 1) {
-    writeFileSync(path.join(repo, "history.txt"), `${index}\n`);
-    runGit(["add", "history.txt"], repo);
+  for (let index = 0; index < report.profile.commitCount; index += 1) {
+    const relativePath = path.join(
+      "history",
+      `${index.toString().padStart(6, "0")}.txt`,
+    );
+    writeFileSync(path.join(repo, relativePath), `${index}\n`);
+    runGit(["add", relativePath], repo);
     runGit(["commit", "-m", `history ${index}`], repo);
   }
 
-  const commitCreateMs = performance.now() - started;
+  const fixtureCreateMs = performance.now() - fixtureStarted;
+  const paginationStarted = performance.now();
   const firstPageStarted = performance.now();
   const firstPage = logPage(0);
   const firstPageMs = performance.now() - firstPageStarted;
@@ -253,16 +257,16 @@ function verifyHistoryPagination() {
     );
   }
 
-  const elapsedMs = Math.round(performance.now() - started);
+  const elapsedMs = Math.round(performance.now() - paginationStarted);
   assert(
     elapsedMs <= report.thresholds.historyPagination.maxElapsedMs,
-    `history pagination took ${elapsedMs}ms, budget ${report.thresholds.historyPagination.maxElapsedMs}ms`,
+    `history pagination query took ${elapsedMs}ms, budget ${report.thresholds.historyPagination.maxElapsedMs}ms`,
   );
   recordCheck("historyPagination", {
     thresholds: report.thresholds.historyPagination,
     metrics: {
       elapsedMs,
-      commitCreateMs: Math.round(commitCreateMs),
+      fixtureCreateMs: Math.round(fixtureCreateMs),
       firstPageMs: Math.round(firstPageMs),
       secondPageMs: Math.round(secondPageMs),
       commitCount: report.profile.commitCount,
@@ -292,7 +296,10 @@ function verifyLargeStatus() {
     repo,
   ).trim();
   const started = performance.now();
-  const status = runGit(["status", "--porcelain=v1", "-z"], repo);
+  const status = runGit(
+    ["status", "--porcelain=v1", "--untracked-files=all", "-z"],
+    repo,
+  );
   const elapsed = performance.now() - started;
   const statusEntries = status.split("\0").filter(Boolean);
   const fsmonitorProbe = probeFsmonitorDaemon();
