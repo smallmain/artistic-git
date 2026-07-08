@@ -675,6 +675,7 @@ function CloneRepositoryDialog({
                 {t("actions.cancel")}
               </Button>
               <Button
+                data-testid="clone-submit"
                 disabled={!canSubmit}
                 type="submit"
                 form="clone-repository"

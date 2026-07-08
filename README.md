@@ -63,6 +63,8 @@ pnpm git-dist:check
 Downloaded Git, Git LFS, OpenSSH, and generated manifests are local build
 outputs; do not commit them. See [docs/git-dist.md](docs/git-dist.md) for the
 current pins, CI artifact/cache policy, and build limitations.
+Real Git Tauri E2E setup and skipped/failed report semantics are documented in
+[docs/e2e-real-git.md](docs/e2e-real-git.md).
 
 While the Win32-OpenSSH pin remains a documented preview placeholder,
 `pnpm git-dist:check:real` is expected to pass only by confirming that real

@@ -8,10 +8,11 @@ const rootDir = path.dirname(fileURLToPath(import.meta.url));
 const driverHost = process.env.TAURI_DRIVER_HOST ?? "127.0.0.1";
 const driverPort = Number.parseInt(process.env.TAURI_DRIVER_PORT ?? "4444", 10);
 const appBinaryPath =
-  process.env.ARTISTIC_GIT_E2E_APP ?? defaultTauriBinaryPath();
-const tauriDriverPath = process.env.TAURI_DRIVER ?? defaultTauriDriverPath();
+  readNonEmptyEnv("ARTISTIC_GIT_E2E_APP") ?? defaultTauriBinaryPath();
+const tauriDriverPath =
+  readNonEmptyEnv("TAURI_DRIVER") ?? defaultTauriDriverPath();
 const gitDistFixturePath =
-  process.env.ARTISTIC_GIT_DIST_DIR ?? defaultGitDistFixturePath();
+  readNonEmptyEnv("ARTISTIC_GIT_DIST_DIR") ?? defaultGitDistFixturePath();
 
 process.env.ARTISTIC_GIT_DIST_DIR = gitDistFixturePath;
 
@@ -78,6 +79,11 @@ function defaultTauriBinaryPath() {
       ? "artistic-git-shell.exe"
       : "artistic-git-shell";
   return path.join(rootDir, "target", "debug", binaryName);
+}
+
+function readNonEmptyEnv(name: string) {
+  const value = process.env[name];
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
 }
 
 function defaultTauriDriverPath() {

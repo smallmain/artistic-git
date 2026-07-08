@@ -117,6 +117,8 @@ jobs:
     name: E2E (${{ matrix.os }})
     needs: test
     runs-on: ${{ matrix.os }}
+    env:
+      ARTISTIC_GIT_DIST_DIR: ${{ vars.ARTISTIC_GIT_E2E_DIST_DIR }}
     strategy:
       fail-fast: false
       matrix:
@@ -158,13 +160,29 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Report real Git E2E availability
+        id: real-git-e2e
+        run: pnpm e2e:real-git:report
+
       - name: Install tauri-driver
         run: cargo install tauri-driver --version 2.0.6 --locked
 
       - name: Run Tauri E2E on Linux
         if: runner.os == 'Linux'
+        env:
+          ARTISTIC_GIT_E2E_REAL_GIT: ${{ steps.real-git-e2e.outputs.ready == 'true' && '1' || '0' }}
         run: xvfb-run --auto-servernum pnpm e2e:tauri:ci
 
       - name: Run Tauri E2E on Windows
         if: runner.os == 'Windows'
+        env:
+          ARTISTIC_GIT_E2E_REAL_GIT: ${{ steps.real-git-e2e.outputs.ready == 'true' && '1' || '0' }}
         run: pnpm e2e:tauri:ci
+
+      - name: Upload real Git E2E report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-real-git-report-${{ matrix.os }}
+          path: artifacts/e2e-real-git-report-*.json
+          if-no-files-found: warn

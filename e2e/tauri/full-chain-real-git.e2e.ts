@@ -198,9 +198,23 @@ async function cloneThroughUi(
   }, parentPath);
   await $('[data-testid="start-clone-project"]').click();
   await $('[data-testid="clone-url-input"]').setValue(remotePath);
+  await browser.waitUntil(
+    async () =>
+      (await $('[data-testid="clone-parent-directory-input"]').getValue()) ===
+      parentPath,
+    {
+      timeout: 10_000,
+      timeoutMsg: `clone parent directory was not prefilled with ${parentPath}`,
+    },
+  );
   const directoryInput = await $('[data-testid="clone-directory-name-input"]');
   await directoryInput.setValue(directoryName);
-  await $('button[form="clone-repository"]').click();
+  const submit = await $('[data-testid="clone-submit"]');
+  await browser.waitUntil(async () => submit.isEnabled(), {
+    timeout: 10_000,
+    timeoutMsg: "clone submit button was not enabled",
+  });
+  await submit.click();
 }
 
 async function commitThroughUi(
@@ -291,10 +305,10 @@ async function revertCommitThroughUi(
   await waitForHistoryCommit(oid, message);
   const row = await elementWithAttribute(
     "history-commit-row",
-    "data-commit-message",
-    message,
+    "data-commit-id",
+    oid,
   );
-  assert.ok(row, `history row for ${message} should exist`);
+  assert.ok(row, `history row for ${message} (${oid}) should exist`);
   await row.click();
   await $('[data-testid="history-revert-open"]').click();
   await $('[data-testid="history-revert-confirm"]').click();
@@ -344,16 +358,15 @@ async function waitForHistoryCommit(oid: string, message: string) {
     async () =>
       (await elementWithAttribute(
         "history-commit-row",
-        "data-commit-message",
-        message,
-      )) !== null ||
-      (await browser.execute(
-        (shortOid) => document.body.textContent?.includes(shortOid) ?? false,
-        oid.slice(0, 7),
-      )),
+        "data-commit-id",
+        oid,
+      )) !== null,
     {
       timeout: 60_000,
-      timeoutMsg: `history commit did not appear in UI: ${message}`,
+      timeoutMsg: `history commit did not appear in UI: ${message} (${oid.slice(
+        0,
+        7,
+      )})`,
     },
   );
 }
@@ -396,36 +409,31 @@ async function waitForCommitDialogClosedOrCommitted() {
 }
 
 async function waitForStartScreen() {
+  await $('[data-testid="start-screen"]').waitForExist({ timeout: 60_000 });
   await browser.waitUntil(
     async () =>
-      browser.execute(() =>
-        Boolean(document.querySelector('[data-testid="start-screen"]')),
-      ),
+      (await $('[data-testid="start-open-project"]').isEnabled()) &&
+      (await $('[data-testid="start-clone-project"]').isEnabled()),
     {
       timeout: 60_000,
-      timeoutMsg: "start screen did not become ready",
+      timeoutMsg: "start screen controls did not become ready",
     },
   );
 }
 
 async function waitForRepository(repositoryPath: string) {
   await browser.waitUntil(
-    async () => {
-      if (!existsSync(path.join(repositoryPath, ".git"))) {
-        return false;
-      }
-      try {
-        await appInvoke("repository_summary", {
-          request: { repositoryPath },
-        });
-        return true;
-      } catch {
-        return false;
-      }
-    },
+    async () =>
+      existsSync(path.join(repositoryPath, ".git")) &&
+      (await elementWithAttribute(
+        "repository-shell",
+        "data-repository-path",
+        repositoryPath,
+      )) !== null &&
+      (await $('[data-testid="history-scroll-viewport"]').isExisting()),
     {
       timeout: 90_000,
-      timeoutMsg: `cloned repository did not become usable at ${repositoryPath}`,
+      timeoutMsg: `cloned repository did not open in the UI at ${repositoryPath}`,
     },
   );
 }
@@ -449,27 +457,4 @@ async function elementWithAttribute(
     }
   }
   return null;
-}
-
-function appInvoke<T = unknown>(command: string, args: unknown): Promise<T> {
-  return browser.execute(
-    async (name, payload) => {
-      const tauri = (
-        window as unknown as {
-          __TAURI_INTERNALS__?: {
-            invoke<TResponse>(
-              command: string,
-              args?: unknown,
-            ): Promise<TResponse>;
-          };
-        }
-      ).__TAURI_INTERNALS__;
-      if (!tauri?.invoke) {
-        throw new Error("Tauri invoke API is not available in the WebView.");
-      }
-      return tauri.invoke<T>(name, payload);
-    },
-    command,
-    args,
-  ) as Promise<T>;
 }

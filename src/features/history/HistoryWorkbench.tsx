@@ -735,7 +735,9 @@ function HistoryCommitRow({
   return (
     <button
       className="absolute left-0 right-0 grid border-b bg-card px-4 text-left transition-colors hover:bg-accent/45 [grid-template-columns:112px_minmax(0,1fr)_180px_140px]"
+      data-commit-id={commit.id}
       data-commit-message={commit.message}
+      data-commit-short-id={commit.shortId}
       data-testid="history-commit-row"
       onClick={() => {
         onSelect(commit.id);
@@ -1257,7 +1259,10 @@ function RevertCommitDialog({
       })}
       footer={
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <span className="min-w-0 text-sm text-muted-foreground">
+          <span
+            className="min-w-0 text-sm text-muted-foreground"
+            data-testid="history-revert-status"
+          >
             {busy ? t("history.revert.busy") : status}
           </span>
           <div className="flex items-center gap-2">
@@ -1306,6 +1311,7 @@ function RevertCommitDialog({
           <input
             checked={pushAfterRevert}
             className="size-4"
+            data-testid="history-revert-push-immediately"
             disabled={busy || status !== null}
             onChange={(event) => {
               setPushAfterRevert(event.currentTarget.checked);

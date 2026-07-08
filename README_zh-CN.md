@@ -56,6 +56,8 @@ pnpm git-dist:check
 下载的 Git、Git LFS、OpenSSH 与生成的 manifest 都是本机构建产物，不提交到普通
 Git 仓库。当前版本钉死、CI artifact/cache 策略与构建限制见
 [docs/git-dist.md](docs/git-dist.md)。
+真实 Git Tauri E2E 的环境准备与 skipped/failed 报告语义见
+[docs/e2e-real-git.md](docs/e2e-real-git.md)。
 
 在 Win32-OpenSSH 仍是记录明确的 preview 占位源期间，
 `pnpm git-dist:check:real` 只有在确认 real build 模式会拒绝该占位源时才通过。

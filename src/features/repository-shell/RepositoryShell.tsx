@@ -1656,7 +1656,11 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   ]);
 
   return (
-    <main className="flex h-screen min-h-0 bg-background text-foreground">
+    <main
+      className="flex h-screen min-h-0 bg-background text-foreground"
+      data-repository-path={repositoryPath}
+      data-testid="repository-shell"
+    >
       <RepositorySidebar
         branchActionsDisabledReason={branchActionsDisabledReason}
         branches={branches}
