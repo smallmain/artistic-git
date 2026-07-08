@@ -9,24 +9,88 @@ const requiredSecrets = [
   "TAURI_SIGNING_PRIVATE_KEY_PASSWORD",
   "GITHUB_TOKEN",
 ];
+const requiredEvidence = [
+  ["ARTISTIC_GIT_RELEASE_010_ARTIFACT_URL", "0.1.0 release artifact URL"],
+  ["ARTISTIC_GIT_RELEASE_MACOS_INSTALL_OK", "macOS install smoke passed"],
+  ["ARTISTIC_GIT_RELEASE_WINDOWS_INSTALL_OK", "Windows install smoke passed"],
+  ["ARTISTIC_GIT_RELEASE_LINUX_INSTALL_OK", "Linux install smoke passed"],
+  [
+    "ARTISTIC_GIT_RELEASE_MACOS_UPDATE_011_OK",
+    "macOS 0.1.0 to 0.1.1 updater rehearsal passed",
+  ],
+  [
+    "ARTISTIC_GIT_RELEASE_WINDOWS_UPDATE_011_OK",
+    "Windows 0.1.0 to 0.1.1 updater rehearsal passed",
+  ],
+  [
+    "ARTISTIC_GIT_RELEASE_LINUX_UPDATE_011_OK",
+    "Linux 0.1.0 to 0.1.1 updater rehearsal passed",
+  ],
+];
 
 const missingSecrets = requiredSecrets.filter((name) => !process.env[name]);
+const missingEvidence = requiredEvidence
+  .filter(([name]) => process.env[name] !== "1" && !process.env[name])
+  .map(([name]) => name);
 const dryRun = process.env.ARTISTIC_GIT_RELEASE_REHEARSAL_DRY_RUN !== "0";
 const reportDir =
   process.env.ARTISTIC_GIT_RELEASE_REHEARSAL_REPORT_DIR ??
   (process.env.CI ? path.join("artifacts", "release-rehearsal") : null);
+const status = dryRun
+  ? "skipped"
+  : missingSecrets.length > 0 || missingEvidence.length > 0
+    ? "blocker"
+    : "pass";
 const rehearsal = {
+  schemaVersion: 1,
+  kind: "release-rehearsal-checklist",
   generatedAt: new Date().toISOString(),
   mode: dryRun ? "dry-run checklist" : "operator-confirmed rehearsal",
   dryRun,
+  status,
+  result: status,
   requiredSecrets: requiredSecrets.map((name) => ({
     name,
     present: Boolean(process.env[name]),
   })),
   missingSecrets,
-  status: !dryRun && missingSecrets.length > 0 ? "blocked" : "ready",
+  requiredEvidence: requiredEvidence.map(([name, description]) => ({
+    name,
+    description,
+    present: Boolean(process.env[name]),
+    value: process.env[name] ? "provided" : "missing",
+  })),
+  missingEvidence,
+  skips: dryRun
+    ? [
+        {
+          id: "dry-run",
+          message:
+            "Dry-run checklist artifact generated; signed release, installation, and updater rehearsal were not executed.",
+        },
+      ]
+    : [],
+  blockers:
+    status === "blocker"
+      ? [
+          ...missingSecrets.map((name) => ({
+            id: "missing-secret",
+            name,
+            message: `${name} is required for an operator-confirmed release rehearsal.`,
+          })),
+          ...missingEvidence.map((name) => ({
+            id: "missing-evidence",
+            name,
+            message: `${name} must be recorded before the TASKS.md release rehearsal checkbox can be checked.`,
+          })),
+        ]
+      : [],
+  taskCheckbox:
+    status === "pass"
+      ? "eligible-after-artifact-review"
+      : "must-remain-unchecked",
   cannotCheckTask:
-    dryRun || missingSecrets.length > 0
+    status !== "pass"
       ? "TASKS.md release rehearsal remains unchecked until signed artifacts are built, installed, and update-tested on macOS, Windows, and Linux."
       : null,
 };
@@ -72,17 +136,21 @@ Commands to run:
 Secrets present in this shell:
 ${requiredSecrets.map((name) => `- ${name}: ${process.env[name] ? "present" : "missing"}`).join("\n")}
 
+Evidence markers in this shell:
+${requiredEvidence.map(([name, description]) => `- ${name}: ${process.env[name] ? "present" : "missing"} (${description})`).join("\n")}
+
 Dry-run verifier result:
 - Status: ${rehearsal.status}
+- Result class: ${rehearsal.result}
 - TASKS.md release item: ${rehearsal.cannotCheckTask ?? "operator prerequisites are present; still requires platform install/update evidence before checking."}
 `;
 
 console.log(markdown);
 writeReports(markdown, rehearsal);
 
-if (!dryRun && missingSecrets.length > 0) {
+if (status === "blocker") {
   throw new Error(
-    `Cannot mark operator-confirmed rehearsal: missing ${missingSecrets.join(", ")}.`,
+    `Cannot mark operator-confirmed rehearsal: missing ${[...missingSecrets, ...missingEvidence].join(", ")}.`,
   );
 }
 

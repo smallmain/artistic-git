@@ -572,9 +572,11 @@ graph TD
 - [ ] 失败注入全矩阵复查：每个融合操作（同步/自动跟踪/提交/撤回/审查/切换/子模块提交）每一步注入失败，断言恢复到操作前状态 + 「工作区与 HEAD 干净可用」全局不变量
   - 进展备注（2026-07-08）：新增 `crates/app/src/phase12_failure_hardening.rs`，提供阶段 12 真实 git-dist hardening harness：同步本地阶段坏子模块失败、提交 GPG 签名失败、revert 冲突 abort 均断言分支/HEAD/index/status 恢复到操作前快照并可继续执行 git 命令。既有 sync/commit/revert/branch/submodule 测试已有多处失败恢复覆盖，但尚未形成覆盖同步/自动跟踪/提交/撤回/审查/切换/子模块提交每一步的完整矩阵，不勾选。
   - 进展备注（2026-07-08）：failure hardening harness 扩展到 7 条真实 git-dist 用例：同步当前分支本地阶段失败、非当前分支发布失败、自动跟踪 ff-only 分歧后恢复本地修改、提交 GPG 失败、撤回冲突 abort、切换分支 auto-stash 冲突后取消恢复、子模块提交发布前护栏失败；均断言 snapshot 恢复和仓库可继续执行 git 命令。仍不是“每个融合操作每一步”的完整矩阵，不勾选。
+  - 进展备注（2026-07-08）：新增 `pnpm phase12:failure-matrix`，CI 上传 `phase12-failure-matrix-*` artifact，机器可读 JSON/Markdown 将同步、自动跟踪、提交、撤回、审查、切换、子模块提交拆成 29 个 failure step，8 个已有真实 harness 用例标记 covered，21 个缺口标记 gap，整体 status=`blocker` 但默认不让 CI 失败。harness 另补审查模式退出时 auto-stash 恢复冲突 + cancel 的真实用例，断言 pre-exit snapshot 恢复、review recovery 仍可提示、仓库可继续执行 git 命令。仍不是完整矩阵，不勾选。
 - [ ] 性能验证：万级提交历史滚动/几万文件大树 status 时延（fsmonitor 生效断言）/巨型二进制 + LFS 仓库操作
   - 进展备注（2026-07-08）：新增 `pnpm phase12:perf`（`scripts/phase12-perf-verify.mjs`），使用真实 `ARTISTIC_GIT_DIST_DIR` 验证历史分页 200/页、`core.fsmonitor=true` + `core.untrackedCache=true` 下大文件树 status 时延、巨型二进制经 git-lfs 以 pointer 入库且工作区保留真实内容；默认轻量，`ARTISTIC_GIT_PERF_HEAVY=1` 跑 10000 commits / 50000 files / 128MB binary，可用 env 覆盖规模。重型性能尚未在目标 CI/平台完成，暂不勾选。
-  - 进展备注（2026-07-08）：`phase12:perf` 支持 `ARTISTIC_GIT_PHASE12_PERF_REPORT`，CI 默认写 `artifacts/phase12-perf-report.json`，包含 skipped/pass/fail、light/heavy profile、history/status/LFS 指标；缺少真实 git-dist 时也产出机器可读 skipped report。本轮仅验证 skipped artifact 输出，重型与目标平台实测未完成，不勾选。
+  - 进展备注（2026-07-08）：`phase12:perf` 支持 `ARTISTIC_GIT_PHASE12_PERF_REPORT`，CI 默认写 `artifacts/phase12-perf-report.json`，包含 pass/skipped/blocker、light/heavy profile、history/status/LFS 指标；缺少真实 git-dist 时也产出机器可读 skipped report。本轮仅验证 skipped artifact 输出，重型与目标平台实测未完成，不勾选。
+  - 进展备注（2026-07-08）：`phase12:perf` JSON 升级为 schemaVersion=1，status/result 明确使用 `pass` / `skipped` / `blocker`，并写入 skips/blockers 数组；CI test matrix 新增 `phase12-perf-*` artifact 上传。本轮本地仍因缺少真实 `ARTISTIC_GIT_DIST_DIR` 只验证 skipped report，真实 heavy perf 与目标平台实测未完成，不勾选。
 - [x] 「整仓库显示已修改」自愈提示条：检测本地更改数量异常巨大 → 列表顶部建议一键规范化（`git add --renormalize` 预览，不自动提交，默认不打扰）
 - [x] 无障碍审计：全键盘可达/焦点环/AA 对比度/仅图标按钮 aria-label + tooltip/减少动态效果降级
 - [x] i18n 审计：全部 UI 双语无遗漏；git 写入文本恒英文（`Revert:`/`Auto Stash:`/`backup/`）；stderr 原文不翻译；日期/相对时间/数字/大小本地化
@@ -584,6 +586,7 @@ graph TD
 - [ ] `0.1.0` 正式发布演练：走完整 Release 流程 + 三平台安装冒烟 + 自动更新升级到 `0.1.1` 演练
   - 进展备注（2026-07-08）：新增 `pnpm release:rehearsal:checklist` 作为精确演练入口，列出 secrets、release workflow、三平台安装、0.1.0→0.1.1 更新验证与记录项；本地不能伪造签名 secrets、GitHub protected environment 与三平台安装/更新结果，未执行正式发布演练，不勾选。
   - 进展备注（2026-07-08）：release dry-run job 增加 `release-rehearsal-*` artifact，`pnpm release:rehearsal:checklist` 支持 `ARTISTIC_GIT_RELEASE_REHEARSAL_REPORT_DIR` 输出 Markdown + JSON dry-run verifier/checklist；secrets、protected environment、三平台安装和 0.1.0→0.1.1 更新演练仍未实际完成，不勾选。
+  - 进展备注（2026-07-08）：release rehearsal JSON 升级为 schemaVersion=1，status/result 明确区分 `skipped`（CI dry-run checklist）、`blocker`（operator-confirmed 但缺 secrets 或三平台安装/更新 evidence）、`pass`（operator-confirmed evidence marker 均提供），并列出 missingSecrets/missingEvidence；release dry-run artifact 上传改为 always。本轮仍缺签名 secrets、三平台安装冒烟、0.1.0→0.1.1 真实升级证据，不勾选。
 
 **验收**：三平台 CI（单元 + 集成）与 Linux/Windows E2E 全绿；发布演练成功。
 

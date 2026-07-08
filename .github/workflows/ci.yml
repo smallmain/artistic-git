@@ -85,6 +85,34 @@ jobs:
       - name: Test Rust
         run: cargo test --workspace
 
+      - name: Generate phase 12 failure matrix
+        if: always()
+        env:
+          ARTISTIC_GIT_PHASE12_FAILURE_MATRIX_REPORT_DIR: ${{ runner.temp }}/phase12-failure-matrix
+        run: pnpm phase12:failure-matrix
+
+      - name: Upload phase 12 failure matrix
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase12-failure-matrix-${{ runner.os }}
+          path: ${{ runner.temp }}/phase12-failure-matrix/
+          retention-days: 14
+
+      - name: Verify phase 12 perf envelope
+        if: always()
+        env:
+          ARTISTIC_GIT_PHASE12_PERF_REPORT: ${{ runner.temp }}/phase12-perf/phase12-perf-report.json
+        run: pnpm phase12:perf
+
+      - name: Upload phase 12 perf report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase12-perf-${{ runner.os }}
+          path: ${{ runner.temp }}/phase12-perf/
+          retention-days: 14
+
   e2e:
     name: E2E (${{ matrix.os }})
     needs: test

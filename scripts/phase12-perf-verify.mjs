@@ -31,11 +31,16 @@ const profile = {
   ),
 };
 const report = {
+  schemaVersion: 1,
+  kind: "phase12-perf",
   generatedAt: new Date().toISOString(),
   heavy,
   profile,
   status: "running",
+  result: "running",
   gitDistDir: process.env.ARTISTIC_GIT_DIST_DIR ?? null,
+  skips: [],
+  blockers: [],
   checks: [],
 };
 
@@ -45,21 +50,32 @@ if (!gitDistDir) {
     "SKIP phase12 perf verification: ARTISTIC_GIT_DIST_DIR is not set.",
   );
   report.status = "skipped";
+  report.result = "skipped";
   report.skipReason = "ARTISTIC_GIT_DIST_DIR is not set";
+  report.skips.push({
+    id: "missing-git-dist",
+    message:
+      "ARTISTIC_GIT_DIST_DIR is not set; real embedded Git performance was not exercised.",
+  });
   writeReport();
   process.exit(0);
 }
 
 const manifestPath = path.join(gitDistDir, "manifest.json");
 if (!existsSync(manifestPath)) {
-  throw new Error(`git distribution manifest is missing at ${manifestPath}`);
+  failBlocker(`git distribution manifest is missing at ${manifestPath}`);
 }
 
-const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+const manifest = readManifest(manifestPath);
+if (!manifest.paths?.gitExecutable || !manifest.paths?.gitLfsExecutable) {
+  failBlocker(
+    `git distribution manifest has invalid executable paths at ${manifestPath}`,
+  );
+}
 const gitPath = path.join(gitDistDir, manifest.paths.gitExecutable);
 const gitLfsPath = path.join(gitDistDir, manifest.paths.gitLfsExecutable);
 if (!existsSync(gitPath)) {
-  throw new Error(`embedded git executable is missing at ${gitPath}`);
+  failBlocker(`embedded git executable is missing at ${gitPath}`);
 }
 
 const root = mkdtempSync(path.join(tmpdir(), "ag-phase12-perf-"));
@@ -87,7 +103,8 @@ try {
   verifyLargeStatus();
   verifyLargeBinaryAndLfs();
 
-  report.status = "passed";
+  report.status = "pass";
+  report.result = "pass";
   report.rootKept = keep ? root : null;
   writeReport();
   console.log(
@@ -95,9 +112,7 @@ try {
       `${profile.commitCount} commits, ${profile.fileCount} files, ${profile.binaryBytes} byte binary.`,
   );
 } catch (error) {
-  report.status = "failed";
-  report.error = error instanceof Error ? error.message : String(error);
-  writeReport();
+  markBlocker(error);
   throw error;
 } finally {
   if (keep) {
@@ -264,6 +279,17 @@ function numberFromEnv(name, fallback) {
   return parsed;
 }
 
+function readManifest(filePath) {
+  try {
+    return JSON.parse(readFileSync(filePath, "utf8"));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    failBlocker(
+      `git distribution manifest is not valid JSON at ${filePath}: ${message}`,
+    );
+  }
+}
+
 function assert(value, message) {
   if (!value) {
     throw new Error(message);
@@ -285,9 +311,29 @@ function assertNotEqual(actual, expected, label) {
 function recordCheck(name, metrics) {
   report.checks.push({
     name,
-    status: "passed",
+    status: "pass",
     ...metrics,
   });
+}
+
+function failBlocker(message) {
+  const error = new Error(message);
+  markBlocker(error);
+  throw error;
+}
+
+function markBlocker(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  report.status = "blocker";
+  report.result = "blocker";
+  report.error = message;
+  if (!report.blockers.some((blocker) => blocker.message === message)) {
+    report.blockers.push({
+      id: "phase12-perf-blocker",
+      message,
+    });
+  }
+  writeReport();
 }
 
 function writeReport() {

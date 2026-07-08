@@ -2,7 +2,8 @@ use crate::git_ops::{display_path, git_stdout};
 use artistic_git_contracts::{
     AbortRevertRequest, BranchOperationResponse, CancelStashRestoreRequest, CheckoutBranchRequest,
     CheckoutLocalChangesMode, CommitRequest, CommitResponse, LargeFileDecision, OperationId,
-    RevertCommitRequest, RevertCommitResponse, SyncAllBranchesRequest, SyncBranchRequest,
+    RevertCommitRequest, RevertCommitResponse, ReviewModeExitStatus, ReviewModeRecoveryRequest,
+    ReviewModeRequest, StartReviewModeRequest, SyncAllBranchesRequest, SyncBranchRequest,
     SyncCurrentBranchRequest,
 };
 use artistic_git_core::config::{AutoTrackingRule, ConfigActor, ConfigPaths};
@@ -246,6 +247,75 @@ fn phase12_checkout_auto_stash_conflict_cancel_restores_snapshot() {
 
     before.assert_restored(&repo);
     assert_repository_reusable(&repo);
+}
+
+#[test]
+fn phase12_review_exit_stash_conflict_cancel_keeps_review_recovery() {
+    let Some((runner, _home)) = real_runner_or_skip() else {
+        return;
+    };
+    let fixture = RemoteFixture::new(&runner, "ag-phase12-review-failure");
+    let config = phase12_config(&fixture._parent);
+    fixture.local.write("tracked.txt", "local review draft\n");
+    fixture.peer.write("tracked.txt", "remote review version\n");
+    fixture.peer.git(["add", "tracked.txt"]);
+    fixture.peer.git(["commit", "-m", "remote review update"]);
+    fixture.peer.git(["push"]);
+
+    crate::start_review_mode_with_config(
+        &runner,
+        Some(&config),
+        StartReviewModeRequest {
+            repository_path: display_path(&fixture.local.path),
+            operation_id: Some(OperationId("phase12-review-start".to_owned())),
+        },
+    )
+    .expect("start review mode");
+    assert_eq!(fixture.local.read("tracked.txt"), "remote review version\n");
+    let before_exit = RepoSnapshot::capture(&fixture.local);
+
+    let exit = crate::exit_review_mode_with_config(
+        &runner,
+        Some(&config),
+        ReviewModeRequest {
+            repository_path: display_path(&fixture.local.path),
+        },
+    )
+    .expect("exit review mode should report restore conflict in-band");
+
+    assert_eq!(exit.status, ReviewModeExitStatus::Conflicts);
+    assert!(fixture.local.read("tracked.txt").contains("<<<<<<<"));
+    let recovery = exit
+        .stash_recovery
+        .expect("conflicted review exit exposes stash recovery");
+
+    crate::cancel_stash_restore(
+        &runner,
+        CancelStashRestoreRequest {
+            repository_path: display_path(&fixture.local.path),
+            recovery,
+        },
+    )
+    .expect("cancel review stash restore");
+
+    before_exit.assert_restored(&fixture.local);
+    let recovery = crate::review_mode_recovery(
+        &runner,
+        Some(&config),
+        ReviewModeRecoveryRequest {
+            repository_path: display_path(&fixture.local.path),
+        },
+    )
+    .expect("review recovery remains available");
+    assert!(recovery.should_prompt);
+    assert_eq!(
+        recovery
+            .auto_stash
+            .as_ref()
+            .map(|stash| stash.message.as_str()),
+        Some("Auto Stash: review mode")
+    );
+    assert_repository_reusable(&fixture.local);
 }
 
 #[test]
