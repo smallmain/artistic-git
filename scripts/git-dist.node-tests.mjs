@@ -43,6 +43,7 @@ const readinessReportPath = path.join(
   "scripts",
   "git-dist-report.mjs",
 );
+const fetchGitDistPath = path.join(repoRoot, "scripts", "fetch-git-dist.mjs");
 
 async function loadConfig() {
   const { data } = await loadGitDistConfig(configPath);
@@ -308,6 +309,7 @@ test("assembly fails without helper binaries and does not write an incomplete ma
 
 test("source Git build flags disable optional Rust components", async () => {
   const config = await loadConfig();
+  const fetchGitDist = await readFile(fetchGitDistPath, "utf8");
   assert.ok(
     config.build.macos.git.make_flags.includes("NO_RUST=YesPlease"),
     "macOS Git source build must not let Cargo discover the repo workspace",
@@ -332,6 +334,10 @@ test("source Git build flags disable optional Rust components", async () => {
       `Linux static libcurl link requires ${packageName}`,
     );
   }
+  assert.match(fetchGitDist, /static_link_flags="-Wl,-Bstatic/);
+  assert.match(fetchGitDist, /EXTLIBS="\$static_link_flags"/);
+  assert.match(fetchGitDist, /OPENSSL_LIBSSL=/);
+  assert.match(fetchGitDist, /find \$\{shellQuote\(installRoot\)\} -type f/);
 });
 
 test("real Windows fetch still rejects the Win32-OpenSSH placeholder before download", async () => {

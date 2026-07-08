@@ -443,14 +443,27 @@ apt-get update
 apt-get install -y --no-install-recommends ${shellWords(packages)}
 cd ${shellQuote(sourceRoot)}
 ./configure ${configureFlags}
-static_libs="$(pkg-config --static --libs libcurl openssl zlib libpcre2-8 expat)"
-make -j"$(nproc)" ${makeFlags} prefix=/ CURL_LDFLAGS="$static_libs" EXPAT_LIBEXPAT="$static_libs" LIB_4_CRYPTO="$static_libs" LIB_4_PCRE="$static_libs" all
-make ${makeFlags} prefix=/ DESTDIR=${shellQuote(installRoot)} NO_INSTALL_HARDLINKS=YesPlease install
-if ldd ${shellQuote(path.posix.join(installRoot, "bin/git"))} | grep -E 'lib(curl|ssl|crypto|z|pcre2|expat)'; then
-  echo "git binary still links dynamic third-party libraries" >&2
+pkg_config_static_libs="$(pkg-config --static --libs libcurl openssl zlib libpcre2-8 expat)"
+static_third_party_libs=""
+dynamic_system_libs=""
+for token in $pkg_config_static_libs; do
+  case "$token" in
+    -ldl|-lrt|-lpthread|-pthread|-lm|-lc|-lresolv|-lutil)
+      dynamic_system_libs="$dynamic_system_libs $token"
+      ;;
+    *)
+      static_third_party_libs="$static_third_party_libs $token"
+      ;;
+  esac
+done
+static_link_flags="-Wl,-Bstatic $static_third_party_libs -Wl,-Bdynamic $dynamic_system_libs"
+make -j"$(nproc)" ${makeFlags} prefix=/ CURL_LDFLAGS="$static_link_flags" EXPAT_LIBEXPAT="$static_link_flags" OPENSSL_LINK= OPENSSL_LIBSSL= LIB_4_CRYPTO="$static_link_flags" EXTLIBS="$static_link_flags" all
+make ${makeFlags} prefix=/ DESTDIR=${shellQuote(installRoot)} NO_INSTALL_HARDLINKS=YesPlease CURL_LDFLAGS="$static_link_flags" EXPAT_LIBEXPAT="$static_link_flags" OPENSSL_LINK= OPENSSL_LIBSSL= LIB_4_CRYPTO="$static_link_flags" EXTLIBS="$static_link_flags" install
+if find ${shellQuote(installRoot)} -type f -perm /111 -print0 | xargs -0 -r ldd 2>/dev/null | grep -E 'lib(curl|ssl|crypto|z|pcre2|expat|nghttp2|idn2|rtmp|ssh|psl|krb5|k5crypto|com_err|ldap|lber|brotli|zstd)'; then
+  echo "git distribution still links dynamic third-party libraries" >&2
   exit 1
 fi
-`;
+	`;
 }
 
 function buildHelpers() {
