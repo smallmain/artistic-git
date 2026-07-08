@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* global console, process */
 
 const requiredSecrets = [
   "TAURI_SIGNING_PRIVATE_KEY",

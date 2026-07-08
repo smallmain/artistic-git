@@ -17,22 +17,35 @@ thread_local! {
 #[derive(Clone)]
 struct AuthCommandContext {
     runtime: crate::auth_ipc::AuthRuntime,
-    interaction_policy: crate::auth_ipc::InteractionPolicy,
+    operation_id: artistic_git_contracts::OperationId,
 }
 
-pub(crate) fn with_auth_runtime<T>(
+pub(crate) fn with_auth_runtime_for_operation<T>(
     auth_runtime: Option<&crate::auth_ipc::AuthRuntime>,
     interaction_policy: crate::auth_ipc::InteractionPolicy,
+    operation_id: Option<artistic_git_contracts::OperationId>,
+    repository_path: Option<PathBuf>,
     action: impl FnOnce() -> T,
 ) -> T {
     let Some(auth_runtime) = auth_runtime else {
         return action();
     };
+    let operation = match auth_runtime.start_operation_for_context(
+        operation_id,
+        interaction_policy,
+        repository_path,
+    ) {
+        Ok(operation) => operation,
+        Err(error) => {
+            tracing::warn!(error = %error, "failed to start auth operation context");
+            return action();
+        }
+    };
 
     AUTH_CONTEXT.with(|contexts| {
         contexts.borrow_mut().push(AuthCommandContext {
             runtime: auth_runtime.clone(),
-            interaction_policy,
+            operation_id: operation.operation_id,
         });
     });
     let _guard = AuthContextGuard;
@@ -204,13 +217,13 @@ pub(crate) fn apply_auth_context_to_plan(
         return Ok(plan);
     };
 
-    apply_auth_runtime_to_plan(
-        plan,
-        Some(&context.runtime),
-        context.interaction_policy,
-        root,
-        operation_name,
-    )
+    let invocation_context = root
+        .map(|path| crate::auth_ipc::AuthInvocationContext::new().with_repository_path(path))
+        .unwrap_or_default();
+    context
+        .runtime
+        .inject_for_operation(&context.operation_id, plan, invocation_context)
+        .map_err(|source| auth_ipc_error(source, operation_name))
 }
 
 fn apply_auth_runtime_to_plan(
@@ -337,18 +350,21 @@ mod tests {
     use super::*;
     use crate::auth_ipc::{AuthRuntime, InteractionPolicy, StaticAuthIpcHandler};
     use artistic_git_git_runner::{GitDistribution, GitRunner};
-    use artistic_git_helpers::{AUTH_INVOCATION_ID_ENV, AUTH_SOCKET_ENV, AUTH_TOKEN_ENV};
+    use artistic_git_helpers::{
+        AUTH_INVOCATION_ID_ENV, AUTH_OPERATION_ID_ENV, AUTH_SOCKET_ENV, AUTH_TOKEN_ENV,
+    };
     use artistic_git_test_support::{
         git_dist_manifest_fixture, write_executable_file, write_git_dist_manifest, TestTempDir,
     };
-    use std::sync::Arc;
+    use std::{ffi::OsStr, sync::Arc};
 
     #[test]
     fn auth_context_injects_helper_config_and_ipc_environment() {
-        let (runner, temp) = fake_runner();
+        let (runner, _temp) = fake_runner();
+        let socket_path = short_auth_socket_path("git-ops-auth");
         let runtime = AuthRuntime::start_at(
             &runner,
-            temp.path().join("auth.sock"),
+            socket_path.clone(),
             Arc::new(StaticAuthIpcHandler::empty()),
         )
         .expect("auth runtime");
@@ -357,9 +373,13 @@ mod tests {
             .args(["fetch", "origin"])
             .build();
 
-        let injected = with_auth_runtime(Some(&runtime), InteractionPolicy::interactive(), || {
-            apply_auth_context_to_plan(plan, Some(Path::new("/repo")), "test")
-        })
+        let injected = with_auth_runtime_for_operation(
+            Some(&runtime),
+            InteractionPolicy::interactive(),
+            None,
+            Some(PathBuf::from("/repo")),
+            || apply_auth_context_to_plan(plan, Some(Path::new("/repo")), "test"),
+        )
         .expect("inject auth");
 
         let args = injected
@@ -372,7 +392,7 @@ mod tests {
         assert!(args.iter().any(|arg| arg.starts_with("core.sshCommand=")));
         assert_eq!(
             injected.environment.variable(AUTH_SOCKET_ENV),
-            Some(temp.path().join("auth.sock").as_os_str())
+            Some(socket_path.as_os_str())
         );
         assert!(injected.environment.variable(AUTH_TOKEN_ENV).is_some());
         assert!(injected
@@ -381,6 +401,62 @@ mod tests {
             .is_some());
         assert_eq!(args[args.len() - 2], "fetch");
         assert_eq!(args[args.len() - 1], "origin");
+    }
+
+    #[test]
+    fn auth_context_reuses_high_level_operation_id_for_multiple_git_invocations() {
+        let (runner, _temp) = fake_runner();
+        let runtime = AuthRuntime::start_at(
+            &runner,
+            short_auth_socket_path("git-ops-auth-multi"),
+            Arc::new(StaticAuthIpcHandler::empty()),
+        )
+        .expect("auth runtime");
+
+        let (first, second) = with_auth_runtime_for_operation(
+            Some(&runtime),
+            InteractionPolicy::interactive(),
+            Some(artistic_git_contracts::OperationId::new("sync-op-1")),
+            Some(PathBuf::from("/repo")),
+            || {
+                let first = apply_auth_context_to_plan(
+                    runner
+                        .git_command_builder()
+                        .args(["fetch", "origin"])
+                        .build(),
+                    Some(Path::new("/repo")),
+                    "test",
+                )
+                .expect("first inject");
+                let second = apply_auth_context_to_plan(
+                    runner
+                        .git_command_builder()
+                        .args(["push", "origin", "main"])
+                        .build(),
+                    Some(Path::new("/repo")),
+                    "test",
+                )
+                .expect("second inject");
+                (first, second)
+            },
+        );
+
+        assert_eq!(
+            first.environment.variable(AUTH_OPERATION_ID_ENV),
+            Some(OsStr::new("sync-op-1"))
+        );
+        assert_eq!(
+            second.environment.variable(AUTH_OPERATION_ID_ENV),
+            Some(OsStr::new("sync-op-1"))
+        );
+        assert_ne!(
+            first.environment.variable(AUTH_INVOCATION_ID_ENV),
+            second.environment.variable(AUTH_INVOCATION_ID_ENV)
+        );
+        assert_ne!(
+            first.environment.variable(AUTH_TOKEN_ENV),
+            second.environment.variable(AUTH_TOKEN_ENV)
+        );
     }
 
     fn fake_runner() -> (GitRunner, TestTempDir) {
@@ -396,6 +472,10 @@ mod tests {
         let distribution = GitDistribution::from_root(temp.path()).expect("distribution");
         let runner = GitRunner::from_distribution(distribution, temp.path().join("home"));
         (runner, temp)
+    }
+
+    fn short_auth_socket_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("{name}-{}.sock", std::process::id()))
     }
 }
 

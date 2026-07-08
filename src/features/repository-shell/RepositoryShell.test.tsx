@@ -27,6 +27,7 @@ import { RepositoryShell } from "./RepositoryShell";
 const commandMocks = vi.hoisted(() => ({
   acceptRemoteHistory: vi.fn(),
   cancelConflictResolution: vi.fn(),
+  cancelOperation: vi.fn(),
   cancelPendingWindowExit: vi.fn(),
   cancelStashRestore: vi.fn(),
   checkoutBranch: vi.fn(),
@@ -378,6 +379,7 @@ beforeEach(() => {
     repositoryPath: "/repo/art",
     shouldPrompt: false,
   });
+  commandMocks.cancelOperation.mockResolvedValue({ cancelled: true });
   commandMocks.setWindowCloseGuard.mockResolvedValue(undefined);
   commandMocks.restoreStash.mockResolvedValue({
     oid: "stashoid",
@@ -823,16 +825,14 @@ describe("RepositoryShell review mode", () => {
 });
 
 describe("RepositoryShell close guard", () => {
-  it.each([false, true])(
-    "guards active backend operations with cancellable=%s as wait-only when no recovery API exists",
-    async (cancellable) => {
+  it("guards non-cancellable active backend operations as wait-only", async () => {
     const errors: unknown[] = [];
     const handleError = (event: Event) => {
       errors.push((event as CustomEvent<unknown>).detail);
     };
     window.addEventListener("artistic-git:error", handleError);
     const activeOperation: OperationProgressEvent = {
-      cancellable,
+      cancellable: false,
       label: "sync",
       operationId: "sync-active",
       progress: { kind: "indeterminate" },
@@ -878,8 +878,45 @@ describe("RepositoryShell close guard", () => {
     } finally {
       window.removeEventListener("artistic-git:error", handleError);
     }
-    },
-  );
+  });
+
+  it("cancels a cancellable active backend operation before closing", async () => {
+    const activeOperation: OperationProgressEvent = {
+      cancellable: true,
+      label: "sync",
+      operationId: "sync-active",
+      progress: { kind: "indeterminate" },
+      repositoryPath: "/repo/art",
+      windowLabel: "repo-1",
+    };
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />, {
+      operationsById: {
+        [activeOperation.operationId]: activeOperation,
+      },
+    });
+
+    await emitWindowCloseBlocked({ reason: "closeWindow" });
+    const dialog = await screen.findByRole("dialog", {
+      name: "Close window?",
+    });
+    expect(dialog).toHaveTextContent(
+      "An operation is in progress. Closing will cancel it and restore the pre-operation state.",
+    );
+
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Close and recover" }),
+    );
+
+    await waitFor(() =>
+      expect(commandMocks.cancelOperation).toHaveBeenCalledWith({
+        operationId: "sync-active",
+      }),
+    );
+    expect(commandMocks.setWindowCloseGuard).toHaveBeenLastCalledWith({
+      active: false,
+    });
+    expect(commandMocks.closeCurrentWindow).toHaveBeenCalledTimes(1);
+  });
 
   it("cancels pending app quit when an active backend operation must keep waiting", async () => {
     const activeOperation: OperationProgressEvent = {

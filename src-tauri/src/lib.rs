@@ -639,6 +639,14 @@ fn cancel_clone_repository(
 }
 
 #[tauri::command]
+fn cancel_operation(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::CancelOperationRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::CancelOperationResponse> {
+    backend.cancel_operation(request)
+}
+
+#[tauri::command]
 fn repository_summary(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::RepositoryPathRequest,
@@ -1452,6 +1460,7 @@ pub fn run() {
             open_repository,
             clone_repository,
             cancel_clone_repository,
+            cancel_operation,
             repository_summary,
             fetch_repository,
             sync_current_branch,

@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+/* global Buffer, console, performance, process */
+
 import { spawnSync } from "node:child_process";
 import {
   existsSync,

@@ -11,26 +11,27 @@ use artistic_git_contracts::{
     AbortRevertRequest, AbortRevertResponse, AcceptRemoteHistoryRequest,
     AcceptRemoteHistoryResponse, AppError, AppEvent, BranchListResponse,
     BranchNameValidationRequest, BranchNameValidationResponse, BranchOperationResponse,
-    CancelCloneRepositoryRequest, CancelCloneRepositoryResponse, CancelStashRestoreRequest,
-    CancelStashRestoreResponse, CheckoutBranchRequest, CloneRepositoryRequest,
-    CloneRepositoryResponse, CommitRequest, CommitResponse, ConflictCancelRequest,
-    ConflictCancelResponse, ConflictCompleteRequest, ConflictCompleteResponse,
-    ConflictDetailResponse, ConflictFile, ConflictListRequest, ConflictListResponse,
-    ConflictPathRequest, ConflictSaveResolutionRequest, ConflictSaveResolutionResponse,
-    ConflictSelectSideRequest, ConflictSelectSideResponse, CreateAutoStashRequest,
-    CreateBranchRequest, CreateStashRequest, CreateStashResponse, DeleteBranchRequest,
-    DeleteSafetyBackupRequest, DeleteSafetyBackupResponse, DeleteStashRequest, DeleteStashResponse,
-    DiffAsset, DiffContent, DiffPayload, ExitReviewModeResponse, FetchRepositoryRequest,
-    FetchRepositoryResponse, GitDistManifest, LargeFileWarning, LfsContentStatus,
-    LocalChangesResponse, LogPageRequest, LogPageResponse, LogSearchRequest, OpenRepositoryRequest,
-    OpenRepositoryResponse, RemoteSettingsResponse, RenormalizePreviewRequest,
-    RenormalizePreviewResponse, RepositoryPathRequest, RepositorySummary, RestoreChangesRequest,
-    RestoreChangesResponse, RestoreStashRequest, RestoreStashResponse, RevertCommitRequest,
-    RevertCommitResponse, ReviewModeRecoveryRequest, ReviewModeRecoveryResponse, ReviewModeRequest,
-    SafetyBackupListResponse, SaveRemoteSettingsRequest, StartReviewModeRequest,
-    StartReviewModeResponse, StashDetailsRequest, StashDetailsResponse, StashListResponse,
-    SyncAllBranchesRequest, SyncAllBranchesResponse, SyncBranchRequest, SyncBranchResponse,
-    SyncCurrentBranchRequest, SyncCurrentBranchResponse, SyncReviewModeResponse,
+    CancelCloneRepositoryRequest, CancelCloneRepositoryResponse, CancelOperationRequest,
+    CancelOperationResponse, CancelStashRestoreRequest, CancelStashRestoreResponse,
+    CheckoutBranchRequest, CloneRepositoryRequest, CloneRepositoryResponse, CommitRequest,
+    CommitResponse, ConflictCancelRequest, ConflictCancelResponse, ConflictCompleteRequest,
+    ConflictCompleteResponse, ConflictDetailResponse, ConflictFile, ConflictListRequest,
+    ConflictListResponse, ConflictPathRequest, ConflictSaveResolutionRequest,
+    ConflictSaveResolutionResponse, ConflictSelectSideRequest, ConflictSelectSideResponse,
+    CreateAutoStashRequest, CreateBranchRequest, CreateStashRequest, CreateStashResponse,
+    DeleteBranchRequest, DeleteSafetyBackupRequest, DeleteSafetyBackupResponse, DeleteStashRequest,
+    DeleteStashResponse, DiffAsset, DiffContent, DiffPayload, ExitReviewModeResponse,
+    FetchRepositoryRequest, FetchRepositoryResponse, GitDistManifest, LargeFileWarning,
+    LfsContentStatus, LocalChangesResponse, LogPageRequest, LogPageResponse, LogSearchRequest,
+    OpenRepositoryRequest, OpenRepositoryResponse, RemoteSettingsResponse,
+    RenormalizePreviewRequest, RenormalizePreviewResponse, RepositoryPathRequest,
+    RepositorySummary, RestoreChangesRequest, RestoreChangesResponse, RestoreStashRequest,
+    RestoreStashResponse, RevertCommitRequest, RevertCommitResponse, ReviewModeRecoveryRequest,
+    ReviewModeRecoveryResponse, ReviewModeRequest, SafetyBackupListResponse,
+    SaveRemoteSettingsRequest, StartReviewModeRequest, StartReviewModeResponse,
+    StashDetailsRequest, StashDetailsResponse, StashListResponse, SyncAllBranchesRequest,
+    SyncAllBranchesResponse, SyncBranchRequest, SyncBranchResponse, SyncCurrentBranchRequest,
+    SyncCurrentBranchResponse, SyncReviewModeResponse,
 };
 use artistic_git_core::config::{
     AppSettings, ConfigChangeEvent, ProjectSettings, ProjectsDocument,
@@ -48,6 +49,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register::<CloneRepositoryResponse>()
         .register::<CancelCloneRepositoryRequest>()
         .register::<CancelCloneRepositoryResponse>()
+        .register::<CancelOperationRequest>()
+        .register::<CancelOperationResponse>()
         .register::<RepositoryPathRequest>()
         .register::<RepositorySummary>()
         .register::<FetchRepositoryRequest>()

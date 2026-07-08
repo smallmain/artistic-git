@@ -10,13 +10,15 @@ use std::{
     fmt,
     io::{Read, Write},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     sync::{Arc, Mutex},
     thread,
+    time::Duration,
 };
 
 static INVOCATION_COUNTER: AtomicU64 = AtomicU64::new(1);
 static OPERATION_COUNTER: AtomicU64 = AtomicU64::new(1);
+const AUTH_IPC_IO_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InteractionMode {
@@ -554,10 +556,14 @@ impl LocalIpcListener {
     #[cfg(windows)]
     pub fn bind_windows_named_pipe(pipe_name: impl Into<String>) -> std::io::Result<Self> {
         use interprocess::local_socket::{prelude::*, GenericNamespaced, ListenerOptions};
+        use interprocess::os::windows::local_socket::ListenerOptionsExt;
 
         let pipe_name = pipe_name.into();
         let name = pipe_name.as_str().to_ns_name::<GenericNamespaced>()?;
-        let listener = ListenerOptions::new().name(name).create_sync()?;
+        let listener = ListenerOptions::new()
+            .name(name)
+            .security_descriptor(owner_only_windows_security_descriptor()?)
+            .create_sync()?;
 
         Ok(Self {
             endpoint: LocalIpcEndpoint::WindowsNamedPipe(pipe_name),
@@ -624,14 +630,22 @@ impl AuthIpcService {
 
     pub fn run_in_background(self) -> AuthIpcServiceHandle {
         let endpoint = self.listener.endpoint().clone();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let thread_shutdown = Arc::clone(&shutdown);
         let thread = thread::spawn(move || loop {
             match self.listener.accept() {
                 Ok(stream) => {
+                    if thread_shutdown.load(Ordering::Acquire) {
+                        break;
+                    }
                     let sessions = Arc::clone(&self.sessions);
                     let handler = Arc::clone(&self.handler);
                     thread::spawn(move || handle_helper_stream(stream, sessions, handler));
                 }
                 Err(error) => {
+                    if thread_shutdown.load(Ordering::Acquire) {
+                        break;
+                    }
                     tracing::warn!(error = %error, "auth IPC listener stopped accepting helper connections");
                     break;
                 }
@@ -640,7 +654,8 @@ impl AuthIpcService {
 
         AuthIpcServiceHandle {
             endpoint,
-            thread: Some(thread),
+            shutdown,
+            thread: Mutex::new(Some(thread)),
         }
     }
 }
@@ -648,7 +663,8 @@ impl AuthIpcService {
 #[derive(Debug)]
 pub struct AuthIpcServiceHandle {
     endpoint: LocalIpcEndpoint,
-    thread: Option<thread::JoinHandle<()>>,
+    shutdown: Arc<AtomicBool>,
+    thread: Mutex<Option<thread::JoinHandle<()>>>,
 }
 
 impl AuthIpcServiceHandle {
@@ -656,8 +672,20 @@ impl AuthIpcServiceHandle {
         &self.endpoint
     }
 
-    pub fn forget(mut self) {
-        self.thread.take();
+    pub fn shutdown(&self) {
+        self.shutdown.store(true, Ordering::Release);
+        let _ = wake_listener(&self.endpoint);
+        if let Ok(mut thread) = self.thread.lock() {
+            if let Some(thread) = thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
+}
+
+impl Drop for AuthIpcServiceHandle {
+    fn drop(&mut self) {
+        self.shutdown();
     }
 }
 
@@ -666,10 +694,70 @@ fn handle_helper_stream(
     sessions: Arc<Mutex<AuthIpcSessionManager>>,
     handler: Arc<dyn AuthIpcHandler>,
 ) {
+    set_stream_timeouts(&stream);
     let response = handle_helper_stream_request(&mut stream, sessions, handler);
     if let Err(error) = write_helper_response(&mut stream, response) {
         tracing::warn!(error = %error, "failed to write auth IPC helper response");
     }
+}
+
+fn set_stream_timeouts(stream: &interprocess::local_socket::Stream) {
+    use interprocess::local_socket::traits::Stream as _;
+
+    let _ = stream.set_recv_timeout(Some(AUTH_IPC_IO_TIMEOUT));
+    let _ = stream.set_send_timeout(Some(AUTH_IPC_IO_TIMEOUT));
+}
+
+fn wake_listener(endpoint: &LocalIpcEndpoint) -> std::io::Result<()> {
+    use interprocess::local_socket::{prelude::*, ConnectOptions, GenericFilePath};
+
+    match endpoint {
+        LocalIpcEndpoint::UnixSocket(path) => {
+            let name = path.clone().to_fs_name::<GenericFilePath>()?;
+            ConnectOptions::new()
+                .name(name)
+                .wait_mode(interprocess::ConnectWaitMode::Timeout(
+                    Duration::from_millis(250),
+                ))
+                .connect_sync()
+                .map(|_| ())
+        }
+        #[cfg(windows)]
+        LocalIpcEndpoint::WindowsNamedPipe(name) => {
+            let name = name
+                .as_str()
+                .to_ns_name::<interprocess::local_socket::GenericNamespaced>()?;
+            ConnectOptions::new()
+                .name(name)
+                .wait_mode(interprocess::ConnectWaitMode::Timeout(
+                    Duration::from_millis(250),
+                ))
+                .connect_sync()
+                .map(|_| ())
+        }
+        #[cfg(not(windows))]
+        LocalIpcEndpoint::WindowsNamedPipe(_) => Ok(()),
+    }
+}
+
+#[cfg(windows)]
+fn owner_only_windows_security_descriptor(
+) -> std::io::Result<interprocess::os::windows::security_descriptor::SecurityDescriptor> {
+    use interprocess::os::windows::security_descriptor::SecurityDescriptor;
+    use widestring::U16CString;
+
+    let sddl = U16CString::from_str(owner_only_windows_sddl()).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("invalid owner-only Windows pipe SDDL: {error}"),
+        )
+    })?;
+    SecurityDescriptor::deserialize(&sddl)
+}
+
+#[cfg(windows)]
+fn owner_only_windows_sddl() -> &'static str {
+    "D:P(A;;GA;;;OW)"
 }
 
 fn handle_helper_stream_request(
@@ -925,6 +1013,7 @@ pub struct AuthRuntime {
     endpoint: LocalIpcEndpoint,
     sessions: Arc<Mutex<AuthIpcSessionManager>>,
     helpers: AuthHelperBinaries,
+    _service: Arc<AuthIpcServiceHandle>,
 }
 
 impl AuthRuntime {
@@ -947,12 +1036,13 @@ impl AuthRuntime {
             default_core_ssh_command(runner),
         );
         let service = AuthIpcService::new(listener, Arc::clone(&sessions), handler);
-        service.run_in_background().forget();
+        let service_handle = Arc::new(service.run_in_background());
 
         Ok(Self {
             endpoint,
             sessions,
             helpers,
+            _service: service_handle,
         })
     }
 
@@ -969,6 +1059,28 @@ impl AuthRuntime {
             interaction_policy,
             repository_path,
         ))
+    }
+
+    pub fn start_operation_for_context(
+        &self,
+        operation_id: Option<OperationId>,
+        interaction_policy: InteractionPolicy,
+        repository_path: Option<PathBuf>,
+    ) -> Result<AuthOperationSession, AuthIpcError> {
+        let mut sessions = self.sessions.lock().map_err(|_| {
+            AuthIpcError::RandomUnavailable("auth session table lock poisoned".into())
+        })?;
+        let operation_id = match operation_id {
+            Some(operation_id) => operation_id,
+            None => OperationId::new(random_identifier("op", &OPERATION_COUNTER, 16)?),
+        };
+        Ok(
+            sessions.start_operation_with_context(
+                operation_id,
+                interaction_policy,
+                repository_path,
+            ),
+        )
     }
 
     pub fn inject_for_operation(
@@ -1026,6 +1138,13 @@ fn default_core_ssh_command(runner: &GitRunner) -> OsString {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::{
+        io::{BufRead, BufReader},
+        net::{TcpListener, TcpStream},
+        process::{Command, Stdio},
+        sync::atomic::{AtomicBool, AtomicUsize},
+    };
 
     #[test]
     fn auth_token_is_consumed_after_successful_validation() {
@@ -1486,5 +1605,418 @@ mod tests {
         );
 
         assert!(matches!(response, HelperIpcResponse::Error { .. }));
+    }
+
+    #[test]
+    fn windows_named_pipe_security_plan_is_owner_only_and_non_network() {
+        let plan = WindowsNamedPipeSecurityPlan::owner_only("artistic-git-auth-test");
+
+        assert!(plan.owner_only);
+        assert_eq!(
+            plan.endpoint(),
+            LocalIpcEndpoint::WindowsNamedPipe("artistic-git-auth-test".to_owned())
+        );
+        assert!(!plan.endpoint().uses_network_transport());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_named_pipe_security_descriptor_limits_access_to_owner() {
+        assert_eq!(owner_only_windows_sddl(), "D:P(A;;GA;;;OW)");
+        owner_only_windows_security_descriptor().expect("owner-only security descriptor");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn real_git_http_backend_invokes_real_credential_helper_over_ipc() {
+        use artistic_git_git_runner::{GitDistribution, GitRunner};
+        use artistic_git_helpers::{CredentialField, GitCredentialResponse};
+        use artistic_git_test_support::{
+            git_dist_manifest_fixture, write_executable_script, write_git_dist_manifest,
+        };
+        use std::{fs, sync::mpsc, time::Duration};
+
+        ensure_helper_binaries_built();
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let remote_root = temp.path().join("http-root");
+        let bare_repo = remote_root.join("repo.git");
+        create_bare_repo_for_http(&temp.path().join("source"), &bare_repo);
+
+        let helper_dir = helper_binary_dir();
+        let mut manifest = git_dist_manifest_fixture();
+        manifest.paths.git_executable = "git/bin/git".to_owned();
+        manifest.paths.git_lfs_executable = "git-lfs/git-lfs".to_owned();
+        manifest.paths.credential_helper = "helpers/artistic-git-credential-helper".to_owned();
+        manifest.paths.ssh_askpass = "helpers/artistic-git-ssh-askpass".to_owned();
+        write_git_dist_manifest(temp.path(), &manifest).expect("manifest");
+        write_executable_script(
+            &temp.path().join("git/bin/git"),
+            "#!/bin/sh\nexec git \"$@\"\n",
+            "@echo off\r\ngit %*\r\n",
+        )
+        .expect("git wrapper");
+        write_executable_script(
+            &temp.path().join("git-lfs/git-lfs"),
+            "#!/bin/sh\nexec git \"$@\"\n",
+            "@echo off\r\ngit %*\r\n",
+        )
+        .expect("git-lfs wrapper");
+        fs::create_dir_all(temp.path().join("helpers")).expect("helpers dir");
+        fs::copy(
+            helper_dir.join("artistic-git-credential-helper"),
+            temp.path().join("helpers/artistic-git-credential-helper"),
+        )
+        .expect("copy credential helper");
+        fs::copy(
+            helper_dir.join("artistic-git-ssh-askpass"),
+            temp.path().join("helpers/artistic-git-ssh-askpass"),
+        )
+        .expect("copy askpass helper");
+
+        let distribution =
+            GitDistribution::from_manifest(temp.path(), manifest).expect("distribution");
+        let runner = GitRunner::from_distribution(distribution, temp.path().join("home"));
+        let (server, server_url, authorized_requests) = GitHttpBackendServer::start(remote_root);
+        let (context_tx, context_rx) = mpsc::channel();
+        let handler = move |context: AuthIpcRequestContext, payload: HelperIpcPayload| {
+            if matches!(payload, HelperIpcPayload::Credential { .. }) {
+                context_tx.send(context).expect("context");
+                HelperIpcResponse::Credential {
+                    credential: GitCredentialResponse {
+                        username: Some("artist".to_owned()),
+                        password: Some("secret-token".to_owned()),
+                        fields: vec![CredentialField {
+                            key: "helper".to_owned(),
+                            value: "real".to_owned(),
+                        }],
+                    },
+                }
+            } else {
+                HelperIpcResponse::Empty
+            }
+        };
+        let runtime = AuthRuntime::start_at(
+            &runner,
+            short_auth_socket_path("auth-http"),
+            Arc::new(handler),
+        )
+        .expect("auth runtime");
+        let operation = runtime
+            .start_operation_for_context(
+                Some(OperationId::new("clone-http-op")),
+                InteractionPolicy::interactive(),
+                None,
+            )
+            .expect("operation");
+        let target = temp.path().join("clone");
+        let plan = runner
+            .git_command_builder()
+            .args([
+                OsString::from("clone"),
+                OsString::from(server_url),
+                target.as_os_str().to_owned(),
+            ])
+            .build();
+        let plan = runtime
+            .inject_for_operation(&operation.operation_id, plan, AuthInvocationContext::new())
+            .expect("inject auth");
+        let output = plan.to_command().output().expect("git clone");
+        server.stop();
+
+        assert!(
+            output.status.success(),
+            "git clone failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(target.join("asset.txt").exists());
+        assert!(
+            authorized_requests.load(Ordering::SeqCst) > 0,
+            "server should have accepted authenticated git-http-backend requests"
+        );
+
+        let context = context_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("helper callback context");
+        assert_eq!(context.operation_id, OperationId::new("clone-http-op"));
+        assert_eq!(context.prompt_decision, AuthPromptDecision::Prompt);
+        assert!(
+            context
+                .host
+                .as_deref()
+                .is_some_and(|host| host.starts_with("127.0.0.1:")),
+            "expected loopback host with port, got {:?}",
+            context.host
+        );
+    }
+
+    #[cfg(unix)]
+    fn ensure_helper_binaries_built() {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("workspace");
+        let status = std::process::Command::new("cargo")
+            .args(["build", "-p", "artistic-git-helpers", "--bins"])
+            .current_dir(workspace)
+            .status()
+            .expect("build helper binaries");
+        assert!(status.success(), "helper binary build failed");
+    }
+
+    #[cfg(unix)]
+    fn short_auth_socket_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("{name}-{}.sock", std::process::id()))
+    }
+
+    #[cfg(unix)]
+    fn helper_binary_dir() -> PathBuf {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("workspace");
+        std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| workspace.join("target"))
+            .join("debug")
+    }
+
+    #[cfg(unix)]
+    fn create_bare_repo_for_http(source: &Path, bare_repo: &Path) {
+        std::fs::create_dir_all(source).expect("source dir");
+        run_git_command(["init", source.to_str().expect("source path")]);
+        std::fs::write(source.join("asset.txt"), "texture\n").expect("asset");
+        run_git_command(["-C", source.to_str().expect("source path"), "add", "."]);
+        run_git_command([
+            "-C",
+            source.to_str().expect("source path"),
+            "-c",
+            "user.name=Art Test",
+            "-c",
+            "user.email=art@example.test",
+            "commit",
+            "-m",
+            "seed",
+        ]);
+        run_git_command([
+            "clone",
+            "--bare",
+            source.to_str().expect("source path"),
+            bare_repo.to_str().expect("bare path"),
+        ]);
+    }
+
+    #[cfg(unix)]
+    fn run_git_command<const N: usize>(args: [&str; N]) {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .status()
+            .expect("git command");
+        assert!(status.success(), "git setup command failed");
+    }
+
+    #[cfg(unix)]
+    struct GitHttpBackendServer {
+        stop: Arc<AtomicBool>,
+        thread: Option<thread::JoinHandle<()>>,
+    }
+
+    #[cfg(unix)]
+    impl GitHttpBackendServer {
+        fn start(project_root: PathBuf) -> (Self, String, Arc<AtomicUsize>) {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind http server");
+            listener
+                .set_nonblocking(true)
+                .expect("nonblocking listener");
+            let addr = listener.local_addr().expect("server addr");
+            let stop = Arc::new(AtomicBool::new(false));
+            let thread_stop = Arc::clone(&stop);
+            let authorized_requests = Arc::new(AtomicUsize::new(0));
+            let thread_authorized_requests = Arc::clone(&authorized_requests);
+            let thread = thread::spawn(move || {
+                while !thread_stop.load(Ordering::Acquire) {
+                    match listener.accept() {
+                        Ok((stream, _)) => {
+                            handle_git_http_connection(
+                                stream,
+                                &project_root,
+                                &thread_authorized_requests,
+                            );
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(error) => panic!("http server accept failed: {error}"),
+                    }
+                }
+            });
+
+            (
+                Self {
+                    stop,
+                    thread: Some(thread),
+                },
+                format!("http://127.0.0.1:{}/repo.git", addr.port()),
+                authorized_requests,
+            )
+        }
+
+        fn stop(mut self) {
+            self.stop.store(true, Ordering::Release);
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn handle_git_http_connection(
+        mut stream: TcpStream,
+        project_root: &Path,
+        authorized_requests: &AtomicUsize,
+    ) {
+        let request = match read_http_request(&mut stream) {
+            Some(request) => request,
+            None => return,
+        };
+        if request.header("authorization").map(str::trim)
+            != Some("Basic YXJ0aXN0OnNlY3JldC10b2tlbg==")
+        {
+            let _ = stream.write_all(
+                b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"artistic-git-test\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+            return;
+        }
+
+        authorized_requests.fetch_add(1, Ordering::SeqCst);
+        let (path_info, query) = request
+            .target
+            .split_once('?')
+            .map(|(path, query)| (path.to_owned(), query.to_owned()))
+            .unwrap_or_else(|| (request.target.clone(), String::new()));
+        let mut backend = Command::new("git");
+        backend
+            .arg("http-backend")
+            .env("GIT_PROJECT_ROOT", project_root)
+            .env("GIT_HTTP_EXPORT_ALL", "1")
+            .env("REQUEST_METHOD", &request.method)
+            .env("PATH_INFO", path_info)
+            .env("QUERY_STRING", query)
+            .env("CONTENT_LENGTH", request.body.len().to_string())
+            .env("REMOTE_USER", "artist")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(content_type) = request.header("content-type") {
+            backend.env("CONTENT_TYPE", content_type);
+        }
+        let mut child = backend.spawn().expect("spawn git http-backend");
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(&request.body).expect("backend stdin");
+        }
+        let output = child.wait_with_output().expect("backend output");
+        assert!(
+            output.status.success(),
+            "git http-backend failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        write_cgi_response(&mut stream, &output.stdout).expect("write cgi response");
+    }
+
+    #[cfg(unix)]
+    struct HttpRequest {
+        method: String,
+        target: String,
+        headers: Vec<(String, String)>,
+        body: Vec<u8>,
+    }
+
+    #[cfg(unix)]
+    impl HttpRequest {
+        fn header(&self, name: &str) -> Option<&str> {
+            self.headers
+                .iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case(name))
+                .map(|(_, value)| value.as_str())
+        }
+    }
+
+    #[cfg(unix)]
+    fn read_http_request(stream: &mut TcpStream) -> Option<HttpRequest> {
+        let mut reader = BufReader::new(stream);
+        let mut request_line = String::new();
+        if reader.read_line(&mut request_line).ok()? == 0 {
+            return None;
+        }
+        let mut parts = request_line.split_whitespace();
+        let method = parts.next()?.to_owned();
+        let target = parts.next()?.to_owned();
+        let mut headers = Vec::new();
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).ok()?;
+            let line = line.trim_end_matches(['\r', '\n']);
+            if line.is_empty() {
+                break;
+            }
+            if let Some((key, value)) = line.split_once(':') {
+                headers.push((key.trim().to_owned(), value.trim().to_owned()));
+            }
+        }
+        let content_length = headers
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case("content-length"))
+            .and_then(|(_, value)| value.parse::<usize>().ok())
+            .unwrap_or(0);
+        let mut body = vec![0_u8; content_length];
+        reader.read_exact(&mut body).ok()?;
+
+        Some(HttpRequest {
+            method,
+            target,
+            headers,
+            body,
+        })
+    }
+
+    #[cfg(unix)]
+    fn write_cgi_response(stream: &mut TcpStream, cgi: &[u8]) -> std::io::Result<()> {
+        let split = cgi
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .map(|index| (index, 4))
+            .or_else(|| {
+                cgi.windows(2)
+                    .position(|window| window == b"\n\n")
+                    .map(|index| (index, 2))
+            })
+            .expect("CGI headers");
+        let headers = String::from_utf8_lossy(&cgi[..split.0]);
+        let body = &cgi[split.0 + split.1..];
+        let mut status = "200 OK".to_owned();
+        let mut response_headers = Vec::new();
+        for header in headers.lines() {
+            let header = header.trim_end_matches('\r');
+            if let Some((key, value)) = header.split_once(':') {
+                if key.eq_ignore_ascii_case("status") {
+                    status = value.trim().to_owned();
+                } else {
+                    response_headers.push((key.trim().to_owned(), value.trim().to_owned()));
+                }
+            }
+        }
+
+        write!(stream, "HTTP/1.1 {status}\r\n")?;
+        for (key, value) in response_headers {
+            write!(stream, "{key}: {value}\r\n")?;
+        }
+        write!(
+            stream,
+            "Content-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )?;
+        stream.write_all(body)?;
+        stream.flush()
     }
 }

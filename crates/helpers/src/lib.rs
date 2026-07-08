@@ -6,6 +6,7 @@ use std::{
     ffi::OsString,
     io::{Read, Write},
     path::{Path, PathBuf},
+    time::Duration,
 };
 use thiserror::Error;
 
@@ -13,6 +14,7 @@ pub const AUTH_SOCKET_ENV: &str = "ARTISTIC_GIT_AUTH_SOCKET";
 pub const AUTH_TOKEN_ENV: &str = "ARTISTIC_GIT_AUTH_TOKEN";
 pub const AUTH_INVOCATION_ID_ENV: &str = "ARTISTIC_GIT_AUTH_INVOCATION_ID";
 pub const AUTH_OPERATION_ID_ENV: &str = "ARTISTIC_GIT_AUTH_OPERATION_ID";
+const AUTH_IPC_IO_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -351,10 +353,14 @@ pub fn invoke_helper_ipc_at(
     socket_path: &Path,
     envelope: &HelperIpcEnvelope,
 ) -> Result<HelperIpcResponse, HelperProtocolError> {
-    use interprocess::local_socket::{prelude::*, GenericFilePath, Stream};
+    use interprocess::local_socket::{prelude::*, ConnectOptions, GenericFilePath};
 
     let name = socket_path.to_fs_name::<GenericFilePath>()?;
-    let mut stream = Stream::connect(name)?;
+    let mut stream = ConnectOptions::new()
+        .name(name)
+        .wait_mode(interprocess::ConnectWaitMode::Timeout(AUTH_IPC_IO_TIMEOUT))
+        .connect_sync()?;
+    set_stream_timeouts(&stream);
     let request = encode_ipc_request(envelope)?;
     stream.write_all(&request)?;
     stream.flush()?;
@@ -368,16 +374,29 @@ pub fn invoke_helper_ipc_at(
     socket_path: &Path,
     envelope: &HelperIpcEnvelope,
 ) -> Result<HelperIpcResponse, HelperProtocolError> {
-    use interprocess::local_socket::{prelude::*, GenericFilePath, Stream};
+    use interprocess::local_socket::{prelude::*, ConnectOptions, GenericNamespaced};
 
-    let name = socket_path.to_fs_name::<GenericFilePath>()?;
-    let mut stream = Stream::connect(name)?;
+    let socket_name = socket_path.to_string_lossy();
+    let name = socket_name.as_ref().to_ns_name::<GenericNamespaced>()?;
+    let mut stream = ConnectOptions::new()
+        .name(name)
+        .wait_mode(interprocess::ConnectWaitMode::Timeout(AUTH_IPC_IO_TIMEOUT))
+        .connect_sync()?;
+    set_stream_timeouts(&stream);
     let request = encode_ipc_request(envelope)?;
     stream.write_all(&request)?;
     stream.flush()?;
 
     let response = read_ipc_line(&mut stream)?;
     decode_ipc_response(&response)
+}
+
+#[cfg(any(unix, windows))]
+fn set_stream_timeouts(stream: &interprocess::local_socket::Stream) {
+    use interprocess::local_socket::traits::Stream as _;
+
+    let _ = stream.set_recv_timeout(Some(AUTH_IPC_IO_TIMEOUT));
+    let _ = stream.set_send_timeout(Some(AUTH_IPC_IO_TIMEOUT));
 }
 
 #[cfg(not(any(unix, windows)))]

@@ -18,11 +18,6 @@ type GitDistManifest = {
   };
 };
 
-type ToolGitIdentity = {
-  name: string | null;
-  email: string | null;
-};
-
 const runRealGitE2e = process.env.ARTISTIC_GIT_E2E_REAL_GIT === "1";
 const describeRealGit = runRealGitE2e ? describe : describe.skip;
 

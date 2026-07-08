@@ -34,6 +34,7 @@ import {
   acceptRemoteHistory,
   checkoutBranch,
   cancelConflictResolution,
+  cancelOperation,
   cancelStashRestore,
   commitChanges,
   completeConflictResolution,
@@ -491,14 +492,21 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     stashActionBusy ||
     historyWriteBusy ||
     reviewBusy;
+  const closeGuardActiveOperation =
+    activeOperation?.cancellable === true ? activeOperation : null;
   const closeGuardActive =
     writeOperationBusy ||
     conflict !== null ||
     reviewActive ||
     reviewRecoveryPrompt;
   const closeGuardNeedsRecovery =
-    conflict !== null || reviewActive || reviewRecoveryPrompt;
-  const closeGuardCanRecover = closeGuardNeedsRecovery && !writeOperationBusy;
+    closeGuardActiveOperation !== null ||
+    conflict !== null ||
+    reviewActive ||
+    reviewRecoveryPrompt;
+  const closeGuardCanRecover =
+    closeGuardActiveOperation !== null ||
+    (closeGuardNeedsRecovery && !writeOperationBusy);
   const interactionBusy = busy || reviewActive;
   const busyLabel = activeOperation
     ? operationLabel(activeOperation.label, t)
@@ -1583,6 +1591,16 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   );
 
   const recoverCloseGuardedState = React.useCallback(async () => {
+    if (closeGuardActiveOperation) {
+      const response = await cancelOperation({
+        operationId: closeGuardActiveOperation.operationId,
+      });
+      if (!response.cancelled) {
+        throw new Error(t("repository.closeGuardBusyBlocked"));
+      }
+      return;
+    }
+
     if (writeOperationBusy) {
       throw new Error(t("repository.closeGuardBusyBlocked"));
     }
@@ -1620,6 +1638,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     }
   }, [
     closeConflictOverlay,
+    closeGuardActiveOperation,
     conflict,
     conflictApi,
     handleReviewExitResponse,

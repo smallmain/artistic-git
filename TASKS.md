@@ -327,16 +327,16 @@ graph TD
 
 依赖：1C。
 
-- [ ] IPC 服务：`interprocess` crate，Unix domain socket（权限 0600）/ Windows 命名管道（ACL 限本用户）；**不开网络端口**
-- [ ] 高层操作上下文：`operation-id` 贯穿恢复流程、忙碌态 UI 与认证交互策略
-- [ ] 每条 git 命令注入环境：socket 路径 + 一次性会话 token + invocation-id（不落盘）；helper 连接先校验 token，成功后 token 立即失效
-- [ ] 交互性决策收敛主进程：`operation-id/invocation-id → {是否交互, 仓库, host, path}` 表决定弹框/静默返回缓存/直接失败；后台 Fetch invocation 恒为非交互
-- [ ] credential helper 单文件二进制：实现 git `get/store/erase` 原生协议；askpass 单文件二进制；均随 resources 分发（接入 1A 构建配置与校验）
-- [ ] 死锁规避架构：服务 helper 回调的 IPC 任务与持写锁操作任务为并发两线（持锁任务等 git、git 等 helper、helper 等弹框）；认证弹窗在忙碌态**照常弹出**（操作的延续，不受忙时禁用约束）；认证框取消 = 取消该操作走恢复流程
+- [x] IPC 服务：`interprocess` crate，Unix domain socket（权限 0600）/ Windows 命名管道（ACL 限本用户）；**不开网络端口**
+- [x] 高层操作上下文：`operation-id` 贯穿恢复流程、忙碌态 UI 与认证交互策略
+- [x] 每条 git 命令注入环境：socket 路径 + 一次性会话 token + invocation-id（不落盘）；helper 连接先校验 token，成功后 token 立即失效
+- [x] 交互性决策收敛主进程：`operation-id/invocation-id → {是否交互, 仓库, host, path}` 表决定弹框/静默返回缓存/直接失败；后台 Fetch invocation 恒为非交互
+- [x] credential helper 单文件二进制：实现 git `get/store/erase` 原生协议；askpass 单文件二进制；均随 resources 分发（接入 1A 构建配置与校验）
+- [x] 死锁规避架构：服务 helper 回调的 IPC 任务与持写锁操作任务为并发两线（持锁任务等 git、git 等 helper、helper 等弹框）；认证弹窗在忙碌态**照常弹出**（操作的延续，不受忙时禁用约束）；认证框取消 = 取消该操作走恢复流程
 
 **验收**：集成测试：operation-id 串联多命令流程、token 校验/一次性失效/socket 权限；真实 git 命令回调 helper 全链路（配合本地 `git http-backend`）；忙碌态弹窗与取消恢复。
 
-进展备注：已补系统 keyring store（HTTPS/SSH，索引不存 token）与 fake backend 测试；已覆盖 auth IPC 一次性 token、Unix socket owner-only、runner 认证注入（`credential.helper`/`credential.useHttpPath`/`core.sshCommand`/`SSH_ASKPASS`）和 helper 回调不持仓库写锁的死锁规避测试。Windows named pipe ACL、真实 `git http-backend` 全链路、忙碌态认证弹窗与取消恢复仍未关闭。
+进展备注（2026-07-08）：4A 验收闭环已补齐。认证 IPC runtime 现在有后台服务生命周期与关闭唤醒；Unix socket 0600、Windows named pipe owner-only SDDL ACL（`cargo check -p artistic-git-app --target x86_64-pc-windows-msvc`）均覆盖；高层 `operation-id` 在 clone/sync/accept remote history 中复用为同一 auth operation，每条 git invocation 派生独立 token/env；helper IPC 加连接/读写超时，交互/非交互决策仍收敛在主进程。真实 `artistic-git-credential-helper` + 本地 `git http-backend` clone E2E 已覆盖 Git 原生回调链路；忙碌态 helper 回调不持仓库写锁、HTTPS/SSH prompt cancel 错误恢复和 clone cancel token 注册均有 Rust 测试。
 
 ### 4B HTTPS 凭据流 **\[P\]**
 
@@ -524,7 +524,7 @@ graph TD
 
 - [ ] 关窗保护：点 X / `Cmd/Ctrl+W` 时若有写操作进行中或未完成冲突/审查模式 → 确认框「有操作正在进行，关闭将取消该操作并恢复到操作前状态」；确认执行标准取消/恢复后关闭；`Cmd/Ctrl+Q` 逐窗口执行同样检查
 - [ ] 崩溃隔离三层验证：WebView 崩溃 → 主进程检测自动重载该窗口 + 崩溃弹窗；React 错误边界仅影响自身窗口；Rust 命令 Result 化全量复查 + panic hook → 崩溃弹窗端到端接通
-  - 进展备注：已补 renderer crash 注入重载 + pending crash 弹窗通路、Rust panic `crash-reported` → 前端崩溃弹窗桥接与测试；`Cmd/Ctrl+W` 菜单关闭与窗口 CloseRequested 共用 close guard 判定，active backend operation 也会注册 guard，冲突/审查模式关窗恢复与退出取消已有覆盖；已补 `operation-progress` 的 repository/window 归属字段与前端过滤，避免多窗口操作误触发其它窗口 close guard；9C close guard 已抽出共用确认/恢复/关闭 flow，clone cancel、stash restore recovery cancel、conflict cancel、review exit/recovery 均纳入该 flow，`Cmd/Ctrl+Q` pending exit 逐窗口复用同一 gate；`cancellable=false` 或尚无明确 cancel/recovery API 的 active backend operation 会阻止关闭并提示等待，不假装可取消。当前 Tauri 2.11 公共事件尚未暴露 native WebView renderer crash 检测，完整崩溃验收仍未关闭。通用写操作进行中的标准取消/恢复仍等待 operation-level cancellation API。
+  - 进展备注：已补 renderer crash 注入重载 + pending crash 弹窗通路、Rust panic `crash-reported` → 前端崩溃弹窗桥接与测试；`Cmd/Ctrl+W` 菜单关闭与窗口 CloseRequested 共用 close guard 判定，active backend operation 也会注册 guard，冲突/审查模式关窗恢复与退出取消已有覆盖；已补 `operation-progress` 的 repository/window 归属字段与前端过滤，避免多窗口操作误触发其它窗口 close guard；9C close guard 已抽出共用确认/恢复/关闭 flow，clone cancel、stash restore recovery cancel、conflict cancel、review exit/recovery 均纳入该 flow，`Cmd/Ctrl+Q` pending exit 逐窗口复用同一 gate；已新增后端通用 `cancel_operation` 注册表与 IPC 命令，clone 已迁移到通用 token 注册，RepositoryShell 对 `cancellable=true` 的 active backend operation 会尝试通用取消后再关闭；`cancellable=false` 或未注册 token 的 active backend operation 仍阻止关闭并提示等待，不假装可取消。当前 Tauri 2.11 公共事件尚未暴露 native WebView renderer crash 检测，完整崩溃验收仍未关闭。sync/commit/revert/branch/review 等融合写操作仍需逐步接入真实 cancel token 与恢复钩子后才能关闭 9C 勾选。
 - [x] 会话状态恢复矩阵：恢复（侧栏比例/折叠状态/本地更改视图模式/窗口几何）；重置（激活选项卡→历史/分支筛选器→自动/搜索框/文件勾选/选中项与滚动/打开的面板 Modal）
 
 **验收**：E2E/手动：操作中关窗 → 取消恢复后关闭；三层崩溃注入各自隔离；会话矩阵逐项断言。

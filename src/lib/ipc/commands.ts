@@ -13,6 +13,8 @@ import type {
   BranchOperationResponse,
   CancelCloneRepositoryRequest,
   CancelCloneRepositoryResponse,
+  CancelOperationRequest,
+  CancelOperationResponse,
   CancelStashRestoreRequest,
   CancelStashRestoreResponse,
   CheckoutBranchRequest,
@@ -122,6 +124,7 @@ export interface AppCommandArgs {
   open_repository: { request: OpenRepositoryRequest };
   clone_repository: { request: CloneRepositoryRequest };
   cancel_clone_repository: { request: CancelCloneRepositoryRequest };
+  cancel_operation: { request: CancelOperationRequest };
   repository_summary: { request: RepositoryPathRequest };
   fetch_repository: { request: FetchRepositoryRequest };
   sync_current_branch: { request: SyncCurrentBranchRequest };
@@ -204,6 +207,7 @@ export interface AppCommandResponses {
   open_repository: OpenRepositoryResponse;
   clone_repository: CloneRepositoryResponse;
   cancel_clone_repository: CancelCloneRepositoryResponse;
+  cancel_operation: CancelOperationResponse;
   repository_summary: RepositorySummary;
   fetch_repository: FetchRepositoryResponse;
   sync_current_branch: SyncCurrentBranchResponse;
@@ -428,6 +432,12 @@ export function cancelCloneRepository(
   request: CancelCloneRepositoryRequest,
 ): Promise<CancelCloneRepositoryResponse> {
   return invokeAppCommand("cancel_clone_repository", { request });
+}
+
+export function cancelOperation(
+  request: CancelOperationRequest,
+): Promise<CancelOperationResponse> {
+  return invokeAppCommand("cancel_operation", { request });
 }
 
 export function repositorySummary(

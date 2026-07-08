@@ -138,6 +138,14 @@ export type CancelCloneRepositoryResponse = {
   cancelled: boolean;
 };
 
+export type CancelOperationRequest = {
+  operationId: OperationId;
+};
+
+export type CancelOperationResponse = {
+  cancelled: boolean;
+};
+
 export type CancelStashRestoreRequest = {
   repositoryPath: string;
   recovery: StashRecoveryPoint;

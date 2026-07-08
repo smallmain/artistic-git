@@ -2,21 +2,22 @@ use artistic_git_contracts::{
     AcceptRemoteHistoryRequest, AcceptRemoteHistoryResponse, AppError, AppErrorCategory, AppResult,
     BranchExistence, BranchListResponse, BranchNameValidationRequest, BranchNameValidationResponse,
     BranchOperationResponse, BranchSummary, CancelCloneRepositoryRequest,
-    CancelCloneRepositoryResponse, CancelStashRestoreRequest, CancelStashRestoreResponse,
-    CheckoutBranchRequest, CloneRepositoryRequest, CloneRepositoryResponse, CommitSummary,
-    CreateAutoStashRequest, CreateBranchRequest, CreateStashRequest, CreateStashResponse,
-    DeleteBranchRequest, DeleteSafetyBackupRequest, DeleteSafetyBackupResponse, DeleteStashRequest,
-    DeleteStashResponse, DiffAsset, DiffChangeKind, DiffContent, DiffFileKind, DiffPayload,
-    FetchRepositoryRequest, FetchRepositoryResponse, FetchStateEvent, GitCommandError,
-    IndexLockInfo, LfsContentStatus, LocalChange, LocalChangeSubmodule,
-    LocalChangesRenormalizeSuggestion, LocalChangesResponse, LogPageRequest, LogPageResponse,
-    LogSearchRequest, OpenRepositoryRequest, OpenRepositoryResponse, OperationId,
-    OperationProgressEvent, ProgressState, RemoteSettingsResponse, RenormalizePreviewRequest,
-    RenormalizePreviewResponse, RepositoryHeadState, RepositoryHealth, RepositoryMiddleState,
-    RepositoryMiddleStateKind, RepositoryOpenWarning, RepositoryOpenWarningKind,
-    RepositoryPathRequest, RepositoryRemote, RepositoryRemoteMode, RepositorySummary,
-    RestoreStashRequest, RestoreStashResponse, SafetyBackupListResponse, SaveRemoteSettingsRequest,
-    StashDetailsRequest, StashDetailsResponse, StashEntry, StashListResponse,
+    CancelCloneRepositoryResponse, CancelOperationRequest, CancelOperationResponse,
+    CancelStashRestoreRequest, CancelStashRestoreResponse, CheckoutBranchRequest,
+    CloneRepositoryRequest, CloneRepositoryResponse, CommitSummary, CreateAutoStashRequest,
+    CreateBranchRequest, CreateStashRequest, CreateStashResponse, DeleteBranchRequest,
+    DeleteSafetyBackupRequest, DeleteSafetyBackupResponse, DeleteStashRequest, DeleteStashResponse,
+    DiffAsset, DiffChangeKind, DiffContent, DiffFileKind, DiffPayload, FetchRepositoryRequest,
+    FetchRepositoryResponse, FetchStateEvent, GitCommandError, IndexLockInfo, LfsContentStatus,
+    LocalChange, LocalChangeSubmodule, LocalChangesRenormalizeSuggestion, LocalChangesResponse,
+    LogPageRequest, LogPageResponse, LogSearchRequest, OpenRepositoryRequest,
+    OpenRepositoryResponse, OperationId, OperationProgressEvent, ProgressState,
+    RemoteSettingsResponse, RenormalizePreviewRequest, RenormalizePreviewResponse,
+    RepositoryHeadState, RepositoryHealth, RepositoryMiddleState, RepositoryMiddleStateKind,
+    RepositoryOpenWarning, RepositoryOpenWarningKind, RepositoryPathRequest, RepositoryRemote,
+    RepositoryRemoteMode, RepositorySummary, RestoreStashRequest, RestoreStashResponse,
+    SafetyBackupListResponse, SaveRemoteSettingsRequest, StashDetailsRequest, StashDetailsResponse,
+    StashEntry, StashListResponse,
 };
 use artistic_git_core::config::{
     AppSettings, ConfigActor, GitUserSettings, ProjectSettings, WindowGeometry,
@@ -53,9 +54,74 @@ pub struct RepositoryBackend {
     runner: GitRunner,
     config: Option<ConfigActor>,
     fetch_states: crate::fetch::FetchStateStore,
-    clone_operations: Arc<Mutex<BTreeMap<String, CancelToken>>>,
+    cancellable_operations: Arc<CancellableOperationRegistry>,
     https_credentials: Arc<Mutex<crate::https_auth::HttpsCredentialFlow>>,
     auth_runtime: Option<crate::auth_ipc::AuthRuntime>,
+}
+
+#[derive(Debug, Default)]
+struct CancellableOperationRegistry {
+    operations: Mutex<BTreeMap<String, CancelToken>>,
+}
+
+impl CancellableOperationRegistry {
+    fn register(
+        self: &Arc<Self>,
+        operation_id: &OperationId,
+        token: CancelToken,
+        operation_name: &str,
+    ) -> AppResult<CancellableOperationGuard> {
+        let mut operations = self
+            .operations
+            .lock()
+            .map_err(|_| operation_registry_error(operation_name))?;
+        if operations.contains_key(operation_id.as_str()) {
+            return Err(logged(AppError::expected(
+                "operation is already registered",
+                operation_name,
+            )));
+        }
+
+        operations.insert(operation_id.as_str().to_owned(), token);
+        Ok(CancellableOperationGuard {
+            operation_id: operation_id.as_str().to_owned(),
+            registry: Arc::clone(self),
+        })
+    }
+
+    fn cancel(&self, operation_id: &OperationId) -> AppResult<bool> {
+        let token = self
+            .operations
+            .lock()
+            .map_err(|_| operation_registry_error("cancelOperation"))?
+            .get(operation_id.as_str())
+            .cloned();
+
+        if let Some(token) = token {
+            token.cancel();
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn unregister(&self, operation_id: &str) {
+        if let Ok(mut operations) = self.operations.lock() {
+            operations.remove(operation_id);
+        }
+    }
+}
+
+#[derive(Debug)]
+struct CancellableOperationGuard {
+    operation_id: String,
+    registry: Arc<CancellableOperationRegistry>,
+}
+
+impl Drop for CancellableOperationGuard {
+    fn drop(&mut self) {
+        self.registry.unregister(&self.operation_id);
+    }
 }
 
 impl RepositoryBackend {
@@ -131,7 +197,7 @@ impl RepositoryBackend {
             runner,
             config,
             fetch_states: crate::fetch::FetchStateStore::default(),
-            clone_operations: Arc::new(Mutex::new(BTreeMap::new())),
+            cancellable_operations: Arc::new(CancellableOperationRegistry::default()),
             https_credentials,
             auth_runtime,
         }
@@ -176,13 +242,19 @@ impl RepositoryBackend {
     {
         let operation_id = request.operation_id.clone();
         let token = CancelToken::new();
-        if let Some(operation_id) = &operation_id {
-            self.register_clone_operation(operation_id, token.clone())?;
-        }
+        let _operation_guard = operation_id
+            .as_ref()
+            .map(|operation_id| {
+                self.cancellable_operations
+                    .register(operation_id, token.clone(), "cloneRepository")
+            })
+            .transpose()?;
 
-        let result = crate::git_ops::with_auth_runtime(
+        crate::git_ops::with_auth_runtime_for_operation(
             self.auth_runtime.as_ref(),
             crate::auth_ipc::InteractionPolicy::interactive(),
+            operation_id,
+            None,
             || {
                 clone_repository_with_cancel_and_progress(
                     &self.runner,
@@ -192,58 +264,28 @@ impl RepositoryBackend {
                     progress,
                 )
             },
-        );
-
-        if let Some(operation_id) = &operation_id {
-            self.unregister_clone_operation(operation_id);
-        }
-
-        result
+        )
     }
 
     pub fn cancel_clone_repository(
         &self,
         request: CancelCloneRepositoryRequest,
     ) -> AppResult<CancelCloneRepositoryResponse> {
-        let token = self
-            .clone_operations
-            .lock()
-            .map_err(|_| clone_registry_error())?
-            .get(request.operation_id.as_str())
-            .cloned();
-
-        if let Some(token) = token {
-            token.cancel();
-            Ok(CancelCloneRepositoryResponse { cancelled: true })
-        } else {
-            Ok(CancelCloneRepositoryResponse { cancelled: false })
-        }
+        let response = self.cancel_operation(CancelOperationRequest {
+            operation_id: request.operation_id,
+        })?;
+        Ok(CancelCloneRepositoryResponse {
+            cancelled: response.cancelled,
+        })
     }
 
-    fn register_clone_operation(
+    pub fn cancel_operation(
         &self,
-        operation_id: &OperationId,
-        token: CancelToken,
-    ) -> AppResult<()> {
-        let mut operations = self
-            .clone_operations
-            .lock()
-            .map_err(|_| clone_registry_error())?;
-        if operations.contains_key(operation_id.as_str()) {
-            return Err(logged(AppError::expected(
-                "clone operation is already registered",
-                "cloneRepository",
-            )));
-        }
-
-        operations.insert(operation_id.as_str().to_owned(), token);
-        Ok(())
-    }
-
-    fn unregister_clone_operation(&self, operation_id: &OperationId) {
-        if let Ok(mut operations) = self.clone_operations.lock() {
-            operations.remove(operation_id.as_str());
-        }
+        request: CancelOperationRequest,
+    ) -> AppResult<CancelOperationResponse> {
+        Ok(CancelOperationResponse {
+            cancelled: self.cancellable_operations.cancel(&request.operation_id)?,
+        })
     }
 
     pub fn repository_summary(
@@ -277,9 +319,13 @@ impl RepositoryBackend {
         &self,
         request: artistic_git_contracts::SyncCurrentBranchRequest,
     ) -> AppResult<artistic_git_contracts::SyncCurrentBranchResponse> {
-        crate::git_ops::with_auth_runtime(
+        let operation_id = request.operation_id.clone();
+        let repository_path = Some(PathBuf::from(request.repository_path.clone()));
+        crate::git_ops::with_auth_runtime_for_operation(
             self.auth_runtime.as_ref(),
             crate::auth_ipc::InteractionPolicy::interactive(),
+            operation_id,
+            repository_path,
             || crate::sync_current_branch(&self.runner, request),
         )
     }
@@ -292,9 +338,13 @@ impl RepositoryBackend {
     where
         F: Fn(OperationProgressEvent),
     {
-        crate::git_ops::with_auth_runtime(
+        let operation_id = request.operation_id.clone();
+        let repository_path = Some(PathBuf::from(request.repository_path.clone()));
+        crate::git_ops::with_auth_runtime_for_operation(
             self.auth_runtime.as_ref(),
             crate::auth_ipc::InteractionPolicy::interactive(),
+            operation_id,
+            repository_path,
             || crate::sync_current_branch_with_progress(&self.runner, request, progress),
         )
     }
@@ -303,9 +353,13 @@ impl RepositoryBackend {
         &self,
         request: artistic_git_contracts::SyncBranchRequest,
     ) -> AppResult<artistic_git_contracts::SyncBranchResponse> {
-        crate::git_ops::with_auth_runtime(
+        let operation_id = request.operation_id.clone();
+        let repository_path = Some(PathBuf::from(request.repository_path.clone()));
+        crate::git_ops::with_auth_runtime_for_operation(
             self.auth_runtime.as_ref(),
             crate::auth_ipc::InteractionPolicy::interactive(),
+            operation_id,
+            repository_path,
             || crate::sync_branch(&self.runner, request),
         )
     }
@@ -318,9 +372,13 @@ impl RepositoryBackend {
     where
         F: Fn(OperationProgressEvent),
     {
-        crate::git_ops::with_auth_runtime(
+        let operation_id = request.operation_id.clone();
+        let repository_path = Some(PathBuf::from(request.repository_path.clone()));
+        crate::git_ops::with_auth_runtime_for_operation(
             self.auth_runtime.as_ref(),
             crate::auth_ipc::InteractionPolicy::interactive(),
+            operation_id,
+            repository_path,
             || crate::sync_branch_with_progress(&self.runner, request, progress),
         )
     }
@@ -333,9 +391,13 @@ impl RepositoryBackend {
     where
         F: Fn(OperationProgressEvent),
     {
-        crate::git_ops::with_auth_runtime(
+        let operation_id = request.operation_id.clone();
+        let repository_path = Some(PathBuf::from(request.repository_path.clone()));
+        crate::git_ops::with_auth_runtime_for_operation(
             self.auth_runtime.as_ref(),
             crate::auth_ipc::InteractionPolicy::interactive(),
+            operation_id,
+            repository_path,
             || {
                 crate::sync_all_branches_with_config(
                     &self.runner,
@@ -351,9 +413,13 @@ impl RepositoryBackend {
         &self,
         request: AcceptRemoteHistoryRequest,
     ) -> AppResult<AcceptRemoteHistoryResponse> {
-        crate::git_ops::with_auth_runtime(
+        let operation_id = request.operation_id.clone();
+        let repository_path = Some(PathBuf::from(request.repository_path.clone()));
+        crate::git_ops::with_auth_runtime_for_operation(
             self.auth_runtime.as_ref(),
             crate::auth_ipc::InteractionPolicy::interactive(),
+            operation_id,
+            repository_path,
             || crate::accept_remote_history(&self.runner, request),
         )
     }
@@ -2105,10 +2171,10 @@ fn open_busy_error(error: OperationBusy) -> AppError {
     logged(AppError::expected(summary, "openRepository"))
 }
 
-fn clone_registry_error() -> AppError {
+fn operation_registry_error(operation_name: &str) -> AppError {
     logged(AppError::unexpected(
-        "clone operation registry is unavailable",
-        "cloneRepository",
+        "operation registry is unavailable",
+        operation_name,
     ))
 }
 
@@ -3770,6 +3836,49 @@ mod tests {
         write_git_dist_manifest, GitDistError, TestTempDir,
     };
     use std::{io::Write, sync::Mutex};
+
+    #[test]
+    fn cancellable_operation_registry_cancels_registered_token() {
+        let registry = Arc::new(CancellableOperationRegistry::default());
+        let operation_id = OperationId::new("operation-1");
+        let token = CancelToken::new();
+        let _guard = registry
+            .register(&operation_id, token.clone(), "testOperation")
+            .expect("register operation");
+
+        assert!(!token.is_cancelled());
+        assert!(registry.cancel(&operation_id).expect("cancel operation"));
+        assert!(token.is_cancelled());
+    }
+
+    #[test]
+    fn cancellable_operation_guard_unregisters_on_drop() {
+        let registry = Arc::new(CancellableOperationRegistry::default());
+        let operation_id = OperationId::new("operation-1");
+        let token = CancelToken::new();
+        let guard = registry
+            .register(&operation_id, token, "testOperation")
+            .expect("register operation");
+
+        drop(guard);
+
+        assert!(!registry.cancel(&operation_id).expect("cancel operation"));
+    }
+
+    #[test]
+    fn cancellable_operation_registry_rejects_duplicate_operation_ids() {
+        let registry = Arc::new(CancellableOperationRegistry::default());
+        let operation_id = OperationId::new("operation-1");
+        let _guard = registry
+            .register(&operation_id, CancelToken::new(), "testOperation")
+            .expect("register operation");
+
+        let error = registry
+            .register(&operation_id, CancelToken::new(), "testOperation")
+            .expect_err("duplicate operation id rejected");
+
+        assert_eq!(error.summary, "operation is already registered");
+    }
 
     #[derive(Debug)]
     struct TestSshPassphrasePromptSink {

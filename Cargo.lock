@@ -102,6 +102,7 @@ dependencies = [
  "specta-typescript",
  "tempfile",
  "tracing",
+ "widestring",
 ]
 
 [[package]]
