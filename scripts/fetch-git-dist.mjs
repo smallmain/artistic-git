@@ -444,23 +444,27 @@ apt-get install -y --no-install-recommends ${shellWords(packages)}
 cd ${shellQuote(sourceRoot)}
 ./configure ${configureFlags}
 pkg_config_static_libs="$(pkg-config --static --libs libcurl openssl zlib libpcre2-8 expat)"
-static_third_party_libs=""
-dynamic_system_libs=""
+static_required_libs=""
+dynamic_transitive_libs=""
 for token in $pkg_config_static_libs; do
   case "$token" in
-    -ldl|-lrt|-lpthread|-pthread|-lm|-lc|-lresolv|-lutil|-lgssapi_krb5|-lkrb5|-lk5crypto|-lcom_err)
-      dynamic_system_libs="$dynamic_system_libs $token"
+    -lcurl|-lssl|-lcrypto|-lz|-lpcre2-8|-lexpat|-lssh)
+      static_required_libs="$static_required_libs $token"
+      ;;
+    -L*|-Wl,*)
+      static_required_libs="$static_required_libs $token"
+      dynamic_transitive_libs="$dynamic_transitive_libs $token"
       ;;
     *)
-      static_third_party_libs="$static_third_party_libs $token"
+      dynamic_transitive_libs="$dynamic_transitive_libs $token"
       ;;
   esac
 done
-static_link_flags="-Wl,-Bstatic $static_third_party_libs -Wl,-Bdynamic $dynamic_system_libs"
+static_link_flags="-Wl,-Bstatic $static_required_libs -Wl,-Bdynamic $dynamic_transitive_libs"
 make -j"$(nproc)" ${makeFlags} prefix=/ CURL_LDFLAGS="$static_link_flags" EXPAT_LIBEXPAT="$static_link_flags" OPENSSL_LINK= OPENSSL_LIBSSL= LIB_4_CRYPTO="$static_link_flags" EXTLIBS="$static_link_flags" all
 make ${makeFlags} prefix=/ DESTDIR=${shellQuote(installRoot)} NO_INSTALL_HARDLINKS=YesPlease CURL_LDFLAGS="$static_link_flags" EXPAT_LIBEXPAT="$static_link_flags" OPENSSL_LINK= OPENSSL_LIBSSL= LIB_4_CRYPTO="$static_link_flags" EXTLIBS="$static_link_flags" install
-if find ${shellQuote(installRoot)} -type f -perm /111 -print0 | xargs -0 -r ldd 2>/dev/null | grep -E 'lib(curl|ssl|crypto|z|pcre2|expat|nghttp2|idn2|rtmp|ssh|psl|ldap|lber|brotli|zstd)'; then
-  echo "git distribution still links dynamic third-party libraries" >&2
+if find ${shellQuote(installRoot)} -type f -perm /111 -print0 | xargs -0 -r ldd 2>/dev/null | grep -E 'lib(curl|ssl|crypto|z|pcre2|expat)'; then
+  echo "git distribution still links dynamic required libraries" >&2
   exit 1
 fi
 	`;

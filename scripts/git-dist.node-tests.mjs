@@ -335,9 +335,11 @@ test("source Git build flags disable optional Rust components", async () => {
     );
   }
   assert.match(fetchGitDist, /static_link_flags="-Wl,-Bstatic/);
+  assert.match(fetchGitDist, /static_required_libs/);
+  assert.match(fetchGitDist, /dynamic_transitive_libs/);
   assert.match(fetchGitDist, /EXTLIBS="\$static_link_flags"/);
   assert.match(fetchGitDist, /OPENSSL_LIBSSL=/);
-  assert.match(fetchGitDist, /-lgssapi_krb5\|-lkrb5\|-lk5crypto/);
+  assert.match(fetchGitDist, /-lcurl\|-lssl\|-lcrypto\|-lz/);
   assert.match(fetchGitDist, /find \$\{shellQuote\(installRoot\)\} -type f/);
 });
 
