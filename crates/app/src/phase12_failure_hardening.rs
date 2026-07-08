@@ -1,16 +1,21 @@
 use crate::git_ops::{display_path, git_stdout};
 use artistic_git_contracts::{
-    AbortRevertRequest, BranchOperationResponse, CancelStashRestoreRequest, CheckoutBranchRequest,
-    CheckoutLocalChangesMode, CommitRequest, CommitResponse, ConflictCancelRequest,
-    LargeFileDecision, OperationId, RevertCommitRequest, RevertCommitResponse,
-    ReviewModeExitStatus, ReviewModePullStatus, ReviewModeRecoveryRequest, ReviewModeRequest,
-    StartReviewModeRequest, SyncAllBranchesRequest, SyncBranchRequest, SyncCurrentBranchRequest,
-    SyncCurrentBranchStatus,
+    AbortRevertRequest, AutoTrackingRuleStatus, BranchOperationResponse, CancelStashRestoreRequest,
+    CheckoutBranchRequest, CheckoutLocalChangesMode, CommitRequest, CommitResponse,
+    ConflictCancelRequest, LargeFileDecision, OperationId, RevertCommitRequest,
+    RevertCommitResponse, ReviewModeExitStatus, ReviewModePullStatus, ReviewModeRecoveryRequest,
+    ReviewModeRequest, StartReviewModeRequest, SyncAllBranchesRequest, SyncBranchRequest,
+    SyncCurrentBranchRequest, SyncCurrentBranchStatus,
 };
 use artistic_git_core::config::{AutoTrackingRule, ConfigActor, ConfigPaths};
 use artistic_git_git_runner::{GitDistribution, GitRunner};
 use artistic_git_test_support::{require_git_dist, GitDistError, TestTempDir};
-use std::{ffi::OsString, fs, io::Write, path::PathBuf};
+use std::{
+    ffi::OsString,
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+};
 
 #[test]
 fn phase12_sync_local_phase_failure_restores_pre_operation_snapshot() {
@@ -515,6 +520,150 @@ fn phase12_auto_tracking_divergence_restores_local_changes() {
 }
 
 #[test]
+fn phase12_auto_tracking_source_fetch_failure_keeps_pre_operation_snapshot() {
+    let Some((runner, _home)) = real_runner_or_skip() else {
+        return;
+    };
+    let fixture = RemoteFixture::new(&runner, "ag-phase12-auto-source-fetch-failure");
+    fixture.create_tracking_branch("stable");
+    fixture.create_tracking_branch("release");
+    fixture.delete_remote_branch_leave_stale_tracking_ref("stable");
+    let before = RepoSnapshot::capture(&fixture.local);
+    let config = phase12_config(&fixture._parent);
+    config
+        .update_project(display_path(&fixture.local.path), |project| {
+            project.auto_tracking_rules = vec![AutoTrackingRule::new("stable", "release")];
+        })
+        .expect("store auto tracking rule");
+
+    let response = crate::sync_all_branches_with_config(
+        &runner,
+        Some(&config),
+        SyncAllBranchesRequest {
+            repository_path: display_path(&fixture.local.path),
+            operation_id: Some(OperationId("phase12-auto-source-fetch-failure".to_owned())),
+        },
+        |_| {},
+    )
+    .expect("auto tracking source fetch failure should be reported in-band");
+
+    let result = response
+        .auto_tracking
+        .iter()
+        .find(|result| result.source_branch == "stable" && result.target_branch == "release")
+        .expect("auto tracking result for stable -> release");
+    assert_eq!(result.status, AutoTrackingRuleStatus::Failed);
+    assert!(result.message.is_some());
+    before.assert_restored(&fixture.local);
+    assert_repository_reusable(&fixture.local);
+}
+
+#[test]
+fn phase12_auto_tracking_target_fetch_failure_keeps_pre_operation_snapshot() {
+    let Some((runner, _home)) = real_runner_or_skip() else {
+        return;
+    };
+    let fixture = RemoteFixture::new(&runner, "ag-phase12-auto-target-fetch-failure");
+    fixture.create_tracking_branch("stable");
+    fixture.create_tracking_branch("release");
+    fixture.delete_remote_branch_leave_stale_tracking_ref("release");
+    let before = RepoSnapshot::capture(&fixture.local);
+    let config = phase12_config(&fixture._parent);
+    config
+        .update_project(display_path(&fixture.local.path), |project| {
+            project.auto_tracking_rules = vec![AutoTrackingRule::new("stable", "release")];
+        })
+        .expect("store auto tracking rule");
+
+    let response = crate::sync_all_branches_with_config(
+        &runner,
+        Some(&config),
+        SyncAllBranchesRequest {
+            repository_path: display_path(&fixture.local.path),
+            operation_id: Some(OperationId("phase12-auto-target-fetch-failure".to_owned())),
+        },
+        |_| {},
+    )
+    .expect("auto tracking target fetch failure should be reported in-band");
+
+    let result = response
+        .auto_tracking
+        .iter()
+        .find(|result| result.source_branch == "stable" && result.target_branch == "release")
+        .expect("auto tracking result for stable -> release");
+    assert_eq!(result.status, AutoTrackingRuleStatus::Failed);
+    assert!(result.message.is_some());
+    before.assert_restored(&fixture.local);
+    assert_repository_reusable(&fixture.local);
+}
+
+#[test]
+fn phase12_auto_tracking_post_merge_push_failure_keeps_forward_safe_source() {
+    let Some((runner, _home)) = real_runner_or_skip() else {
+        return;
+    };
+    let fixture = RemoteFixture::new(&runner, "ag-phase12-auto-post-merge-push-failure");
+    fixture.local.git(["checkout", "-b", "stable"]);
+    fixture.local.git(["push", "-u", "origin", "stable"]);
+    fixture.local.git(["checkout", "main"]);
+    fixture.local.write("target.txt", "target branch update\n");
+    fixture.local.git(["add", "target.txt"]);
+    fixture.local.git(["commit", "-m", "target branch update"]);
+    fixture.local.git(["push"]);
+    fixture.local.git(["checkout", "stable"]);
+    fixture
+        .local
+        .write("draft.txt", "dirty draft survives push failure\n");
+    fixture
+        .local
+        .install_failing_push_hook("intentional phase12 auto tracking push failure");
+    let before_head = fixture.local.git_output(["rev-parse", "HEAD"]);
+    let before_remote_source = fixture
+        ._remote
+        .git_output(["rev-parse", "refs/heads/stable"]);
+    let config = phase12_config(&fixture._parent);
+    config
+        .update_project(display_path(&fixture.local.path), |project| {
+            project.auto_tracking_rules = vec![AutoTrackingRule::new("stable", "main")];
+        })
+        .expect("store auto tracking rule");
+
+    let response = crate::sync_all_branches_with_config(
+        &runner,
+        Some(&config),
+        SyncAllBranchesRequest {
+            repository_path: display_path(&fixture.local.path),
+            operation_id: Some(OperationId(
+                "phase12-auto-post-merge-push-failure".to_owned(),
+            )),
+        },
+        |_| {},
+    )
+    .expect("auto tracking push failure should be reported in-band");
+
+    let result = response
+        .auto_tracking
+        .iter()
+        .find(|result| result.source_branch == "stable" && result.target_branch == "main")
+        .expect("auto tracking result for stable -> main");
+    assert_eq!(result.status, AutoTrackingRuleStatus::Failed);
+    assert_ne!(fixture.local.git_output(["rev-parse", "HEAD"]), before_head);
+    assert_eq!(fixture.local.read("target.txt"), "target branch update\n");
+    assert_eq!(
+        fixture.local.read("draft.txt"),
+        "dirty draft survives push failure\n"
+    );
+    assert_eq!(ahead_behind(&fixture.local), (1, 0));
+    assert_eq!(
+        fixture
+            ._remote
+            .git_output(["rev-parse", "refs/heads/stable"]),
+        before_remote_source
+    );
+    assert_repository_reusable(&fixture.local);
+}
+
+#[test]
 fn phase12_checkout_auto_stash_conflict_cancel_restores_snapshot() {
     let Some((runner, _home)) = real_runner_or_skip() else {
         return;
@@ -754,6 +903,67 @@ fn phase12_submodule_superproject_pointer_commit_failure_restores_chain() {
 }
 
 #[test]
+fn phase12_submodule_partial_publish_boundary_keeps_forward_safe_pointer_commit() {
+    let Some((runner, _home)) = real_runner_or_skip() else {
+        return;
+    };
+    let fixture = RemoteFixture::new(&runner, "ag-phase12-submodule-partial-publish");
+    let (submodule, submodule_remote) = add_bare_submodule(&runner, &fixture, "module");
+    let before_remote_pointer =
+        fixture
+            ._remote
+            .git_output(["ls-tree", "refs/heads/main", "module"]);
+    submodule.write(
+        "nested.txt",
+        "submodule published before superproject push\n",
+    );
+    fixture
+        .local
+        .install_failing_push_hook("intentional phase12 superproject push failure");
+
+    crate::commit_changes(
+        &runner,
+        CommitRequest {
+            repository_path: display_path(&fixture.local.path),
+            paths: vec!["module/nested.txt".to_owned()],
+            message: "submodule partial publish boundary".to_owned(),
+            large_file_threshold_mb: None,
+            large_file_decision: LargeFileDecision::Prompt,
+            disable_repository_gpgsign: false,
+            push_immediately: true,
+            operation_id: Some(OperationId("phase12-submodule-partial-publish".to_owned())),
+        },
+    )
+    .expect_err("superproject pre-push hook should fail after submodule publish");
+
+    assert_eq!(
+        submodule_remote.git_output(["show", "refs/heads/main:nested.txt"]),
+        "submodule published before superproject push\n"
+    );
+    assert_eq!(ahead_behind(&submodule), (0, 0));
+    assert_eq!(ahead_behind(&fixture.local), (1, 0));
+    assert_eq!(
+        fixture
+            .local
+            .git_output(["log", "-1", "--format=%s"])
+            .trim(),
+        "submodule partial publish boundary"
+    );
+    assert_ne!(
+        fixture.local.git_output(["ls-tree", "HEAD", "module"]),
+        before_remote_pointer
+    );
+    assert_eq!(
+        fixture
+            ._remote
+            .git_output(["ls-tree", "refs/heads/main", "module"]),
+        before_remote_pointer
+    );
+    assert_repository_clean_and_reusable(&submodule);
+    assert_repository_clean_and_reusable(&fixture.local);
+}
+
+#[test]
 fn phase12_submodule_nested_commit_failure_restores_super_and_submodule() {
     let Some((runner, _home)) = real_runner_or_skip() else {
         return;
@@ -912,12 +1122,21 @@ impl RemoteFixture {
         self.local.git(["push", "-u", "origin", branch_name]);
         self.local.git(["checkout", "main"]);
         self.peer.git(["fetch", "origin"]);
+        self.peer.git(["checkout", "main"]);
         self.peer.git([
             OsString::from("checkout"),
             OsString::from("-b"),
             OsString::from(branch_name),
             OsString::from(format!("origin/{branch_name}")),
         ]);
+    }
+
+    fn delete_remote_branch_leave_stale_tracking_ref(&self, branch_name: &str) {
+        let tracking_ref = format!("refs/remotes/origin/{branch_name}");
+        let tracking_oid = self.local.git_output(["rev-parse", tracking_ref.as_str()]);
+        self.local.git(["push", "origin", "--delete", branch_name]);
+        self.local
+            .git(["update-ref", tracking_ref.as_str(), tracking_oid.trim()]);
     }
 }
 
@@ -989,6 +1208,15 @@ impl TestRepo {
         file.write_all(content.as_bytes()).expect("write file");
     }
 
+    fn write_bytes(&self, relative: &str, content: &[u8]) {
+        let path = self.path.join(relative);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("parent dir");
+        }
+        let mut file = fs::File::create(path).expect("create file");
+        file.write_all(content).expect("write file");
+    }
+
     fn read(&self, relative: &str) -> String {
         fs::read_to_string(self.path.join(relative)).expect("read file")
     }
@@ -1019,6 +1247,50 @@ impl TestRepo {
                 .expect("chmod pre-push hook");
         }
     }
+}
+
+#[test]
+fn phase12_commit_large_file_lfs_track_failure_keeps_pre_operation_snapshot() {
+    let Some((runner, home)) = real_runner_or_skip() else {
+        return;
+    };
+    let runner = runner_with_failing_git_lfs(
+        &runner,
+        home.path(),
+        "intentional phase12 git-lfs track failure",
+    );
+    let repo = TestRepo::new(&runner, "ag-phase12-commit-lfs-track-failure");
+    repo.init_with_commit();
+    repo.write_bytes("large.bin", &vec![b'x'; 1024 * 1024 + 1]);
+    let before = RepoSnapshot::capture(&repo);
+
+    let error = crate::commit_changes(
+        &runner,
+        CommitRequest {
+            repository_path: display_path(&repo.path),
+            paths: vec!["large.bin".to_owned()],
+            message: "large file should fail before commit".to_owned(),
+            large_file_threshold_mb: Some(1),
+            large_file_decision: LargeFileDecision::TrackWithLfs,
+            disable_repository_gpgsign: false,
+            push_immediately: false,
+            operation_id: Some(OperationId("phase12-commit-lfs-track-failure".to_owned())),
+        },
+    )
+    .expect_err("failing git-lfs track should stop before local commit");
+
+    assert!(
+        error
+            .git
+            .as_ref()
+            .map(|git| git
+                .stderr
+                .contains("intentional phase12 git-lfs track failure"))
+            .unwrap_or(false),
+        "{error:?}"
+    );
+    before.assert_restored(&repo);
+    assert_repository_reusable(&repo);
 }
 
 fn assert_repository_reusable(repo: &TestRepo) {
@@ -1098,6 +1370,126 @@ fn add_local_submodule(runner: &GitRunner, fixture: &RemoteFixture, path: &str) 
     fixture.local.git(["commit", "-am", "add submodule"]);
     fixture.local.git(["push"]);
     TestRepo::at(runner, fixture.local.path.join(path))
+}
+
+fn add_bare_submodule(
+    runner: &GitRunner,
+    fixture: &RemoteFixture,
+    path: &str,
+) -> (TestRepo, TestRepo) {
+    let remote_path = fixture
+        ._parent
+        .path()
+        .join(format!("submodule-{}.git", path.replace('/', "-")));
+    git_stdout(
+        runner,
+        None::<&std::path::Path>,
+        [
+            OsString::from("init"),
+            OsString::from("--bare"),
+            OsString::from("-b"),
+            OsString::from("main"),
+            remote_path.as_os_str().to_owned(),
+        ],
+        "phase12FailureHarness",
+    )
+    .expect("init bare submodule remote");
+
+    let seed = TestRepo::at(
+        runner,
+        fixture
+            ._parent
+            .path()
+            .join(format!("submodule-seed-{}", path.replace('/', "-"))),
+    );
+    git_stdout(
+        runner,
+        None::<&std::path::Path>,
+        [
+            OsString::from("init"),
+            OsString::from("-b"),
+            OsString::from("main"),
+            seed.path.as_os_str().to_owned(),
+        ],
+        "phase12FailureHarness",
+    )
+    .expect("init submodule seed");
+    seed.configure_identity();
+    seed.write("nested.txt", "initial\n");
+    seed.git(["add", "nested.txt"]);
+    seed.git(["commit", "-m", "submodule initial"]);
+    seed.git([
+        "remote",
+        "add",
+        "origin",
+        display_path(&remote_path).as_str(),
+    ]);
+    seed.git(["push", "-u", "origin", "main"]);
+
+    fixture.local.git([
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        display_path(&remote_path).as_str(),
+        path,
+    ]);
+    fixture.local.git(["commit", "-am", "add submodule"]);
+    fixture.local.git(["push"]);
+    let submodule = TestRepo::at(runner, fixture.local.path.join(path));
+    submodule.configure_identity();
+    (submodule, TestRepo::at(runner, remote_path))
+}
+
+fn runner_with_failing_git_lfs(runner: &GitRunner, parent: &Path, message: &str) -> GitRunner {
+    let fake_dir = parent.join("fake-git-lfs");
+    fs::create_dir_all(&fake_dir).expect("create fake git-lfs dir");
+    let fake_lfs = fake_git_lfs_path(&fake_dir);
+    write_failing_git_lfs(&fake_lfs, message);
+    let distribution = runner.distribution();
+    GitRunner::from_distribution(
+        GitDistribution {
+            root: distribution.root.clone(),
+            manifest: distribution.manifest.clone(),
+            git_executable: distribution.git_executable.clone(),
+            git_lfs_executable: fake_lfs,
+            credential_helper: distribution.credential_helper.clone(),
+            ssh_askpass: distribution.ssh_askpass.clone(),
+            windows_ssh_executable: distribution.windows_ssh_executable.clone(),
+        },
+        parent.join("fake-git-lfs-home"),
+    )
+}
+
+#[cfg(windows)]
+fn fake_git_lfs_path(fake_dir: &Path) -> PathBuf {
+    fake_dir.join("git-lfs.cmd")
+}
+
+#[cfg(not(windows))]
+fn fake_git_lfs_path(fake_dir: &Path) -> PathBuf {
+    fake_dir.join("git-lfs")
+}
+
+#[cfg(windows)]
+fn write_failing_git_lfs(path: &Path, message: &str) {
+    let script = format!(
+        "@echo off\r\necho %* | findstr /C:\" track \" >nul\r\nif %errorlevel%==0 (\r\n  echo {message} 1>&2\r\n  exit /b 1\r\n)\r\nexit /b 0\r\n"
+    );
+    fs::write(path, script).expect("write fake git-lfs");
+}
+
+#[cfg(not(windows))]
+fn write_failing_git_lfs(path: &Path, message: &str) {
+    let script = format!(
+        "#!/bin/sh\ncase \" $* \" in\n  *\" track \"*) printf '%s\\n' '{message}' >&2; exit 1 ;;\n  *) exit 0 ;;\nesac\n"
+    );
+    fs::write(path, script).expect("write fake git-lfs");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).expect("chmod fake git-lfs");
+    }
 }
 
 fn real_runner_or_skip() -> Option<(GitRunner, TestTempDir)> {

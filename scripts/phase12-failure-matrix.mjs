@@ -57,14 +57,21 @@ const operations = [
       "Tracked branch cannot fast-forward from its source branch after local changes are stashed",
       "phase12_auto_tracking_divergence_restores_local_changes",
     ),
-    gap("source-fetch-failure", "Source branch fetch failure"),
-    gap(
+    covered(
+      "source-fetch-failure",
+      "Source branch fetch failure",
+      "phase12_auto_tracking_source_fetch_failure_keeps_pre_operation_snapshot",
+    ),
+    covered(
       "target-fetch-failure",
       "Target branch fetch failure after local stash",
+      "phase12_auto_tracking_target_fetch_failure_keeps_pre_operation_snapshot",
     ),
-    gap(
+    covered(
       "post-merge-push-failure",
       "Auto-tracking merge succeeds but final push fails at publish boundary",
+      "phase12_auto_tracking_post_merge_push_failure_keeps_forward_safe_source",
+      "source branch remains ahead of upstream, dirty worktree changes are restored, the remote source ref is unchanged, and basic git commands remain usable after the publish boundary",
     ),
   ]),
   operation("commit", "Commit selected changes", [
@@ -78,9 +85,10 @@ const operations = [
       "Pre-commit sync fails after selected and unselected local changes are stashed",
       "phase12_commit_pre_sync_failure_restores_selected_and_unselected_changes",
     ),
-    gap(
+    covered(
       "large-file-lfs-track-failure",
       "Large-file prompt chooses LFS but git-lfs tracking fails",
+      "phase12_commit_large_file_lfs_track_failure_keeps_pre_operation_snapshot",
     ),
     covered(
       "push-after-commit-failure",
@@ -163,9 +171,11 @@ const operations = [
       "phase12_submodule_superproject_pointer_commit_failure_restores_chain",
       "superproject and submodule snapshots are both restored and reusable",
     ),
-    gap(
+    covered(
       "partial-publish-boundary",
       "Submodule push succeeds but superproject push fails and leaves a forward-safe local pointer commit",
+      "phase12_submodule_partial_publish_boundary_keeps_forward_safe_pointer_commit",
+      "submodule commit is published and clean, superproject pointer commit remains ahead of upstream, the remote superproject pointer is unchanged, and basic git commands remain usable after the publish boundary",
     ),
   ]),
 ];
