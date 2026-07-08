@@ -3,8 +3,9 @@ use artistic_git_contracts::{
     AbortRevertRequest, BranchOperationResponse, CancelStashRestoreRequest, CheckoutBranchRequest,
     CheckoutLocalChangesMode, CommitRequest, CommitResponse, ConflictCancelRequest,
     LargeFileDecision, OperationId, RevertCommitRequest, RevertCommitResponse,
-    ReviewModeExitStatus, ReviewModeRecoveryRequest, ReviewModeRequest, StartReviewModeRequest,
-    SyncAllBranchesRequest, SyncBranchRequest, SyncCurrentBranchRequest, SyncCurrentBranchStatus,
+    ReviewModeExitStatus, ReviewModePullStatus, ReviewModeRecoveryRequest, ReviewModeRequest,
+    StartReviewModeRequest, SyncAllBranchesRequest, SyncBranchRequest, SyncCurrentBranchRequest,
+    SyncCurrentBranchStatus,
 };
 use artistic_git_core::config::{AutoTrackingRule, ConfigActor, ConfigPaths};
 use artistic_git_git_runner::{GitDistribution, GitRunner};
@@ -158,6 +159,93 @@ fn phase12_commit_gpg_failure_restores_index_and_head() {
 }
 
 #[test]
+fn phase12_commit_pre_sync_failure_restores_selected_and_unselected_changes() {
+    let Some((runner, _home)) = real_runner_or_skip() else {
+        return;
+    };
+    let fixture = RemoteFixture::new(&runner, "ag-phase12-commit-pre-sync-failure");
+    fixture.local.write("selected.txt", "selected draft\n");
+    fixture.local.write("unselected.txt", "unselected draft\n");
+    fixture.local.git([
+        "remote",
+        "set-url",
+        "origin",
+        "/definitely/missing/artistic-git-remote.git",
+    ]);
+    let before = RepoSnapshot::capture(&fixture.local);
+
+    crate::commit_changes(
+        &runner,
+        CommitRequest {
+            repository_path: display_path(&fixture.local.path),
+            paths: vec!["selected.txt".to_owned()],
+            message: "pre sync should fail".to_owned(),
+            large_file_threshold_mb: None,
+            large_file_decision: LargeFileDecision::Prompt,
+            disable_repository_gpgsign: false,
+            push_immediately: false,
+            operation_id: Some(OperationId("phase12-commit-pre-sync-failure".to_owned())),
+        },
+    )
+    .expect_err("missing origin should fail before local commit");
+
+    before.assert_restored(&fixture.local);
+    assert_eq!(fixture.local.read("selected.txt"), "selected draft\n");
+    assert_eq!(fixture.local.read("unselected.txt"), "unselected draft\n");
+    assert_repository_reusable(&fixture.local);
+}
+
+#[test]
+fn phase12_commit_push_failure_keeps_local_commit_forward_safe() {
+    let Some((runner, _home)) = real_runner_or_skip() else {
+        return;
+    };
+    let fixture = RemoteFixture::new(&runner, "ag-phase12-commit-push-failure");
+    fixture.local.write("selected.txt", "selected commit\n");
+    fixture
+        .local
+        .install_failing_push_hook("intentional phase12 commit push failure");
+    let before_head = fixture.local.git_output(["rev-parse", "HEAD"]);
+
+    let error = crate::commit_changes(
+        &runner,
+        CommitRequest {
+            repository_path: display_path(&fixture.local.path),
+            paths: vec!["selected.txt".to_owned()],
+            message: "commit survives push failure".to_owned(),
+            large_file_threshold_mb: None,
+            large_file_decision: LargeFileDecision::Prompt,
+            disable_repository_gpgsign: false,
+            push_immediately: true,
+            operation_id: Some(OperationId("phase12-commit-push-failure".to_owned())),
+        },
+    )
+    .expect_err("failing pre-push hook should fail after the local commit");
+
+    assert!(
+        error.summary.contains("本地提交已保留为未推送状态"),
+        "{}",
+        error.summary
+    );
+    assert_ne!(fixture.local.git_output(["rev-parse", "HEAD"]), before_head);
+    assert_eq!(
+        fixture
+            .local
+            .git_output(["log", "-1", "--format=%s"])
+            .trim(),
+        "commit survives push failure"
+    );
+    assert_eq!(ahead_behind(&fixture.local), (1, 0));
+    assert_eq!(
+        fixture
+            ._remote
+            .git_output(["show", "refs/heads/main:tracked.txt"]),
+        "initial\n"
+    );
+    assert_repository_clean_and_reusable(&fixture.local);
+}
+
+#[test]
 fn phase12_revert_conflict_abort_restores_pre_operation_snapshot() {
     let Some((runner, _home)) = real_runner_or_skip() else {
         return;
@@ -197,6 +285,57 @@ fn phase12_revert_conflict_abort_restores_pre_operation_snapshot() {
 
     before.assert_restored(&repo);
     assert_repository_reusable(&repo);
+}
+
+#[test]
+fn phase12_revert_push_failure_keeps_revert_commit_forward_safe() {
+    let Some((runner, _home)) = real_runner_or_skip() else {
+        return;
+    };
+    let fixture = RemoteFixture::new(&runner, "ag-phase12-revert-push-failure");
+    fixture.local.write("target.txt", "target\n");
+    fixture.local.git(["add", "target.txt"]);
+    fixture.local.git(["commit", "-m", "target commit"]);
+    let target = fixture
+        .local
+        .git_output(["rev-parse", "HEAD"])
+        .trim()
+        .to_owned();
+    fixture.local.write("later.txt", "later\n");
+    fixture.local.git(["add", "later.txt"]);
+    fixture.local.git(["commit", "-m", "later commit"]);
+    fixture.local.git(["push"]);
+    fixture
+        .local
+        .install_failing_push_hook("intentional phase12 revert push failure");
+
+    crate::revert_commit(
+        &runner,
+        RevertCommitRequest {
+            repository_path: display_path(&fixture.local.path),
+            oid: target,
+            push_after_revert: true,
+            operation_id: Some(OperationId("phase12-revert-push-failure".to_owned())),
+        },
+    )
+    .expect_err("failing pre-push hook should fail after creating the revert commit");
+
+    assert_eq!(
+        fixture
+            .local
+            .git_output(["log", "-1", "--format=%s"])
+            .trim(),
+        "Revert: target commit"
+    );
+    assert_eq!(ahead_behind(&fixture.local), (1, 0));
+    assert!(!fixture.local.path.join("target.txt").exists());
+    assert_eq!(
+        fixture
+            ._remote
+            .git_output(["show", "refs/heads/main:target.txt"]),
+        "target\n"
+    );
+    assert_repository_clean_and_reusable(&fixture.local);
 }
 
 #[test]
@@ -493,6 +632,56 @@ fn phase12_review_exit_stash_conflict_cancel_keeps_review_recovery() {
 }
 
 #[test]
+fn phase12_review_pull_offline_degrades_with_recovery_stash() {
+    let Some((runner, _home)) = real_runner_or_skip() else {
+        return;
+    };
+    let fixture = RemoteFixture::new(&runner, "ag-phase12-review-offline");
+    let config = phase12_config(&fixture._parent);
+    fixture
+        .local
+        .write("draft.txt", "review draft survives offline\n");
+    fixture.local.git([
+        "remote",
+        "set-url",
+        "origin",
+        "/definitely/missing/artistic-git-remote.git",
+    ]);
+
+    let start = crate::start_review_mode_with_config(
+        &runner,
+        Some(&config),
+        StartReviewModeRequest {
+            repository_path: display_path(&fixture.local.path),
+            operation_id: Some(OperationId("phase12-review-offline".to_owned())),
+        },
+    )
+    .expect("offline pull should degrade into review mode state");
+
+    assert_eq!(start.state.pull_status, ReviewModePullStatus::Offline);
+    assert!(start.state.pull_message.is_some());
+    assert_eq!(
+        start
+            .state
+            .auto_stash
+            .as_ref()
+            .map(|stash| stash.message.as_str()),
+        Some("Auto Stash: review mode")
+    );
+    let recovery = crate::review_mode_recovery(
+        &runner,
+        Some(&config),
+        ReviewModeRecoveryRequest {
+            repository_path: display_path(&fixture.local.path),
+            operation_id: None,
+        },
+    )
+    .expect("review recovery remains available after offline pull");
+    assert!(recovery.should_prompt);
+    assert_repository_clean_and_reusable(&fixture.local);
+}
+
+#[test]
 fn phase12_submodule_commit_publish_guard_failure_preserves_super_and_submodule() {
     let Some((runner, _home)) = real_runner_or_skip() else {
         return;
@@ -519,6 +708,45 @@ fn phase12_submodule_commit_publish_guard_failure_preserves_super_and_submodule(
     )
     .expect_err("submodule without origin cannot be pushable");
 
+    before_super.assert_restored(&fixture.local);
+    before_submodule.assert_restored(&submodule);
+    assert_repository_reusable(&fixture.local);
+    assert_repository_reusable(&submodule);
+}
+
+#[test]
+fn phase12_submodule_superproject_pointer_commit_failure_restores_chain() {
+    let Some((runner, _home)) = real_runner_or_skip() else {
+        return;
+    };
+    let fixture = RemoteFixture::new(&runner, "ag-phase12-submodule-superproject-commit-failure");
+    let submodule = add_local_submodule(&runner, &fixture, "module");
+    fixture.local.git(["config", "commit.gpgsign", "true"]);
+    fixture.local.git([
+        "config",
+        "gpg.program",
+        "/definitely/missing/artistic-git-superproject-gpg",
+    ]);
+    submodule.write("nested.txt", "submodule draft\n");
+    let before_super = RepoSnapshot::capture(&fixture.local);
+    let before_submodule = RepoSnapshot::capture(&submodule);
+
+    let response = crate::commit_changes(
+        &runner,
+        CommitRequest {
+            repository_path: display_path(&fixture.local.path),
+            paths: vec!["module/nested.txt".to_owned()],
+            message: "superproject pointer commit should fail".to_owned(),
+            large_file_threshold_mb: None,
+            large_file_decision: LargeFileDecision::Prompt,
+            disable_repository_gpgsign: false,
+            push_immediately: false,
+            operation_id: None,
+        },
+    )
+    .expect("superproject gpg failure is an expected commit response");
+
+    assert!(matches!(response, CommitResponse::GpgSignFailed { .. }));
     before_super.assert_restored(&fixture.local);
     before_submodule.assert_restored(&submodule);
     assert_repository_reusable(&fixture.local);
@@ -764,11 +992,59 @@ impl TestRepo {
     fn read(&self, relative: &str) -> String {
         fs::read_to_string(self.path.join(relative)).expect("read file")
     }
+
+    fn git_path(&self, relative: &str) -> PathBuf {
+        let path = PathBuf::from(
+            self.git_output(["rev-parse", "--git-path", relative])
+                .trim(),
+        );
+        if path.is_absolute() {
+            path
+        } else {
+            self.path.join(path)
+        }
+    }
+
+    fn install_failing_push_hook(&self, message: &str) {
+        let hook = self.git_path("hooks/pre-push");
+        fs::create_dir_all(hook.parent().expect("hook parent")).expect("create hook parent");
+        let script = format!("#!/bin/sh\nprintf '%s\\n' '{message}' >&2\nexit 1\n");
+        let mut file = fs::File::create(&hook).expect("create pre-push hook");
+        file.write_all(script.as_bytes())
+            .expect("write pre-push hook");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&hook, fs::Permissions::from_mode(0o755))
+                .expect("chmod pre-push hook");
+        }
+    }
 }
 
 fn assert_repository_reusable(repo: &TestRepo) {
     repo.git(["rev-parse", "--verify", "HEAD"]);
     repo.git(["status", "--porcelain=v1"]);
+}
+
+fn assert_repository_clean_and_reusable(repo: &TestRepo) {
+    assert_eq!(repo.git_output(["status", "--porcelain=v1"]), "");
+    assert_repository_reusable(repo);
+}
+
+fn ahead_behind(repo: &TestRepo) -> (usize, usize) {
+    let counts = repo.git_output(["rev-list", "--left-right", "--count", "HEAD...@{u}"]);
+    let mut parts = counts.split_whitespace();
+    let ahead = parts
+        .next()
+        .expect("ahead count")
+        .parse()
+        .expect("parse ahead count");
+    let behind = parts
+        .next()
+        .expect("behind count")
+        .parse()
+        .expect("parse behind count");
+    (ahead, behind)
 }
 
 fn assert_no_sync_worktrees(repo: &TestRepo) {

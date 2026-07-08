@@ -73,17 +73,20 @@ const operations = [
       "Repository-level GPG signing points at a missing gpg program",
       "phase12_commit_gpg_failure_restores_index_and_head",
     ),
-    gap(
+    covered(
       "pre-commit-sync-failure",
       "Pre-commit sync fails after selected and unselected local changes are stashed",
+      "phase12_commit_pre_sync_failure_restores_selected_and_unselected_changes",
     ),
     gap(
       "large-file-lfs-track-failure",
       "Large-file prompt chooses LFS but git-lfs tracking fails",
     ),
-    gap(
+    covered(
       "push-after-commit-failure",
       "Local commit succeeds and immediate push fails with forward-safe preservation",
+      "phase12_commit_push_failure_keeps_local_commit_forward_safe",
+      "local commit remains ahead of upstream, worktree is clean, and basic git commands remain usable after the publish boundary",
     ),
   ]),
   operation("revert", "Revert commit", [
@@ -97,9 +100,11 @@ const operations = [
       "Pre-revert sync fails before the revert is attempted",
       "phase12_revert_pre_sync_failure_restores_pre_operation_snapshot",
     ),
-    gap(
+    covered(
       "push-after-revert-failure",
       "Revert commit is created and final push fails with forward-safe preservation",
+      "phase12_revert_push_failure_keeps_revert_commit_forward_safe",
+      "revert commit remains ahead of upstream, worktree is clean, and basic git commands remain usable after the publish boundary",
     ),
   ]),
   operation("review-mode", "Review mode", [
@@ -113,9 +118,11 @@ const operations = [
       "start-stash-create-failure",
       "Entering review mode fails while creating the auto-stash",
     ),
-    gap(
+    covered(
       "pull-offline-degrade",
       "Review pull fails offline and leaves the user in review mode with explicit offline status",
+      "phase12_review_pull_offline_degrades_with_recovery_stash",
+      "review mode remains active with an Auto Stash recovery marker and a clean reusable worktree",
     ),
     gap(
       "sync-review-ff-failure",
@@ -150,9 +157,11 @@ const operations = [
       "phase12_submodule_nested_commit_failure_restores_super_and_submodule",
       "superproject and submodule snapshots are both restored and reusable",
     ),
-    gap(
+    covered(
       "superproject-pointer-commit-failure",
       "Submodule commit succeeds but superproject gitlink commit fails",
+      "phase12_submodule_superproject_pointer_commit_failure_restores_chain",
+      "superproject and submodule snapshots are both restored and reusable",
     ),
     gap(
       "partial-publish-boundary",
