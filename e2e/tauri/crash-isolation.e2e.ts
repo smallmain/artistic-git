@@ -20,13 +20,17 @@ type CrashDiagnostics = {
   dialogTexts: string[];
   hasCrashDialogTestId: boolean;
   hasStartScreen: boolean;
+  injectionCompleted: boolean | null;
   injectionError: string | null;
+  injectionState: string | null;
+  navigationType: string | null;
   readyState: string;
   title: string;
 };
 
 type CrashInjectionResult = {
   accepted: boolean;
+  completed: boolean;
   error: string | null;
 };
 
@@ -38,7 +42,9 @@ type TauriInvokeInternals = {
 };
 
 type WindowWithTauriInternals = Window & {
+  __artisticGitCrashInjectionCompleted?: boolean | null;
   __artisticGitCrashInjectionError?: string | null;
+  __artisticGitCrashInjectionState?: string | null;
   __TAURI_INTERNALS__?: TauriInvokeInternals;
 };
 
@@ -162,26 +168,63 @@ function startScreenControlsReady() {
   }) as Promise<boolean>;
 }
 
-function injectRendererCrash(summary: string) {
-  return browser.execute((nextSummary) => {
-    const internals = (window as WindowWithTauriInternals).__TAURI_INTERNALS__;
-    if (typeof internals?.invoke !== "function") {
-      throw new Error("Tauri invoke internals are not available in WebDriver");
-    }
+async function injectRendererCrash(summary: string) {
+  try {
+    return (await browser.executeAsync((nextSummary, done) => {
+      const targetWindow = window as WindowWithTauriInternals;
+      const internals = targetWindow.__TAURI_INTERNALS__;
+      if (typeof internals?.invoke !== "function") {
+        done({
+          accepted: false,
+          completed: true,
+          error: "Tauri invoke internals are not available in WebDriver",
+        });
+        return;
+      }
 
-    const targetWindow = window as WindowWithTauriInternals;
-    targetWindow.__artisticGitCrashInjectionError = null;
-    void internals
-      .invoke("inject_renderer_crash", {
-        request: { summary: nextSummary },
-      })
-      .catch((error) => {
-        targetWindow.__artisticGitCrashInjectionError =
-          error instanceof Error ? error.message : String(error);
-      });
+      let finished = false;
+      const finish = (result: CrashInjectionResult) => {
+        if (finished) {
+          return;
+        }
+        finished = true;
+        done(result);
+      };
 
-    return { accepted: true, error: null };
-  }, summary) as Promise<CrashInjectionResult>;
+      targetWindow.__artisticGitCrashInjectionCompleted = false;
+      targetWindow.__artisticGitCrashInjectionError = null;
+      targetWindow.__artisticGitCrashInjectionState = "pending";
+      void internals
+        .invoke("inject_renderer_crash", {
+          request: { summary: nextSummary },
+        })
+        .then(() => {
+          targetWindow.__artisticGitCrashInjectionCompleted = true;
+          targetWindow.__artisticGitCrashInjectionState = "fulfilled";
+          finish({ accepted: true, completed: true, error: null });
+        })
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          targetWindow.__artisticGitCrashInjectionCompleted = true;
+          targetWindow.__artisticGitCrashInjectionError = message;
+          targetWindow.__artisticGitCrashInjectionState = "rejected";
+          finish({ accepted: false, completed: true, error: message });
+        });
+
+      setTimeout(() => {
+        targetWindow.__artisticGitCrashInjectionState = "timeout";
+        finish({ accepted: true, completed: false, error: null });
+      }, 1_000);
+    }, summary)) as CrashInjectionResult;
+  } catch (error) {
+    return {
+      accepted: true,
+      completed: false,
+      error: `executeAsync interrupted after crash injection: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
 }
 
 function crashDialogState() {
@@ -204,9 +247,17 @@ function crashDialogState() {
         hasStartScreen: Boolean(
           document.querySelector('[data-testid="start-screen"]'),
         ),
+        injectionCompleted:
+          (window as WindowWithTauriInternals)
+            .__artisticGitCrashInjectionCompleted ?? null,
         injectionError:
           (window as WindowWithTauriInternals)
             .__artisticGitCrashInjectionError ?? null,
+        injectionState:
+          (window as WindowWithTauriInternals)
+            .__artisticGitCrashInjectionState ?? null,
+        navigationType:
+          performance.getEntriesByType("navigation")[0]?.toJSON().type ?? null,
         readyState: document.readyState,
         title: document.title,
       },
