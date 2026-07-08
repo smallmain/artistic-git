@@ -177,9 +177,23 @@ fn first_existing_dist_dir(root: &Path, relative_paths: &[&str]) -> Option<PathB
 fn existing_dist_dirs(root: &Path, relative_paths: &[&str]) -> Vec<PathBuf> {
     relative_paths
         .iter()
-        .map(|relative_path| root.join(relative_path))
+        .map(|relative_path| join_valid_relative_path(root, Path::new(relative_path)))
         .filter(|path| path.is_dir())
         .collect()
+}
+
+fn join_valid_relative_path(root: &Path, relative_path: &Path) -> PathBuf {
+    let mut path = root.to_path_buf();
+    for component in relative_path.components() {
+        match component {
+            Component::Normal(segment) => path.push(segment),
+            Component::CurDir => {}
+            Component::Prefix(_) | Component::RootDir | Component::ParentDir => {
+                path.push(component.as_os_str());
+            }
+        }
+    }
+    path
 }
 
 fn push_parent_dir(entries: &mut Vec<PathBuf>, path: &Path) {
@@ -1075,7 +1089,7 @@ fn resolve_manifest_executable(
     let relative_path = Path::new(relative_path);
     validate_manifest_relative_path(field, relative_path)?;
 
-    let path = root.join(relative_path);
+    let path = join_valid_relative_path(root, relative_path);
     validate_executable(field, &path)?;
 
     Ok(path)
