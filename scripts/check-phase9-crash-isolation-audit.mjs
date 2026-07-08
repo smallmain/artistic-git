@@ -109,10 +109,10 @@ const evidenceChecks = [
     id: "pending-crash-frontend-dialog",
     layer: "renderer",
     requirement:
-      "frontend reopens pending renderer crash as a crash dialog after reload",
+      "frontend stores a pending renderer crash in app state and reopens it as a crash dialog after reload",
     source: "app",
     pattern:
-      /context\.pendingCrash[\s\S]*dispatchAppCrash\(context\.pendingCrash\)/,
+      /(?=[\s\S]*context\.pendingCrash[\s\S]*onCrash\(context\.pendingCrash\))(?=[\s\S]*<GlobalErrorDialogs[\s\S]*crash=\{globalCrash\})/,
   },
   {
     id: "pending-crash-component-test",
