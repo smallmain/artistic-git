@@ -129,6 +129,7 @@ function tauriDriverEnvironment(gitDistPath: string) {
   };
   for (const name of [
     "CI",
+    "DBUS_SESSION_BUS_ADDRESS",
     "DISPLAY",
     "GDK_BACKEND",
     "HOME",
@@ -137,6 +138,7 @@ function tauriDriverEnvironment(gitDistPath: string) {
     "RUST_BACKTRACE",
     "RUST_LOG",
     "WEBKIT_DISABLE_COMPOSITING_MODE",
+    "XAUTHORITY",
     "XDG_RUNTIME_DIR",
   ]) {
     copyEnvIfSet(env, name);
