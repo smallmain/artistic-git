@@ -77,6 +77,18 @@ required next steps: update `git-dist.toml`, remove the placeholder gate, and
 run real artifact validation before checking Windows or three-platform 1A
 items.
 
+For CI and release handoff, the readiness report writes both Markdown and JSON
+summaries of the same state:
+
+```sh
+node scripts/git-dist-report.mjs --include-openssh-release --output-dir=artifacts/git-dist-readiness
+```
+
+The JSON report marks each target as `ready` or `blocked`, includes every
+placeholder/non-stable source blocker, and records the latest Win32-OpenSSH
+release metadata when requested. A `blocked` report is evidence for why a target
+was skipped; it is not a substitute for a real embedded Git artifact.
+
 ## Fetch Pipeline
 
 `scripts/fetch-git-dist.mjs` is the local and CI entry point for preparing a
@@ -258,6 +270,10 @@ Build mode uses this policy:
 - placeholder-blocked matrix jobs run the expected-placeholder rejection check
   and stop without uploading an artifact. This keeps Windows OpenSSH preview
   status visible without publishing a fake Windows distribution.
+- contract and build jobs upload `git-dist-readiness-*` artifacts containing
+  `git-dist-readiness.json` and `git-dist-readiness.md`, so downstream release
+  checks can distinguish real target readiness from documented external blocks
+  without scraping logs.
 - source archive cache key includes target, `git-dist.toml`, fetch/check
   scripts, lockfiles, and a manual `GIT_DIST_CACHE_VERSION`.
 - assembled distribution cache key includes target, `git-dist.toml`, fetch/check

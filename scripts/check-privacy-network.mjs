@@ -92,6 +92,7 @@ const analyticsTerms = [
 const allowedFetchFiles = new Set([
   "scripts/fetch-git-dist.mjs",
   "scripts/check-git-dist-openssh-release.mjs",
+  "scripts/git-dist-report.mjs",
 ]);
 
 const urlPattern = /\b(?:https?:\/\/|git@github\.com:)[^"'`\s<>)]+/g;

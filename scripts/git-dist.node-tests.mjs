@@ -38,6 +38,11 @@ const opensshReleaseCheckPath = path.join(
   "scripts",
   "check-git-dist-openssh-release.mjs",
 );
+const readinessReportPath = path.join(
+  repoRoot,
+  "scripts",
+  "git-dist-report.mjs",
+);
 
 async function loadConfig() {
   const { data } = await loadGitDistConfig(configPath);
@@ -427,10 +432,75 @@ test("Win32-OpenSSH release gate fails when the latest release is stable", async
   }
 });
 
+test("readiness report marks Windows blocked without blocking macOS and Linux", async () => {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-git-dist-"));
+  try {
+    const metadataPath = path.join(tmpDir, "openssh-releases.json");
+    const outputDir = path.join(tmpDir, "report");
+    await writeFile(
+      metadataPath,
+      JSON.stringify([
+        {
+          tag_name: "10.0.0.0p2-Preview",
+          name: "10.0.0.0p2-Preview",
+          draft: false,
+          prerelease: false,
+          published_at: "2025-10-27T18:58:57Z",
+          assets: [{ name: "OpenSSH-Win64.zip" }],
+        },
+      ]),
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        readinessReportPath,
+        `--metadata=${metadataPath}`,
+        `--output-dir=${outputDir}`,
+      ],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+      },
+    );
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /windows-x86_64 \| blocked/);
+    assert.match(result.stdout, /macos-universal \| ready/);
+    assert.match(result.stdout, /linux-x86_64 \| ready/);
+
+    const report = JSON.parse(
+      await readFile(path.join(outputDir, "git-dist-readiness.json"), "utf8"),
+    );
+    assert.equal(
+      report.targets.find((target) => target.target === "windows-x86_64")
+        ?.status,
+      "blocked",
+    );
+    assert.equal(
+      report.targets.find((target) => target.target === "macos-universal")
+        ?.status,
+      "ready",
+    );
+    assert.equal(
+      report.targets.find((target) => target.target === "linux-x86_64")?.status,
+      "ready",
+    );
+    assert.equal(report.opensshRelease.status, "non-stable");
+    assert.equal(report.opensshRelease.latest.hasRequiredAsset, true);
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test("workflow validates restored assembled cache hits before reuse", async () => {
   const workflow = await readFile(workflowPath, "utf8");
   assert.match(workflow, /id: dist-cache/);
   assert.match(workflow, /Check Win32-OpenSSH release gate/);
+  assert.match(workflow, /Write git-dist readiness report/);
+  assert.match(workflow, /git-dist-readiness-contract/);
+  assert.match(workflow, /Write target readiness report/);
+  assert.match(workflow, /git-dist-readiness-\$\{\{ matrix\.target \}\}/);
   assert.match(
     workflow,
     /node scripts\/check-git-dist-openssh-release\.mjs --expect-no-stable-release/,

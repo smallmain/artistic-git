@@ -64,8 +64,22 @@ jobs:
       - name: Check Win32-OpenSSH release gate
         run: node scripts/check-git-dist-openssh-release.mjs --expect-no-stable-release
 
+      - name: Write git-dist readiness report
+        run: |
+          node scripts/git-dist-report.mjs \
+            --include-openssh-release \
+            --output-dir=artifacts/git-dist-readiness
+
       - name: Validate bundle resource mapping
         run: node scripts/check-tauri-bundle-resources.mjs
+
+      - name: Upload git-dist readiness report
+        uses: actions/upload-artifact@v4
+        with:
+          name: git-dist-readiness-contract
+          path: artifacts/git-dist-readiness/
+          if-no-files-found: error
+          retention-days: 14
 
   prepare:
     name: Prepare ${{ matrix.target }}
@@ -166,6 +180,22 @@ jobs:
         run: |
           set -euo pipefail
           node scripts/check-git-dist.mjs --target="${{ matrix.target }}" --no-exec
+
+      - name: Write target readiness report
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/git-dist-report.mjs \
+            --target="${{ matrix.target }}" \
+            --output-dir="artifacts/git-dist-readiness-${{ matrix.target }}"
+
+      - name: Upload target readiness report
+        uses: actions/upload-artifact@v4
+        with:
+          name: git-dist-readiness-${{ matrix.target }}
+          path: artifacts/git-dist-readiness-${{ matrix.target }}/
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Upload reusable git-dist artifact
         if: matrix.placeholderBlocked != true
