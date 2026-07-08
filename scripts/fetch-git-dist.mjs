@@ -463,6 +463,8 @@ async function buildSourceTarballs({ config, target, sources }) {
         `${ref} has source-tarball kind but ${target.platform} has no source build recipe`,
       );
     }
+    await ensureGitTransportBuiltinWrappers(installRoot);
+    await chmodTreeExecutables(installRoot);
   }
 }
 
@@ -548,7 +550,57 @@ async function buildMacosGit({ config, sourceRoot, installRoot }) {
       .filter((entry) => entry.path !== base.path)
       .map((entry) => entry.path),
   });
-  await chmodTreeExecutables(installRoot);
+}
+
+const gitTransportBuiltinWrappers = [
+  ["git-receive-pack", "receive-pack"],
+  ["git-upload-archive", "upload-archive"],
+  ["git-upload-pack", "upload-pack"],
+];
+
+async function ensureGitTransportBuiltinWrappers(installRoot) {
+  const gitExecPath = await firstExistingDirectory(installRoot, [
+    "git/libexec/git-core",
+    "git/mingw64/libexec/git-core",
+    "git/usr/libexec/git-core",
+  ]);
+  if (!gitExecPath) {
+    fail(
+      `source-built git install is missing libexec/git-core under ${installRoot}`,
+    );
+  }
+
+  const gitBinary = path.join(gitExecPath, "git");
+  const gitStat = await stat(gitBinary).catch(() => null);
+  if (!gitStat?.isFile()) {
+    fail(
+      `source-built git install is missing libexec git binary: ${gitBinary}`,
+    );
+  }
+
+  for (const [wrapperName, builtinName] of gitTransportBuiltinWrappers) {
+    const wrapperPath = path.join(gitExecPath, wrapperName);
+    const wrapperStat = await stat(wrapperPath).catch(() => null);
+    if (wrapperStat?.isFile()) {
+      continue;
+    }
+    await writeFile(
+      wrapperPath,
+      `#!/bin/sh\nexec "$(dirname "$0")/git" ${builtinName} "$@"\n`,
+    );
+    await chmod(wrapperPath, 0o755);
+  }
+}
+
+async function firstExistingDirectory(root, relativePaths) {
+  for (const relativePath of relativePaths) {
+    const candidate = path.join(root, relativePath);
+    const candidateStat = await stat(candidate).catch(() => null);
+    if (candidateStat?.isDirectory()) {
+      return candidate;
+    }
+  }
+  return null;
 }
 
 async function lipoInstallTrees({ destinationRoot, baseRoot, otherRoots }) {

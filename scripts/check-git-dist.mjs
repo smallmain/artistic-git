@@ -3,7 +3,15 @@
 
 import { spawnSync } from "node:child_process";
 import { constants, existsSync } from "node:fs";
-import { access, mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -474,12 +482,66 @@ async function runGitRuntimeSmoke({ gitExecutable, distRoot, runtimeEnv }) {
       repo,
       runtimeEnv,
     );
+
+    const remote = path.join(root, "remote.git");
+    runGitSmokeCommand(
+      gitExecutable,
+      ["init", "--bare", "-b", "main", remote],
+      root,
+      runtimeEnv,
+    );
+    runGitSmokeCommand(
+      gitExecutable,
+      ["config", "user.name", "Artistic Git Smoke"],
+      repo,
+      runtimeEnv,
+    );
+    runGitSmokeCommand(
+      gitExecutable,
+      ["config", "user.email", "smoke@example.test"],
+      repo,
+      runtimeEnv,
+    );
+    await writeFile(path.join(repo, "transport.txt"), "transport\n");
+    runGitSmokeCommand(
+      gitExecutable,
+      ["add", "transport.txt"],
+      repo,
+      runtimeEnv,
+    );
+    runGitSmokeCommand(
+      gitExecutable,
+      ["commit", "-m", "transport smoke"],
+      repo,
+      runtimeEnv,
+    );
+    runGitSmokeCommand(
+      gitExecutable,
+      ["remote", "add", "origin", remote],
+      repo,
+      runtimeEnv,
+    );
+    runGitSmokeCommand(
+      gitExecutable,
+      ["push", "-u", "origin", "main"],
+      repo,
+      runtimeEnv,
+    );
+    runGitSmokeCommand(
+      gitExecutable,
+      ["clone", remote, "clone"],
+      root,
+      runtimeEnv,
+    );
+    if (!existsSync(path.join(root, "clone", "transport.txt"))) {
+      fail("embedded git clone smoke did not materialize pushed file");
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 
   info(
-    "embedded git runtime smoke: exec-path, init templates, default branch, and submodule status passed",
+    "embedded git runtime smoke: exec-path, init templates, default branch, submodule status, local push, and clone passed",
   );
 }
 

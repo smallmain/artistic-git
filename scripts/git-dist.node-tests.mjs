@@ -460,6 +460,10 @@ test("source Git build flags disable optional Rust components", async () => {
   assert.match(fetchGitDist, /find \$\{shellQuote\(installRoot\)\} -type f/);
   assert.match(fetchGitDist, /function gitInstallPrefix/);
   assert.match(fetchGitDist, /makePrefixFlag/);
+  assert.match(fetchGitDist, /ensureGitTransportBuiltinWrappers/);
+  assert.match(fetchGitDist, /git-receive-pack/);
+  assert.match(fetchGitDist, /git-upload-pack/);
+  assert.match(fetchGitDist, /git-upload-archive/);
   assert.doesNotMatch(fetchGitDist, /prefix=\/(?=["'\s]|$)/);
 });
 
@@ -473,6 +477,9 @@ test("git-dist validation executes embedded Git runtime smoke checks", async () 
   assert.match(checkGitDist, /runGitRuntimeSmoke/);
   assert.match(checkGitDist, /"--exec-path"/);
   assert.match(checkGitDist, /"submodule", "status"/);
+  assert.match(checkGitDist, /"init", "--bare", "-b", "main", remote/);
+  assert.match(checkGitDist, /"push", "-u", "origin", "main"/);
+  assert.match(checkGitDist, /"clone", remote, "clone"/);
   assert.match(checkGitDist, /"init", "repo"/);
   assert.match(checkGitDist, /GIT_CONFIG_KEY_0: "init\.defaultBranch"/);
   assert.match(checkGitDist, /resourceOverrides: true/);
