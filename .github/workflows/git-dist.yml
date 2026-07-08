@@ -187,12 +187,47 @@ jobs:
           set -euo pipefail
           node scripts/check-git-dist.mjs --target="${{ matrix.target }}" --no-exec
 
-      - name: Write target readiness report
+      - name: Write target readiness and build evidence report
         shell: bash
         run: |
           set -euo pipefail
+          openssh_args=()
+          if [ "${{ matrix.target }}" = "windows-x86_64" ]; then
+            openssh_args+=(--include-openssh-release)
+          fi
+          source_cache_key="git-dist-source-${{ env.GIT_DIST_CACHE_VERSION }}-${{ matrix.target }}-${{ hashFiles('git-dist.toml', 'scripts/fetch-git-dist.mjs', 'scripts/git-dist-lib.mjs', 'scripts/check-git-dist.mjs', 'pnpm-lock.yaml', 'Cargo.lock') }}"
+          source_cache_restore_key="git-dist-source-${{ env.GIT_DIST_CACHE_VERSION }}-${{ matrix.target }}-"
+          dist_cache_key="git-dist-artifact-${{ env.GIT_DIST_CACHE_VERSION }}-${{ matrix.target }}-${{ hashFiles('git-dist.toml', 'scripts/fetch-git-dist.mjs', 'scripts/git-dist-lib.mjs', 'scripts/check-git-dist.mjs', 'crates/helpers/**', 'Cargo.lock') }}"
+          dist_cache_restore_key="git-dist-artifact-${{ env.GIT_DIST_CACHE_VERSION }}-${{ matrix.target }}-"
           node scripts/git-dist-report.mjs \
             --target="${{ matrix.target }}" \
+            --workflow-build \
+            --mode="${{ inputs.mode }}" \
+            --run-id="${{ github.run_id }}" \
+            --run-attempt="${{ github.run_attempt }}" \
+            --run-url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --repository="${{ github.repository }}" \
+            --workflow="${{ github.workflow }}" \
+            --event-name="${{ github.event_name }}" \
+            --ref="${{ github.ref }}" \
+            --ref-name="${{ github.ref_name }}" \
+            --commit-sha="${{ github.sha }}" \
+            --actor="${{ github.actor }}" \
+            --runner-os="${{ runner.os }}" \
+            --runner-arch="${{ runner.arch }}" \
+            --job-os="${{ matrix.os }}" \
+            --source-cache-hit="${{ steps.source-cache.outputs.cache-hit }}" \
+            --dist-cache-hit="${{ steps.dist-cache.outputs.cache-hit }}" \
+            --source-cache-key="${source_cache_key}" \
+            --source-cache-restore-key="${source_cache_restore_key}" \
+            --dist-cache-key="${dist_cache_key}" \
+            --dist-cache-restore-key="${dist_cache_restore_key}" \
+            --source-cache-dir="${ARTISTIC_GIT_DIST_CACHE_DIR}" \
+            --dist-dir="${ARTISTIC_GIT_DIST_DIR}" \
+            --readiness-artifact-name="git-dist-readiness-${{ matrix.target }}" \
+            --build-evidence-artifact-name="git-dist-build-evidence-${{ matrix.target }}" \
+            --blocker-artifact-name="git-dist-blocker-${{ matrix.target }}" \
+            "${openssh_args[@]}" \
             --output-dir="artifacts/git-dist-readiness-${{ matrix.target }}"
 
       - name: Upload target readiness report
@@ -200,6 +235,29 @@ jobs:
         with:
           name: git-dist-readiness-${{ matrix.target }}
           path: artifacts/git-dist-readiness-${{ matrix.target }}/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload target build evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: git-dist-build-evidence-${{ matrix.target }}
+          path: |
+            artifacts/git-dist-readiness-${{ matrix.target }}/git-dist-readiness.json
+            artifacts/git-dist-readiness-${{ matrix.target }}/git-dist-readiness.md
+            artifacts/git-dist-readiness-${{ matrix.target }}/git-dist-build-evidence.json
+            artifacts/git-dist-readiness-${{ matrix.target }}/git-dist-build-evidence.md
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload target blocker evidence
+        if: matrix.placeholderBlocked == true
+        uses: actions/upload-artifact@v4
+        with:
+          name: git-dist-blocker-${{ matrix.target }}
+          path: |
+            artifacts/git-dist-readiness-${{ matrix.target }}/git-dist-blocker.json
+            artifacts/git-dist-readiness-${{ matrix.target }}/git-dist-blocker.md
           if-no-files-found: error
           retention-days: 14
 

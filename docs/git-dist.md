@@ -274,12 +274,23 @@ Build mode uses this policy:
   `git-dist-readiness.json` and `git-dist-readiness.md`, so downstream release
   checks can distinguish real target readiness from documented external blocks
   without scraping logs.
+- build jobs also upload `git-dist-build-evidence-<target>` with
+  `git-dist-build-evidence.json` and `.md`. That report records the workflow run
+  manifest, target status, produced artifact index, source/archive provenance,
+  source-cache hit state, assembled-cache hit state, and the validation command
+  path used for either a cache hit or a fresh build.
+- placeholder-blocked jobs upload `git-dist-blocker-<target>` with
+  `git-dist-blocker.json` and `.md`. For Windows this is the auditable proof
+  that Win32-OpenSSH is still blocked; it is intentionally separate from
+  `artistic-git-dist-windows-x86_64`, which must remain absent until the
+  OpenSSH pin is stable.
 - source archive cache key includes target, `git-dist.toml`, fetch/check
   scripts, lockfiles, and a manual `GIT_DIST_CACHE_VERSION`.
 - assembled distribution cache key includes target, `git-dist.toml`, fetch/check
   scripts, helper crate sources, lockfiles, and `GIT_DIST_CACHE_VERSION`.
 - cache hit still runs `scripts/check-git-dist.mjs --no-exec` against the
-  restored `ARTISTIC_GIT_DIST_DIR`.
+  restored `ARTISTIC_GIT_DIST_DIR`, and the build evidence records that command
+  as the cache-hit validation gate.
 - cache miss builds the helper binaries, then runs
   `scripts/fetch-git-dist.mjs --target=<target>` with explicit output,
   source-cache, and staging directories.
@@ -287,6 +298,23 @@ Build mode uses this policy:
   values fail before download/build/package
 - successful jobs upload `artistic-git-dist-<target>` artifacts for later test
   and packaging jobs to consume via `ARTISTIC_GIT_DIST_DIR`.
+
+Auditing a `workflow_dispatch` build run should start with the build evidence
+artifact for each target:
+
+```text
+git-dist-build-evidence-<target>/
+  git-dist-readiness.json
+  git-dist-readiness.md
+  git-dist-build-evidence.json
+  git-dist-build-evidence.md
+```
+
+For macOS and Linux, `workflowBuild.validationSummary.reusableArtifactProduced`
+must be `true` before a downstream job consumes
+`artistic-git-dist-<target>`. For Windows, the expected current state is
+`placeholder-blocked`, `reusableArtifactProduced = false`, and a separate
+`git-dist-blocker-windows-x86_64` artifact containing the OpenSSH blocker.
 
 Current limitation: Windows build mode intentionally skips artifact generation
 while the Win32-OpenSSH entry remains `placeholder = true` / `stable = false`.

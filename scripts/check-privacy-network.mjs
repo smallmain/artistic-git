@@ -53,6 +53,7 @@ const allowedUrlPatterns = [
   /^https:\/\/github\.com\/smallmain\/artistic-git\/releases(?:[/?#].*)?$/,
   /^https:\/\/github\.com\/smallmain\/artistic-git\/releases\/latest\/download\/latest\.json$/,
   /^https:\/\/github\.com\/smallmain\/artistic-git\/releases\/download\/[^/]+\/[^"'`\s)]+$/,
+  /^https:\/\/github\.com\/\$\{repository\}\/actions\/runs\/\$\{runId\}$/,
   /^https:\/\/github\.com\/\$\{repo\}\/releases\/download\/\$\{encodedTag\}\/\$\{encodedFile\}$/,
   /^https:\/\/github\.com\/git-for-windows\/git\/releases\/tag\/[^/]+$/,
   /^https:\/\/github\.com\/git-for-windows\/git\/releases\/download\/[^/]+\/[^"'`\s)]+$/,

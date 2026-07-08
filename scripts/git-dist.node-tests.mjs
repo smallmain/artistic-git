@@ -522,14 +522,183 @@ test("readiness report marks Windows blocked without blocking macOS and Linux", 
   }
 });
 
+test("workflow build evidence records cache validation and reusable artifact index", async () => {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-git-dist-"));
+  try {
+    const outputDir = path.join(tmpDir, "report");
+    const result = spawnSync(
+      process.execPath,
+      [
+        readinessReportPath,
+        "--workflow-build",
+        "--target=macos-universal",
+        "--mode=build",
+        "--run-id=123",
+        "--run-attempt=2",
+        "--repository=smallmain/artistic-git",
+        "--workflow=Git Distribution",
+        "--event-name=workflow_dispatch",
+        "--ref=refs/heads/main",
+        "--ref-name=main",
+        "--commit-sha=abcdef",
+        "--runner-os=macOS",
+        "--runner-arch=ARM64",
+        "--job-os=macos-14",
+        "--source-cache-hit=true",
+        "--dist-cache-hit=true",
+        "--source-cache-key=source-key",
+        "--source-cache-restore-key=source-prefix-",
+        "--dist-cache-key=dist-key",
+        "--dist-cache-restore-key=dist-prefix-",
+        "--source-cache-dir=.cache/git-dist",
+        "--dist-dir=.artifacts/git-dist/macos-universal",
+        `--output-dir=${outputDir}`,
+      ],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+      },
+    );
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /Status: validated-cache-hit/);
+
+    const report = JSON.parse(
+      await readFile(
+        path.join(outputDir, "git-dist-build-evidence.json"),
+        "utf8",
+      ),
+    );
+    assert.equal(report.workflowBuild.run.runId, "123");
+    assert.equal(report.workflowBuild.target.name, "macos-universal");
+    assert.equal(
+      report.workflowBuild.validationSummary.status,
+      "validated-cache-hit",
+    );
+    assert.equal(
+      report.workflowBuild.cacheValidation.assembledDistributionCache.cacheHit,
+      true,
+    );
+    assert.equal(
+      report.workflowBuild.cacheValidation.assembledDistributionCache.validation
+        .status,
+      "passed",
+    );
+    assert.equal(
+      report.workflowBuild.artifactIndex.find(
+        (artifact) => artifact.kind === "reusable-git-dist",
+      )?.produced,
+      true,
+    );
+    assert.ok(
+      report.workflowBuild.provenance.every(
+        (source) => source.checksum?.algorithm === "sha256",
+      ),
+    );
+    assert.equal(
+      await pathExists(path.join(outputDir, "git-dist-blocker.json")),
+      false,
+    );
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("workflow build evidence writes blocker artifact for placeholder-blocked Windows", async () => {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-git-dist-"));
+  try {
+    const metadataPath = path.join(tmpDir, "openssh-releases.json");
+    const outputDir = path.join(tmpDir, "report");
+    await writeFile(
+      metadataPath,
+      JSON.stringify([
+        {
+          tag_name: "10.0.0.0p2-Preview",
+          name: "10.0.0.0p2-Preview",
+          draft: false,
+          prerelease: false,
+          published_at: "2025-10-27T18:58:57Z",
+          assets: [{ name: "OpenSSH-Win64.zip" }],
+        },
+      ]),
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        readinessReportPath,
+        "--",
+        "--workflow-build",
+        "--target=windows-x86_64",
+        `--metadata=${metadataPath}`,
+        "--mode=build",
+        "--run-id=456",
+        "--repository=smallmain/artistic-git",
+        "--runner-os=Windows",
+        "--runner-arch=X64",
+        "--job-os=windows-2022",
+        `--output-dir=${outputDir}`,
+      ],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+      },
+    );
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const report = JSON.parse(
+      await readFile(
+        path.join(outputDir, "git-dist-build-evidence.json"),
+        "utf8",
+      ),
+    );
+    const blockerReport = JSON.parse(
+      await readFile(path.join(outputDir, "git-dist-blocker.json"), "utf8"),
+    );
+
+    assert.equal(report.workflowBuild.target.blocked, true);
+    assert.equal(
+      report.workflowBuild.validationSummary.status,
+      "placeholder-blocked",
+    );
+    assert.equal(
+      report.workflowBuild.artifactIndex.find(
+        (artifact) => artifact.kind === "reusable-git-dist",
+      )?.produced,
+      false,
+    );
+    assert.equal(
+      report.workflowBuild.artifactIndex.find(
+        (artifact) => artifact.kind === "blocker-evidence",
+      )?.produced,
+      true,
+    );
+    assert.equal(blockerReport.opensshRelease.status, "non-stable");
+    assert.equal(blockerReport.workflowBuild.target.name, "windows-x86_64");
+    assert.equal(
+      await pathExists(path.join(outputDir, "git-dist-blocker.md")),
+      true,
+    );
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test("workflow validates restored assembled cache hits before reuse", async () => {
   const workflow = await readFile(workflowPath, "utf8");
   assert.match(workflow, /id: dist-cache/);
   assert.match(workflow, /Check Win32-OpenSSH release gate/);
   assert.match(workflow, /Write git-dist readiness report/);
   assert.match(workflow, /git-dist-readiness-contract/);
-  assert.match(workflow, /Write target readiness report/);
+  assert.match(workflow, /Write target readiness and build evidence report/);
   assert.match(workflow, /git-dist-readiness-\$\{\{ matrix\.target \}\}/);
+  assert.match(workflow, /--workflow-build/);
+  assert.match(workflow, /git-dist-build-evidence-\$\{\{ matrix\.target \}\}/);
+  assert.match(workflow, /git-dist-blocker-\$\{\{ matrix\.target \}\}/);
+  assert.match(
+    workflow,
+    /Upload target blocker evidence[\s\S]+if: matrix\.placeholderBlocked == true/,
+  );
   assert.match(
     workflow,
     /Validate contract[\s\S]+Set up pnpm[\s\S]+pnpm\/action-setup@v4[\s\S]+Set up Node\.js/,
