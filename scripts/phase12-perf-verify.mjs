@@ -330,7 +330,7 @@ function verifyLargeStatus() {
     metrics: {
       elapsedMs: Math.round(elapsed),
       fileCount: report.profile.fileCount,
-      statusEntryCount: statusEntries.length,
+      statusItemCount: statusEntries.length,
       fsmonitorConfigured: true,
       untrackedCacheConfigured: true,
       untrackedCacheProbePassed: true,

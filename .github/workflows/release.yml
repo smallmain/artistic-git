@@ -172,7 +172,7 @@ jobs:
         env:
           ARTISTIC_GIT_RELEASE_REHEARSAL_REPORT_DIR: ${{ runner.temp }}/release-rehearsal
           ARTISTIC_GIT_RELEASE_REHEARSAL_ARTIFACT_NAME: release-rehearsal-${{ runner.os }}
-          ARTISTIC_GIT_RELEASE_WORKFLOW_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ARTISTIC_GIT_RELEASE_WORKFLOW_RUN_URL: https://github.com/${{github.repository}}/actions/runs/${{github.run_id}}
           ARTISTIC_GIT_RELEASE_WORKFLOW_ATTEMPT: ${{ github.run_attempt }}
           ARTISTIC_GIT_RELEASE_WORKFLOW_SHA: ${{ github.sha }}
           ARTISTIC_GIT_RELEASE_PLAN_VERSION: ${{ needs.plan.outputs.version }}

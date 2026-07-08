@@ -246,7 +246,7 @@ test("release workflow uploads dry-run rehearsal evidence with CI context", () =
     "Generate release rehearsal dry-run checklist",
     "ARTISTIC_GIT_RELEASE_REHEARSAL_REPORT_DIR: ${{ runner.temp }}/release-rehearsal",
     "ARTISTIC_GIT_RELEASE_REHEARSAL_ARTIFACT_NAME: release-rehearsal-${{ runner.os }}",
-    "ARTISTIC_GIT_RELEASE_WORKFLOW_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+    "ARTISTIC_GIT_RELEASE_WORKFLOW_RUN_URL: https://github.com/${{github.repository}}/actions/runs/${{github.run_id}}",
     "ARTISTIC_GIT_RELEASE_PLAN_VERSION: ${{ needs.plan.outputs.version }}",
     "ARTISTIC_GIT_RELEASE_PLAN_TAG: ${{ needs.plan.outputs.tag }}",
     "ARTISTIC_GIT_RELEASE_MODE_REASON: ${{ needs.plan.outputs.mode_reason }}",

@@ -53,6 +53,7 @@ const allowedUrlPatterns = [
   /^https:\/\/github\.com\/smallmain\/artistic-git\/releases(?:[/?#].*)?$/,
   /^https:\/\/github\.com\/smallmain\/artistic-git\/releases\/latest\/download\/latest\.json$/,
   /^https:\/\/github\.com\/smallmain\/artistic-git\/releases\/download\/[^/]+\/[^"'`\s)]+$/,
+  /^https:\/\/github\.com\/\$\{\{github\.repository\}\}\/actions\/runs\/\$\{\{github\.run_id\}\}$/,
   /^https:\/\/github\.com\/\$\{repository\}\/actions\/runs\/\$\{runId\}$/,
   /^https:\/\/github\.com\/\$\{repo\}\/releases\/download\/\$\{encodedTag\}\/\$\{encodedFile\}$/,
   /^https:\/\/github\.com\/git-for-windows\/git\/releases\/tag\/[^/]+$/,
@@ -69,6 +70,7 @@ const allowedUrlPatterns = [
   /^https:\/\/www\.gravatar\.com\/avatar\/(?:\$\{.*)?$/,
   /^https:\/\/git-lfs\.github\.com\/spec\/v1$/,
   /^https:\/\/schema\.tauri\.app\/config\/2$/,
+  /^https:\/\/json-schema\.org\/draft\/2020-12\/schema$/,
   /^https:\/\/example\.test\/[^"'`\s)]+$/,
   /^http:\/\/127\.0\.0\.1(?::(?:\d+|\{\}))?(?:\/[^"'`\s)]*)?$/,
 ];

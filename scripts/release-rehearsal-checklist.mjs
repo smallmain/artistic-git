@@ -8,6 +8,7 @@ const fromVersion = "0.1.0";
 const toVersion = "0.1.1";
 const fromTag = `v${fromVersion}`;
 const toTag = `v${toVersion}`;
+const githubEvidenceBaseUrl = "https://github.com/smallmain/artistic-git";
 const dryRun = process.env.ARTISTIC_GIT_RELEASE_REHEARSAL_DRY_RUN !== "0";
 const reportDir =
   process.env.ARTISTIC_GIT_RELEASE_REHEARSAL_REPORT_DIR ??
@@ -371,7 +372,7 @@ function validateGithubUrl(rawValue, kind, expectedTag = null) {
     return {
       valid: false,
       normalizedUrl: parsed.href,
-      reason: "URL must use https://github.com/.",
+      reason: "URL must use the GitHub HTTPS host.",
     };
   }
 
@@ -614,7 +615,7 @@ function buildUpdateRecordSchema() {
             postUpdateSmokePassed: { const: true },
             evidenceUrl: {
               type: "string",
-              pattern: "^https://github\\.com/.+/(actions|releases)/.+",
+              pattern: "^https:\\/\\/github\\.com/.+/(actions|releases)/.+",
             },
             recordedAt: { type: "string", format: "date-time" },
             operator: { type: "string", minLength: 1 },
@@ -640,7 +641,7 @@ function buildUpdateRecordExample() {
       updateDownloaded: true,
       restartGateVerified: true,
       postUpdateSmokePassed: true,
-      evidenceUrl: `https://github.com/OWNER/REPO/actions/runs/1234567890/artifacts/${platform.id}`,
+      evidenceUrl: `${githubEvidenceBaseUrl}/actions/runs/1234567890/artifacts/${platform.id}`,
       recordedAt: "2026-07-08T00:00:00.000Z",
       operator: "release-operator",
       rollbackNotes: "none",
