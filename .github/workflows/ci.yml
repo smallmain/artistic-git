@@ -584,6 +584,52 @@ jobs:
           pattern: e2e-real-git-report-*
           path: ${{ runner.temp }}/phase12-evidence-input
 
+      - name: Resolve phase 12 git-dist evidence artifacts
+        id: phase12-git-dist-evidence
+        shell: bash
+        env:
+          DISPATCH_GIT_DIST_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.phase12_git_dist_run_id || '' }}
+          DEFAULT_GIT_DIST_RUN_ID: ${{ vars.ARTISTIC_GIT_PHASE12_GIT_DIST_RUN_ID }}
+        run: |
+          set -euo pipefail
+          run_id="${DISPATCH_GIT_DIST_RUN_ID:-${DEFAULT_GIT_DIST_RUN_ID:-}}"
+          echo "run_id=${run_id}" >> "$GITHUB_OUTPUT"
+          if [ -n "$run_id" ]; then
+            echo "Phase 12 summary will include Git Distribution evidence from run ${run_id}."
+          else
+            echo "No Git Distribution run id configured for Phase 12 summary evidence."
+          fi
+
+      - name: Download git-dist build evidence
+        if: steps.phase12-git-dist-evidence.outputs.run_id != ''
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: git-dist-build-evidence-*
+          path: ${{ runner.temp }}/phase12-evidence-input
+          run-id: ${{ steps.phase12-git-dist-evidence.outputs.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Download git-dist source evidence
+        if: steps.phase12-git-dist-evidence.outputs.run_id != ''
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: git-dist-source-evidence-*
+          path: ${{ runner.temp }}/phase12-evidence-input
+          run-id: ${{ steps.phase12-git-dist-evidence.outputs.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Download git-dist blocker evidence
+        if: steps.phase12-git-dist-evidence.outputs.run_id != ''
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: git-dist-blocker-*
+          path: ${{ runner.temp }}/phase12-evidence-input
+          run-id: ${{ steps.phase12-git-dist-evidence.outputs.run_id }}
+          github-token: ${{ github.token }}
+
       - name: Generate phase 12 evidence summary
         run: |
           node scripts/phase12-evidence-summary.mjs \

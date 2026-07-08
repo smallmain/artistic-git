@@ -42,22 +42,42 @@ const e2eReports = reports.filter(
 const perfReports = reports.filter(
   (entry) => entry.content.kind === "phase12-perf",
 );
+const gitDistBuildReports = reports.filter(
+  (entry) => entry.content.workflowBuild?.schemaVersion === 1,
+);
+const gitDistSourceReports = reports.filter(
+  (entry) => entry.content.mode === "source-evidence-only",
+);
+const gitDistBlockerReports = reports.filter(
+  (entry) => entry.content.workflowBuild?.target?.blocked === true,
+);
+const gitDistRequiredTargets = Array.from(
+  new Set([...e2eRequiredTargets, ...perfRequiredTargets]),
+);
+const gitDistribution = evaluateGitDistributionEvidence({
+  buildReports: gitDistBuildReports,
+  blockerReports: gitDistBlockerReports,
+  requiredTargets: gitDistRequiredTargets,
+  sourceReports: gitDistSourceReports,
+});
 
 const e2e = evaluateTask({
   reports: e2eReports,
   requiredTargets: e2eRequiredTargets,
   taskName: "E2E full-chain",
+  gitDistribution,
   validator: validateE2eReport,
 });
 const performance = evaluateTask({
   reports: perfReports,
   requiredTargets: perfRequiredTargets,
   taskName: "Performance",
+  gitDistribution,
   validator: validatePerfReport,
 });
 
 const summary = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   kind: "phase12-evidence-summary",
   generatedAt: new Date().toISOString(),
   artifactsDir,
@@ -69,7 +89,11 @@ const summary = {
     jsonFileCount: reports.length,
     e2eReportCount: e2eReports.length,
     perfReportCount: perfReports.length,
+    gitDistBuildReportCount: gitDistBuildReports.length,
+    gitDistSourceReportCount: gitDistSourceReports.length,
+    gitDistBlockerReportCount: gitDistBlockerReports.length,
   },
+  gitDistribution,
   tasks: {
     e2eFullChain: {
       task: "E2E 全链路：克隆 → 修改 → 提交 → 同事推送 → 同步 → 冲突 → 解决 → 撤回",
@@ -116,6 +140,7 @@ function evaluateTask({
   reports: currentReports,
   requiredTargets,
   taskName,
+  gitDistribution: currentGitDistribution,
   validator,
 }) {
   const targets = {};
@@ -149,6 +174,9 @@ function evaluateTask({
       artifactName: selected.content.gitDistSource?.artifactName ?? null,
       runId: selected.content.gitDistSource?.runId ?? null,
       source: selected.content.gitDistSource?.source ?? null,
+      gitDistEvidence:
+        currentGitDistribution.targets[inferReportTarget(selected.content)] ??
+        null,
     };
     targets[target] = targetResult;
     if (!targetResult.checkable) {
@@ -172,6 +200,267 @@ function evaluateTask({
         : "not-ready",
     targets,
     blockers,
+  };
+}
+
+function evaluateGitDistributionEvidence({
+  buildReports,
+  blockerReports,
+  requiredTargets,
+  sourceReports,
+}) {
+  const targets = {};
+  const blockers = [];
+  for (const target of requiredTargets) {
+    const buildCandidates = buildReports
+      .filter((entry) => entry.content.workflowBuild?.target?.name === target)
+      .map((entry) => ({
+        ...entry,
+        validation: validateGitDistBuildEvidence(entry.content, target),
+      }))
+      .sort(
+        (left, right) =>
+          scoreGitDistBuild(right.validation) -
+          scoreGitDistBuild(left.validation),
+      );
+    const selectedBuild = buildCandidates[0] ?? null;
+    const selectedSource =
+      sourceReports.find((entry) => entry.content.target?.name === target) ??
+      null;
+    const selectedBlocker =
+      blockerReports.find(
+        (entry) => entry.content.workflowBuild?.target?.name === target,
+      ) ?? null;
+
+    const sourceArchiveValidation =
+      selectedBuild?.content.workflowBuild?.sourceArchiveValidation ??
+      (selectedSource
+        ? sourceArchiveValidationFromStandalone(selectedSource.content)
+        : null);
+    const sourceArchive =
+      sourceArchiveValidation &&
+      validateSourceArchiveValidation(sourceArchiveValidation);
+
+    const targetResult = {
+      status: "missing",
+      reusableArtifactCheckable: false,
+      sourceArchiveCheckable: sourceArchive?.checkable ?? false,
+      buildEvidencePath: selectedBuild?.filePath ?? null,
+      sourceEvidencePath: selectedSource?.filePath ?? null,
+      blockerEvidencePath: selectedBlocker?.filePath ?? null,
+      runId: selectedBuild?.content.workflowBuild?.run?.runId ?? null,
+      artifactName:
+        selectedBuild?.content.workflowBuild?.target?.artifactName ??
+        selectedSource?.content.target?.artifactName ??
+        `artistic-git-dist-${target}`,
+      build: selectedBuild
+        ? {
+            status: selectedBuild.validation.status,
+            reusableArtifactProduced:
+              selectedBuild.content.workflowBuild?.validationSummary
+                ?.reusableArtifactProduced ?? null,
+            targetStatus:
+              selectedBuild.content.workflowBuild?.target?.status ?? null,
+            blocked:
+              selectedBuild.content.workflowBuild?.target?.blocked ?? null,
+            reasons: selectedBuild.validation.reasons,
+          }
+        : null,
+      sourceArchive: sourceArchive
+        ? {
+            status: sourceArchiveValidation.status,
+            checkable: sourceArchive.checkable,
+            summary: sourceArchiveValidation.summary ?? null,
+            checkedComponents: sourceArchive.checkedComponents,
+            blockedComponents: sourceArchive.blockedComponents,
+            reasons: sourceArchive.reasons,
+          }
+        : null,
+      blockers: [],
+    };
+
+    if (selectedBuild) {
+      targetResult.reusableArtifactCheckable =
+        selectedBuild.validation.checkable;
+      if (selectedBuild.validation.checkable) {
+        targetResult.status = "reusable-ready";
+      } else if (sourceArchive?.checkable) {
+        targetResult.status = "source-partial";
+      } else if (selectedBuild.content.workflowBuild?.target?.blocked) {
+        targetResult.status = "blocked";
+      } else {
+        targetResult.status = selectedBuild.validation.status;
+      }
+      targetResult.blockers.push(...selectedBuild.validation.reasons);
+    } else if (sourceArchive?.checkable) {
+      targetResult.status = "source-partial";
+      targetResult.blockers.push(
+        `git-dist ${target} reusable build evidence is missing.`,
+      );
+    } else {
+      targetResult.blockers.push(
+        `git-dist ${target} build evidence is missing.`,
+      );
+    }
+
+    if (sourceArchive && !sourceArchive.checkable) {
+      targetResult.blockers.push(...sourceArchive.reasons);
+    }
+    if (!targetResult.reusableArtifactCheckable) {
+      blockers.push(`git-dist ${target}: ${targetResult.blockers.join("; ")}`);
+    }
+    targets[target] = targetResult;
+  }
+
+  return {
+    requiredTargets,
+    targets,
+    blockers,
+  };
+}
+
+function validateGitDistBuildEvidence(report, target) {
+  const reasons = [];
+  const build = report.workflowBuild;
+  if (build?.target?.name !== target) {
+    reasons.push(
+      `workflowBuild.target.name is ${build?.target?.name ?? "missing"}, expected ${target}`,
+    );
+  }
+  if (build?.mode !== "build") {
+    reasons.push(`workflowBuild.mode is ${build?.mode ?? "missing"}`);
+  }
+  if (build?.target?.blocked === true || build?.target?.status !== "ready") {
+    reasons.push(
+      `target is ${build?.target?.status ?? "missing"} blocked=${String(
+        build?.target?.blocked,
+      )}`,
+    );
+  }
+  if (build?.validationSummary?.reusableArtifactProduced !== true) {
+    reasons.push("reusableArtifactProduced is not true");
+  }
+  if (
+    !["validated-cache-hit", "validated-fresh-build"].includes(
+      build?.validationSummary?.status,
+    )
+  ) {
+    reasons.push(
+      `validationSummary.status is ${build?.validationSummary?.status ?? "missing"}`,
+    );
+  }
+  const reusableArtifact = Array.isArray(build?.artifactIndex)
+    ? build.artifactIndex.find(
+        (artifact) => artifact.kind === "reusable-git-dist",
+      )
+    : null;
+  if (reusableArtifact?.produced !== true) {
+    reasons.push("reusable git-dist artifact was not produced");
+  }
+  const commands = build?.validationSummary?.commands;
+  if (!Array.isArray(commands)) {
+    reasons.push("validationSummary.commands is missing");
+  } else {
+    if (
+      !commands.includes(`node scripts/check-git-dist.mjs --target="${target}"`)
+    ) {
+      reasons.push("target runtime check-git-dist validation is missing");
+    }
+    if (commands.some((command) => String(command).includes("--no-exec"))) {
+      reasons.push("build evidence contains --no-exec validation");
+    }
+  }
+
+  return {
+    checkable: reasons.length === 0,
+    status: reasons.length === 0 ? "pass" : "blocked",
+    reasons,
+  };
+}
+
+function scoreGitDistBuild(validation) {
+  if (validation.checkable) {
+    return 4;
+  }
+  if (validation.status === "blocked") {
+    return 3;
+  }
+  return 1;
+}
+
+function sourceArchiveValidationFromStandalone(evidence) {
+  return {
+    status: evidence.status,
+    produced: true,
+    evidencePath: null,
+    evidenceArtifactName: `git-dist-source-evidence-${evidence.target?.name ?? "unknown"}`,
+    summary: evidence.summary,
+    sources: Array.isArray(evidence.sources)
+      ? evidence.sources.map((source) => ({
+          ref: source.ref,
+          component: source.component,
+          status: source.status,
+          stable: source.stable,
+          placeholder: source.placeholder,
+          reason: source.reason,
+          expectedSha256: source.checksum?.expectedSha256 ?? null,
+          actualSha256: source.actualSha256 ?? null,
+          cachePath: source.cachePath ?? null,
+          url: source.url,
+          assetName: source.assetName,
+        }))
+      : [],
+  };
+}
+
+function validateSourceArchiveValidation(evidence) {
+  const reasons = [];
+  const checkedComponents = [];
+  const blockedComponents = [];
+  if (evidence.produced !== true) {
+    reasons.push("source archive evidence was not produced");
+  }
+  if (!["passed", "partial"].includes(evidence.status)) {
+    reasons.push(`source archive status is ${evidence.status ?? "missing"}`);
+  }
+  if (
+    typeof evidence.summary?.checked !== "number" ||
+    evidence.summary.checked < 1
+  ) {
+    reasons.push("source archive evidence checked no stable sources");
+  }
+  if (!Array.isArray(evidence.sources)) {
+    reasons.push("source archive evidence sources are missing");
+  } else {
+    for (const source of evidence.sources) {
+      if (source.status === "checked") {
+        checkedComponents.push(source.component);
+        if (!source.stable || source.placeholder) {
+          reasons.push(`${source.component} checked source is not stable`);
+        }
+        if (
+          !source.expectedSha256 ||
+          !source.actualSha256 ||
+          source.expectedSha256 !== source.actualSha256
+        ) {
+          reasons.push(
+            `${source.component} checked SHA-256 evidence is invalid`,
+          );
+        }
+      } else if (source.status === "skipped-blocked") {
+        blockedComponents.push(source.component);
+        if (!source.reason) {
+          reasons.push(`${source.component} blocked source is missing reason`);
+        }
+      }
+    }
+  }
+
+  return {
+    checkable: reasons.length === 0,
+    reasons,
+    checkedComponents,
+    blockedComponents,
   };
 }
 
@@ -349,12 +638,38 @@ function renderMarkdown(value) {
     `Artifacts: ${value.artifactsDir}`,
     `E2E required targets: ${value.requiredTargets.e2eFullChain.join(", ")}`,
     `Performance required targets: ${value.requiredTargets.performance.join(", ")}`,
+    `Git Distribution evidence targets: ${value.gitDistribution.requiredTargets.join(", ")}`,
     "",
     "| TASKS.md item | Checkable | Status |",
     "| --- | --- | --- |",
     `| E2E full-chain | ${value.tasks.e2eFullChain.checkable ? "yes" : "no"} | ${value.tasks.e2eFullChain.status} |`,
     `| Performance | ${value.tasks.performance.checkable ? "yes" : "no"} | ${value.tasks.performance.status} |`,
+    "",
+    "## Git Distribution",
+    "",
+    "| Target | Status | Reusable Artifact | Source Archive Evidence | Artifact | Run |",
+    "| --- | --- | --- | --- | --- | --- |",
   ];
+
+  for (const [target, result] of Object.entries(
+    value.gitDistribution.targets,
+  )) {
+    const sourceSummary = result.sourceArchive
+      ? `${result.sourceArchive.checkable ? "yes" : "no"} (${result.sourceArchive.checkedComponents.join(", ") || "none"} checked; ${result.sourceArchive.blockedComponents.join(", ") || "none"} blocked)`
+      : "n/a";
+    lines.push(
+      `| ${target} | ${result.status} | ${result.reusableArtifactCheckable ? "yes" : "no"} | ${sourceSummary} | ${result.artifactName ?? "n/a"} | ${result.runId ?? "n/a"} |`,
+    );
+  }
+
+  if (value.gitDistribution.blockers.length > 0) {
+    lines.push("", "Git Distribution blockers:");
+    for (const blocker of value.gitDistribution.blockers) {
+      lines.push(`- ${blocker}`);
+    }
+  }
+
+  lines.push("");
 
   for (const [taskKey, task] of Object.entries(value.tasks)) {
     lines.push("", `## ${taskKey}`, "");
