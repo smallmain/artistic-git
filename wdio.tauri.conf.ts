@@ -11,7 +11,7 @@ const appBinaryPath =
   process.env.ARTISTIC_GIT_E2E_APP ?? defaultTauriBinaryPath();
 const tauriDriverPath = process.env.TAURI_DRIVER ?? defaultTauriDriverPath();
 const gitDistFixturePath =
-  process.env.ARTISTIC_GIT_DIST_DIR ?? prepareGitDistFixture();
+  process.env.ARTISTIC_GIT_DIST_DIR ?? defaultGitDistFixturePath();
 
 process.env.ARTISTIC_GIT_DIST_DIR = gitDistFixturePath;
 
@@ -194,6 +194,16 @@ function prepareGitDistFixture() {
   );
 
   return root;
+}
+
+function defaultGitDistFixturePath() {
+  if (process.env.ARTISTIC_GIT_E2E_REAL_GIT === "1") {
+    throw new Error(
+      "ARTISTIC_GIT_E2E_REAL_GIT=1 requires ARTISTIC_GIT_DIST_DIR to point at a real embedded Git distribution.",
+    );
+  }
+
+  return prepareGitDistFixture();
 }
 
 function writeVersionExecutable(filePath: string, versionOutput: string) {

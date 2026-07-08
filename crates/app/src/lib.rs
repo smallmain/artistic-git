@@ -21,6 +21,8 @@ pub mod fetch;
 mod full_chain_e2e;
 pub(crate) mod git_ops;
 pub mod https_auth;
+#[cfg(test)]
+mod phase12_failure_hardening;
 pub mod remote;
 pub mod repository;
 pub mod restore;

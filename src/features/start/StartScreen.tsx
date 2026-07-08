@@ -711,6 +711,7 @@ function CloneRepositoryDialog({
             <input
               autoFocus
               className="h-9 rounded-md border bg-background px-3 text-sm font-normal outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              data-testid="clone-url-input"
               id={urlId}
               onChange={(event) => onUrlChange(event.currentTarget.value)}
               placeholder="https://github.com/studio/art.git"
@@ -726,6 +727,7 @@ function CloneRepositoryDialog({
             <span className="grid grid-cols-[1fr_auto] gap-2">
               <input
                 className="h-9 min-w-0 rounded-md border bg-background px-3 text-sm font-normal outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                data-testid="clone-parent-directory-input"
                 id={parentId}
                 onChange={(event) =>
                   onParentDirectoryChange(event.currentTarget.value)
@@ -753,6 +755,7 @@ function CloneRepositoryDialog({
             {t("start.cloneDirectoryName")}
             <input
               className="h-9 rounded-md border bg-background px-3 text-sm font-normal outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              data-testid="clone-directory-name-input"
               id={directoryNameId}
               onChange={(event) =>
                 onDirectoryNameChange(event.currentTarget.value)

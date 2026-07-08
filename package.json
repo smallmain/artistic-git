@@ -33,6 +33,8 @@
     "release:artifacts:test": "node --test scripts/release-artifacts.node-tests.mjs",
     "release:resources:check": "node scripts/check-tauri-bundle-resources.mjs",
     "release:check": "pnpm release:version:test && pnpm release:updater-pubkey:test && pnpm release:artifacts:test && pnpm release:resources:check",
+    "release:rehearsal:checklist": "node scripts/release-rehearsal-checklist.mjs",
+    "phase12:perf": "node scripts/phase12-perf-verify.mjs",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
