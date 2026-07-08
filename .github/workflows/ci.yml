@@ -315,6 +315,9 @@ jobs:
             patchelf \
             pkg-config \
             libssl-dev \
+            pipewire \
+            pipewire-bin \
+            pipewire-media-session \
             webkit2gtk-driver \
             xvfb
 
@@ -350,10 +353,15 @@ jobs:
         run: |
           set -euo pipefail
           echo "DISPLAY=${DISPLAY:-}"
+          echo "GDK_BACKEND=${GDK_BACKEND:-}"
+          echo "GTK_USE_PORTAL=${GTK_USE_PORTAL:-}"
+          echo "XDG_SESSION_TYPE=${XDG_SESSION_TYPE:-}"
           command -v tauri-driver
           tauri-driver --version || true
           command -v WebKitWebDriver
           WebKitWebDriver --version || true
+          command -v pipewire || true
+          pipewire --version || true
 
       - name: Run Tauri E2E on Linux
         id: tauri_e2e_linux
@@ -365,18 +373,49 @@ jobs:
           ARTISTIC_GIT_E2E_LOG_DIR: ${{ runner.temp }}/tauri-e2e-logs/main
           ARTISTIC_GIT_E2E_START_TIMEOUT_MS: "90000"
           GDK_BACKEND: x11
+          GALLIUM_DRIVER: llvmpipe
+          GSK_RENDERER: cairo
+          GTK_USE_PORTAL: "0"
+          LIBGL_ALWAYS_SOFTWARE: "1"
           NO_AT_BRIDGE: "1"
           RUST_BACKTRACE: "1"
           RUST_LOG: info,artistic_git=debug
           TAURI_DRIVER_PORT: "4444"
           WEBKIT_DISABLE_COMPOSITING_MODE: "1"
+          WEBKIT_DISABLE_DMABUF_RENDERER: "1"
+          XDG_CACHE_HOME: ${{ runner.temp }}/tauri-e2e-cache/main
+          XDG_CONFIG_HOME: ${{ runner.temp }}/tauri-e2e-config/main
+          XDG_CURRENT_DESKTOP: GNOME
+          XDG_DATA_HOME: ${{ runner.temp }}/tauri-e2e-data/main
+          XDG_SESSION_TYPE: x11
         run: |
           set -euo pipefail
           export XDG_RUNTIME_DIR="${RUNNER_TEMP}/xdg-runtime"
-          mkdir -p "$XDG_RUNTIME_DIR" "$ARTISTIC_GIT_E2E_LOG_DIR"
+          mkdir -p "$XDG_RUNTIME_DIR" "$ARTISTIC_GIT_E2E_LOG_DIR" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
           chmod 700 "$XDG_RUNTIME_DIR"
           export ARTISTIC_GIT_E2E_SPEC_SET=real
-          xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" dbus-run-session -- pnpm e2e:tauri:ci
+          xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" dbus-run-session -- bash -lc '
+            set -euo pipefail
+            pipewire_pid=""
+            media_session_pid=""
+            if command -v pipewire >/dev/null 2>&1; then
+              pipewire >"${ARTISTIC_GIT_E2E_LOG_DIR}/pipewire-main.log" 2>&1 &
+              pipewire_pid=$!
+            fi
+            if command -v pipewire-media-session >/dev/null 2>&1; then
+              pipewire-media-session >"${ARTISTIC_GIT_E2E_LOG_DIR}/pipewire-media-session-main.log" 2>&1 &
+              media_session_pid=$!
+            fi
+            trap "kill ${media_session_pid:-} ${pipewire_pid:-} 2>/dev/null || true" EXIT
+            if [ -n "${pipewire_pid}" ]; then
+              for _ in $(seq 1 20); do
+                [ -S "${XDG_RUNTIME_DIR}/pipewire-0" ] && break
+                sleep 0.25
+              done
+              echo "PipeWire socket present: $([ -S "${XDG_RUNTIME_DIR}/pipewire-0" ] && echo yes || echo no)"
+            fi
+            pnpm e2e:tauri:ci
+          '
 
       - name: Stop lingering Linux WebDriver processes
         if: always() && runner.os == 'Linux'
@@ -415,17 +454,48 @@ jobs:
           ARTISTIC_GIT_E2E_START_TIMEOUT_MS: "90000"
           ARTISTIC_GIT_PHASE9_CRASH_ISOLATION_E2E_REPORT: ${{ runner.temp }}/phase9-crash-isolation-e2e/phase9-crash-isolation-e2e-${{ runner.os }}.json
           GDK_BACKEND: x11
+          GALLIUM_DRIVER: llvmpipe
+          GSK_RENDERER: cairo
+          GTK_USE_PORTAL: "0"
+          LIBGL_ALWAYS_SOFTWARE: "1"
           NO_AT_BRIDGE: "1"
           RUST_BACKTRACE: "1"
           RUST_LOG: info,artistic_git=debug
           TAURI_DRIVER_PORT: "4454"
           WEBKIT_DISABLE_COMPOSITING_MODE: "1"
+          WEBKIT_DISABLE_DMABUF_RENDERER: "1"
+          XDG_CACHE_HOME: ${{ runner.temp }}/tauri-e2e-cache/crash
+          XDG_CONFIG_HOME: ${{ runner.temp }}/tauri-e2e-config/crash
+          XDG_CURRENT_DESKTOP: GNOME
+          XDG_DATA_HOME: ${{ runner.temp }}/tauri-e2e-data/crash
+          XDG_SESSION_TYPE: x11
         run: |
           set -euo pipefail
           export XDG_RUNTIME_DIR="${RUNNER_TEMP}/xdg-runtime"
-          mkdir -p "$XDG_RUNTIME_DIR" "$ARTISTIC_GIT_E2E_LOG_DIR"
+          mkdir -p "$XDG_RUNTIME_DIR" "$ARTISTIC_GIT_E2E_LOG_DIR" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
           chmod 700 "$XDG_RUNTIME_DIR"
-          xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" dbus-run-session -- pnpm e2e:tauri:ci
+          xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" dbus-run-session -- bash -lc '
+            set -euo pipefail
+            pipewire_pid=""
+            media_session_pid=""
+            if command -v pipewire >/dev/null 2>&1; then
+              pipewire >"${ARTISTIC_GIT_E2E_LOG_DIR}/pipewire-crash.log" 2>&1 &
+              pipewire_pid=$!
+            fi
+            if command -v pipewire-media-session >/dev/null 2>&1; then
+              pipewire-media-session >"${ARTISTIC_GIT_E2E_LOG_DIR}/pipewire-media-session-crash.log" 2>&1 &
+              media_session_pid=$!
+            fi
+            trap "kill ${media_session_pid:-} ${pipewire_pid:-} 2>/dev/null || true" EXIT
+            if [ -n "${pipewire_pid}" ]; then
+              for _ in $(seq 1 20); do
+                [ -S "${XDG_RUNTIME_DIR}/pipewire-0" ] && break
+                sleep 0.25
+              done
+              echo "PipeWire socket present: $([ -S "${XDG_RUNTIME_DIR}/pipewire-0" ] && echo yes || echo no)"
+            fi
+            pnpm e2e:tauri:ci
+          '
 
       - name: Run phase 9 crash isolation E2E evidence on Windows
         id: phase9_crash_e2e_windows
@@ -470,7 +540,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: tauri-e2e-logs-${{ matrix.os }}
-          path: ${{ runner.temp }}/tauri-e2e-logs/
+          path: |
+            ${{ runner.temp }}/tauri-e2e-logs/
+            ${{ runner.temp }}/tauri-e2e-cache/
+            ${{ runner.temp }}/tauri-e2e-config/
+            ${{ runner.temp }}/tauri-e2e-data/
           if-no-files-found: ignore
           retention-days: 14
 
