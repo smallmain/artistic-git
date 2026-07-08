@@ -353,18 +353,19 @@ test("source Git build flags disable optional Rust components", async () => {
   assert.doesNotMatch(fetchGitDist, /prefix=\/(?=["'\s]|$)/);
 });
 
-test("git-dist validation executes embedded Git self-located smoke checks", async () => {
+test("git-dist validation executes embedded Git runtime smoke checks", async () => {
   const checkGitDist = await readFile(
     path.join(repoRoot, "scripts", "check-git-dist.mjs"),
     "utf8",
   );
   const workflow = await readFile(workflowPath, "utf8");
 
-  assert.match(checkGitDist, /runGitSelfLocatedSmoke/);
+  assert.match(checkGitDist, /runGitRuntimeSmoke/);
   assert.match(checkGitDist, /"--exec-path"/);
   assert.match(checkGitDist, /"submodule", "status"/);
   assert.match(checkGitDist, /"init", "repo"/);
   assert.match(checkGitDist, /GIT_CONFIG_KEY_0: "init\.defaultBranch"/);
+  assert.match(checkGitDist, /resourceOverrides: true/);
   assert.doesNotMatch(checkGitDist, /"init", "-b", "main", "repo"/);
   assert.match(
     workflow,

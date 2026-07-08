@@ -218,7 +218,7 @@ async function checkDistRoot(config) {
       distRoot,
       manifest,
       home: path.join(runtimeRoot, "home"),
-      resourceOverrides: false,
+      resourceOverrides: true,
     });
     try {
       runVersionCheck(
@@ -235,7 +235,7 @@ async function checkDistRoot(config) {
         `git-lfs/${config.versions.git_lfs}`,
         runtimeEnv,
       );
-      await runGitSelfLocatedSmoke({ gitExecutable, distRoot, runtimeEnv });
+      await runGitRuntimeSmoke({ gitExecutable, distRoot, runtimeEnv });
     } finally {
       await rm(runtimeRoot, { recursive: true, force: true });
     }
@@ -430,7 +430,7 @@ async function embeddedGitRuntimeEnv({
   return env;
 }
 
-async function runGitSelfLocatedSmoke({ gitExecutable, distRoot, runtimeEnv }) {
+async function runGitRuntimeSmoke({ gitExecutable, distRoot, runtimeEnv }) {
   const root = await mkdtemp(path.join(os.tmpdir(), "ag-git-dist-smoke-"));
   try {
     const expectedExecPath = firstExistingDirectory(distRoot, [
@@ -449,7 +449,7 @@ async function runGitSelfLocatedSmoke({ gitExecutable, distRoot, runtimeEnv }) {
     ).stdout.trim();
     if (!samePath(observedExecPath, expectedExecPath)) {
       fail(
-        `embedded git --exec-path must self-locate inside dist: expected ${expectedExecPath}, got ${observedExecPath}`,
+        `embedded git --exec-path must resolve to artifact resource env: expected ${expectedExecPath}, got ${observedExecPath}`,
       );
     }
 
@@ -479,7 +479,7 @@ async function runGitSelfLocatedSmoke({ gitExecutable, distRoot, runtimeEnv }) {
   }
 
   info(
-    "embedded git self-located smoke: exec-path, init templates, default branch, and submodule status passed",
+    "embedded git runtime smoke: exec-path, init templates, default branch, and submodule status passed",
   );
 }
 
