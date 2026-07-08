@@ -28,9 +28,11 @@ const operations = [
       "Diverged upstream rebase conflict plus explicit abort recovery",
       "phase12_sync_rebase_conflict_cancel_restores_pre_operation_snapshot",
     ),
-    gap(
+    covered(
       "push-race-retry-exhausted",
       "Publish retry loop exhausts after non-fast-forward races",
+      "phase12_sync_push_race_retry_exhausted_keeps_local_commit_forward_safe",
+      "local commit remains ahead of upstream, the remote does not receive the local commit, worktree is clean, and basic git commands remain usable after the publish boundary",
     ),
   ]),
   operation("sync-non-current-branch", "Sync non-current branch", [
@@ -46,9 +48,11 @@ const operations = [
       "phase12_sync_non_current_worktree_rebase_conflict_cancel_restores_snapshot",
       "main worktree snapshot is unchanged, the conflicted tool worktree is removed, and git commands remain usable",
     ),
-    gap(
+    covered(
       "temporary-worktree-cleanup-failure",
       "Tool-owned temporary worktree removal failure is surfaced without damaging the main worktree",
+      "phase12_sync_non_current_worktree_cleanup_failure_keeps_main_worktree_reusable",
+      "main worktree snapshot is unchanged, the cleanup failure is surfaced, the leftover tool worktree is removable, and git commands remain usable",
     ),
   ]),
   operation("auto-tracking", "Auto tracking sync", [
@@ -122,9 +126,11 @@ const operations = [
       "phase12_review_exit_stash_conflict_cancel_keeps_review_recovery",
       "review-mode state is restored, the review auto-stash remains recoverable, and git commands remain usable",
     ),
-    gap(
+    covered(
       "start-stash-create-failure",
       "Entering review mode fails while creating the auto-stash",
+      "phase12_review_start_stash_create_failure_keeps_pre_operation_snapshot",
+      "pre-entry snapshot is unchanged, no review recovery marker is prompted, and git commands remain usable",
     ),
     covered(
       "pull-offline-degrade",
@@ -132,9 +138,11 @@ const operations = [
       "phase12_review_pull_offline_degrades_with_recovery_stash",
       "review mode remains active with an Auto Stash recovery marker and a clean reusable worktree",
     ),
-    gap(
+    covered(
       "sync-review-ff-failure",
       "In-review sync fetches but cannot fast-forward",
+      "phase12_review_sync_ff_failure_keeps_review_recovery_and_clean_worktree",
+      "review mode reports failed pull status, the local branch snapshot remains unchanged, the recovery stash stays available, and git commands remain usable",
     ),
   ]),
   operation("checkout", "Checkout branch", [
@@ -143,13 +151,17 @@ const operations = [
       "Auto-stash checkout applies onto the target branch with conflicts, then cancel restores the original branch snapshot",
       "phase12_checkout_auto_stash_conflict_cancel_restores_snapshot",
     ),
-    gap(
+    covered(
       "stash-create-failure",
       "Checkout fails while creating the auto-stash before branch movement",
+      "phase12_checkout_stash_create_failure_keeps_pre_operation_snapshot",
+      "pre-checkout snapshot is unchanged, no stash is created, branch movement does not occur, and git commands remain usable",
     ),
-    gap(
+    covered(
       "discard-trash-backup-failure",
       "Discard-local-changes path cannot create the trash backup",
+      "phase12_checkout_discard_trash_backup_failure_keeps_pre_operation_snapshot",
+      "pre-checkout snapshot and local changes are unchanged, branch movement and discard do not occur, and git commands remain usable",
     ),
   ]),
   operation("submodule-commit", "Submodule commit", [
@@ -222,17 +234,6 @@ function covered(id, failureMode, test, invariant = commonInvariant) {
     harness: "crates/app/src/phase12_failure_hardening.rs",
     test,
     invariant,
-  };
-}
-
-function gap(id, failureMode) {
-  return {
-    id,
-    status: "gap",
-    failureMode,
-    gapMarker: true,
-    requiredEvidence:
-      "Add a real git-dist harness test that injects this failure and asserts the recovery invariant.",
   };
 }
 

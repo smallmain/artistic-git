@@ -4,13 +4,14 @@ use artistic_git_contracts::{
     CheckoutBranchRequest, CheckoutLocalChangesMode, CommitRequest, CommitResponse,
     ConflictCancelRequest, LargeFileDecision, OperationId, RevertCommitRequest,
     RevertCommitResponse, ReviewModeExitStatus, ReviewModePullStatus, ReviewModeRecoveryRequest,
-    ReviewModeRequest, StartReviewModeRequest, SyncAllBranchesRequest, SyncBranchRequest,
-    SyncCurrentBranchRequest, SyncCurrentBranchStatus,
+    ReviewModeRequest, StartReviewModeRequest, StashEntry, SyncAllBranchesRequest,
+    SyncBranchRequest, SyncCurrentBranchRequest, SyncCurrentBranchStatus,
 };
 use artistic_git_core::config::{AutoTrackingRule, ConfigActor, ConfigPaths};
 use artistic_git_git_runner::{GitDistribution, GitRunner};
 use artistic_git_test_support::{require_git_dist, GitDistError, TestTempDir};
 use std::{
+    env,
     ffi::OsString,
     fs,
     io::Write,
@@ -125,6 +126,64 @@ fn phase12_sync_rebase_conflict_cancel_restores_pre_operation_snapshot() {
 
     before.assert_restored(&fixture.local);
     assert_repository_reusable(&fixture.local);
+}
+
+#[test]
+fn phase12_sync_push_race_retry_exhausted_keeps_local_commit_forward_safe() {
+    let Some((runner, _home)) = real_runner_or_skip() else {
+        return;
+    };
+    let fixture = RemoteFixture::new(&runner, "ag-phase12-sync-push-race-exhausted");
+    fixture
+        .local
+        .write("local.txt", "local survives push race\n");
+    fixture.local.git(["add", "local.txt"]);
+    fixture
+        .local
+        .git(["commit", "-m", "local survives push race"]);
+    fixture.install_repeating_push_race_hook();
+
+    let error = crate::sync_current_branch(
+        &runner,
+        SyncCurrentBranchRequest {
+            repository_path: display_path(&fixture.local.path),
+            operation_id: Some(OperationId("phase12-sync-push-race-exhausted".to_owned())),
+        },
+    )
+    .expect_err("repeating push race should exhaust capped retries");
+
+    assert!(
+        error.summary.contains("远程更新过于频繁"),
+        "{}",
+        error.summary
+    );
+    assert!(
+        error.summary.contains("本地提交已保留为未推送状态"),
+        "{}",
+        error.summary
+    );
+    assert_eq!(
+        fixture
+            .local
+            .git_output(["log", "-1", "--format=%s"])
+            .trim(),
+        "local survives push race"
+    );
+    assert_eq!(
+        fixture.local.git_output(["show", "HEAD:local.txt"]),
+        "local survives push race\n"
+    );
+    let (ahead, _behind) = ahead_behind(&fixture.local);
+    assert!(ahead > 0, "local commit should remain ahead of upstream");
+    let remote_tree = fixture
+        ._remote
+        .git_output(["ls-tree", "-r", "--name-only", "main"]);
+    assert!(
+        !remote_tree.lines().any(|path| path == "local.txt"),
+        "{remote_tree}"
+    );
+    fixture.remove_push_hook();
+    assert_repository_clean_and_reusable(&fixture.local);
 }
 
 #[test]
@@ -475,6 +534,70 @@ fn phase12_sync_non_current_worktree_rebase_conflict_cancel_restores_snapshot() 
 }
 
 #[test]
+fn phase12_sync_non_current_worktree_cleanup_failure_keeps_main_worktree_reusable() {
+    let Some((runner, home)) = real_runner_or_skip() else {
+        return;
+    };
+    let fixture = RemoteFixture::new(&runner, "ag-phase12-sync-branch-cleanup-failure");
+    fixture.create_tracking_branch("feature/cleanup-failure");
+    fixture.local.git(["checkout", "feature/cleanup-failure"]);
+    fixture.local.write("local.txt", "local feature change\n");
+    fixture.local.git(["add", "local.txt"]);
+    fixture.local.git(["commit", "-m", "local feature change"]);
+    fixture.local.git(["checkout", "main"]);
+    fixture.local.write(
+        "tracked.txt",
+        "dirty main worktree survives cleanup failure\n",
+    );
+    fixture.peer.write("remote.txt", "remote feature change\n");
+    fixture.peer.git(["add", "remote.txt"]);
+    fixture.peer.git(["commit", "-m", "remote feature change"]);
+    fixture.peer.git(["push"]);
+    let before = RepoSnapshot::capture(&fixture.local);
+    let failing_runner = runner_with_failing_git(
+        &runner,
+        home.path(),
+        FakeGitFailure::WorktreeRemove,
+        "intentional phase12 worktree cleanup failure",
+    );
+
+    let error = crate::sync_branch(
+        &failing_runner,
+        SyncBranchRequest {
+            repository_path: display_path(&fixture.local.path),
+            branch_name: "feature/cleanup-failure".to_owned(),
+            operation_id: Some(OperationId(
+                "phase12-sync-branch-cleanup-failure".to_owned(),
+            )),
+        },
+    )
+    .expect_err("failing worktree remove should surface cleanup failure");
+
+    assert!(
+        error.summary.contains("无法删除同步临时 worktree")
+            || error
+                .git
+                .as_ref()
+                .map(|git| {
+                    git.stderr
+                        .contains("intentional phase12 worktree cleanup failure")
+                })
+                .unwrap_or(false),
+        "{error:?}"
+    );
+    before.assert_restored(&fixture.local);
+    assert_eq!(
+        fixture.local.read("tracked.txt"),
+        "dirty main worktree survives cleanup failure\n"
+    );
+    let leftovers = sync_worktrees_for(&fixture.local);
+    assert_eq!(leftovers.len(), 1, "{leftovers:?}");
+    cleanup_worktree(&fixture.local, &leftovers[0]);
+    assert_no_sync_worktrees(&fixture.local);
+    assert_repository_reusable(&fixture.local);
+}
+
+#[test]
 fn phase12_auto_tracking_divergence_restores_local_changes() {
     let Some((runner, _home)) = real_runner_or_skip() else {
         return;
@@ -710,6 +833,105 @@ fn phase12_checkout_auto_stash_conflict_cancel_restores_snapshot() {
 }
 
 #[test]
+fn phase12_checkout_stash_create_failure_keeps_pre_operation_snapshot() {
+    let Some((runner, home)) = real_runner_or_skip() else {
+        return;
+    };
+    let repo = TestRepo::new(&runner, "ag-phase12-checkout-stash-create-failure");
+    repo.init_with_commit();
+    repo.git(["branch", "feature/stash-failure"]);
+    repo.write("tracked.txt", "checkout draft before failed stash\n");
+    let before = RepoSnapshot::capture(&repo);
+    let failing_runner = runner_with_failing_git(
+        &runner,
+        home.path(),
+        FakeGitFailure::StashPush,
+        "intentional phase12 checkout stash failure",
+    );
+
+    let error = crate::branches::checkout_branch(
+        &failing_runner,
+        CheckoutBranchRequest {
+            repository_path: display_path(&repo.path),
+            branch_name: "feature/stash-failure".to_owned(),
+            local_changes_mode: CheckoutLocalChangesMode::AutoStash,
+            operation_id: Some(OperationId(
+                "phase12-checkout-stash-create-failure".to_owned(),
+            )),
+        },
+    )
+    .expect_err("failing auto-stash creation should stop checkout");
+
+    assert!(
+        error
+            .git
+            .as_ref()
+            .map(|git| git
+                .stderr
+                .contains("intentional phase12 checkout stash failure"))
+            .unwrap_or(false),
+        "{error:?}"
+    );
+    before.assert_restored(&repo);
+    assert_eq!(repo.git_output(["branch", "--show-current"]).trim(), "main");
+    assert_eq!(
+        repo.read("tracked.txt"),
+        "checkout draft before failed stash\n"
+    );
+    assert!(repo.git_output(["stash", "list"]).trim().is_empty());
+    assert_repository_reusable(&repo);
+}
+
+#[test]
+fn phase12_checkout_discard_trash_backup_failure_keeps_pre_operation_snapshot() {
+    let Some((runner, _home)) = real_runner_or_skip() else {
+        return;
+    };
+    let repo = TestRepo::new(&runner, "ag-phase12-checkout-trash-backup-failure");
+    let trash_parent = TestTempDir::new("ag-phase12-trash-file").expect("trash temp");
+    let trash_file = trash_parent.path().join("trash-as-file");
+    fs::write(&trash_file, "not a directory\n").expect("write trash sentinel");
+    let _trash = EnvGuard::set_path("ARTISTIC_GIT_TRASH_DIR", &trash_file);
+    repo.init_with_commit();
+    repo.git(["branch", "feature/discard-failure"]);
+    repo.write("tracked.txt", "discard draft before backup failure\n");
+    repo.write("untracked.txt", "untracked draft before backup failure\n");
+    let before = RepoSnapshot::capture(&repo);
+
+    let error = crate::branches::checkout_branch(
+        &runner,
+        CheckoutBranchRequest {
+            repository_path: display_path(&repo.path),
+            branch_name: "feature/discard-failure".to_owned(),
+            local_changes_mode: CheckoutLocalChangesMode::Discard,
+            operation_id: Some(OperationId(
+                "phase12-checkout-trash-backup-failure".to_owned(),
+            )),
+        },
+    )
+    .expect_err("file-backed trash root should fail before discard");
+
+    assert!(
+        error
+            .summary
+            .contains("failed to create local changes backup"),
+        "{}",
+        error.summary
+    );
+    before.assert_restored(&repo);
+    assert_eq!(repo.git_output(["branch", "--show-current"]).trim(), "main");
+    assert_eq!(
+        repo.read("tracked.txt"),
+        "discard draft before backup failure\n"
+    );
+    assert_eq!(
+        repo.read("untracked.txt"),
+        "untracked draft before backup failure\n"
+    );
+    assert_repository_reusable(&repo);
+}
+
+#[test]
 fn phase12_review_exit_stash_conflict_cancel_keeps_review_recovery() {
     let Some((runner, _home)) = real_runner_or_skip() else {
         return;
@@ -770,14 +992,60 @@ fn phase12_review_exit_stash_conflict_cancel_keeps_review_recovery() {
     )
     .expect("review recovery remains available");
     assert!(recovery.should_prompt);
-    assert_eq!(
-        recovery
-            .auto_stash
-            .as_ref()
-            .map(|stash| stash.message.as_str()),
-        Some("Auto Stash: review mode")
-    );
+    assert_auto_stash_message(recovery.auto_stash.as_ref(), "Auto Stash: review mode");
     assert_repository_reusable(&fixture.local);
+}
+
+#[test]
+fn phase12_review_start_stash_create_failure_keeps_pre_operation_snapshot() {
+    let Some((runner, home)) = real_runner_or_skip() else {
+        return;
+    };
+    let repo = TestRepo::new(&runner, "ag-phase12-review-start-stash-failure");
+    repo.init_with_commit();
+    repo.write("tracked.txt", "review draft before failed stash\n");
+    let before = RepoSnapshot::capture(&repo);
+    let config = phase12_config(&home);
+    let failing_runner = runner_with_failing_git(
+        &runner,
+        home.path(),
+        FakeGitFailure::StashPush,
+        "intentional phase12 review stash failure",
+    );
+
+    let error = crate::start_review_mode_with_config(
+        &failing_runner,
+        Some(&config),
+        StartReviewModeRequest {
+            repository_path: display_path(&repo.path),
+            operation_id: Some(OperationId("phase12-review-start-stash-failure".to_owned())),
+        },
+    )
+    .expect_err("failing auto-stash creation should stop review mode entry");
+
+    assert!(
+        error
+            .git
+            .as_ref()
+            .map(|git| git
+                .stderr
+                .contains("intentional phase12 review stash failure"))
+            .unwrap_or(false),
+        "{error:?}"
+    );
+    before.assert_restored(&repo);
+    assert!(repo.git_output(["stash", "list"]).trim().is_empty());
+    let recovery = crate::review_mode_recovery(
+        &runner,
+        Some(&config),
+        ReviewModeRecoveryRequest {
+            repository_path: display_path(&repo.path),
+            operation_id: None,
+        },
+    )
+    .expect("review recovery after failed start");
+    assert!(!recovery.should_prompt);
+    assert_repository_reusable(&repo);
 }
 
 #[test]
@@ -827,6 +1095,73 @@ fn phase12_review_pull_offline_degrades_with_recovery_stash() {
     )
     .expect("review recovery remains available after offline pull");
     assert!(recovery.should_prompt);
+    assert_auto_stash_message(recovery.auto_stash.as_ref(), "Auto Stash: review mode");
+    assert_repository_clean_and_reusable(&fixture.local);
+}
+
+#[test]
+fn phase12_review_sync_ff_failure_keeps_review_recovery_and_clean_worktree() {
+    let Some((runner, _home)) = real_runner_or_skip() else {
+        return;
+    };
+    let fixture = RemoteFixture::new(&runner, "ag-phase12-review-sync-ff-failure");
+    let config = phase12_config(&fixture._parent);
+    fixture
+        .local
+        .write("draft.txt", "review recovery draft survives sync failure\n");
+
+    let start = crate::start_review_mode_with_config(
+        &runner,
+        Some(&config),
+        StartReviewModeRequest {
+            repository_path: display_path(&fixture.local.path),
+            operation_id: Some(OperationId("phase12-review-sync-start".to_owned())),
+        },
+    )
+    .expect("start review mode with recovery stash");
+    assert_eq!(
+        start.state.pull_status,
+        ReviewModePullStatus::AlreadyUpToDate
+    );
+    assert!(start.state.auto_stash.is_some());
+    assert_repository_clean_and_reusable(&fixture.local);
+
+    fixture
+        .local
+        .write("local-review.txt", "local review commit\n");
+    fixture.local.git(["add", "local-review.txt"]);
+    fixture.local.git(["commit", "-m", "local review commit"]);
+    fixture
+        .peer
+        .write("remote-review.txt", "remote review commit\n");
+    fixture.peer.git(["add", "remote-review.txt"]);
+    fixture.peer.git(["commit", "-m", "remote review commit"]);
+    fixture.peer.git(["push"]);
+    let before = RepoSnapshot::capture(&fixture.local);
+
+    let response = crate::sync_review_mode_with_lock(
+        &runner,
+        ReviewModeRequest {
+            repository_path: display_path(&fixture.local.path),
+            operation_id: Some(OperationId("phase12-review-sync-ff-failure".to_owned())),
+        },
+    )
+    .expect("review sync ff-only failure should degrade into review status");
+
+    assert_eq!(response.state.pull_status, ReviewModePullStatus::Failed);
+    assert!(response.state.pull_message.is_some());
+    before.assert_restored(&fixture.local);
+    let recovery = crate::review_mode_recovery(
+        &runner,
+        Some(&config),
+        ReviewModeRecoveryRequest {
+            repository_path: display_path(&fixture.local.path),
+            operation_id: None,
+        },
+    )
+    .expect("review recovery remains available after sync failure");
+    assert!(recovery.should_prompt);
+    assert_auto_stash_message(recovery.auto_stash.as_ref(), "Auto Stash: review mode");
     assert_repository_clean_and_reusable(&fixture.local);
 }
 
@@ -1138,6 +1473,43 @@ impl RemoteFixture {
         self.local
             .git(["update-ref", tracking_ref.as_str(), tracking_oid.trim()]);
     }
+
+    fn install_repeating_push_race_hook(&self) {
+        let counter = self.local.git_path("ag-phase12-push-race-counter");
+        let hook = self.local.git_path("hooks/pre-push");
+        fs::create_dir_all(hook.parent().expect("hook parent")).expect("create hook parent");
+        let git = self.local.runner.distribution().git_executable.clone();
+        let script = format!(
+            r#"#!/bin/sh
+set -e
+git={git}
+counter_file={counter}
+peer={peer}
+counter=0
+if [ -f "$counter_file" ]; then
+  counter=$(cat "$counter_file")
+fi
+counter=$((counter + 1))
+printf '%s\n' "$counter" > "$counter_file"
+"$git" -C "$peer" pull --ff-only
+printf '%s\n' "$counter" > "$peer/race-$counter.txt"
+"$git" -C "$peer" add "race-$counter.txt"
+"$git" -C "$peer" commit -m "race change $counter"
+"$git" -C "$peer" push
+exit 0
+"#,
+            git = shell_quote(&git),
+            counter = shell_quote(&counter),
+            peer = shell_quote(&self.peer.path),
+        );
+        fs::write(&hook, script).expect("write repeating pre-push hook");
+        make_executable(&hook);
+    }
+
+    fn remove_push_hook(&self) {
+        let hook = self.local.git_path("hooks/pre-push");
+        let _ = fs::remove_file(hook);
+    }
 }
 
 struct TestRepo {
@@ -1249,6 +1621,28 @@ impl TestRepo {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum FakeGitFailure {
+    StashPush,
+    WorktreeRemove,
+}
+
+impl FakeGitFailure {
+    fn needle(self) -> &'static str {
+        match self {
+            Self::StashPush => " stash push ",
+            Self::WorktreeRemove => " worktree remove ",
+        }
+    }
+
+    fn directory_name(self) -> &'static str {
+        match self {
+            Self::StashPush => "fake-git-stash-push",
+            Self::WorktreeRemove => "fake-git-worktree-remove",
+        }
+    }
+}
+
 #[test]
 fn phase12_commit_large_file_lfs_track_failure_keeps_pre_operation_snapshot() {
     let Some((runner, home)) = real_runner_or_skip() else {
@@ -1303,6 +1697,16 @@ fn assert_repository_clean_and_reusable(repo: &TestRepo) {
     assert_repository_reusable(repo);
 }
 
+fn assert_auto_stash_message(stash: Option<&StashEntry>, expected: &str) {
+    let message = stash.map(|stash| stash.message.as_str());
+    assert!(
+        message
+            .map(|message| message == expected || message.ends_with(&format!(": {expected}")))
+            .unwrap_or(false),
+        "expected auto-stash message {expected:?}, got {message:?}"
+    );
+}
+
 fn ahead_behind(repo: &TestRepo) -> (usize, usize) {
     let counts = repo.git_output(["rev-list", "--left-right", "--count", "HEAD...@{u}"]);
     let mut parts = counts.split_whitespace();
@@ -1338,6 +1742,54 @@ fn assert_no_sync_worktrees(repo: &TestRepo) {
             entry.path().display()
         );
     }
+}
+
+fn sync_worktrees_for(repo: &TestRepo) -> Vec<PathBuf> {
+    repo.git_output(["worktree", "list", "--porcelain"])
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .map(PathBuf::from)
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.starts_with("artistic-git-sync-"))
+                .unwrap_or(false)
+        })
+        .collect()
+}
+
+fn cleanup_worktree(repo: &TestRepo, worktree: &Path) {
+    repo.git([
+        OsString::from("worktree"),
+        OsString::from("remove"),
+        OsString::from("--force"),
+        worktree.as_os_str().to_owned(),
+    ]);
+    if worktree.exists() {
+        fs::remove_dir_all(worktree).expect("remove leftover worktree directory");
+    }
+}
+
+fn make_executable(path: &Path) {
+    let _ = path;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = fs::metadata(path)
+            .expect("executable metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).expect("make executable");
+    }
+}
+
+fn shell_quote(path: &Path) -> String {
+    shell_quote_value(&display_path(path))
+}
+
+fn shell_quote_value(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn add_local_submodule(runner: &GitRunner, fixture: &RemoteFixture, path: &str) -> TestRepo {
@@ -1441,6 +1893,36 @@ fn add_bare_submodule(
     (submodule, TestRepo::at(runner, remote_path))
 }
 
+fn runner_with_failing_git(
+    runner: &GitRunner,
+    parent: &Path,
+    failure: FakeGitFailure,
+    message: &str,
+) -> GitRunner {
+    let fake_dir = parent.join(failure.directory_name());
+    fs::create_dir_all(&fake_dir).expect("create fake git dir");
+    let fake_git = fake_git_executable_path(&fake_dir);
+    write_failing_git(
+        &fake_git,
+        &runner.distribution().git_executable,
+        failure,
+        message,
+    );
+    let distribution = runner.distribution();
+    GitRunner::from_distribution(
+        GitDistribution {
+            root: distribution.root.clone(),
+            manifest: distribution.manifest.clone(),
+            git_executable: fake_git,
+            git_lfs_executable: distribution.git_lfs_executable.clone(),
+            credential_helper: distribution.credential_helper.clone(),
+            ssh_askpass: distribution.ssh_askpass.clone(),
+            windows_ssh_executable: distribution.windows_ssh_executable.clone(),
+        },
+        parent.join(format!("{}-home", failure.directory_name())),
+    )
+}
+
 fn runner_with_failing_git_lfs(runner: &GitRunner, parent: &Path, message: &str) -> GitRunner {
     let fake_dir = parent.join("fake-git-lfs");
     fs::create_dir_all(&fake_dir).expect("create fake git-lfs dir");
@@ -1459,6 +1941,39 @@ fn runner_with_failing_git_lfs(runner: &GitRunner, parent: &Path, message: &str)
         },
         parent.join("fake-git-lfs-home"),
     )
+}
+
+#[cfg(windows)]
+fn fake_git_executable_path(fake_dir: &Path) -> PathBuf {
+    fake_dir.join("git.cmd")
+}
+
+#[cfg(not(windows))]
+fn fake_git_executable_path(fake_dir: &Path) -> PathBuf {
+    fake_dir.join("git")
+}
+
+#[cfg(windows)]
+fn write_failing_git(path: &Path, real_git: &Path, failure: FakeGitFailure, message: &str) {
+    let script = format!(
+        "@echo off\r\nsetlocal\r\nset \"args= %* \"\r\necho %args% | findstr /C:\"{needle}\" >nul\r\nif %errorlevel%==0 (\r\n  echo {message} 1>&2\r\n  exit /b 1\r\n)\r\n\"{real_git}\" %*\r\nexit /b %errorlevel%\r\n",
+        needle = failure.needle(),
+        message = message,
+        real_git = display_path(real_git),
+    );
+    fs::write(path, script).expect("write fake git");
+}
+
+#[cfg(not(windows))]
+fn write_failing_git(path: &Path, real_git: &Path, failure: FakeGitFailure, message: &str) {
+    let script = format!(
+        "#!/bin/sh\ncase \" $* \" in\n  *\"{needle}\"*) printf '%s\\n' {message} >&2; exit 1 ;;\nesac\nexec {real_git} \"$@\"\n",
+        needle = failure.needle(),
+        message = shell_quote_value(message),
+        real_git = shell_quote(real_git),
+    );
+    fs::write(path, script).expect("write fake git");
+    make_executable(path);
 }
 
 #[cfg(windows)]
@@ -1489,6 +2004,29 @@ fn write_failing_git_lfs(path: &Path, message: &str) {
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, fs::Permissions::from_mode(0o755)).expect("chmod fake git-lfs");
+    }
+}
+
+struct EnvGuard {
+    key: &'static str,
+    previous: Option<OsString>,
+}
+
+impl EnvGuard {
+    fn set_path(key: &'static str, value: &Path) -> Self {
+        let previous = env::var_os(key);
+        env::set_var(key, value);
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        if let Some(previous) = self.previous.take() {
+            env::set_var(self.key, previous);
+        } else {
+            env::remove_var(self.key);
+        }
     }
 }
 
