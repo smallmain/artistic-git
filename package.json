@@ -41,6 +41,8 @@
     "phase12:e2e:audit": "node scripts/phase12-e2e-full-chain-audit.mjs",
     "phase12:failure-matrix": "node scripts/phase12-failure-matrix.mjs",
     "phase12:perf": "node scripts/phase12-perf-verify.mjs",
+    "phase12:perf:heavy": "node scripts/phase12-perf-verify.mjs --heavy --require-real-git-dist",
+    "phase12:perf:test": "node --test scripts/phase12-perf-verify.node-tests.mjs",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",

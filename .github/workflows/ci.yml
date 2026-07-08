@@ -6,6 +6,21 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      phase12_perf_profile:
+        description: "Phase 12 perf profile for this manual CI run."
+        required: false
+        default: auto
+        type: choice
+        options:
+          - auto
+          - light
+          - heavy
+      phase12_perf_require_real_git_dist:
+        description: "Fail the perf gate instead of writing skipped evidence when ARTISTIC_GIT_DIST_DIR is missing."
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   test:
@@ -102,6 +117,9 @@ jobs:
       - name: Verify phase 12 perf envelope
         if: always()
         env:
+          ARTISTIC_GIT_DIST_DIR: ${{ vars.ARTISTIC_GIT_PHASE12_PERF_DIST_DIR }}
+          ARTISTIC_GIT_PERF_HEAVY: ${{ github.event_name == 'workflow_dispatch' && inputs.phase12_perf_profile == 'heavy' && '1' || '0' }}
+          ARTISTIC_GIT_PHASE12_PERF_REQUIRE_REAL_GIT_DIST: ${{ github.event_name == 'workflow_dispatch' && inputs.phase12_perf_require_real_git_dist && '1' || '0' }}
           ARTISTIC_GIT_PHASE12_PERF_REPORT: ${{ runner.temp }}/phase12-perf/phase12-perf-report.json
         run: pnpm phase12:perf
 
