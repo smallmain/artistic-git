@@ -1762,7 +1762,6 @@ fn cleanup_worktree(repo: &TestRepo, worktree: &Path) {
     repo.git([
         OsString::from("worktree"),
         OsString::from("remove"),
-        OsString::from("--force"),
         worktree.as_os_str().to_owned(),
     ]);
     if worktree.exists() {
