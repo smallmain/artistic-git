@@ -316,6 +316,22 @@ test("source Git build flags disable optional Rust components", async () => {
     config.build.linux.git.make_flags.includes("NO_RUST=YesPlease"),
     "Linux Ubuntu 20.04 build image should not require Cargo for optional Git Rust code",
   );
+  for (const packageName of [
+    "libnghttp2-dev",
+    "libidn2-dev",
+    "librtmp-dev",
+    "libssh-dev",
+    "libpsl-dev",
+    "libkrb5-dev",
+    "libldap2-dev",
+    "libbrotli-dev",
+    "libzstd-dev",
+  ]) {
+    assert.ok(
+      config.build.linux.git.apt_packages.includes(packageName),
+      `Linux static libcurl link requires ${packageName}`,
+    );
+  }
 });
 
 test("real Windows fetch still rejects the Win32-OpenSSH placeholder before download", async () => {
