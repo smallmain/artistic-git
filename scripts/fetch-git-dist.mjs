@@ -11,6 +11,7 @@ import {
   readFile,
   rm,
   stat,
+  writeFile,
 } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -19,7 +20,7 @@ import { pipeline } from "node:stream/promises";
 import {
   GitDistConfigError,
   assembleGitDist,
-  configPath,
+  configPath as defaultConfigPath,
   getHostTarget,
   getTarget,
   getTargetSources,
@@ -31,8 +32,9 @@ import {
 
 const args = parseArgs(process.argv.slice(2));
 const targetName = normalizeTargetArg(args.target ?? getHostTarget());
+const configFilePath = path.resolve(args.config ?? defaultConfigPath);
 const devResourcesDir = path.join(
-  path.dirname(configPath),
+  path.dirname(configFilePath),
   "src-tauri",
   "resources",
   "git-dist",
@@ -51,15 +53,23 @@ const stagingDir = path.resolve(
   args.stagingDir ??
     path.join(os.tmpdir(), "artistic-git-dist-staging", targetName),
 );
+const sourceEvidenceDir = path.resolve(
+  args.evidenceDir ??
+    path.join(os.tmpdir(), "artistic-git-dist-source-evidence", targetName),
+);
 
 const usage = `Usage:
-  node scripts/fetch-git-dist.mjs --schema-only [--target=${supportedTargets.join("|")}]
-  node scripts/fetch-git-dist.mjs --print-env [--target=${supportedTargets.join("|")}] [--output=/path/to/git-dist]
+  node scripts/fetch-git-dist.mjs --schema-only [--target=${supportedTargets.join("|")}] [--config=/path/to/git-dist.toml]
+  node scripts/fetch-git-dist.mjs --print-env [--target=${supportedTargets.join("|")}] [--output=/path/to/git-dist] [--config=/path/to/git-dist.toml]
+  node scripts/fetch-git-dist.mjs --source-evidence-only --skip-blocked-sources [--target=${supportedTargets.join("|")}] [--components=git,git_lfs] [--cache-dir=/path] [--evidence-dir=/path] [--config=/path/to/git-dist.toml]
   node scripts/fetch-git-dist.mjs [--target=${supportedTargets.join("|")}] [--output=/path/to/git-dist] [--cache-dir=/path] [--download-only] [--no-extract] [--build-helpers] [--helper-dir=/path | --credential-helper=/path --ssh-askpass=/path] [--helper-profile=auto|release|debug]
   node scripts/fetch-git-dist.mjs --dev-resources [--target=${supportedTargets.join("|")}] [--download-only]
 
 Default output is $ARTISTIC_GIT_DIST_DIR when set, otherwise a temp directory.
 --dev-resources writes to src-tauri/resources/git-dist for local Tauri runs.
+--source-evidence-only downloads and SHA-verifies selected stable source
+archives for a target, records placeholder/non-stable sources as skipped when
+--skip-blocked-sources is set, and never extracts or assembles a git-dist tree.
 Archive assembly copies staged archives into the git-dist layout, copies helper
 binaries from explicit paths or target/{release,debug}, and writes manifest.json
 only after every required executable is present and hashed.
@@ -94,7 +104,7 @@ function failConfig(error) {
 }
 
 async function run() {
-  const { data: config } = await loadGitDistConfig(configPath);
+  const { data: config } = await loadGitDistConfig(configFilePath);
 
   if (args.schemaOnly) {
     validateGitDistConfig(config, {
@@ -113,6 +123,11 @@ async function run() {
       realBuild: false,
     });
     printEnv(outputDir);
+    return;
+  }
+
+  if (args.sourceEvidenceOnly) {
+    await writeSourceEvidence(config);
     return;
   }
 
@@ -170,28 +185,208 @@ async function run() {
   info(`manifest: ${path.join(outputDir, config.resources.layout.manifest)}`);
 }
 
+async function writeSourceEvidence(config) {
+  validateGitDistConfig(config, {
+    targetName,
+    allowPlaceholders: true,
+    realBuild: false,
+  });
+
+  const target = getTarget(config, targetName);
+  const selectedComponents = args.components ? new Set(args.components) : null;
+  const sources = getTargetSources(config, targetName);
+  const evidenceSources = [];
+
+  await mkdir(cacheDir, { recursive: true });
+  await mkdir(sourceEvidenceDir, { recursive: true });
+
+  info(`target: ${targetName}`);
+  info(`cache: ${cacheDir}`);
+  info(`source evidence: ${sourceEvidenceDir}`);
+
+  for (const { ref, source } of sources) {
+    const entry = sourceEvidenceBaseEntry({ config, ref, source });
+    const blocked = source.placeholder === true || source.stable !== true;
+    if (blocked) {
+      if (!args.skipBlockedSources) {
+        fail(
+          `${ref} is blocked by placeholder/non-stable source; pass --skip-blocked-sources to record it without downloading`,
+        );
+      }
+      evidenceSources.push({
+        ...entry,
+        status: "skipped-blocked",
+        reason: sourceBlockerReason(source),
+      });
+      info(`skipped blocked source ${ref}: ${sourceBlockerReason(source)}`);
+      continue;
+    }
+
+    if (selectedComponents && !selectedComponents.has(source.component)) {
+      evidenceSources.push({
+        ...entry,
+        status: "skipped-unselected",
+        reason: `component ${source.component} was not selected`,
+      });
+      info(`skipped unselected source ${ref}`);
+      continue;
+    }
+
+    const archivePath = await downloadSource(ref, source);
+    const actualSha256 = await verifySource(ref, source, archivePath);
+    evidenceSources.push({
+      ...entry,
+      status: "checked",
+      reason: "downloaded archive matched configured SHA-256",
+      actualSha256,
+      cachePath: path.relative(process.cwd(), archivePath),
+    });
+  }
+
+  const checked = evidenceSources.filter(
+    (source) => source.status === "checked",
+  );
+  if (checked.length === 0) {
+    fail("source evidence mode did not check any source archives");
+  }
+
+  const evidence = {
+    schemaVersion: 1,
+    generatedAt: new Date().toISOString(),
+    mode: "source-evidence-only",
+    target: {
+      name: targetName,
+      platform: target.platform,
+      manifestPlatform: target.manifest_platform,
+      artifactName: target.artifact_name,
+    },
+    config: {
+      path: path.relative(process.cwd(), configFilePath),
+    },
+    cacheDir: path.relative(process.cwd(), cacheDir),
+    components: args.components ?? null,
+    skipBlockedSources: args.skipBlockedSources,
+    status: evidenceSources.some(
+      (source) => source.status === "skipped-blocked",
+    )
+      ? "partial"
+      : "passed",
+    summary: {
+      checked: checked.length,
+      skippedBlocked: evidenceSources.filter(
+        (source) => source.status === "skipped-blocked",
+      ).length,
+      skippedUnselected: evidenceSources.filter(
+        (source) => source.status === "skipped-unselected",
+      ).length,
+    },
+    sources: evidenceSources,
+  };
+
+  await writeFile(
+    path.join(sourceEvidenceDir, "git-dist-source-evidence.json"),
+    `${JSON.stringify(evidence, null, 2)}\n`,
+  );
+  await writeFile(
+    path.join(sourceEvidenceDir, "git-dist-source-evidence.md"),
+    renderSourceEvidenceMarkdown(evidence),
+  );
+  info(
+    `source evidence wrote ${checked.length} checked source(s) to ${sourceEvidenceDir}`,
+  );
+}
+
+function sourceEvidenceBaseEntry({ config, ref, source }) {
+  const versionKey = source.version_key;
+  return {
+    ref,
+    component: source.component,
+    kind: source.kind,
+    vendor: source.vendor,
+    version: versionKey ? config.versions?.[versionKey] : null,
+    stable: source.stable === true,
+    placeholder: source.placeholder === true,
+    placeholderReason: source.placeholder_reason ?? null,
+    releaseUrl: source.release_url ?? null,
+    assetName: source.asset_name ?? null,
+    url: source.url,
+    checksum: {
+      algorithm: source.checksum?.algorithm ?? null,
+      expectedSha256: source.checksum?.value?.toLowerCase() ?? null,
+      source: source.checksum?.source ?? null,
+      url: source.checksum?.url ?? null,
+    },
+    resourcesPath: source.resources_path ?? null,
+  };
+}
+
+function sourceBlockerReason(source) {
+  return (
+    source.placeholder_reason ??
+    (source.stable === true
+      ? "source is marked as a placeholder"
+      : "source is not marked stable")
+  );
+}
+
+function renderSourceEvidenceMarkdown(evidence) {
+  const lines = [
+    "# Git Distribution Source Evidence",
+    "",
+    `Generated: ${evidence.generatedAt}`,
+    "",
+    `Target: ${evidence.target.name}`,
+    "",
+    `Status: ${evidence.status}`,
+    "",
+    "| Component | Source | Status | SHA-256 | Reason |",
+    "| --- | --- | --- | --- | --- |",
+  ];
+  for (const source of evidence.sources) {
+    lines.push(
+      `| ${source.component} | ${source.ref} | ${source.status} | ${
+        source.actualSha256 ?? source.checksum.expectedSha256 ?? "unknown"
+      } | ${source.reason} |`,
+    );
+  }
+  return `${lines.join("\n")}\n`;
+}
+
 async function downloadSource(ref, source) {
   const fileName =
     source.asset_name || path.basename(new URL(source.url).pathname);
   const destination = path.join(cacheDir, fileName);
   const temporary = `${destination}.tmp`;
 
-  info(`downloading ${ref}: ${source.url}`);
-  const response = await fetch(source.url, {
-    redirect: "follow",
-    headers: {
-      "User-Agent": "artistic-git-dist-fetch/phase-1a",
-    },
-    signal: AbortSignal.timeout(10 * 60 * 1000),
-  });
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    info(`downloading ${ref}: ${source.url}`);
+    try {
+      const response = await fetch(source.url, {
+        redirect: "follow",
+        headers: {
+          "User-Agent": "artistic-git-dist-fetch/phase-1a",
+        },
+        signal: AbortSignal.timeout(10 * 60 * 1000),
+      });
 
-  if (!response.ok || !response.body) {
-    fail(
-      `download failed for ${ref}: HTTP ${response.status} ${response.statusText}`,
-    );
+      if (!response.ok || !response.body) {
+        throw new Error(`HTTP ${response.status} ${response.statusText}`);
+      }
+
+      await pipeline(
+        Readable.fromWeb(response.body),
+        createWriteStream(temporary),
+      );
+      break;
+    } catch (error) {
+      await rm(temporary, { force: true });
+      if (attempt === 3) {
+        fail(`download failed for ${ref}: ${error.message}`);
+      }
+      info(`retrying ${ref} after download failure: ${error.message}`);
+    }
   }
 
-  await pipeline(Readable.fromWeb(response.body), createWriteStream(temporary));
   const actual = await sha256File(temporary);
   if (actual !== source.checksum.value.toLowerCase()) {
     fail(
@@ -210,6 +405,7 @@ async function verifySource(ref, source, archivePath) {
     fail(`${ref} checksum mismatch: expected ${expected}, got ${actual}`);
   }
   info(`verified ${ref}: sha256 ${actual}`);
+  return actual;
 }
 
 async function extractSource(ref, source, archivePath) {
@@ -496,7 +692,7 @@ function buildHelpers() {
     "cargo",
     ["build", "-p", "artistic-git-helpers", "--bins", "--release"],
     {
-      cwd: path.dirname(configPath),
+      cwd: path.dirname(configFilePath),
       encoding: "utf8",
       env: process.env,
       stdio: "inherit",
@@ -667,12 +863,17 @@ function parseArgs(argv) {
     printEnv: false,
     downloadOnly: false,
     noExtract: false,
+    sourceEvidenceOnly: false,
+    skipBlockedSources: false,
+    components: undefined,
     buildHelpers: false,
     devResources: false,
+    config: undefined,
     target: undefined,
     output: undefined,
     cacheDir: undefined,
     stagingDir: undefined,
+    evidenceDir: undefined,
     helperDir: undefined,
     credentialHelper: undefined,
     sshAskpass: undefined,
@@ -693,18 +894,35 @@ function parseArgs(argv) {
       parsed.downloadOnly = true;
     } else if (arg === "--no-extract") {
       parsed.noExtract = true;
+    } else if (arg === "--source-evidence-only") {
+      parsed.sourceEvidenceOnly = true;
+    } else if (arg === "--skip-blocked-sources") {
+      parsed.skipBlockedSources = true;
     } else if (arg === "--build-helpers") {
       parsed.buildHelpers = true;
     } else if (arg === "--dev-resources") {
       parsed.devResources = true;
+    } else if (arg.startsWith("--config=")) {
+      parsed.config = arg.slice("--config=".length);
     } else if (arg.startsWith("--target=")) {
       parsed.target = arg.slice("--target=".length);
+    } else if (arg.startsWith("--components=")) {
+      parsed.components = arg
+        .slice("--components=".length)
+        .split(",")
+        .map((component) => component.trim())
+        .filter(Boolean);
+      if (parsed.components.length === 0) {
+        fail("--components must include at least one component");
+      }
     } else if (arg.startsWith("--output=")) {
       parsed.output = arg.slice("--output=".length);
     } else if (arg.startsWith("--cache-dir=")) {
       parsed.cacheDir = arg.slice("--cache-dir=".length);
     } else if (arg.startsWith("--staging-dir=")) {
       parsed.stagingDir = arg.slice("--staging-dir=".length);
+    } else if (arg.startsWith("--evidence-dir=")) {
+      parsed.evidenceDir = arg.slice("--evidence-dir=".length);
     } else if (arg.startsWith("--helper-dir=")) {
       parsed.helperDir = arg.slice("--helper-dir=".length);
     } else if (arg.startsWith("--credential-helper=")) {

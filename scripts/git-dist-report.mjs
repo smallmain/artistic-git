@@ -21,7 +21,7 @@ const args = parseArgs(process.argv.slice(2));
 
 const usage = `Usage:
   node scripts/git-dist-report.mjs [--target=${supportedTargets.join("|")}] [--output-dir=/path]
-  node scripts/git-dist-report.mjs --workflow-build --target=${supportedTargets.join("|")} [--output-dir=/path]
+  node scripts/git-dist-report.mjs --workflow-build --target=${supportedTargets.join("|")} [--source-evidence=/path/git-dist-source-evidence.json] [--output-dir=/path]
   node scripts/git-dist-report.mjs --include-openssh-release [--metadata=/path/to/releases.json] [--output-json=/path] [--output-md=/path]
 
 Writes a machine-readable report for the embedded git-dist build readiness.
@@ -66,7 +66,13 @@ async function run() {
     workflowBuild: null,
   };
   if (args.workflowBuild) {
-    report.workflowBuild = workflowBuildEvidence(report.targets[0]);
+    const sourceEvidence = args.sourceEvidence
+      ? await loadSourceEvidence(args.sourceEvidence)
+      : null;
+    report.workflowBuild = workflowBuildEvidence(
+      report.targets[0],
+      sourceEvidence,
+    );
   }
 
   const markdown = renderMarkdown(report);
@@ -193,10 +199,32 @@ function targetReadiness(config, targetName) {
   };
 }
 
-function workflowBuildEvidence(target) {
+async function loadSourceEvidence(filePath) {
+  const evidence = JSON.parse(await readFile(filePath, "utf8"));
+  if (evidence?.schemaVersion !== 1) {
+    fail(`source evidence must use schemaVersion=1: ${filePath}`);
+  }
+  if (!Array.isArray(evidence.sources)) {
+    fail(`source evidence must contain a sources array: ${filePath}`);
+  }
+  return {
+    path: filePath,
+    data: evidence,
+  };
+}
+
+function workflowBuildEvidence(target, sourceEvidence) {
   const blocked = target.status === "blocked";
   const cache = cacheValidationEvidence(target, blocked);
-  const artifactIndex = artifactIndexEvidence(target, blocked);
+  const sourceArchiveValidation = sourceArchiveValidationEvidence(
+    target,
+    sourceEvidence,
+  );
+  const artifactIndex = artifactIndexEvidence(
+    target,
+    blocked,
+    sourceArchiveValidation,
+  );
 
   return {
     schemaVersion: 1,
@@ -229,7 +257,13 @@ function workflowBuildEvidence(target) {
     },
     artifactIndex,
     cacheValidation: cache,
-    validationSummary: validationSummary(target, blocked, cache),
+    sourceArchiveValidation,
+    validationSummary: validationSummary(
+      target,
+      blocked,
+      cache,
+      sourceArchiveValidation,
+    ),
     provenance: target.sources.map((source) => ({
       ref: source.ref,
       component: source.component,
@@ -248,7 +282,7 @@ function workflowBuildEvidence(target) {
   };
 }
 
-function artifactIndexEvidence(target, blocked) {
+function artifactIndexEvidence(target, blocked, sourceArchiveValidation) {
   const readinessArtifactName =
     args.readinessArtifactName ?? `git-dist-readiness-${target.target}`;
   const buildEvidenceArtifactName =
@@ -303,7 +337,81 @@ function artifactIndexEvidence(target, blocked) {
     });
   }
 
+  if (sourceArchiveValidation.produced) {
+    index.push({
+      name:
+        args.sourceEvidenceArtifactName ??
+        `git-dist-source-evidence-${target.target}`,
+      kind: "source-check-evidence",
+      produced: true,
+      requiredForAudit: blocked,
+      files: ["git-dist-source-evidence.json", "git-dist-source-evidence.md"],
+      purpose:
+        "source-scoped download and SHA-256 evidence for available stable archives",
+      reason:
+        "blocked targets may still prove stable source archives without producing a reusable distribution",
+    });
+  }
+
   return index;
+}
+
+function sourceArchiveValidationEvidence(target, sourceEvidence) {
+  if (!sourceEvidence) {
+    return {
+      status:
+        target.status === "blocked"
+          ? "skipped-blocked-target"
+          : "covered-by-fetch",
+      produced: false,
+      evidencePath: null,
+      evidenceArtifactName: null,
+      summary: {
+        checked: 0,
+        skippedBlocked: 0,
+        skippedUnselected: 0,
+      },
+      sources: [],
+      command: null,
+      reason:
+        target.status === "blocked"
+          ? "target is placeholder-blocked before source archive fetch"
+          : "fresh-build fetch validation checks source archives before assembly",
+    };
+  }
+
+  const evidence = sourceEvidence.data;
+  if (evidence.target?.name !== target.target) {
+    fail(
+      `source evidence target mismatch: expected ${target.target}, got ${evidence.target?.name ?? "unknown"}`,
+    );
+  }
+
+  return {
+    status: evidence.status,
+    produced: true,
+    evidencePath: sourceEvidence.path,
+    evidenceArtifactName:
+      args.sourceEvidenceArtifactName ??
+      `git-dist-source-evidence-${target.target}`,
+    summary: evidence.summary,
+    sources: evidence.sources.map((source) => ({
+      ref: source.ref,
+      component: source.component,
+      status: source.status,
+      stable: source.stable,
+      placeholder: source.placeholder,
+      reason: source.reason,
+      expectedSha256: source.checksum?.expectedSha256 ?? null,
+      actualSha256: source.actualSha256 ?? null,
+      cachePath: source.cachePath ?? null,
+      url: source.url,
+      assetName: source.assetName,
+    })),
+    command: `node scripts/fetch-git-dist.mjs --target="${target.target}" --source-evidence-only --skip-blocked-sources --components=git,git_lfs --cache-dir="$ARTISTIC_GIT_DIST_CACHE_DIR" --evidence-dir="<evidence-dir>"`,
+    reason:
+      "stable source archives were downloaded and checked by configured SHA-256 while blocked sources were recorded without assembly",
+  };
 }
 
 function cacheValidationEvidence(target, blocked) {
@@ -381,16 +489,21 @@ function skippedValidation(reason) {
   };
 }
 
-function validationSummary(target, blocked, cache) {
+function validationSummary(target, blocked, cache, sourceArchiveValidation) {
   if (blocked) {
+    const commands = [
+      `node scripts/check-git-dist.mjs --schema-only --real-build --target="${target.target}" --expect-placeholder-rejection`,
+    ];
+    if (sourceArchiveValidation.command) {
+      commands.push(sourceArchiveValidation.command);
+    }
     return {
       status: "placeholder-blocked",
       reusableArtifactProduced: false,
-      commands: [
-        `node scripts/check-git-dist.mjs --schema-only --real-build --target="${target.target}" --expect-placeholder-rejection`,
-      ],
-      reason:
-        "expected-placeholder validation passed; the workflow writes blocker evidence and intentionally skips reusable artifact upload",
+      commands,
+      reason: sourceArchiveValidation.produced
+        ? "expected-placeholder validation passed; available stable source archives were independently checked; the workflow writes blocker evidence and intentionally skips reusable artifact upload"
+        : "expected-placeholder validation passed; the workflow writes blocker evidence and intentionally skips reusable artifact upload",
     };
   }
 
@@ -725,6 +838,29 @@ function renderWorkflowBuildMarkdown(report) {
 
   lines.push(
     "",
+    "## Source Archive Validation",
+    "",
+    `Status: ${build.sourceArchiveValidation.status}`,
+    "",
+    `Reason: ${build.sourceArchiveValidation.reason}`,
+  );
+  if (build.sourceArchiveValidation.sources.length > 0) {
+    lines.push(
+      "",
+      "| Component | Source | Status | SHA-256 | Reason |",
+      "| --- | --- | --- | --- | --- |",
+    );
+    for (const source of build.sourceArchiveValidation.sources) {
+      lines.push(
+        `| ${source.component} | ${source.ref} | ${source.status} | ${
+          source.actualSha256 ?? source.expectedSha256 ?? "unknown"
+        } | ${source.reason} |`,
+      );
+    }
+  }
+
+  lines.push(
+    "",
     "## Cache Validation",
     "",
     "| Cache | Hit | Validation | Reason |",
@@ -883,6 +1019,8 @@ function parseArgs(argv) {
     readinessArtifactName: undefined,
     buildEvidenceArtifactName: undefined,
     blockerArtifactName: undefined,
+    sourceEvidence: undefined,
+    sourceEvidenceArtifactName: undefined,
   };
 
   for (const arg of argv) {
@@ -962,6 +1100,10 @@ function parseArgs(argv) {
       parsed.sourceCacheDir = arg.slice("--source-cache-dir=".length);
     } else if (arg.startsWith("--dist-dir=")) {
       parsed.distDir = arg.slice("--dist-dir=".length);
+    } else if (arg.startsWith("--source-evidence=")) {
+      parsed.sourceEvidence = path.resolve(
+        arg.slice("--source-evidence=".length),
+      );
     } else if (arg.startsWith("--readiness-artifact-name=")) {
       parsed.readinessArtifactName = arg.slice(
         "--readiness-artifact-name=".length,
@@ -972,6 +1114,10 @@ function parseArgs(argv) {
       );
     } else if (arg.startsWith("--blocker-artifact-name=")) {
       parsed.blockerArtifactName = arg.slice("--blocker-artifact-name=".length);
+    } else if (arg.startsWith("--source-evidence-artifact-name=")) {
+      parsed.sourceEvidenceArtifactName = arg.slice(
+        "--source-evidence-artifact-name=".length,
+      );
     } else {
       fail(`unknown argument: ${arg}`);
     }

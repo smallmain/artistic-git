@@ -133,6 +133,19 @@ jobs:
           node scripts/check-git-dist.mjs --schema-only --real-build --target="${{ matrix.target }}" --expect-placeholder-rejection
           echo "::notice title=git-dist target blocked::${{ matrix.target }} is intentionally skipped because git-dist.toml still contains a documented non-stable placeholder source."
 
+      - name: Check available source archives for placeholder-blocked target
+        if: matrix.placeholderBlocked == true
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/fetch-git-dist.mjs \
+            --target="${{ matrix.target }}" \
+            --source-evidence-only \
+            --skip-blocked-sources \
+            --components=git,git_lfs \
+            --cache-dir="${ARTISTIC_GIT_DIST_CACHE_DIR}" \
+            --evidence-dir="artifacts/git-dist-readiness-${{ matrix.target }}"
+
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -196,6 +209,13 @@ jobs:
           if [ "${{ matrix.target }}" = "windows-x86_64" ]; then
             openssh_args+=(--include-openssh-release)
           fi
+          source_evidence_args=()
+          if [ -f "artifacts/git-dist-readiness-${{ matrix.target }}/git-dist-source-evidence.json" ]; then
+            source_evidence_args+=(
+              --source-evidence="artifacts/git-dist-readiness-${{ matrix.target }}/git-dist-source-evidence.json"
+              --source-evidence-artifact-name="git-dist-source-evidence-${{ matrix.target }}"
+            )
+          fi
           source_cache_key="git-dist-source-${{ env.GIT_DIST_CACHE_VERSION }}-${{ matrix.target }}-${{ hashFiles('git-dist.toml', 'scripts/fetch-git-dist.mjs', 'scripts/git-dist-lib.mjs', 'scripts/check-git-dist.mjs', 'pnpm-lock.yaml', 'Cargo.lock') }}"
           source_cache_restore_key="git-dist-source-${{ env.GIT_DIST_CACHE_VERSION }}-${{ matrix.target }}-"
           dist_cache_key="git-dist-artifact-${{ env.GIT_DIST_CACHE_VERSION }}-${{ matrix.target }}-${{ hashFiles('git-dist.toml', 'scripts/fetch-git-dist.mjs', 'scripts/git-dist-lib.mjs', 'scripts/check-git-dist.mjs', 'crates/helpers/**', 'Cargo.lock') }}"
@@ -228,6 +248,7 @@ jobs:
             --readiness-artifact-name="git-dist-readiness-${{ matrix.target }}" \
             --build-evidence-artifact-name="git-dist-build-evidence-${{ matrix.target }}" \
             --blocker-artifact-name="git-dist-blocker-${{ matrix.target }}" \
+            ${source_evidence_args[@]+"${source_evidence_args[@]}"} \
             ${openssh_args[@]+"${openssh_args[@]}"} \
             --output-dir="artifacts/git-dist-readiness-${{ matrix.target }}"
 
@@ -248,6 +269,17 @@ jobs:
             artifacts/git-dist-readiness-${{ matrix.target }}/git-dist-readiness.md
             artifacts/git-dist-readiness-${{ matrix.target }}/git-dist-build-evidence.json
             artifacts/git-dist-readiness-${{ matrix.target }}/git-dist-build-evidence.md
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload target source evidence
+        if: matrix.placeholderBlocked == true
+        uses: actions/upload-artifact@v4
+        with:
+          name: git-dist-source-evidence-${{ matrix.target }}
+          path: |
+            artifacts/git-dist-readiness-${{ matrix.target }}/git-dist-source-evidence.json
+            artifacts/git-dist-readiness-${{ matrix.target }}/git-dist-source-evidence.md
           if-no-files-found: error
           retention-days: 14
 

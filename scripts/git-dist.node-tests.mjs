@@ -1,7 +1,8 @@
-/* global process */
+/* global Buffer, URL, process */
 
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { createServer } from "node:http";
 import {
   chmod,
   mkdir,
@@ -133,6 +134,110 @@ async function pathExists(filePath) {
   } catch {
     return false;
   }
+}
+
+async function startFixtureServer(files) {
+  const server = createServer((request, response) => {
+    const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
+    const key = decodeURIComponent(requestUrl.pathname.replace(/^\//, ""));
+    const body = files[key];
+    if (!body) {
+      response.statusCode = 404;
+      response.end("missing fixture");
+      return;
+    }
+    response.end(body);
+  });
+
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  const address = server.address();
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    close: () =>
+      new Promise((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      }),
+  };
+}
+
+async function writeSourceEvidenceFixtureConfig({
+  tmpDir,
+  baseUrl,
+  gitContent,
+  gitLfsContent,
+  gitLfsChecksum,
+}) {
+  const config = await loadConfig();
+  const gitSource = getTargetSources(config, windowsTarget).find(
+    ({ source }) => source.component === "git",
+  ).source;
+  const gitLfsSource = getTargetSources(config, windowsTarget).find(
+    ({ source }) => source.component === "git_lfs",
+  ).source;
+  const gitSha = await writeFixtureHash(
+    tmpDir,
+    "mingit-fixture.zip",
+    gitContent,
+  );
+  const gitLfsSha =
+    gitLfsChecksum ??
+    (await writeFixtureHash(tmpDir, "git-lfs-fixture.zip", gitLfsContent));
+
+  let raw = await readFile(configPath, "utf8");
+  raw = raw
+    .replace(`url = "${gitSource.url}"`, `url = "${baseUrl}/mingit.zip"`)
+    .replace(
+      `checksum.value = "${gitSource.checksum.value}"`,
+      `checksum.value = "${gitSha}"`,
+    )
+    .replace(`url = "${gitLfsSource.url}"`, `url = "${baseUrl}/git-lfs.zip"`)
+    .replace(
+      `checksum.value = "${gitLfsSource.checksum.value}"`,
+      `checksum.value = "${gitLfsSha}"`,
+    );
+
+  const fixtureConfigPath = path.join(tmpDir, "git-dist.toml");
+  await writeFile(fixtureConfigPath, raw);
+  return fixtureConfigPath;
+}
+
+async function writeFixtureHash(tmpDir, fileName, content) {
+  const filePath = path.join(tmpDir, fileName);
+  await writeFile(filePath, content);
+  return sha256File(filePath);
+}
+
+async function spawnNode(args, options = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, args, {
+      cwd: options.cwd ?? repoRoot,
+      env: options.env ?? process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("error", (error) => {
+      stderr += error.message;
+      resolve({ status: 1, stdout, stderr });
+    });
+    child.on("close", (status) => {
+      resolve({ status, stdout, stderr });
+    });
+  });
 }
 
 test("assembles staged Windows archives into manifest layout and validates as a cache hit", async () => {
@@ -413,6 +518,115 @@ test("real Windows fetch still rejects the Win32-OpenSSH placeholder before down
     assert.match(result.stderr, /real build mode rejects placeholder pins/);
     assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /downloading/);
   } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("source evidence mode checks available Windows archives while skipping OpenSSH", async () => {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-git-dist-"));
+  const gitContent = Buffer.from("mingit fixture archive\n");
+  const gitLfsContent = Buffer.from("git-lfs fixture archive\n");
+  const server = await startFixtureServer({
+    "mingit.zip": gitContent,
+    "git-lfs.zip": gitLfsContent,
+  });
+
+  try {
+    const fixtureConfigPath = await writeSourceEvidenceFixtureConfig({
+      tmpDir,
+      baseUrl: server.baseUrl,
+      gitContent,
+      gitLfsContent,
+    });
+    const evidenceDir = path.join(tmpDir, "evidence");
+    const outputDir = path.join(tmpDir, "git-dist");
+
+    const result = await spawnNode([
+      fetchGitDistPath,
+      "--source-evidence-only",
+      "--skip-blocked-sources",
+      "--components=git,git_lfs",
+      `--target=${windowsTarget}`,
+      `--config=${fixtureConfigPath}`,
+      `--cache-dir=${path.join(tmpDir, "cache")}`,
+      `--evidence-dir=${evidenceDir}`,
+      `--output=${outputDir}`,
+    ]);
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /source evidence wrote 2 checked source/);
+    assert.equal(
+      await pathExists(path.join(outputDir, "manifest.json")),
+      false,
+    );
+
+    const evidence = JSON.parse(
+      await readFile(
+        path.join(evidenceDir, "git-dist-source-evidence.json"),
+        "utf8",
+      ),
+    );
+    assert.equal(evidence.target.name, windowsTarget);
+    assert.equal(evidence.status, "partial");
+    assert.equal(evidence.summary.checked, 2);
+    assert.equal(evidence.summary.skippedBlocked, 1);
+    assert.deepEqual(
+      evidence.sources
+        .filter((source) => source.status === "checked")
+        .map((source) => source.component)
+        .sort(),
+      ["git", "git_lfs"],
+    );
+    assert.equal(
+      evidence.sources.find((source) => source.component === "win32_openssh")
+        ?.status,
+      "skipped-blocked",
+    );
+    for (const source of evidence.sources.filter(
+      (entry) => entry.status === "checked",
+    )) {
+      assert.equal(source.actualSha256, source.checksum.expectedSha256);
+      assert.ok(source.cachePath);
+    }
+  } finally {
+    await server.close();
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("source evidence mode fails when an available archive checksum mismatches", async () => {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-git-dist-"));
+  const gitContent = Buffer.from("mingit fixture archive\n");
+  const gitLfsContent = Buffer.from("git-lfs fixture archive\n");
+  const server = await startFixtureServer({
+    "mingit.zip": gitContent,
+    "git-lfs.zip": gitLfsContent,
+  });
+
+  try {
+    const fixtureConfigPath = await writeSourceEvidenceFixtureConfig({
+      tmpDir,
+      baseUrl: server.baseUrl,
+      gitContent,
+      gitLfsContent,
+      gitLfsChecksum: "f".repeat(64),
+    });
+
+    const result = await spawnNode([
+      fetchGitDistPath,
+      "--source-evidence-only",
+      "--skip-blocked-sources",
+      "--components=git,git_lfs",
+      `--target=${windowsTarget}`,
+      `--config=${fixtureConfigPath}`,
+      `--cache-dir=${path.join(tmpDir, "cache")}`,
+      `--evidence-dir=${path.join(tmpDir, "evidence")}`,
+    ]);
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /checksum mismatch after download/);
+  } finally {
+    await server.close();
     await rm(tmpDir, { recursive: true, force: true });
   }
 });
@@ -836,6 +1050,153 @@ test("workflow build evidence writes blocker artifact for placeholder-blocked Wi
   }
 });
 
+test("workflow build evidence records partial source checks for blocked Windows", async () => {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-git-dist-"));
+  try {
+    const metadataPath = path.join(tmpDir, "openssh-releases.json");
+    const sourceEvidencePath = path.join(
+      tmpDir,
+      "git-dist-source-evidence.json",
+    );
+    const outputDir = path.join(tmpDir, "report");
+    await writeFile(
+      metadataPath,
+      JSON.stringify([
+        {
+          tag_name: "10.0.0.0p2-Preview",
+          name: "10.0.0.0p2-Preview",
+          draft: false,
+          prerelease: false,
+          published_at: "2025-10-27T18:58:57Z",
+          assets: [{ name: "OpenSSH-Win64.zip" }],
+        },
+      ]),
+    );
+    await writeFile(
+      sourceEvidencePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        generatedAt: "2026-07-09T00:00:00.000Z",
+        mode: "source-evidence-only",
+        target: {
+          name: windowsTarget,
+          platform: "windows",
+          manifestPlatform: windowsTarget,
+          artifactName: `artistic-git-dist-${windowsTarget}`,
+        },
+        status: "partial",
+        summary: {
+          checked: 2,
+          skippedBlocked: 1,
+          skippedUnselected: 0,
+        },
+        sources: [
+          {
+            ref: "sources.windows.x86_64.git",
+            component: "git",
+            status: "checked",
+            stable: true,
+            placeholder: false,
+            reason: "downloaded archive matched configured SHA-256",
+            checksum: { expectedSha256: "a".repeat(64) },
+            actualSha256: "a".repeat(64),
+            cachePath: ".cache/git-dist/MinGit.zip",
+            url: "https://example.invalid/MinGit.zip",
+            assetName: "MinGit.zip",
+          },
+          {
+            ref: "sources.windows.x86_64.git_lfs",
+            component: "git_lfs",
+            status: "checked",
+            stable: true,
+            placeholder: false,
+            reason: "downloaded archive matched configured SHA-256",
+            checksum: { expectedSha256: "b".repeat(64) },
+            actualSha256: "b".repeat(64),
+            cachePath: ".cache/git-dist/git-lfs.zip",
+            url: "https://example.invalid/git-lfs.zip",
+            assetName: "git-lfs.zip",
+          },
+          {
+            ref: "sources.windows.x86_64.win32_openssh",
+            component: "win32_openssh",
+            status: "skipped-blocked",
+            stable: false,
+            placeholder: true,
+            reason: "preview release",
+            checksum: { expectedSha256: "c".repeat(64) },
+            url: "https://example.invalid/OpenSSH-Win64.zip",
+            assetName: "OpenSSH-Win64.zip",
+          },
+        ],
+      }),
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        readinessReportPath,
+        "--workflow-build",
+        "--target=windows-x86_64",
+        `--metadata=${metadataPath}`,
+        "--mode=build",
+        "--run-id=789",
+        "--repository=smallmain/artistic-git",
+        "--runner-os=Windows",
+        "--runner-arch=X64",
+        "--job-os=windows-2022",
+        `--source-evidence=${sourceEvidencePath}`,
+        "--source-evidence-artifact-name=git-dist-source-evidence-windows-x86_64",
+        `--output-dir=${outputDir}`,
+      ],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+      },
+    );
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const report = JSON.parse(
+      await readFile(
+        path.join(outputDir, "git-dist-build-evidence.json"),
+        "utf8",
+      ),
+    );
+    assert.equal(report.workflowBuild.target.blocked, true);
+    assert.equal(
+      report.workflowBuild.validationSummary.reusableArtifactProduced,
+      false,
+    );
+    assert.equal(
+      report.workflowBuild.sourceArchiveValidation.status,
+      "partial",
+    );
+    assert.equal(
+      report.workflowBuild.sourceArchiveValidation.summary.checked,
+      2,
+    );
+    assert.equal(
+      report.workflowBuild.sourceArchiveValidation.sources.find(
+        (source) => source.component === "win32_openssh",
+      )?.status,
+      "skipped-blocked",
+    );
+    assert.equal(
+      report.workflowBuild.artifactIndex.find(
+        (artifact) => artifact.kind === "source-check-evidence",
+      )?.name,
+      "git-dist-source-evidence-windows-x86_64",
+    );
+    assert.ok(
+      report.workflowBuild.validationSummary.commands.some((command) =>
+        command.includes("--source-evidence-only"),
+      ),
+    );
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test("workflow validates restored assembled cache hits before reuse", async () => {
   const workflow = await readFile(workflowPath, "utf8");
   assert.match(workflow, /id: dist-cache/);
@@ -871,6 +1232,19 @@ test("workflow validates restored assembled cache hits before reuse", async () =
   assert.match(
     workflow,
     /Report placeholder-blocked target[\s\S]+--expect-placeholder-rejection/,
+  );
+  assert.match(
+    workflow,
+    /Check available source archives for placeholder-blocked target[\s\S]+--source-evidence-only[\s\S]+--skip-blocked-sources[\s\S]+--components=git,git_lfs/,
+  );
+  assert.match(workflow, /source_evidence_args=\(\)/);
+  assert.match(
+    workflow,
+    /--source-evidence="artifacts\/git-dist-readiness-\$\{\{ matrix\.target \}\}\/git-dist-source-evidence\.json"/,
+  );
+  assert.match(
+    workflow,
+    /Upload target source evidence[\s\S]+git-dist-source-evidence-\$\{\{ matrix\.target \}\}/,
   );
   assert.match(
     workflow,
