@@ -103,49 +103,7 @@ jobs:
           RUN_URL: ${{ steps.phase12-git-dist.outputs.run_id != '' && format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, steps.phase12-git-dist.outputs.run_id) || '' }}
         run: |
           set -euo pipefail
-          node --input-type=module <<'NODE'
-          import { appendFileSync, existsSync } from "node:fs";
-          import path from "node:path";
-
-          const runId = process.env.RUN_ID ?? "";
-          const artifactName = process.env.ARTIFACT_NAME ?? "";
-          const distDir = process.env.DIST_DIR ?? "";
-          const fallbackDistDir = process.env.FALLBACK_DIST_DIR ?? "";
-          let sourceKind = "none";
-          let activeDistDir = "";
-
-          if (runId && existsSync(path.join(distDir, "manifest.json"))) {
-            sourceKind = "artifact";
-            activeDistDir = distDir;
-          } else if (!runId && fallbackDistDir) {
-            sourceKind = "repository-variable";
-            activeDistDir = fallbackDistDir;
-          } else if (runId) {
-            sourceKind = "artifact-missing";
-          }
-
-          const envLines = [
-            ["ARTISTIC_GIT_PHASE12_GIT_DIST_SOURCE", sourceKind],
-            ["ARTISTIC_GIT_PHASE12_GIT_DIST_ARTIFACT_NAME", artifactName],
-            ["ARTISTIC_GIT_PHASE12_GIT_DIST_RUN_ID", runId],
-            ["ARTISTIC_GIT_PHASE12_GIT_DIST_RUN_URL", process.env.RUN_URL ?? ""],
-            ["ARTISTIC_GIT_PHASE12_GIT_DIST_TARGET", process.env.GIT_DIST_TARGET ?? ""],
-            ["ARTISTIC_GIT_PHASE12_GIT_DIST_DOWNLOAD_DIR", distDir],
-          ];
-          if (activeDistDir) {
-            envLines.push(["ARTISTIC_GIT_DIST_DIR", activeDistDir]);
-          }
-          appendFileSync(
-            process.env.GITHUB_ENV,
-            envLines.map(([key, value]) => `${key}=${value}`).join("\n") + "\n",
-          );
-
-          if (activeDistDir) {
-            console.log(`Activated ${sourceKind} git-dist at ${activeDistDir}.`);
-          } else {
-            console.log("No ARTISTIC_GIT_DIST_DIR was activated; Phase 12 evidence scripts will report skipped or blocker status.");
-          }
-          NODE
+          node scripts/activate-phase12-git-dist.mjs
 
       - name: Install Linux Tauri dependencies
         if: runner.os == 'Linux'
@@ -341,49 +299,7 @@ jobs:
           RUN_URL: ${{ steps.phase12-git-dist.outputs.run_id != '' && format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, steps.phase12-git-dist.outputs.run_id) || '' }}
         run: |
           set -euo pipefail
-          node --input-type=module <<'NODE'
-          import { appendFileSync, existsSync } from "node:fs";
-          import path from "node:path";
-
-          const runId = process.env.RUN_ID ?? "";
-          const artifactName = process.env.ARTIFACT_NAME ?? "";
-          const distDir = process.env.DIST_DIR ?? "";
-          const fallbackDistDir = process.env.FALLBACK_DIST_DIR ?? "";
-          let sourceKind = "none";
-          let activeDistDir = "";
-
-          if (runId && existsSync(path.join(distDir, "manifest.json"))) {
-            sourceKind = "artifact";
-            activeDistDir = distDir;
-          } else if (!runId && fallbackDistDir) {
-            sourceKind = "repository-variable";
-            activeDistDir = fallbackDistDir;
-          } else if (runId) {
-            sourceKind = "artifact-missing";
-          }
-
-          const envLines = [
-            ["ARTISTIC_GIT_PHASE12_GIT_DIST_SOURCE", sourceKind],
-            ["ARTISTIC_GIT_PHASE12_GIT_DIST_ARTIFACT_NAME", artifactName],
-            ["ARTISTIC_GIT_PHASE12_GIT_DIST_RUN_ID", runId],
-            ["ARTISTIC_GIT_PHASE12_GIT_DIST_RUN_URL", process.env.RUN_URL ?? ""],
-            ["ARTISTIC_GIT_PHASE12_GIT_DIST_TARGET", process.env.GIT_DIST_TARGET ?? ""],
-            ["ARTISTIC_GIT_PHASE12_GIT_DIST_DOWNLOAD_DIR", distDir],
-          ];
-          if (activeDistDir) {
-            envLines.push(["ARTISTIC_GIT_DIST_DIR", activeDistDir]);
-          }
-          appendFileSync(
-            process.env.GITHUB_ENV,
-            envLines.map(([key, value]) => `${key}=${value}`).join("\n") + "\n",
-          );
-
-          if (activeDistDir) {
-            console.log(`Activated ${sourceKind} git-dist at ${activeDistDir}.`);
-          } else {
-            console.log("No ARTISTIC_GIT_DIST_DIR was activated; the real-git E2E report will record skipped or failed status.");
-          }
-          NODE
+          node scripts/activate-phase12-git-dist.mjs
 
       - name: Install Linux Tauri and WebDriver dependencies
         if: runner.os == 'Linux'

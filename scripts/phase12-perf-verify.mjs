@@ -164,7 +164,12 @@ try {
   report.gitDist.versions = {
     git: runGit(["--version"], undefined).trim(),
     gitLfsViaGit: runGit(["lfs", "version"], undefined).trim(),
-    gitLfsExecutable: runTool(gitLfsPath, ["version"], undefined).stdout.trim(),
+    gitLfsExecutable: runToolChecked(
+      gitLfsPath,
+      ["version"],
+      undefined,
+      "git-lfs executable",
+    ).stdout.trim(),
   };
   runGit(["init", "-b", "main", repo]);
   runGit(["config", "user.name", "Phase 12 Perf"], repo);
@@ -432,10 +437,8 @@ function probeFsmonitorDaemon() {
 
 function runGit(args, cwd) {
   const result = runGitForEvidence(args, cwd);
-  if (result.status !== 0) {
-    throw new Error(
-      `git ${args.join(" ")} failed in ${cwd ?? process.cwd()}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
-    );
+  if (result.error || result.status !== 0) {
+    throw commandFailureError("git", gitPath, args, cwd, result);
   }
   return result.stdout;
 }
@@ -451,6 +454,59 @@ function runTool(toolPath, args, cwd, extraEnv = process.env) {
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
   });
+}
+
+function runToolChecked(toolPath, args, cwd, label, extraEnv = env) {
+  const result = runTool(toolPath, args, cwd, extraEnv);
+  if (result.error || result.status !== 0) {
+    throw commandFailureError(label, toolPath, args, cwd, result);
+  }
+  return {
+    ...result,
+    stdout: result.stdout ?? "",
+    stderr: result.stderr ?? "",
+  };
+}
+
+function commandFailureError(label, toolPath, args, cwd, result) {
+  const message = [
+    `${label} ${args.join(" ")} failed in ${cwd ?? process.cwd()}`,
+    `tool: ${toolPath}`,
+    `status: ${result.status ?? "not-started"}`,
+    `signal: ${result.signal ?? "none"}`,
+    result.error ? formatSpawnError(result.error) : null,
+    "stdout:",
+    safeOutput(result.stdout),
+    "stderr:",
+    safeOutput(result.stderr),
+  ]
+    .filter((line) => line !== null)
+    .join("\n");
+  return new Error(message, { cause: result.error });
+}
+
+function formatSpawnError(error) {
+  const details = [`spawn error: ${error.message}`];
+  if (error.code) {
+    details.push(`code=${error.code}`);
+  }
+  if (error.errno !== undefined) {
+    details.push(`errno=${error.errno}`);
+  }
+  if (error.path) {
+    details.push(`path=${error.path}`);
+  }
+  if (Array.isArray(error.spawnargs)) {
+    details.push(`spawnargs=${JSON.stringify(error.spawnargs)}`);
+  }
+  return details.join("\n");
+}
+
+function safeOutput(value) {
+  if (value === null || value === undefined || value === "") {
+    return "<empty>";
+  }
+  return String(value);
 }
 
 function buildProfile(isHeavy) {

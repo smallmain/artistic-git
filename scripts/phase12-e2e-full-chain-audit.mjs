@@ -24,6 +24,7 @@ const markdownPath = reportPath.replace(/\.json$/i, ".md");
 
 const sourceFiles = {
   ci: ".github/workflows/ci.yml",
+  gitDistActivator: "scripts/activate-phase12-git-dist.mjs",
   packageJson: "package.json",
   rust: "crates/app/src/full_chain_e2e.rs",
   wdio: "e2e/tauri/full-chain-real-git.e2e.ts",
@@ -243,12 +244,24 @@ const gates = [
       "phase12_e2e_require_real_git_dist",
       "actions/download-artifact@v4",
       "artistic-git-dist-${{ matrix.gitDistTarget }}",
-      "ARTISTIC_GIT_PHASE12_GIT_DIST_SOURCE",
+      "node scripts/activate-phase12-git-dist.mjs",
       "pnpm e2e:real-git:report",
       "ARTISTIC_GIT_E2E_REAL_GIT",
       "pnpm e2e:tauri:ci",
       "e2e-real-git-report-${{ matrix.os }}",
       "artifacts/e2e-real-git-report-*",
+    ],
+    extraSources: [
+      {
+        source: "gitDistActivator",
+        tokens: [
+          "ARTISTIC_GIT_PHASE12_GIT_DIST_SOURCE",
+          "ARTISTIC_GIT_DIST_DIR",
+          "chmodSync",
+          "git/libexec/git-core",
+          "manifest.paths",
+        ],
+      },
     ],
   },
   {
