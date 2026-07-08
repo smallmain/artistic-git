@@ -44,7 +44,7 @@
 
 - 工具内嵌 Git，所有 Git 操作均使用内嵌 Git 执行。
   - 实现方式：把整套 git 与 git-lfs 发行目录作为 Tauri `resources`（打包资源）分发，运行时经 `resource_dir()` 解析路径，用 Rust `std::process::Command` 直接调用（**不使用 Tauri `externalBin`/sidecar 单文件机制**，因为 git 是一整套发行目录而非单个二进制）；由一个薄的 “git runner” 封装层统一承载飞行锁、进度解析、日志与 `Result<T, AppError>` 化。
-  - 二进制来源（按平台）：Windows 使用官方 **MinGit** 预编译包；macOS/Linux 从**官方源码**在 CI 以 `RUNTIME_PREFIX` 可重定位方式自建——macOS 用 Xcode 工具链出 arm64 + x86_64 再 lipo 成 Universal；Linux 在 **Ubuntu 20.04 容器（glibc 2.31）**编译，依赖库（libcurl/openssl/zlib/pcre2/expat）全部静态链入，`NO_GETTEXT/NO_PERL/NO_TCLTK` 裁剪，glibc 本身动态链接（不采用 musl 全静态，规避其 DNS/NSS 行为差异）；git-lfs 全平台用官方预编译包（macOS 合成 Universal）。
+  - 二进制来源（按平台）：Windows 使用官方 **MinGit** 预编译包；macOS/Linux 从**官方源码**在 CI 以 `RUNTIME_PREFIX` 可重定位方式自建——macOS 用 Xcode 工具链出 arm64 + x86_64 再 lipo 成 Universal；Linux 在 **Ubuntu 20.04 容器（glibc 2.31）**编译，依赖库（libcurl/openssl/zlib/pcre2/expat）全部静态链入，`NO_GETTEXT/NO_TCLTK` 裁剪并保留 Perl-backed porcelain（如 `git submodule`），glibc 本身动态链接（不采用 musl 全静态，规避其 DNS/NSS 行为差异）；git-lfs 全平台用官方预编译包（macOS 合成 Universal）。
   - 内嵌 Git LFS：同时打包 git-lfs 二进制，打开或克隆的仓库若包含 LFS 规则（.gitattributes），自动执行 `git lfs install --local`，对用户完全透明；该命令允许按需持久写入仓库级 `.git/config` 的 `filter.lfs.*`，属于工具主动写入白名单。
   - 版本锁定：git 与 git-lfs 版本钉入**单一构建配置文件**（版本号 + 各平台产物/源码 SHA-256 + 完整编译配方集中于此），不随构建机环境浮动；实现启动时取当时最新稳定版钉入，升级 = 修改该文件走 PR + 全量测试并记录在更新日志，保证全平台全用户跑同一套经过测试的 git 行为。git 版本优先选 fsmonitor 支持面最全的版本，个别平台缺失则自动降级（见“实时 Fetch”的本地侧配套）。内嵌 Git/LFS/SSH 二进制产物不提交到普通 Git 仓库；CI 通过 cache/artifact 复用，本地开发通过脚本准备 dev resources。
   - 构建期校验（按平台细化）：预编译产物（Windows MinGit、全平台 git-lfs）校验发布页**二进制 SHA-256**；macOS/Linux 自建的 git 则钉死**官方源码 tarball 的 SHA-256 + 完整编译配方（flags/容器镜像）**以可复现。防止供应链污染或下载损坏。

@@ -57,7 +57,7 @@ buildable, run:
 ```sh
 pnpm fetch:git-dist -- --dev-resources --target=macos-universal
 export ARTISTIC_GIT_DIST_DIR="$PWD/src-tauri/resources/git-dist"
-pnpm git-dist:check
+pnpm git-dist:check:runtime -- --target=macos-universal
 ```
 
 Downloaded Git, Git LFS, OpenSSH, and generated manifests are local build

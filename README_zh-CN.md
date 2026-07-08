@@ -50,7 +50,7 @@ Artistic Git 不包含遥测、分析 SDK、崩溃上报上传器，也不连接
 ```sh
 pnpm fetch:git-dist -- --dev-resources --target=macos-universal
 export ARTISTIC_GIT_DIST_DIR="$PWD/src-tauri/resources/git-dist"
-pnpm git-dist:check
+pnpm git-dist:check:runtime -- --target=macos-universal
 ```
 
 下载的 Git、Git LFS、OpenSSH 与生成的 manifest 都是本机构建产物，不提交到普通
