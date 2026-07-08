@@ -3,6 +3,8 @@
 /dist/
 /target/
 /src-tauri/target/
+/src-tauri/resources/git-dist/*
+!/src-tauri/resources/git-dist/README.md
 /.vscode/
 /.idea/
 .DS_Store

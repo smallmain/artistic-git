@@ -417,6 +417,26 @@ test("real Windows fetch still rejects the Win32-OpenSSH placeholder before down
   }
 });
 
+test("dev resources print-env points at the Tauri git-dist resource mount", () => {
+  const result = spawnSync(
+    process.execPath,
+    [
+      fetchGitDistPath,
+      "--print-env",
+      "--dev-resources",
+      "--target=macos-universal",
+    ],
+    {
+      cwd: repoRoot,
+      encoding: "utf8",
+    },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /ARTISTIC_GIT_DIST_DIR/);
+  assert.match(result.stdout, /src-tauri\/resources\/git-dist/);
+});
+
 test("Win32-OpenSSH release gate treats Preview tags as non-stable even when GitHub prerelease is false", async () => {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-git-dist-"));
   try {

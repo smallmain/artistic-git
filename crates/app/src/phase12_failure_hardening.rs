@@ -1823,7 +1823,9 @@ fn add_local_submodule(runner: &GitRunner, fixture: &RemoteFixture, path: &str) 
     ]);
     fixture.local.git(["commit", "-am", "add submodule"]);
     fixture.local.git(["push"]);
-    TestRepo::at(runner, fixture.local.path.join(path))
+    let submodule = TestRepo::at(runner, fixture.local.path.join(path));
+    submodule.configure_identity();
+    submodule
 }
 
 fn add_bare_submodule(
