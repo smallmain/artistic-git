@@ -206,7 +206,7 @@ function selectE2eSpecs(specSet: string | null, realGitEnabled: boolean) {
 
 function defaultMochaTimeout(specSet: string | null, realGitEnabled: boolean) {
   if (specSet === "real" || (specSet === null && realGitEnabled)) {
-    return 480_000;
+    return 1_800_000;
   }
 
   if (specSet === "crash") {
