@@ -248,16 +248,25 @@ jobs:
           ARTISTIC_GIT_PHASE12_PERF_REPORT: ${{ runner.temp }}/phase12-perf/phase12-perf-report.json
         run: |
           set -euo pipefail
-          args=()
+          profile_arg=""
+          require_arg=""
           if [ "$PHASE12_PERF_PROFILE" = "heavy" ]; then
-            args+=(--heavy)
+            profile_arg="--heavy"
           elif [ "$PHASE12_PERF_PROFILE" = "light" ]; then
-            args+=(--light)
+            profile_arg="--light"
           fi
           if [ "$PHASE12_PERF_REQUIRE_REAL_GIT_DIST" = "true" ]; then
-            args+=(--require-real-git-dist)
+            require_arg="--require-real-git-dist"
           fi
-          pnpm -s phase12:perf -- "${args[@]}"
+          if [ -n "$profile_arg" ] && [ -n "$require_arg" ]; then
+            pnpm -s phase12:perf -- "$profile_arg" "$require_arg"
+          elif [ -n "$profile_arg" ]; then
+            pnpm -s phase12:perf -- "$profile_arg"
+          elif [ -n "$require_arg" ]; then
+            pnpm -s phase12:perf -- "$require_arg"
+          else
+            pnpm -s phase12:perf
+          fi
 
       - name: Upload phase 12 perf report
         if: always()
