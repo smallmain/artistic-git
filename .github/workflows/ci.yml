@@ -26,6 +26,11 @@ on:
         required: false
         default: ""
         type: string
+      release_rehearsal_run_id:
+        description: "Completed Release workflow run id whose release-rehearsal-* artifacts should be included in readiness evidence."
+        required: false
+        default: ""
+        type: string
       phase12_e2e_require_real_git_dist:
         description: "Fail the real-git E2E availability report when a real git-dist artifact cannot be staged."
         required: false
@@ -637,6 +642,32 @@ jobs:
           node scripts/phase12-evidence-summary.mjs \
             --artifacts-dir="${{ runner.temp }}/phase12-evidence-input" \
             --report-dir="${{ runner.temp }}/phase12-evidence-summary"
+
+      - name: Resolve release rehearsal evidence artifacts
+        id: release-rehearsal-evidence
+        shell: bash
+        env:
+          DISPATCH_RELEASE_REHEARSAL_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.release_rehearsal_run_id || '' }}
+          DEFAULT_RELEASE_REHEARSAL_RUN_ID: ${{ vars.ARTISTIC_GIT_RELEASE_REHEARSAL_RUN_ID }}
+        run: |
+          set -euo pipefail
+          run_id="${DISPATCH_RELEASE_REHEARSAL_RUN_ID:-${DEFAULT_RELEASE_REHEARSAL_RUN_ID:-}}"
+          echo "run_id=${run_id}" >> "$GITHUB_OUTPUT"
+          if [ -n "$run_id" ]; then
+            echo "Readiness summary will include release rehearsal evidence from Release run ${run_id}."
+          else
+            echo "No Release run id configured for release rehearsal readiness evidence."
+          fi
+
+      - name: Download release rehearsal evidence
+        if: steps.release-rehearsal-evidence.outputs.run_id != ''
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: release-rehearsal-*
+          path: ${{ runner.temp }}/phase12-evidence-input
+          run-id: ${{ steps.release-rehearsal-evidence.outputs.run_id }}
+          github-token: ${{ github.token }}
 
       - name: Generate readiness summary
         run: |

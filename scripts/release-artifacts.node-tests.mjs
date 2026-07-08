@@ -432,6 +432,28 @@ test("release workflow checks staged and packaged git-dist resources", () => {
 test("CI and git-dist workflows cover release and report contract checks", () => {
   assert.ok(ciWorkflow.includes("run: pnpm release:check"));
   assert.ok(ciWorkflow.includes("if: runner.os == 'Linux'"));
+  for (const token of [
+    "release_rehearsal_run_id:",
+    "Resolve release rehearsal evidence artifacts",
+    "DEFAULT_RELEASE_REHEARSAL_RUN_ID: ${{ vars.ARTISTIC_GIT_RELEASE_REHEARSAL_RUN_ID }}",
+    "Download release rehearsal evidence",
+    "if: steps.release-rehearsal-evidence.outputs.run_id != ''",
+    "pattern: release-rehearsal-*",
+    "path: ${{ runner.temp }}/phase12-evidence-input",
+    "run-id: ${{ steps.release-rehearsal-evidence.outputs.run_id }}",
+    "github-token: ${{ github.token }}",
+    "Readiness summary will include release rehearsal evidence from Release run",
+  ]) {
+    assert.ok(ciWorkflow.includes(token), token);
+  }
+  assert.ok(
+    ciWorkflow.indexOf("Download release rehearsal evidence") >
+      ciWorkflow.indexOf("Generate phase 12 evidence summary"),
+  );
+  assert.ok(
+    ciWorkflow.indexOf("Download release rehearsal evidence") <
+      ciWorkflow.indexOf("Generate readiness summary"),
+  );
   assert.ok(ciWorkflow.includes("node scripts/readiness-summary.mjs"));
   assert.ok(ciWorkflow.includes("name: readiness-summary"));
   assert.ok(gitDistWorkflow.includes('"scripts/git-dist-report.mjs"'));

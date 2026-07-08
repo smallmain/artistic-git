@@ -686,6 +686,7 @@ graph TD
   - 进展备注（2026-07-09）：`readiness-summary` 薄聚合器已把 release rehearsal 的 dry-run/operator blockers 与 Phase 12、git-dist blockers 归一到 `overallStatus` / `remainingBlockers[]`，并接入 `release:check` 测试与 CI 上传；该报告只让正式演练缺口更易审计，不伪造 protected environment、签名 secrets、安装冒烟或 updater 证据，本项继续不勾选。
   - 验证备注（2026-07-09）：当前 `main` commit `5fb13a1` 的 Release dry-run run `28978942292` 三平台成功，常规 push CI run `28978942302` 也成功；Phase 12 run `28979260811` 上传的 `readiness-summary` 仍为 `overallStatus=blocked`，其中 `release-rehearsal` blocker 明确为 checklist/operator evidence missing。正式演练仍缺 `ENABLE_MAIN_RELEASE=true` protected environment 审批、Tauri signing secrets、三平台安装冒烟和 `0.1.0`→`0.1.1` updater 记录，本项继续不勾选。
   - 验证备注（2026-07-09）：当前 `main` commit `4569a06` 的常规 push CI run `28981187124` 与 Release dry-run run `28981187048` 均成功；Phase 12 run `28981195931` 的 `readiness-summary` 仍为 `overallStatus=blocked`、9 个 remaining blockers，其中 release rehearsal 仍是 operator evidence missing。正式演练继续等待 protected environment/secrets/三平台安装冒烟/updater 记录，本项继续不勾选。
+  - 进展备注（2026-07-09）：CI `workflow_dispatch` 新增 `release_rehearsal_run_id`，可在 Phase 12 summary 之后、readiness summary 之前下载 Release workflow 的 `release-rehearsal-*` artifact 到同一 evidence input 目录；`readiness-summary` 因而能把 dry-run checklist 识别为 release rehearsal operator evidence，而不是缺失 artifact。该路径仍只消费 dry-run/operator evidence，不替代正式 protected environment、签名 secrets、三平台安装冒烟或 updater 记录，本项继续不勾选。
 
 **验收**：三平台 CI（单元 + 集成）与 Linux/Windows E2E 全绿；发布演练成功。
 
