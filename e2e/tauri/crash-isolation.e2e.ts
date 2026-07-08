@@ -5,6 +5,8 @@ import path from "node:path";
 
 import { browser } from "@wdio/globals";
 
+import { waitForStartScreenReady } from "./start-screen";
+
 type CrashDialogState = {
   detailsVisible: boolean;
   open: boolean;
@@ -116,11 +118,7 @@ describe("Artistic Git Tauri crash isolation", () => {
 });
 
 async function waitForStartScreen() {
-  await $('[data-testid="start-screen"]').waitForExist({ timeout: 60_000 });
-  await browser.waitUntil(startScreenControlsReady, {
-    timeout: 60_000,
-    timeoutMsg: "start screen controls did not become ready",
-  });
+  await waitForStartScreenReady();
 }
 
 function startScreenControlsReady() {

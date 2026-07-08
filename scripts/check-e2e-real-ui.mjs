@@ -15,7 +15,16 @@ const fullChainPath = path.join(
   "tauri",
   "full-chain-real-git.e2e.ts",
 );
-const source = readFileSync(fullChainPath, "utf8");
+const startScreenHelperPath = path.join(
+  repoRoot,
+  "e2e",
+  "tauri",
+  "start-screen.ts",
+);
+const source = [
+  readFileSync(fullChainPath, "utf8"),
+  readFileSync(startScreenHelperPath, "utf8"),
+].join("\n");
 
 const forbiddenPatterns = [
   {

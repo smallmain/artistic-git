@@ -32,9 +32,11 @@ const commandTimeout = readPositiveIntegerEnv(
 );
 const wdioLogLevel = readNonEmptyEnv("ARTISTIC_GIT_E2E_WDIO_LOG_LEVEL") ?? "info";
 const runRealGitE2e = process.env.ARTISTIC_GIT_E2E_REAL_GIT === "1";
-const e2eSpecs = selectE2eSpecs(
-  readNonEmptyEnv("ARTISTIC_GIT_E2E_SPEC_SET"),
-  runRealGitE2e,
+const e2eSpecSet = readNonEmptyEnv("ARTISTIC_GIT_E2E_SPEC_SET");
+const e2eSpecs = selectE2eSpecs(e2eSpecSet, runRealGitE2e);
+const mochaTimeout = readPositiveIntegerEnv(
+  "ARTISTIC_GIT_E2E_MOCHA_TIMEOUT_MS",
+  defaultMochaTimeout(e2eSpecSet, runRealGitE2e),
 );
 const tauriServiceOptions = {
   appBinaryPath,
@@ -91,7 +93,7 @@ export const config = {
   ],
   mochaOpts: {
     ui: "bdd",
-    timeout: 60_000,
+    timeout: mochaTimeout,
   },
   onPrepare: () => {
     ensureTauriBinary();
@@ -183,6 +185,14 @@ function selectE2eSpecs(specSet: string | null, realGitEnabled: boolean) {
         `Unsupported ARTISTIC_GIT_E2E_SPEC_SET=${specSet}. Use smoke, crash, or real.`,
       );
   }
+}
+
+function defaultMochaTimeout(specSet: string | null, realGitEnabled: boolean) {
+  if (specSet === "real" || specSet === "crash" || (specSet === null && realGitEnabled)) {
+    return 300_000;
+  }
+
+  return 60_000;
 }
 
 function defaultTauriDriverPath() {

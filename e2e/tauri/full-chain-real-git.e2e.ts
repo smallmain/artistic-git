@@ -12,6 +12,8 @@ import path from "node:path";
 
 import { browser } from "@wdio/globals";
 
+import { waitForStartScreenReady } from "./start-screen";
+
 type GitDistManifest = {
   paths: {
     gitExecutable: string;
@@ -477,16 +479,7 @@ async function waitForCommitDialogClosedOrCommitted() {
 }
 
 async function waitForStartScreen() {
-  await $('[data-testid="start-screen"]').waitForExist({ timeout: 60_000 });
-  await browser.waitUntil(
-    async () =>
-      (await $('[data-testid="start-open-project"]').isEnabled()) &&
-      (await $('[data-testid="start-clone-project"]').isEnabled()),
-    {
-      timeout: 60_000,
-      timeoutMsg: "start screen controls did not become ready",
-    },
-  );
+  await waitForStartScreenReady();
 }
 
 async function waitForRepository(repositoryPath: string) {

@@ -1,38 +1,10 @@
 import assert from "node:assert/strict";
 
-import { browser } from "@wdio/globals";
-
-type StartScreenState = {
-  bodyText: string;
-  cloneProjectEnabled: boolean | null;
-  hasCloneProject: boolean;
-  hasOpenProject: boolean;
-  hasStartScreen: boolean;
-  openProjectEnabled: boolean | null;
-  readyState: string;
-  title: string;
-};
-
-const startScreenStateScript = `
-return (function () {
-  var byTestId = function (testId) {
-    return document.querySelector('[data-testid="' + testId + '"]');
-  };
-  var openProject = byTestId('start-open-project');
-  var cloneProject = byTestId('start-clone-project');
-
-  return {
-    bodyText: document.body ? document.body.innerText.slice(0, 500) : '',
-    cloneProjectEnabled: cloneProject ? !cloneProject.disabled : null,
-    hasCloneProject: Boolean(cloneProject),
-    hasOpenProject: Boolean(openProject),
-    hasStartScreen: Boolean(byTestId('start-screen')),
-    openProjectEnabled: openProject ? !openProject.disabled : null,
-    readyState: document.readyState,
-    title: document.title,
-  };
-})();
-`;
+import {
+  getStartScreenState,
+  isStartScreenReady,
+  type StartScreenState,
+} from "./start-screen";
 
 describe("Artistic Git Tauri smoke", () => {
   it("opens the start screen", async () => {
@@ -60,17 +32,6 @@ describe("Artistic Git Tauri smoke", () => {
   });
 });
 
-function isStartScreenReady(state: StartScreenState) {
-  return (
-    state.title === "Artistic Git" &&
-    state.hasStartScreen &&
-    state.hasOpenProject &&
-    state.hasCloneProject &&
-    state.openProjectEnabled === true &&
-    state.cloneProjectEnabled === true
-  );
-}
-
 function startScreenState() {
-  return browser.execute(startScreenStateScript) as Promise<StartScreenState>;
+  return getStartScreenState() as Promise<StartScreenState>;
 }
