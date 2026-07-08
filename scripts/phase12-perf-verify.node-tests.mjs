@@ -210,3 +210,23 @@ test("reports spawn error details when git-dist executable cannot start", async 
     await rm(tmpDir, { force: true, recursive: true });
   }
 });
+
+test("history perf fixture uses linear commit-tree history", async () => {
+  const source = await readFile(scriptPath, "utf8");
+
+  assert.match(
+    source,
+    /fixtureStrategy: "commit-tree-linear-single-tree"/,
+    "history evidence records the commit-tree fixture strategy",
+  );
+  assert.match(
+    source,
+    /"commit-tree", tree, "-m"/,
+    "history fixture creates commits without rewriting a new file per commit",
+  );
+  assert.doesNotMatch(
+    source,
+    /runGit\(\["commit", "-m", `history/,
+    "history fixture must not use porcelain commit for every perf commit",
+  );
+});

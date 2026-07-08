@@ -222,16 +222,20 @@ if (exitCode !== 0) {
 function verifyHistoryPagination() {
   const fixtureStarted = performance.now();
   const historyDir = path.join(repo, "history");
+  const seedRelativePath = path.join("history", "seed.txt");
   mkdirSync(historyDir, { recursive: true });
+  writeFileSync(path.join(repo, seedRelativePath), "phase 12 history seed\n");
+  runGit(["add", seedRelativePath], repo);
+  const tree = runGit(["write-tree"], repo).trim();
 
+  let parent = null;
   for (let index = 0; index < report.profile.commitCount; index += 1) {
-    const relativePath = path.join(
-      "history",
-      `${index.toString().padStart(6, "0")}.txt`,
-    );
-    writeFileSync(path.join(repo, relativePath), `${index}\n`);
-    runGit(["add", relativePath], repo);
-    runGit(["commit", "-m", `history ${index}`], repo);
+    const args = ["commit-tree", tree, "-m", `history ${index}`];
+    if (parent) {
+      args.push("-p", parent);
+    }
+    parent = runGit(args, repo).trim();
+    runGit(["update-ref", "refs/heads/main", parent], repo);
   }
 
   const fixtureCreateMs = performance.now() - fixtureStarted;
@@ -273,6 +277,7 @@ function verifyHistoryPagination() {
     metrics: {
       elapsedMs,
       fixtureCreateMs: Math.round(fixtureCreateMs),
+      fixtureStrategy: "commit-tree-linear-single-tree",
       firstPageMs: Math.round(firstPageMs),
       secondPageMs: Math.round(secondPageMs),
       commitCount: report.profile.commitCount,
@@ -282,6 +287,8 @@ function verifyHistoryPagination() {
     },
     evidence: {
       pageSize: 200,
+      fixtureStrategy: "commit-tree-linear-single-tree",
+      seedPath: seedRelativePath,
       newestFirstSubject: firstPage[0]?.split("\x01").at(-1) ?? null,
     },
   });
