@@ -528,8 +528,43 @@ describe("RepositoryShell session preferences", () => {
     );
   });
 
+  it("refetches local changes when opening the local changes tab", async () => {
+    commandMocks.listLocalChanges
+      .mockResolvedValueOnce({
+        changes: [],
+        renormalizeSuggestion: null,
+      })
+      .mockResolvedValue({
+        changes: [
+          createLocalChange({
+            changeKind: "added",
+            fileKind: "text",
+            indexStatus: "?",
+            newPath: "fresh-local.txt",
+            newText: "fresh\n",
+            worktreeStatus: "?",
+          }),
+        ],
+        renormalizeSuggestion: null,
+      });
+
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    await waitFor(() =>
+      expect(commandMocks.listLocalChanges).toHaveBeenCalledTimes(1),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: /Local Changes/ }),
+    );
+
+    await waitFor(() =>
+      expect(commandMocks.listLocalChanges).toHaveBeenCalledTimes(2),
+    );
+    expect(await screen.findAllByText("fresh-local.txt")).not.toHaveLength(0);
+  });
+
   it("previews renormalization from the large local changes prompt", async () => {
-    commandMocks.listLocalChanges.mockResolvedValueOnce({
+    commandMocks.listLocalChanges.mockResolvedValue({
       changes: [
         createLocalChange({
           changeKind: "modified",

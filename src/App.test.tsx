@@ -24,6 +24,7 @@ import type { WindowStoreState } from "./store/window-store";
 import type { ThemePreference } from "./theme/ThemeProvider";
 
 const commandMocks = vi.hoisted(() => ({
+  acknowledgeRendererCrash: vi.fn(),
   closeCurrentWindow: vi.fn(),
   newProjectWindow: vi.fn(),
   openLogDir: vi.fn(),
@@ -37,6 +38,7 @@ vi.mock("@/lib/ipc/commands", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/ipc/commands")>();
   return {
     ...actual,
+    acknowledgeRendererCrash: commandMocks.acknowledgeRendererCrash,
     closeCurrentWindow: commandMocks.closeCurrentWindow,
     newProjectWindow: commandMocks.newProjectWindow,
     openLogDir: commandMocks.openLogDir,
@@ -83,6 +85,7 @@ beforeEach(() => {
     tauriEventListeners.set(name, handler as EventCallback<unknown>);
     return () => undefined;
   });
+  commandMocks.acknowledgeRendererCrash.mockResolvedValue(undefined);
   commandMocks.closeCurrentWindow.mockResolvedValue(undefined);
   commandMocks.newProjectWindow.mockResolvedValue({ label: "start-1" });
   commandMocks.openLogDir.mockResolvedValue({ opened: false, path: "/logs" });
@@ -353,6 +356,52 @@ describe("App", () => {
 
     expect(await screen.findByRole("dialog")).toHaveTextContent(
       "Renderer process crashed; this window was reloaded.",
+    );
+    await waitFor(() =>
+      expect(commandMocks.acknowledgeRendererCrash).toHaveBeenCalledTimes(1),
+    );
+  });
+
+  it("keeps a pending renderer crash available across a cancelled effect replay", async () => {
+    const pendingCrash = {
+      details:
+        "Renderer process for window `repo-1` was reported unhealthy. The window was reloaded to isolate the crash from other windows.",
+      source: "renderer" as const,
+      summary: "Renderer process crashed during StrictMode replay.",
+      windowLabel: "repo-1",
+    };
+    let resolveFirstContext!: (value: unknown) => void;
+    const firstContext = new Promise((resolve) => {
+      resolveFirstContext = resolve;
+    });
+    commandMocks.windowContext
+      .mockReturnValueOnce(firstContext)
+      .mockResolvedValue({
+        label: "repo-1",
+        pendingCrash,
+        repositoryPath: null,
+      });
+
+    const firstRender = renderWithProviders(<App />);
+    firstRender.unmount();
+    renderWithProviders(<App />);
+
+    await waitFor(() =>
+      expect(commandMocks.windowContext).toHaveBeenCalledTimes(2),
+    );
+    await act(async () => {
+      resolveFirstContext({
+        label: "repo-1",
+        pendingCrash,
+        repositoryPath: null,
+      });
+    });
+
+    expect(await screen.findByRole("dialog")).toHaveTextContent(
+      "Renderer process crashed during StrictMode replay.",
+    );
+    await waitFor(() =>
+      expect(commandMocks.acknowledgeRendererCrash).toHaveBeenCalled(),
     );
   });
 });

@@ -100,10 +100,19 @@ const evidenceChecks = [
   {
     id: "pending-crash-window-context",
     layer: "renderer",
-    requirement: "pending renderer crash is consumed through window_context",
+    requirement: "pending renderer crash is exposed idempotently through window_context",
     source: "tauriLib",
     pattern:
-      /fn window_context\([\s\S]*let pending_crash = registry_take_pending_crash\(&registry, &label\);[\s\S]*pending_crash,/,
+      /fn window_context\([\s\S]*let pending_crash = registry_peek_pending_crash\(&registry, &label\);[\s\S]*pending_crash,/,
+  },
+  {
+    id: "pending-crash-ack-command",
+    layer: "renderer",
+    requirement:
+      "pending renderer crash is cleared only after the frontend acknowledges it",
+    source: "tauriLib",
+    pattern:
+      /fn acknowledge_renderer_crash\([\s\S]*registry_clear_pending_crash\(&registry, window\.label\(\)\)/,
   },
   {
     id: "pending-crash-frontend-dialog",
@@ -113,6 +122,15 @@ const evidenceChecks = [
     source: "app",
     pattern:
       /(?=[\s\S]*context\.pendingCrash[\s\S]*onCrash\(context\.pendingCrash\))(?=[\s\S]*<GlobalErrorDialogs[\s\S]*crash=\{globalCrash\})/,
+  },
+  {
+    id: "pending-crash-frontend-ack",
+    layer: "renderer",
+    requirement:
+      "frontend acknowledges a pending renderer crash after moving it into app state",
+    source: "app",
+    pattern:
+      /context\.pendingCrash[\s\S]*onCrash\(context\.pendingCrash\);[\s\S]*acknowledgeRendererCrash\(\)\.catch\(onError\)/,
   },
   {
     id: "pending-crash-component-test",

@@ -406,7 +406,7 @@ fn window_context(
         .label_to_repository
         .get(&label)
         .cloned();
-    let pending_crash = registry_take_pending_crash(&registry, &label);
+    let pending_crash = registry_peek_pending_crash(&registry, &label);
 
     Ok(WindowContextResponse {
         label,
@@ -570,6 +570,14 @@ fn inject_renderer_crash(
             .summary
             .unwrap_or_else(default_renderer_crash_summary),
     )
+}
+
+#[tauri::command]
+fn acknowledge_renderer_crash(
+    window: tauri::Window,
+    registry: State<'_, WindowRegistry>,
+) -> artistic_git_contracts::AppResult<()> {
+    registry_clear_pending_crash(&registry, window.label())
 }
 
 #[tauri::command]
@@ -1788,6 +1796,7 @@ pub fn run() {
             set_window_close_guard,
             cancel_pending_window_exit,
             inject_renderer_crash,
+            acknowledge_renderer_crash,
             open_log_dir,
             open_update_release_page,
             open_repository,
@@ -2185,7 +2194,6 @@ fn registry_unregister(registry: &WindowRegistry, label: &str) {
         inner
             .focused_window_labels
             .retain(|focused_label| focused_label != label);
-        inner.pending_crashes_by_label.remove(label);
     }
 }
 
@@ -2314,7 +2322,7 @@ fn registry_set_pending_crash(
     Ok(())
 }
 
-fn registry_take_pending_crash(
+fn registry_peek_pending_crash(
     registry: &WindowRegistry,
     label: &str,
 ) -> Option<CrashDialogPayload> {
@@ -2322,7 +2330,19 @@ fn registry_take_pending_crash(
         .inner
         .lock()
         .ok()
-        .and_then(|mut inner| inner.pending_crashes_by_label.remove(label))
+        .and_then(|inner| inner.pending_crashes_by_label.get(label).cloned())
+}
+
+fn registry_clear_pending_crash(
+    registry: &WindowRegistry,
+    label: &str,
+) -> artistic_git_contracts::AppResult<()> {
+    let mut inner = registry
+        .inner
+        .lock()
+        .map_err(|_| window_command_error("window registry lock poisoned", "rendererCrash"))?;
+    inner.pending_crashes_by_label.remove(label);
+    Ok(())
 }
 
 fn handle_renderer_crash(
@@ -3043,32 +3063,38 @@ mod tests {
     }
 
     #[test]
-    fn window_menu_renderer_crash_payload_is_consumed_once() {
+    fn window_menu_renderer_crash_payload_is_peeked_until_acknowledged() {
         let registry = WindowRegistry::default();
         let crash = renderer_crash_payload("repo-1", "Renderer crashed".to_owned());
 
         registry_set_pending_crash(&registry, "repo-1", crash.clone()).expect("set crash");
 
         assert_eq!(
-            registry_take_pending_crash(&registry, "repo-1"),
+            registry_peek_pending_crash(&registry, "repo-1"),
+            Some(crash.clone())
+        );
+        assert_eq!(
+            registry_peek_pending_crash(&registry, "repo-1"),
             Some(crash)
         );
-        assert_eq!(registry_take_pending_crash(&registry, "repo-1"), None);
+        registry_clear_pending_crash(&registry, "repo-1").expect("ack crash");
+        assert_eq!(registry_peek_pending_crash(&registry, "repo-1"), None);
     }
 
     #[test]
-    fn window_menu_unregister_clears_pending_renderer_crash() {
+    fn window_menu_unregister_preserves_pending_renderer_crash_for_reload() {
         let registry = WindowRegistry::default();
-        registry_set_pending_crash(
-            &registry,
-            "repo-1",
-            renderer_crash_payload("repo-1", "Renderer crashed".to_owned()),
-        )
-        .expect("set crash");
+        let crash = renderer_crash_payload("repo-1", "Renderer crashed".to_owned());
+        registry_set_pending_crash(&registry, "repo-1", crash.clone()).expect("set crash");
 
         registry_unregister(&registry, "repo-1");
 
-        assert_eq!(registry_take_pending_crash(&registry, "repo-1"), None);
+        assert_eq!(
+            registry_peek_pending_crash(&registry, "repo-1"),
+            Some(crash)
+        );
+        registry_clear_pending_crash(&registry, "repo-1").expect("ack crash");
+        assert_eq!(registry_peek_pending_crash(&registry, "repo-1"), None);
     }
 
     #[test]

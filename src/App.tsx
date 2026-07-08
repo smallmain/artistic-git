@@ -11,6 +11,7 @@ import { RepositoryShell } from "@/features/repository-shell/RepositoryShell";
 import { SettingsModal } from "@/features/settings/SettingsModal";
 import { StartScreen } from "@/features/start/StartScreen";
 import {
+  acknowledgeRendererCrash,
   closeCurrentWindow,
   type CrashDialogPayload,
   newProjectWindow,
@@ -84,6 +85,7 @@ function WindowRuntimeBridge({ onCrash, onError }: WindowRuntimeBridgeProps) {
         }
         if (context.pendingCrash) {
           onCrash(context.pendingCrash);
+          void acknowledgeRendererCrash().catch(onError);
         }
       })
       .catch(() => {

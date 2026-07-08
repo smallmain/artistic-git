@@ -119,6 +119,7 @@ export interface AppCommandArgs {
   set_window_close_guard: { request: WindowCloseGuardRequest };
   cancel_pending_window_exit: undefined;
   inject_renderer_crash: { request: RendererCrashInjectionRequest };
+  acknowledge_renderer_crash: undefined;
   open_log_dir: undefined;
   open_update_release_page: undefined;
   open_repository: { request: OpenRepositoryRequest };
@@ -202,6 +203,7 @@ export interface AppCommandResponses {
   set_window_close_guard: void;
   cancel_pending_window_exit: void;
   inject_renderer_crash: void;
+  acknowledge_renderer_crash: void;
   open_log_dir: OpenLogDirResponse;
   open_update_release_page: void;
   open_repository: OpenRepositoryResponse;
@@ -406,6 +408,10 @@ export function injectRendererCrash(
   request: RendererCrashInjectionRequest = {},
 ): Promise<void> {
   return invokeAppCommand("inject_renderer_crash", { request });
+}
+
+export function acknowledgeRendererCrash(): Promise<void> {
+  return invokeAppCommand("acknowledge_renderer_crash");
 }
 
 export function openLogDir(): Promise<OpenLogDirResponse> {

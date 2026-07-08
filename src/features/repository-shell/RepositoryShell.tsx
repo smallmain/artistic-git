@@ -256,6 +256,14 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     queryKey: repoQueryKeys.localChanges(repositoryPath),
     retry: false,
   });
+  const refetchLocalChanges = localChangesQuery.refetch;
+  const showHistoryTab = React.useCallback(() => {
+    setActiveTab("history");
+  }, []);
+  const showLocalChangesTab = React.useCallback(() => {
+    setActiveTab("localChanges");
+    void refetchLocalChanges();
+  }, [refetchLocalChanges]);
   const projectSettingsQuery = useQuery({
     queryFn: () => loadProjectSettings({ repositoryPath }),
     queryKey: ["repository", repositoryPath, "projectSettings"] as const,
@@ -369,8 +377,10 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   React.useEffect(() => {
     const handleViewTab = (event: Event) => {
       const tab = (event as CustomEvent<MainTab>).detail;
-      if (tab === "history" || tab === "localChanges") {
-        setActiveTab(tab);
+      if (tab === "history") {
+        showHistoryTab();
+      } else if (tab === "localChanges") {
+        showLocalChangesTab();
       }
     };
 
@@ -378,7 +388,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     return () => {
       window.removeEventListener("artistic-git:view-tab", handleViewTab);
     };
-  }, []);
+  }, [showHistoryTab, showLocalChangesTab]);
 
   React.useEffect(() => {
     const persistGeometry = () => {
@@ -1746,9 +1756,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
               active={activeTab === "history"}
               icon={<History className="size-4" aria-hidden="true" />}
               label={t("repository.history")}
-              onClick={() => {
-                setActiveTab("history");
-              }}
+              onClick={showHistoryTab}
               testId="repository-tab-history"
             />
             <TabButton
@@ -1756,9 +1764,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
               badge={localChangeCount}
               icon={<FileText className="size-4" aria-hidden="true" />}
               label={t("repository.localChanges")}
-              onClick={() => {
-                setActiveTab("localChanges");
-              }}
+              onClick={showLocalChangesTab}
               testId="repository-tab-local-changes"
             />
           </nav>
