@@ -240,6 +240,7 @@ export function RepositorySidebar({
               className={
                 hasPendingSync ? "text-warning hover:bg-warning/10" : undefined
               }
+              data-testid="repository-sync-all"
               disabled={busy || !onFetch}
               label={
                 projectSyncComplete

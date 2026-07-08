@@ -162,6 +162,18 @@ jobs:
       - name: Check release scripts and bundle resources
         run: pnpm release:check
 
+      - name: Generate release rehearsal dry-run checklist
+        env:
+          ARTISTIC_GIT_RELEASE_REHEARSAL_REPORT_DIR: ${{ runner.temp }}/release-rehearsal
+        run: pnpm release:rehearsal:checklist
+
+      - name: Upload release rehearsal dry-run checklist
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-rehearsal-${{ runner.os }}
+          path: ${{ runner.temp }}/release-rehearsal/
+          retention-days: 14
+
       - name: Dry-run Tauri package build
         run: pnpm tauri build --ci --no-bundle
 

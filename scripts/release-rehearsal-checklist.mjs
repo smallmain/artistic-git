@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /* global console, process */
 
+import { mkdirSync, writeFileSync } from "node:fs";
+import path from "node:path";
+
 const requiredSecrets = [
   "TAURI_SIGNING_PRIVATE_KEY",
   "TAURI_SIGNING_PRIVATE_KEY_PASSWORD",
@@ -9,14 +12,32 @@ const requiredSecrets = [
 
 const missingSecrets = requiredSecrets.filter((name) => !process.env[name]);
 const dryRun = process.env.ARTISTIC_GIT_RELEASE_REHEARSAL_DRY_RUN !== "0";
+const reportDir =
+  process.env.ARTISTIC_GIT_RELEASE_REHEARSAL_REPORT_DIR ??
+  (process.env.CI ? path.join("artifacts", "release-rehearsal") : null);
+const rehearsal = {
+  generatedAt: new Date().toISOString(),
+  mode: dryRun ? "dry-run checklist" : "operator-confirmed rehearsal",
+  dryRun,
+  requiredSecrets: requiredSecrets.map((name) => ({
+    name,
+    present: Boolean(process.env[name]),
+  })),
+  missingSecrets,
+  status: !dryRun && missingSecrets.length > 0 ? "blocked" : "ready",
+  cannotCheckTask:
+    dryRun || missingSecrets.length > 0
+      ? "TASKS.md release rehearsal remains unchecked until signed artifacts are built, installed, and update-tested on macOS, Windows, and Linux."
+      : null,
+};
 
-console.log(`# Artistic Git 0.1.0 release rehearsal checklist
+const markdown = `# Artistic Git 0.1.0 release rehearsal checklist
 
 This script is a checklist entry point, not a local substitute for the formal
 release rehearsal. The TASKS.md release item can only be checked after signed
 artifacts are built, installed, and update-tested on all three target platforms.
 
-Mode: ${dryRun ? "dry-run checklist" : "operator-confirmed rehearsal"}
+Mode: ${rehearsal.mode}
 
 Required external prerequisites:
 - GitHub repository environments/variables enable main release publishing.
@@ -50,10 +71,36 @@ Commands to run:
 
 Secrets present in this shell:
 ${requiredSecrets.map((name) => `- ${name}: ${process.env[name] ? "present" : "missing"}`).join("\n")}
-`);
+
+Dry-run verifier result:
+- Status: ${rehearsal.status}
+- TASKS.md release item: ${rehearsal.cannotCheckTask ?? "operator prerequisites are present; still requires platform install/update evidence before checking."}
+`;
+
+console.log(markdown);
+writeReports(markdown, rehearsal);
 
 if (!dryRun && missingSecrets.length > 0) {
   throw new Error(
     `Cannot mark operator-confirmed rehearsal: missing ${missingSecrets.join(", ")}.`,
+  );
+}
+
+function writeReports(markdownContent, jsonContent) {
+  if (!reportDir) {
+    return;
+  }
+  const absoluteReportDir = path.resolve(reportDir);
+  mkdirSync(absoluteReportDir, { recursive: true });
+  writeFileSync(
+    path.join(absoluteReportDir, "release-rehearsal-checklist.md"),
+    markdownContent,
+  );
+  writeFileSync(
+    path.join(absoluteReportDir, "release-rehearsal-checklist.json"),
+    `${JSON.stringify(jsonContent, null, 2)}\n`,
+  );
+  console.log(
+    `Wrote release rehearsal checklist artifacts to ${absoluteReportDir}`,
   );
 }

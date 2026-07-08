@@ -568,10 +568,13 @@ graph TD
 - [ ] E2E 全链路：克隆 → 修改 → 提交 → 同事推送 → 同步 → 冲突 → 解决 → 撤回（真实临时远程仓库）
   - 进展备注：已补 Rust 后端 full-chain integration test，使用真实临时 bare remote + app clone/open/commit/sync/conflict resolution/revert API 串联覆盖完整 Git 操作链；WDIO/Tauri UI 自动化目前仍是 smoke，尚未关闭 UI 点击全链路。
   - 进展备注（2026-07-08）：新增 `e2e/tauri/full-chain-real-git.e2e.ts`，在 `ARTISTIC_GIT_E2E_REAL_GIT=1` 且提供真实 `ARTISTIC_GIT_DIST_DIR` 时创建真实临时 bare remote，并通过 Tauri WebView 点击克隆入口/填写克隆表单；克隆后的提交/同步/冲突保存完成/撤回通过同一真实 Tauri 后端 invoke 链路执行。由于提交、冲突解决、撤回仍未做到完整 UI 控件点击，不勾选。
+  - 进展备注（2026-07-08）：WDIO full-chain 已进一步改为 UI 控件链路：克隆、切本地更改、勾选文件、提交弹窗、立即推送开关、项目同步按钮、冲突文件选择/采用己方/完成、历史提交行/撤回确认均通过稳定 `data-testid`/属性 selector 驱动；backend invoke 仅保留 readiness 探测。当前工作区未提供真实 git-dist + tauri-driver 实跑环境，尚未用 Linux/Windows E2E 证明全链路绿，不勾选。
 - [ ] 失败注入全矩阵复查：每个融合操作（同步/自动跟踪/提交/撤回/审查/切换/子模块提交）每一步注入失败，断言恢复到操作前状态 + 「工作区与 HEAD 干净可用」全局不变量
   - 进展备注（2026-07-08）：新增 `crates/app/src/phase12_failure_hardening.rs`，提供阶段 12 真实 git-dist hardening harness：同步本地阶段坏子模块失败、提交 GPG 签名失败、revert 冲突 abort 均断言分支/HEAD/index/status 恢复到操作前快照并可继续执行 git 命令。既有 sync/commit/revert/branch/submodule 测试已有多处失败恢复覆盖，但尚未形成覆盖同步/自动跟踪/提交/撤回/审查/切换/子模块提交每一步的完整矩阵，不勾选。
+  - 进展备注（2026-07-08）：failure hardening harness 扩展到 7 条真实 git-dist 用例：同步当前分支本地阶段失败、非当前分支发布失败、自动跟踪 ff-only 分歧后恢复本地修改、提交 GPG 失败、撤回冲突 abort、切换分支 auto-stash 冲突后取消恢复、子模块提交发布前护栏失败；均断言 snapshot 恢复和仓库可继续执行 git 命令。仍不是“每个融合操作每一步”的完整矩阵，不勾选。
 - [ ] 性能验证：万级提交历史滚动/几万文件大树 status 时延（fsmonitor 生效断言）/巨型二进制 + LFS 仓库操作
   - 进展备注（2026-07-08）：新增 `pnpm phase12:perf`（`scripts/phase12-perf-verify.mjs`），使用真实 `ARTISTIC_GIT_DIST_DIR` 验证历史分页 200/页、`core.fsmonitor=true` + `core.untrackedCache=true` 下大文件树 status 时延、巨型二进制经 git-lfs 以 pointer 入库且工作区保留真实内容；默认轻量，`ARTISTIC_GIT_PERF_HEAVY=1` 跑 10000 commits / 50000 files / 128MB binary，可用 env 覆盖规模。重型性能尚未在目标 CI/平台完成，暂不勾选。
+  - 进展备注（2026-07-08）：`phase12:perf` 支持 `ARTISTIC_GIT_PHASE12_PERF_REPORT`，CI 默认写 `artifacts/phase12-perf-report.json`，包含 skipped/pass/fail、light/heavy profile、history/status/LFS 指标；缺少真实 git-dist 时也产出机器可读 skipped report。本轮仅验证 skipped artifact 输出，重型与目标平台实测未完成，不勾选。
 - [x] 「整仓库显示已修改」自愈提示条：检测本地更改数量异常巨大 → 列表顶部建议一键规范化（`git add --renormalize` 预览，不自动提交，默认不打扰）
 - [x] 无障碍审计：全键盘可达/焦点环/AA 对比度/仅图标按钮 aria-label + tooltip/减少动态效果降级
 - [x] i18n 审计：全部 UI 双语无遗漏；git 写入文本恒英文（`Revert:`/`Auto Stash:`/`backup/`）；stderr 原文不翻译；日期/相对时间/数字/大小本地化
@@ -580,6 +583,7 @@ graph TD
 - [x] 文档收尾：README.md / README_zh-CN.md 完整（功能/最低版本 macOS 13+ / 签名绕过 / git-dist 升级流程 / main 自动发布闸门）
 - [ ] `0.1.0` 正式发布演练：走完整 Release 流程 + 三平台安装冒烟 + 自动更新升级到 `0.1.1` 演练
   - 进展备注（2026-07-08）：新增 `pnpm release:rehearsal:checklist` 作为精确演练入口，列出 secrets、release workflow、三平台安装、0.1.0→0.1.1 更新验证与记录项；本地不能伪造签名 secrets、GitHub protected environment 与三平台安装/更新结果，未执行正式发布演练，不勾选。
+  - 进展备注（2026-07-08）：release dry-run job 增加 `release-rehearsal-*` artifact，`pnpm release:rehearsal:checklist` 支持 `ARTISTIC_GIT_RELEASE_REHEARSAL_REPORT_DIR` 输出 Markdown + JSON dry-run verifier/checklist；secrets、protected environment、三平台安装和 0.1.0→0.1.1 更新演练仍未实际完成，不勾选。
 
 **验收**：三平台 CI（单元 + 集成）与 Linux/Windows E2E 全绿；发布演练成功。
 

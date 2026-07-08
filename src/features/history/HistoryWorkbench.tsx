@@ -735,6 +735,8 @@ function HistoryCommitRow({
   return (
     <button
       className="absolute left-0 right-0 grid border-b bg-card px-4 text-left transition-colors hover:bg-accent/45 [grid-template-columns:112px_minmax(0,1fr)_180px_140px]"
+      data-commit-message={commit.message}
+      data-testid="history-commit-row"
       onClick={() => {
         onSelect(commit.id);
       }}
@@ -1198,6 +1200,7 @@ function RevertActionButton({
     <Button
       aria-describedby={describedBy}
       className="gap-2"
+      data-testid="history-revert-open"
       disabled={busy || reason !== null}
       onClick={onClick}
       type="button"
@@ -1268,6 +1271,7 @@ function RevertCommitDialog({
             </Button>
             <Button
               className="gap-2"
+              data-testid="history-revert-confirm"
               disabled={busy || status !== null}
               onClick={onConfirm}
               type="button"

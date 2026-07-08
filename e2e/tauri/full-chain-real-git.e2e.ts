@@ -32,21 +32,15 @@ describeRealGit("Artistic Git Tauri real-git full chain", () => {
     fixture?.cleanup();
   });
 
-  it("drives UI clone and completes clone/open/commit/sync/conflict/revert through the Tauri backend", async () => {
+  it("drives clone/commit/sync/conflict/revert through UI controls with a real remote", async () => {
     await waitForStartScreen();
     await cloneThroughUi(fixture.remotePath, fixture.parentPath, "local");
     const localPath = path.join(fixture.parentPath, "local");
     await waitForRepository(localPath);
 
-    const localAddOid = await appInvoke<CommitResponse>("commit_changes", {
-      request: commitRequest(
-        localPath,
-        "local.txt",
-        "local\n",
-        "add local file",
-        true,
-      ),
-    }).then((response) => committedOid(response, "local commit"));
+    fixture.write("local", "local.txt", "local\n");
+    await commitThroughUi("local.txt", "add local file", true);
+    const localAddOid = fixture.git(["rev-parse", "HEAD"], localPath).trim();
     assert.equal(
       fixture.git(["show", "refs/heads/main:local.txt"], fixture.remotePath),
       "local\n",
@@ -58,31 +52,15 @@ describeRealGit("Artistic Git Tauri real-git full chain", () => {
     fixture.git(["commit", "-m", "peer pushes file"], fixture.repoPath("peer"));
     fixture.git(["push"], fixture.repoPath("peer"));
 
-    const pulled = await appInvoke<SyncCurrentBranchResponse>(
-      "sync_current_branch",
-      {
-        request: {
-          repositoryPath: localPath,
-          operationId: "wdio-full-chain-pull",
-        },
-      },
-    );
-    assert.equal(pulled.status, "pulled");
+    await syncAllThroughUi();
     assert.equal(
       readFileSync(path.join(localPath, "peer.txt"), "utf8"),
       "peer\n",
     );
     assertClean(fixture, localPath);
 
-    await appInvoke<CommitResponse>("commit_changes", {
-      request: commitRequest(
-        localPath,
-        "tracked.txt",
-        "local conflicting edit\n",
-        "local conflicting edit",
-        false,
-      ),
-    }).then((response) => committedOid(response, "local conflicting commit"));
+    fixture.write("local", "tracked.txt", "local conflicting edit\n");
+    await commitThroughUi("tracked.txt", "local conflicting edit", false);
 
     fixture.write("peer", "tracked.txt", "peer conflicting edit\n");
     fixture.git(["add", "tracked.txt"], fixture.repoPath("peer"));
@@ -92,84 +70,32 @@ describeRealGit("Artistic Git Tauri real-git full chain", () => {
     );
     fixture.git(["push"], fixture.repoPath("peer"));
 
-    const conflict = await appInvoke<SyncCurrentBranchResponse>(
-      "sync_current_branch",
-      {
-        request: {
-          repositoryPath: localPath,
-          operationId: "wdio-full-chain-conflict",
-        },
-      },
-    );
-    assert.equal(conflict.status, "conflicts");
-    assert.ok(
-      conflict.conflict?.files.some((file) => file.path === "tracked.txt"),
-    );
+    await syncAllThroughUi();
+    await waitForConflictOverlay("tracked.txt");
     assert.match(
       fixture.git(["status", "--porcelain=v1"], localPath),
       /UU tracked\.txt/,
     );
-
-    await appInvoke("save_conflict_resolution", {
-      request: {
-        repositoryPath: localPath,
-        path: "tracked.txt",
-        content: "resolved full chain\n",
-        pendingHunks: 0,
-      },
-    });
-    await appInvoke("complete_conflict_resolution", {
-      request: {
-        repositoryPath: localPath,
-        operationId: "wdio-full-chain-conflict",
-        paths: ["tracked.txt"],
-      },
-    });
+    await resolveConflictWithOwnVersion("tracked.txt");
     assert.equal(
       readFileSync(path.join(localPath, "tracked.txt"), "utf8"),
-      "resolved full chain\n",
+      "local conflicting edit\n",
     );
     assertClean(fixture, localPath);
 
-    const pushedResolution = await appInvoke<SyncCurrentBranchResponse>(
-      "sync_current_branch",
-      {
-        request: {
-          repositoryPath: localPath,
-          operationId: "wdio-full-chain-push-resolution",
-        },
-      },
-    );
-    assert.ok(
-      pushedResolution.status === "pushed" ||
-        pushedResolution.status === "alreadyUpToDate",
-      `unexpected resolution push status: ${pushedResolution.status}`,
-    );
+    await syncAllThroughUi();
     fixture.git(["pull", "--ff-only"], fixture.repoPath("peer"));
     assert.equal(
       readFileSync(path.join(fixture.repoPath("peer"), "tracked.txt"), "utf8"),
-      "resolved full chain\n",
+      "local conflicting edit\n",
     );
 
-    const reverted = await appInvoke<RevertCommitResponse>("revert_commit", {
-      request: {
-        repositoryPath: localPath,
-        oid: localAddOid,
-        pushAfterRevert: true,
-      },
-    });
-    assert.equal(reverted.status, "reverted");
-    if (reverted.status !== "reverted") {
-      throw new Error(
-        `unexpected revert response: ${JSON.stringify(reverted)}`,
-      );
-    }
-    const revertedCommit = reverted as Extract<
-      RevertCommitResponse,
-      { status: "reverted" }
-    >;
-    assert.equal(revertedCommit.message, "Revert: add local file");
-    assert.equal(revertedCommit.pushed, true);
+    await revertCommitThroughUi(
+      fixture,
+      localPath,
+      localAddOid,
+      "add local file",
+    );
 
     fixture.git(["pull", "--ff-only"], fixture.repoPath("peer"));
     assert.equal(
@@ -179,32 +105,6 @@ describeRealGit("Artistic Git Tauri real-git full chain", () => {
     assertClean(fixture, localPath);
   });
 });
-
-type CommitResponse =
-  | {
-      status: "committed";
-      oid: string;
-      committedPaths: string[];
-      lfsTrackedPaths: string[];
-    }
-  | { status: string };
-
-type RevertCommitResponse =
-  | { status: "reverted"; oid: string; message: string; pushed: boolean }
-  | { status: string };
-
-type SyncCurrentBranchResponse = {
-  repositoryPath: string;
-  branchName: string;
-  upstream: string | null;
-  status: string;
-  attempts: number;
-  conflict: null | {
-    files: Array<{ path: string }>;
-  };
-  stashRecovery: unknown;
-  remoteHistoryChange: unknown;
-};
 
 class RealGitFixture {
   private constructor(
@@ -303,6 +203,198 @@ async function cloneThroughUi(
   await $('button[form="clone-repository"]').click();
 }
 
+async function commitThroughUi(
+  relativePath: string,
+  message: string,
+  pushImmediately: boolean,
+) {
+  await openLocalChangesTab();
+  await waitForLocalChange(relativePath);
+  await setLocalChangeChecked(relativePath, true);
+  await $('[data-testid="local-changes-commit"]').click();
+  await $('[data-testid="commit-message-input"]').setValue(message);
+  const pushCheckbox = await $('[data-testid="commit-push-immediately"]');
+  if (await pushCheckbox.isExisting()) {
+    const checked = await pushCheckbox.isSelected();
+    if (checked !== pushImmediately) {
+      await pushCheckbox.click();
+    }
+  }
+  await $('[data-testid="commit-dialog-submit"]').click();
+  await waitForCommitDialogClosedOrCommitted();
+}
+
+async function syncAllThroughUi() {
+  const syncButton = await $('[data-testid="repository-sync-all"]');
+  await browser.waitUntil(async () => syncButton.isEnabled(), {
+    timeout: 30_000,
+    timeoutMsg: "repository sync button was not enabled before click",
+  });
+  await syncButton.click();
+  await browser.waitUntil(
+    async () => await $('[data-testid="repository-sync-all"]').isEnabled(),
+    {
+      timeout: 90_000,
+      timeoutMsg: "repository sync button did not become enabled",
+    },
+  );
+}
+
+async function waitForConflictOverlay(relativePath: string) {
+  await browser.waitUntil(
+    async () =>
+      (await $('[data-testid="conflict-resolution-overlay"]').isExisting()) &&
+      (await elementWithAttribute(
+        "conflict-file-row",
+        "data-conflict-path",
+        relativePath,
+      )) !== null,
+    {
+      timeout: 90_000,
+      timeoutMsg: `conflict overlay did not show ${relativePath}`,
+    },
+  );
+}
+
+async function resolveConflictWithOwnVersion(relativePath: string) {
+  const row = await elementWithAttribute(
+    "conflict-file-row",
+    "data-conflict-path",
+    relativePath,
+  );
+  assert.ok(row, `conflict row for ${relativePath} should exist`);
+  await row.click();
+  await $('[data-testid="conflict-detail-use-own"]').click();
+  const complete = await $('[data-testid="conflict-complete"]');
+  await browser.waitUntil(async () => complete.isEnabled(), {
+    timeout: 30_000,
+    timeoutMsg: "conflict complete button did not become enabled",
+  });
+  await complete.click();
+  await browser.waitUntil(
+    async () =>
+      !(await $('[data-testid="conflict-resolution-overlay"]').isExisting()),
+    {
+      timeout: 90_000,
+      timeoutMsg: "conflict overlay did not close",
+    },
+  );
+}
+
+async function revertCommitThroughUi(
+  fixture: RealGitFixture,
+  repositoryPath: string,
+  oid: string,
+  message: string,
+) {
+  await openHistoryTab();
+  await waitForHistoryCommit(oid, message);
+  const row = await elementWithAttribute(
+    "history-commit-row",
+    "data-commit-message",
+    message,
+  );
+  assert.ok(row, `history row for ${message} should exist`);
+  await row.click();
+  await $('[data-testid="history-revert-open"]').click();
+  await $('[data-testid="history-revert-confirm"]').click();
+  await browser.waitUntil(
+    async () => {
+      const status = fixture.git(["status", "--porcelain=v1"], repositoryPath);
+      return status.trim() === "";
+    },
+    {
+      timeout: 90_000,
+      timeoutMsg: "revert did not leave a clean repository",
+    },
+  );
+}
+
+async function openLocalChangesTab() {
+  await $('[data-testid="repository-tab-local-changes"]').click();
+  await $('[data-testid="local-changes-panel"]').waitForExist({
+    timeout: 30_000,
+  });
+}
+
+async function openHistoryTab() {
+  await $('[data-testid="repository-tab-history"]').click();
+  await $('[data-testid="history-scroll-viewport"]').waitForExist({
+    timeout: 30_000,
+  });
+}
+
+async function waitForLocalChange(relativePath: string) {
+  await browser.waitUntil(
+    async () =>
+      (await elementWithAttribute(
+        "local-change-row",
+        "data-change-path",
+        relativePath,
+      )) !== null,
+    {
+      timeout: 60_000,
+      timeoutMsg: `local change did not appear in UI: ${relativePath}`,
+    },
+  );
+}
+
+async function waitForHistoryCommit(oid: string, message: string) {
+  await browser.waitUntil(
+    async () =>
+      (await elementWithAttribute(
+        "history-commit-row",
+        "data-commit-message",
+        message,
+      )) !== null ||
+      (await browser.execute(
+        (shortOid) => document.body.textContent?.includes(shortOid) ?? false,
+        oid.slice(0, 7),
+      )),
+    {
+      timeout: 60_000,
+      timeoutMsg: `history commit did not appear in UI: ${message}`,
+    },
+  );
+}
+
+async function setLocalChangeChecked(relativePath: string, checked: boolean) {
+  const row = await elementWithAttribute(
+    "local-change-row",
+    "data-change-path",
+    relativePath,
+  );
+  assert.ok(row, `local change row for ${relativePath} should exist`);
+  const checkbox = await row.$('[data-testid="local-change-checkbox"]');
+  if ((await checkbox.isSelected()) !== checked) {
+    await checkbox.click();
+  }
+}
+
+async function waitForCommitDialogClosedOrCommitted() {
+  await browser.waitUntil(
+    async () => {
+      const dialogSubmit = await $('[data-testid="commit-dialog-submit"]');
+      if (!(await dialogSubmit.isExisting())) {
+        return true;
+      }
+      if (!(await dialogSubmit.isEnabled())) {
+        return false;
+      }
+      const status = await $('[data-testid="commit-dialog-status"]');
+      return (await status.getText()).length > 0;
+    },
+    {
+      timeout: 90_000,
+      timeoutMsg: "commit dialog did not finish",
+    },
+  );
+  const submit = await $('[data-testid="commit-dialog-submit"]');
+  if (await submit.isExisting()) {
+    await browser.keys("Escape");
+  }
+}
+
 async function waitForStartScreen() {
   await browser.waitUntil(
     async () =>
@@ -338,35 +430,25 @@ async function waitForRepository(repositoryPath: string) {
   );
 }
 
-function commitRequest(
-  repositoryPath: string,
-  relativePath: string,
-  content: string,
-  message: string,
-  pushImmediately: boolean,
-) {
-  writeFileSync(path.join(repositoryPath, relativePath), content);
-  return {
-    repositoryPath,
-    paths: [relativePath],
-    message,
-    largeFileThresholdMb: null,
-    largeFileDecision: "prompt",
-    disableRepositoryGpgsign: false,
-    pushImmediately,
-  };
-}
-
-function committedOid(response: CommitResponse, label: string) {
-  assert.equal(response.status, "committed", `${label} should commit`);
-  return (response as Extract<CommitResponse, { status: "committed" }>).oid;
-}
-
 function assertClean(fixture: RealGitFixture, repositoryPath: string) {
   assert.equal(
     fixture.git(["status", "--porcelain=v1"], repositoryPath).trim(),
     "",
   );
+}
+
+async function elementWithAttribute(
+  testId: string,
+  attribute: string,
+  value: string,
+) {
+  const elements = await $$(`[data-testid="${testId}"]`);
+  for (const element of elements) {
+    if ((await element.getAttribute(attribute)) === value) {
+      return element;
+    }
+  }
+  return null;
 }
 
 function appInvoke<T = unknown>(command: string, args: unknown): Promise<T> {

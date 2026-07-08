@@ -1718,6 +1718,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
               onClick={() => {
                 setActiveTab("history");
               }}
+              testId="repository-tab-history"
             />
             <TabButton
               active={activeTab === "localChanges"}
@@ -1727,6 +1728,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
               onClick={() => {
                 setActiveTab("localChanges");
               }}
+              testId="repository-tab-local-changes"
             />
           </nav>
           <div className="min-w-0 text-numeric text-sm text-muted-foreground">
@@ -2758,7 +2760,10 @@ function CommitChangesDialog({
       description={t("localChanges.commitDescription", { count: fileCount })}
       footer={
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <span className="min-w-0 text-sm text-muted-foreground">
+          <span
+            className="min-w-0 text-sm text-muted-foreground"
+            data-testid="commit-dialog-status"
+          >
             {busy ? t("localChanges.commitBusy") : status}
           </span>
           <div className="flex items-center gap-2">
@@ -2770,7 +2775,12 @@ function CommitChangesDialog({
             >
               {t("actions.cancel")}
             </Button>
-            <Button disabled={!canCommit} onClick={onCommit} type="button">
+            <Button
+              data-testid="commit-dialog-submit"
+              disabled={!canCommit}
+              onClick={onCommit}
+              type="button"
+            >
               {t("localChanges.commit")}
             </Button>
           </div>
@@ -2783,6 +2793,7 @@ function CommitChangesDialog({
         <span className="font-medium">{t("localChanges.commitMessage")}</span>
         <textarea
           className="min-h-28 resize-y rounded-md border bg-background p-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          data-testid="commit-message-input"
           onChange={(event) => onMessageChange(event.target.value)}
           onKeyDown={(event) => {
             if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
@@ -2802,6 +2813,7 @@ function CommitChangesDialog({
           <input
             checked={pushImmediately}
             className="size-4"
+            data-testid="commit-push-immediately"
             disabled={busy}
             onChange={(event) => onPushImmediatelyChange(event.target.checked)}
             type="checkbox"
@@ -3132,6 +3144,7 @@ interface TabButtonProps {
   icon: React.ReactNode;
   label: string;
   onClick: () => void;
+  testId?: string;
 }
 
 function TabButton({
@@ -3140,6 +3153,7 @@ function TabButton({
   icon,
   label,
   onClick,
+  testId,
 }: TabButtonProps) {
   return (
     <button
@@ -3149,6 +3163,7 @@ function TabButton({
           ? "bg-secondary text-secondary-foreground"
           : "text-muted-foreground hover:bg-accent hover:text-foreground",
       )}
+      data-testid={testId}
       onClick={onClick}
       type="button"
     >

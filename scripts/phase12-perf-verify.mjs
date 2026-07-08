@@ -15,6 +15,9 @@ import path from "node:path";
 
 const heavy = process.env.ARTISTIC_GIT_PERF_HEAVY === "1";
 const keep = process.env.ARTISTIC_GIT_PERF_KEEP_TEMP === "1";
+const reportPath =
+  process.env.ARTISTIC_GIT_PHASE12_PERF_REPORT ??
+  (process.env.CI ? path.join("artifacts", "phase12-perf-report.json") : null);
 const profile = {
   binaryBytes: numberFromEnv(
     "ARTISTIC_GIT_PERF_BINARY_BYTES",
@@ -27,12 +30,23 @@ const profile = {
     heavy ? 30_000 : 10_000,
   ),
 };
+const report = {
+  generatedAt: new Date().toISOString(),
+  heavy,
+  profile,
+  status: "running",
+  gitDistDir: process.env.ARTISTIC_GIT_DIST_DIR ?? null,
+  checks: [],
+};
 
 const gitDistDir = process.env.ARTISTIC_GIT_DIST_DIR;
 if (!gitDistDir) {
   console.log(
     "SKIP phase12 perf verification: ARTISTIC_GIT_DIST_DIR is not set.",
   );
+  report.status = "skipped";
+  report.skipReason = "ARTISTIC_GIT_DIST_DIR is not set";
+  writeReport();
   process.exit(0);
 }
 
@@ -73,10 +87,18 @@ try {
   verifyLargeStatus();
   verifyLargeBinaryAndLfs();
 
+  report.status = "passed";
+  report.rootKept = keep ? root : null;
+  writeReport();
   console.log(
     `PASS phase12 perf verification (${heavy ? "heavy" : "light"}): ` +
       `${profile.commitCount} commits, ${profile.fileCount} files, ${profile.binaryBytes} byte binary.`,
   );
+} catch (error) {
+  report.status = "failed";
+  report.error = error instanceof Error ? error.message : String(error);
+  writeReport();
+  throw error;
 } finally {
   if (keep) {
     console.log(`Keeping perf fixture at ${root}`);
@@ -86,6 +108,7 @@ try {
 }
 
 function verifyHistoryPagination() {
+  const started = performance.now();
   writeFileSync(path.join(repo, "history.txt"), "0\n");
   runGit(["add", "history.txt"], repo);
   runGit(["commit", "-m", "history 0"], repo);
@@ -116,6 +139,11 @@ function verifyHistoryPagination() {
       "history pages do not overlap at boundary",
     );
   }
+  recordCheck("historyPagination", {
+    elapsedMs: Math.round(performance.now() - started),
+    firstPageSize: firstPage.length,
+    secondPageChecked: profile.commitCount > 200,
+  });
 }
 
 function verifyLargeStatus() {
@@ -149,9 +177,17 @@ function verifyLargeStatus() {
     "true",
     "core.untrackedCache config",
   );
+  recordCheck("largeStatus", {
+    elapsedMs: Math.round(elapsed),
+    fileCount: profile.fileCount,
+    fsmonitor: true,
+    untrackedCache: true,
+    budgetMs: profile.statusBudgetMs,
+  });
 }
 
 function verifyLargeBinaryAndLfs() {
+  const started = performance.now();
   if (!existsSync(gitLfsPath)) {
     throw new Error(`embedded git-lfs executable is missing at ${gitLfsPath}`);
   }
@@ -175,6 +211,11 @@ function verifyLargeBinaryAndLfs() {
     profile.binaryBytes,
     "working tree binary size",
   );
+  recordCheck("largeBinaryLfs", {
+    elapsedMs: Math.round(performance.now() - started),
+    binaryBytes: profile.binaryBytes,
+    pointerStored: true,
+  });
 }
 
 function logPage(skip) {
@@ -239,4 +280,22 @@ function assertNotEqual(actual, expected, label) {
   if (actual === expected) {
     throw new Error(`${label}: both values were ${actual}`);
   }
+}
+
+function recordCheck(name, metrics) {
+  report.checks.push({
+    name,
+    status: "passed",
+    ...metrics,
+  });
+}
+
+function writeReport() {
+  if (!reportPath) {
+    return;
+  }
+  const absoluteReportPath = path.resolve(reportPath);
+  mkdirSync(path.dirname(absoluteReportPath), { recursive: true });
+  writeFileSync(absoluteReportPath, `${JSON.stringify(report, null, 2)}\n`);
+  console.log(`Wrote phase12 perf report to ${absoluteReportPath}`);
 }

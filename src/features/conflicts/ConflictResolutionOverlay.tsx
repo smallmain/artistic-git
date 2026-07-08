@@ -279,6 +279,7 @@ export function ConflictResolutionOverlay({
       aria-label={t("conflicts.title")}
       aria-modal="true"
       className="fixed inset-0 z-50 flex min-h-0 flex-col bg-background text-foreground"
+      data-testid="conflict-resolution-overlay"
       role="dialog"
     >
       <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b bg-card px-4">
@@ -298,6 +299,7 @@ export function ConflictResolutionOverlay({
             <span className="text-sm text-muted-foreground">{busyLabel}</span>
           ) : null}
           <Button
+            data-testid="conflict-complete"
             disabled={!allResolved || busyLabel !== null}
             onClick={() => {
               void runComplete();
@@ -356,6 +358,7 @@ export function ConflictResolutionOverlay({
               {t("conflicts.invert")}
             </Button>
             <Button
+              data-testid="conflict-use-other"
               disabled={
                 selectedOrCurrentPaths.length === 0 || busyLabel !== null
               }
@@ -368,6 +371,7 @@ export function ConflictResolutionOverlay({
               {t("conflicts.useOther")}
             </Button>
             <Button
+              data-testid="conflict-use-own"
               disabled={
                 selectedOrCurrentPaths.length === 0 || busyLabel !== null
               }
@@ -469,6 +473,8 @@ function ConflictFileRow({
         "flex w-full items-center gap-2 border-b px-3 py-2 text-left text-sm hover:bg-accent",
         selected ? "bg-secondary text-secondary-foreground" : "text-foreground",
       )}
+      data-conflict-path={file.path}
+      data-testid="conflict-file-row"
       onClick={onSelect}
       type="button"
     >
@@ -596,6 +602,7 @@ function TextConflictDetail({
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <Button
+            data-testid="conflict-detail-use-own"
             disabled={saving}
             onClick={() => onSelectSide("own")}
             type="button"
@@ -604,6 +611,7 @@ function TextConflictDetail({
             {sideLabels.useOwn}
           </Button>
           <Button
+            data-testid="conflict-detail-use-other"
             disabled={saving}
             onClick={() => onSelectSide("other")}
             type="button"
@@ -640,6 +648,7 @@ function TextConflictDetail({
             </label>
           ) : null}
           <Button
+            data-testid="conflict-save"
             disabled={saveDisabled}
             onClick={() => onSave(content, pendingHunks)}
             type="button"

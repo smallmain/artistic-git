@@ -128,7 +128,10 @@ export function LocalChangesPanel({
   };
 
   return (
-    <section className="grid h-full min-h-0 grid-cols-[360px_minmax(0,1fr)] overflow-hidden border bg-background">
+    <section
+      className="grid h-full min-h-0 grid-cols-[360px_minmax(0,1fr)] overflow-hidden border bg-background"
+      data-testid="local-changes-panel"
+    >
       <aside className="flex min-h-0 flex-col border-r bg-card">
         <header className="space-y-3 border-b p-3">
           <div className="flex items-center justify-between gap-2">
@@ -244,6 +247,7 @@ export function LocalChangesPanel({
           </span>
           <Button
             className="gap-2"
+            data-testid="local-changes-commit"
             disabled={busy || checkedIds.size === 0}
             onClick={() => onCommit?.(Array.from(checkedIds))}
           >
@@ -472,6 +476,8 @@ function ChangeRow({
         indent ? "pl-6" : "",
         selected ? "bg-accent" : "",
       )}
+      data-change-path={change.payload.newPath}
+      data-testid="local-change-row"
       onClick={onSelect}
       onContextMenu={onContextMenu}
       onKeyDown={(event) => {
@@ -493,6 +499,7 @@ function ChangeRow({
         })}
         checked={checked}
         className="size-4 accent-primary"
+        data-testid="local-change-checkbox"
         onChange={(event) => onToggle(event.target.checked)}
         onClick={(event) => event.stopPropagation()}
         type="checkbox"

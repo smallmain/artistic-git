@@ -1,8 +1,11 @@
 use crate::git_ops::{display_path, git_stdout};
 use artistic_git_contracts::{
-    AbortRevertRequest, CommitRequest, CommitResponse, LargeFileDecision, OperationId,
-    RevertCommitRequest, RevertCommitResponse, SyncCurrentBranchRequest,
+    AbortRevertRequest, BranchOperationResponse, CancelStashRestoreRequest, CheckoutBranchRequest,
+    CheckoutLocalChangesMode, CommitRequest, CommitResponse, LargeFileDecision, OperationId,
+    RevertCommitRequest, RevertCommitResponse, SyncAllBranchesRequest, SyncBranchRequest,
+    SyncCurrentBranchRequest,
 };
+use artistic_git_core::config::{AutoTrackingRule, ConfigActor, ConfigPaths};
 use artistic_git_git_runner::{GitDistribution, GitRunner};
 use artistic_git_test_support::{require_git_dist, GitDistError, TestTempDir};
 use std::{ffi::OsString, fs, io::Write, path::PathBuf};
@@ -119,6 +122,190 @@ fn phase12_revert_conflict_abort_restores_pre_operation_snapshot() {
 
     before.assert_restored(&repo);
     assert_repository_reusable(&repo);
+}
+
+#[test]
+fn phase12_sync_non_current_publish_failure_keeps_repository_reusable() {
+    let Some((runner, _home)) = real_runner_or_skip() else {
+        return;
+    };
+    let fixture = RemoteFixture::new(&runner, "ag-phase12-sync-branch-publish-failure");
+    fixture.local.git(["checkout", "-b", "local-only"]);
+    fixture.local.write("branch.txt", "branch\n");
+    fixture.local.git(["add", "branch.txt"]);
+    fixture.local.git(["commit", "-m", "local-only work"]);
+    fixture.local.git(["checkout", "main"]);
+    fixture.local.git([
+        "remote",
+        "set-url",
+        "origin",
+        "/definitely/missing/artistic-git-remote.git",
+    ]);
+    let before = RepoSnapshot::capture(&fixture.local);
+
+    crate::sync_branch(
+        &runner,
+        SyncBranchRequest {
+            repository_path: display_path(&fixture.local.path),
+            branch_name: "local-only".to_owned(),
+            operation_id: Some(OperationId("phase12-sync-branch-publish".to_owned())),
+        },
+    )
+    .expect_err("publishing to a missing origin should fail");
+
+    before.assert_restored(&fixture.local);
+    assert_repository_reusable(&fixture.local);
+}
+
+#[test]
+fn phase12_auto_tracking_divergence_restores_local_changes() {
+    let Some((runner, _home)) = real_runner_or_skip() else {
+        return;
+    };
+    let fixture = RemoteFixture::new(&runner, "ag-phase12-auto-tracking-failure");
+    fixture.local.git(["checkout", "-b", "feature"]);
+    fixture.local.write("feature.txt", "feature\n");
+    fixture.local.git(["add", "feature.txt"]);
+    fixture.local.git(["commit", "-m", "feature work"]);
+    fixture.local.git(["push", "-u", "origin", "feature"]);
+    fixture.local.git(["checkout", "main"]);
+    fixture.local.write("main.txt", "main\n");
+    fixture.local.git(["add", "main.txt"]);
+    fixture.local.git(["commit", "-m", "main work"]);
+    fixture.local.git(["push"]);
+    fixture.local.git(["checkout", "feature"]);
+    fixture.local.write("draft.txt", "draft survives\n");
+    let before = RepoSnapshot::capture(&fixture.local);
+    let config = phase12_config(&fixture._parent);
+    config
+        .update_project(display_path(&fixture.local.path), |project| {
+            project.auto_tracking_rules = vec![AutoTrackingRule::new("feature", "main")];
+        })
+        .expect("store auto tracking rule");
+
+    let response = crate::sync_all_branches_with_config(
+        &runner,
+        Some(&config),
+        SyncAllBranchesRequest {
+            repository_path: display_path(&fixture.local.path),
+            operation_id: Some(OperationId("phase12-auto-tracking-failure".to_owned())),
+        },
+        |_| {},
+    )
+    .expect("auto tracking divergence is reported in-band");
+
+    assert!(response
+        .auto_tracking
+        .iter()
+        .any(|result| result.source_branch == "feature" && result.message.is_some()));
+    before.assert_restored(&fixture.local);
+    assert_repository_reusable(&fixture.local);
+}
+
+#[test]
+fn phase12_checkout_auto_stash_conflict_cancel_restores_snapshot() {
+    let Some((runner, _home)) = real_runner_or_skip() else {
+        return;
+    };
+    let repo = TestRepo::new(&runner, "ag-phase12-checkout-failure");
+    repo.init_with_commit();
+    repo.git(["checkout", "-b", "other"]);
+    repo.write("tracked.txt", "other branch\n");
+    repo.git(["add", "tracked.txt"]);
+    repo.git(["commit", "-m", "other branch edit"]);
+    repo.git(["checkout", "main"]);
+    repo.write("tracked.txt", "local draft\n");
+    let before = RepoSnapshot::capture(&repo);
+
+    let response = crate::branches::checkout_branch(
+        &runner,
+        CheckoutBranchRequest {
+            repository_path: display_path(&repo.path),
+            branch_name: "other".to_owned(),
+            local_changes_mode: CheckoutLocalChangesMode::AutoStash,
+            operation_id: Some(OperationId("phase12-checkout-conflict".to_owned())),
+        },
+    )
+    .expect("checkout conflict should be reported in-band");
+    let BranchOperationResponse::Conflicts {
+        stash_recovery: Some(recovery),
+        ..
+    } = response
+    else {
+        panic!("expected checkout auto-stash conflict with recovery point");
+    };
+
+    crate::cancel_stash_restore(
+        &runner,
+        CancelStashRestoreRequest {
+            repository_path: display_path(&repo.path),
+            recovery,
+        },
+    )
+    .expect("cancel checkout stash restore");
+
+    before.assert_restored(&repo);
+    assert_repository_reusable(&repo);
+}
+
+#[test]
+fn phase12_submodule_commit_publish_guard_failure_preserves_super_and_submodule() {
+    let Some((runner, _home)) = real_runner_or_skip() else {
+        return;
+    };
+    let fixture = RemoteFixture::new(&runner, "ag-phase12-submodule-commit-failure");
+    let submodule_source = TestRepo::at(&runner, fixture._parent.path().join("submodule-source"));
+    git_stdout(
+        &runner,
+        None::<&std::path::Path>,
+        [
+            OsString::from("init"),
+            OsString::from("-b"),
+            OsString::from("main"),
+            submodule_source.path.as_os_str().to_owned(),
+        ],
+        "phase12FailureHarness",
+    )
+    .expect("init submodule source");
+    submodule_source.configure_identity();
+    submodule_source.write("nested.txt", "initial\n");
+    submodule_source.git(["add", "nested.txt"]);
+    submodule_source.git(["commit", "-m", "submodule initial"]);
+    fixture.local.git([
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        display_path(&submodule_source.path).as_str(),
+        "module",
+    ]);
+    fixture.local.git(["commit", "-am", "add submodule"]);
+    fixture.local.git(["push"]);
+
+    let submodule = TestRepo::at(&runner, fixture.local.path.join("module"));
+    submodule.git(["remote", "remove", "origin"]);
+    submodule.write("nested.txt", "submodule draft\n");
+    let before_super = RepoSnapshot::capture(&fixture.local);
+    let before_submodule = RepoSnapshot::capture(&submodule);
+
+    crate::commit_changes(
+        &runner,
+        CommitRequest {
+            repository_path: display_path(&fixture.local.path),
+            paths: vec!["module/nested.txt".to_owned()],
+            message: "submodule publish guard should fail".to_owned(),
+            large_file_threshold_mb: None,
+            large_file_decision: LargeFileDecision::Prompt,
+            disable_repository_gpgsign: false,
+            push_immediately: true,
+        },
+    )
+    .expect_err("submodule without origin cannot be pushable");
+
+    before_super.assert_restored(&fixture.local);
+    before_submodule.assert_restored(&submodule);
+    assert_repository_reusable(&fixture.local);
+    assert_repository_reusable(&submodule);
 }
 
 #[derive(Debug)]
@@ -328,4 +515,14 @@ fn real_runner_or_skip() -> Option<(GitRunner, TestTempDir)> {
     fs::create_dir_all(&home).expect("create runner home");
     let runner = GitRunner::from_distribution(distribution, home);
     Some((runner, temp))
+}
+
+fn phase12_config(parent: &TestTempDir) -> ConfigActor {
+    let config_dir = parent.path().join("config");
+    fs::create_dir_all(&config_dir).expect("create config dir");
+    ConfigActor::load(ConfigPaths::new(
+        config_dir.join("settings.json"),
+        config_dir.join("projects.json"),
+    ))
+    .expect("load phase12 config")
 }
