@@ -1664,15 +1664,17 @@ mod tests {
         manifest.paths.credential_helper = "helpers/artistic-git-credential-helper".to_owned();
         manifest.paths.ssh_askpass = "helpers/artistic-git-ssh-askpass".to_owned();
         write_git_dist_manifest(temp.path(), &manifest).expect("manifest");
+        let system_git = shell_quote_path(&system_git_path());
+        let git_wrapper = format!("#!/bin/sh\nexec {system_git} \"$@\"\n");
         write_executable_script(
             &temp.path().join("git/bin/git"),
-            "#!/bin/sh\nexec git \"$@\"\n",
+            &git_wrapper,
             "@echo off\r\ngit %*\r\n",
         )
         .expect("git wrapper");
         write_executable_script(
             &temp.path().join("git-lfs/git-lfs"),
-            "#!/bin/sh\nexec git \"$@\"\n",
+            &git_wrapper,
             "@echo off\r\ngit %*\r\n",
         )
         .expect("git-lfs wrapper");
@@ -1828,6 +1830,26 @@ mod tests {
             .status()
             .expect("git command");
         assert!(status.success(), "git setup command failed");
+    }
+
+    #[cfg(unix)]
+    fn system_git_path() -> PathBuf {
+        let output = Command::new("sh")
+            .args(["-c", "command -v git"])
+            .output()
+            .expect("locate system git");
+        assert!(
+            output.status.success(),
+            "failed to locate system git: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        PathBuf::from(String::from_utf8_lossy(&output.stdout).trim())
+    }
+
+    #[cfg(unix)]
+    fn shell_quote_path(path: &Path) -> String {
+        let value = path.to_string_lossy();
+        format!("'{}'", value.replace('\'', "'\\''"))
     }
 
     #[cfg(unix)]

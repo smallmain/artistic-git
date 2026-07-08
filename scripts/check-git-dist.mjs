@@ -2,8 +2,9 @@
 /* global console, process */
 
 import { spawnSync } from "node:child_process";
-import { constants } from "node:fs";
-import { access, readFile, stat } from "node:fs/promises";
+import { constants, existsSync } from "node:fs";
+import { access, mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import {
   GitDistConfigError,
@@ -209,18 +210,35 @@ async function checkDistRoot(config) {
   await checkManifestExecutablesAndChecksums(config, manifest, distRoot);
 
   if (!noExec && targetName === getHostTarget()) {
-    runVersionCheck(
-      path.join(distRoot, manifest.paths.gitExecutable),
-      ["--version"],
-      "embedded git",
-      expectedGitVersion(config, target),
+    const gitExecutable = path.join(distRoot, manifest.paths.gitExecutable);
+    const runtimeRoot = await mkdtemp(
+      path.join(os.tmpdir(), "ag-git-dist-runtime-"),
     );
-    runVersionCheck(
-      path.join(distRoot, manifest.paths.gitLfsExecutable),
-      ["version"],
-      "embedded git-lfs",
-      `git-lfs/${config.versions.git_lfs}`,
-    );
+    const runtimeEnv = await embeddedGitRuntimeEnv({
+      distRoot,
+      manifest,
+      home: path.join(runtimeRoot, "home"),
+      resourceOverrides: false,
+    });
+    try {
+      runVersionCheck(
+        gitExecutable,
+        ["--version"],
+        "embedded git",
+        expectedGitVersion(config, target),
+        runtimeEnv,
+      );
+      runVersionCheck(
+        path.join(distRoot, manifest.paths.gitLfsExecutable),
+        ["version"],
+        "embedded git-lfs",
+        `git-lfs/${config.versions.git_lfs}`,
+        runtimeEnv,
+      );
+      await runGitSelfLocatedSmoke({ gitExecutable, distRoot, runtimeEnv });
+    } finally {
+      await rm(runtimeRoot, { recursive: true, force: true });
+    }
   }
 
   info(`ARTISTIC_GIT_DIST_DIR is valid for ${manifest.platform}: ${distRoot}`);
@@ -330,14 +348,10 @@ async function checkManifestExecutablesAndChecksums(
   }
 }
 
-function runVersionCheck(executable, versionArgs, label, expectedVersion) {
+function runVersionCheck(executable, versionArgs, label, expectedVersion, env) {
   const result = spawnSync(executable, versionArgs, {
     encoding: "utf8",
-    env: {
-      GIT_CONFIG_NOSYSTEM: "1",
-      HOME: path.dirname(executable),
-      PATH: "",
-    },
+    env,
   });
 
   if (result.error) {
@@ -356,6 +370,180 @@ function runVersionCheck(executable, versionArgs, label, expectedVersion) {
     fail(`${label} expected version '${expectedVersion}', got '${output}'`);
   }
   info(`${label}: ${output}`);
+}
+
+async function embeddedGitRuntimeEnv({
+  distRoot,
+  manifest,
+  home,
+  resourceOverrides,
+}) {
+  await mkdir(home, { recursive: true });
+
+  const gitExecutable = path.join(distRoot, manifest.paths.gitExecutable);
+  const gitLfsExecutable = path.join(distRoot, manifest.paths.gitLfsExecutable);
+  const gitExecPath = firstExistingDirectory(distRoot, [
+    "git/libexec/git-core",
+    "git/mingw64/libexec/git-core",
+    "git/usr/libexec/git-core",
+  ]);
+  const templateDir = firstExistingDirectory(distRoot, [
+    "git/share/git-core/templates",
+    "git/mingw64/share/git-core/templates",
+  ]);
+  const perlDirs = existingDirectories(distRoot, [
+    "git/share/perl5",
+    "git/mingw64/share/perl5",
+  ]);
+  const pathEntries = uniquePaths([
+    path.dirname(gitExecutable),
+    gitExecPath,
+    path.dirname(gitLfsExecutable),
+    path.join(distRoot, "git", "cmd"),
+    path.join(distRoot, "git", "mingw64", "bin"),
+    path.join(distRoot, "git", "usr", "bin"),
+    ...platformToolPathEntries(),
+  ]);
+
+  const env = {
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "init.defaultBranch",
+    GIT_CONFIG_VALUE_0: "main",
+    GIT_TERMINAL_PROMPT: "0",
+    HOME: home,
+    PATH: pathEntries.join(path.delimiter),
+  };
+
+  if (resourceOverrides) {
+    if (gitExecPath) {
+      env.GIT_EXEC_PATH = gitExecPath;
+    }
+    if (templateDir) {
+      env.GIT_TEMPLATE_DIR = templateDir;
+    }
+    if (perlDirs.length > 0) {
+      env.GITPERLLIB = perlDirs.join(path.delimiter);
+    }
+  }
+
+  return env;
+}
+
+async function runGitSelfLocatedSmoke({ gitExecutable, distRoot, runtimeEnv }) {
+  const root = await mkdtemp(path.join(os.tmpdir(), "ag-git-dist-smoke-"));
+  try {
+    const expectedExecPath = firstExistingDirectory(distRoot, [
+      "git/libexec/git-core",
+      "git/mingw64/libexec/git-core",
+      "git/usr/libexec/git-core",
+    ]);
+    if (!expectedExecPath) {
+      fail("embedded git smoke could not find git libexec/git-core in dist");
+    }
+    const observedExecPath = runGitSmokeCommand(
+      gitExecutable,
+      ["--exec-path"],
+      root,
+      runtimeEnv,
+    ).stdout.trim();
+    if (!samePath(observedExecPath, expectedExecPath)) {
+      fail(
+        `embedded git --exec-path must self-locate inside dist: expected ${expectedExecPath}, got ${observedExecPath}`,
+      );
+    }
+
+    runGitSmokeCommand(gitExecutable, ["init", "repo"], root, runtimeEnv);
+    const repo = path.join(root, "repo");
+    const branch = runGitSmokeCommand(
+      gitExecutable,
+      ["symbolic-ref", "--short", "HEAD"],
+      repo,
+      runtimeEnv,
+    ).stdout.trim();
+    if (branch !== "main") {
+      fail(`embedded git init default branch must be main, got ${branch}`);
+    }
+    const sampleHook = path.join(repo, ".git", "hooks", "pre-commit.sample");
+    if (!existsSync(sampleHook)) {
+      fail(`embedded git init must copy hook templates; missing ${sampleHook}`);
+    }
+    runGitSmokeCommand(
+      gitExecutable,
+      ["submodule", "status"],
+      repo,
+      runtimeEnv,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+
+  info(
+    "embedded git self-located smoke: exec-path, init templates, default branch, and submodule status passed",
+  );
+}
+
+function runGitSmokeCommand(gitExecutable, args, cwd, env) {
+  const result = spawnSync(gitExecutable, args, {
+    cwd,
+    encoding: "utf8",
+    env,
+  });
+  if (result.error) {
+    fail(
+      `embedded git smoke command '${args.join(" ")}' failed to start: ${result.error.message}`,
+    );
+  }
+  if (result.status !== 0) {
+    fail(
+      `embedded git smoke command '${args.join(" ")}' failed: ${result.stderr || result.stdout}`,
+    );
+  }
+  return result;
+}
+
+function firstExistingDirectory(distRoot, relativePaths) {
+  return existingDirectories(distRoot, relativePaths)[0] ?? null;
+}
+
+function existingDirectories(distRoot, relativePaths) {
+  return relativePaths
+    .map((relativePath) => path.join(distRoot, relativePath))
+    .filter((candidate) => existsSync(candidate));
+}
+
+function uniquePaths(paths) {
+  const seen = new Set();
+  const result = [];
+  for (const item of paths) {
+    if (!item || !existsSync(item)) {
+      continue;
+    }
+    const normalized = normalizeComparablePath(item);
+    if (seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    result.push(item);
+  }
+  return result;
+}
+
+function platformToolPathEntries() {
+  if (process.platform === "win32") {
+    const systemRoot = process.env.SystemRoot || process.env.WINDIR;
+    return systemRoot ? [path.join(systemRoot, "System32")] : [];
+  }
+  return ["/usr/bin", "/bin", "/usr/sbin", "/sbin"];
+}
+
+function samePath(left, right) {
+  return normalizeComparablePath(left) === normalizeComparablePath(right);
+}
+
+function normalizeComparablePath(value) {
+  const resolved = path.resolve(value);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
 function expectedGitVersion(config, target) {

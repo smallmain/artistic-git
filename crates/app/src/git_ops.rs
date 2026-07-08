@@ -206,15 +206,12 @@ where
     I: IntoIterator<Item = S>,
     S: Into<OsString>,
 {
-    let mut planned_args = Vec::new();
+    let plan = runner.git_lfs_command_plan(args);
+    let mut command = plan.to_command();
     if let Some(root) = root {
-        planned_args.push(OsString::from("-C"));
-        planned_args.push(root.as_os_str().to_owned());
+        command.current_dir(root);
     }
-    planned_args.extend(args.into_iter().map(Into::into));
-
-    let plan = runner.git_lfs_command_plan(planned_args);
-    command_to_output(plan.to_command(), &plan, operation_name)
+    command_to_output(command, &plan, operation_name)
 }
 
 pub(crate) fn run_git_raw<I, S>(

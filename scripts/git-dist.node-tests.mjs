@@ -109,7 +109,7 @@ async function stageMacosPreparedSources(config, stagingDir) {
     const root = sourceStagingDirectory(stagingDir, ref);
     if (source.kind === "source-tarball") {
       await writeExecutable(
-        path.join(root, "install", "bin", "git"),
+        path.join(root, "install", "git", "bin", "git"),
         "git version 2.55.0\n",
       );
     } else if (source.component === "git_lfs") {
@@ -310,6 +310,8 @@ test("assembly fails without helper binaries and does not write an incomplete ma
 test("source Git build flags disable optional Rust components", async () => {
   const config = await loadConfig();
   const fetchGitDist = await readFile(fetchGitDistPath, "utf8");
+  assert.deepEqual(config.build.macos.git.configure_flags, ["--prefix=/git"]);
+  assert.deepEqual(config.build.linux.git.configure_flags, ["--prefix=/git"]);
   assert.ok(
     config.build.macos.git.make_flags.includes("NO_RUST=YesPlease"),
     "macOS Git source build must not let Cargo discover the repo workspace",
@@ -317,6 +319,11 @@ test("source Git build flags disable optional Rust components", async () => {
   assert.ok(
     config.build.linux.git.make_flags.includes("NO_RUST=YesPlease"),
     "Linux Ubuntu 20.04 build image should not require Cargo for optional Git Rust code",
+  );
+  assert.equal(
+    config.build.linux.git.make_flags.includes("NO_PERL=YesPlease"),
+    false,
+    "Linux Git source build must keep Perl-backed porcelain commands such as git submodule",
   );
   for (const packageName of [
     "libnghttp2-dev",
@@ -341,6 +348,32 @@ test("source Git build flags disable optional Rust components", async () => {
   assert.match(fetchGitDist, /OPENSSL_LIBSSL=/);
   assert.match(fetchGitDist, /-lcurl\|-lssl\|-lcrypto\|-lz/);
   assert.match(fetchGitDist, /find \$\{shellQuote\(installRoot\)\} -type f/);
+  assert.match(fetchGitDist, /function gitInstallPrefix/);
+  assert.match(fetchGitDist, /makePrefixFlag/);
+  assert.doesNotMatch(fetchGitDist, /prefix=\/(?=["'\s]|$)/);
+});
+
+test("git-dist validation executes embedded Git self-located smoke checks", async () => {
+  const checkGitDist = await readFile(
+    path.join(repoRoot, "scripts", "check-git-dist.mjs"),
+    "utf8",
+  );
+  const workflow = await readFile(workflowPath, "utf8");
+
+  assert.match(checkGitDist, /runGitSelfLocatedSmoke/);
+  assert.match(checkGitDist, /"--exec-path"/);
+  assert.match(checkGitDist, /"submodule", "status"/);
+  assert.match(checkGitDist, /"init", "repo"/);
+  assert.match(checkGitDist, /GIT_CONFIG_KEY_0: "init\.defaultBranch"/);
+  assert.doesNotMatch(checkGitDist, /"init", "-b", "main", "repo"/);
+  assert.match(
+    workflow,
+    /node scripts\/check-git-dist\.mjs --target="\$\{\{ matrix\.target \}\}"/,
+  );
+  assert.doesNotMatch(
+    workflow,
+    /Validate (?:restored assembled|assembled) distribution[\s\S]*?--no-exec/,
+  );
 });
 
 test("real Windows fetch still rejects the Win32-OpenSSH placeholder before download", async () => {
@@ -731,6 +764,6 @@ test("workflow validates restored assembled cache hits before reuse", async () =
   );
   assert.match(
     workflow,
-    /Validate restored assembled distribution[\s\S]+matrix\.placeholderBlocked != true && steps\.dist-cache\.outputs\.cache-hit == 'true'[\s\S]+node scripts\/check-git-dist\.mjs --target="\$\{\{ matrix\.target \}\}" --no-exec/,
+    /Validate restored assembled distribution[\s\S]+matrix\.placeholderBlocked != true && steps\.dist-cache\.outputs\.cache-hit == 'true'[\s\S]+node scripts\/check-git-dist\.mjs --target="\$\{\{ matrix\.target \}\}"/,
   );
 });

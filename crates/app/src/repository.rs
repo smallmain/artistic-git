@@ -2096,11 +2096,10 @@ fn submodule_has_lfs_files(
     submodule: &Path,
     operation_name: &str,
 ) -> AppResult<bool> {
-    let mut args = vec![OsString::from("-C"), submodule.as_os_str().to_owned()];
-    args.push(OsString::from("ls-files"));
-    let plan = runner.git_lfs_command_plan(args);
-    let output = plan
-        .to_command()
+    let plan = runner.git_lfs_command_plan(["ls-files"]);
+    let mut command = plan.to_command();
+    command.current_dir(submodule);
+    let output = command
         .output()
         .map_err(|source| spawn_error(&plan, source, operation_name))?;
     if output.status.success() {
@@ -2120,10 +2119,10 @@ where
     I: IntoIterator<Item = S>,
     S: Into<OsString>,
 {
-    let mut planned_args = vec![OsString::from("-C"), submodule.as_os_str().to_owned()];
-    planned_args.extend(args.into_iter().map(Into::into));
-    let plan = runner.git_lfs_command_plan(planned_args);
-    command_to_output(plan.to_command(), &plan, operation_name).map(|_| ())
+    let plan = runner.git_lfs_command_plan(args);
+    let mut command = plan.to_command();
+    command.current_dir(submodule);
+    command_to_output(command, &plan, operation_name).map(|_| ())
 }
 
 fn run_git_lfs_for_submodule_with_progress<F, I, S>(
@@ -2141,8 +2140,9 @@ where
     S: Into<OsString>,
 {
     let mut planned_args = vec![OsString::from("-C"), submodule.as_os_str().to_owned()];
+    planned_args.push(OsString::from("lfs"));
     planned_args.extend(args.into_iter().map(Into::into));
-    let plan = runner.git_lfs_command_plan(planned_args);
+    let plan = runner.git_command_plan(planned_args);
     run_command_with_progress(
         plan,
         operation_name,
@@ -3418,17 +3418,15 @@ fn fetch_lfs_object(
         )));
     }
 
-    let mut planned_args = Vec::new();
-    planned_args.push(OsString::from("-C"));
-    planned_args.push(root.as_os_str().to_owned());
-    planned_args.extend([
+    let plan = runner.git_lfs_command_plan([
         OsString::from("fetch"),
         OsString::from("--object-id"),
         OsString::from("origin"),
         OsString::from(oid),
     ]);
-    let plan = runner.git_lfs_command_plan(planned_args);
-    command_to_output(plan.to_command(), &plan, operation_name).map(|_| ())
+    let mut command = plan.to_command();
+    command.current_dir(root);
+    command_to_output(command, &plan, operation_name).map(|_| ())
 }
 
 fn local_lfs_object_path(
@@ -4938,12 +4936,15 @@ size 16\n"
         )
         .expect("write git");
         let marker = temp.path().join("lfs-args.txt");
+        let cwd_marker = temp.path().join("lfs-cwd.txt");
         let unix_script = format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nexit 0\n",
-            marker.display()
+            "#!/bin/sh\npwd > {cwd_marker}\nprintf '%s\\n' \"$@\" > {marker}\nexit 0\n",
+            cwd_marker = shell_quote(&cwd_marker),
+            marker = shell_quote(&marker),
         );
         let windows_script = format!(
-            "@echo off\r\necho %* > \"{}\"\r\nexit /b 0\r\n",
+            "@echo off\r\ncd > \"{}\"\r\necho %* > \"{}\"\r\nexit /b 0\r\n",
+            cwd_marker.display(),
             marker.display()
         );
         write_executable_script(
@@ -4974,8 +4975,13 @@ size 16\n"
         fetch_lfs_object(&runner, &repo, oid, "testFetchLfs").expect("fetch lfs object");
 
         let args = fs::read_to_string(marker).expect("read lfs args");
-        assert!(args.contains("-C"));
-        assert!(args.contains(&display_path(&repo)));
+        let cwd = fs::read_to_string(cwd_marker).expect("read lfs cwd");
+        assert_eq!(
+            canonical_or_self(Path::new(cwd.trim())),
+            canonical_or_self(&repo)
+        );
+        assert!(!args.contains("-C"));
+        assert!(!args.contains(&display_path(&repo)));
         assert!(args.contains("fetch"));
         assert!(args.contains("--object-id"));
         assert!(args.contains("origin"));

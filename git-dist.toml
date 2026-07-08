@@ -217,7 +217,7 @@ toolchain = "xcode"
 deployment_target = "13.0"
 arches = ["arm64", "x86_64"]
 universal_binary = true
-configure_flags = ["--prefix=/"]
+configure_flags = ["--prefix=/git"]
 make_flags = ["RUNTIME_PREFIX=YesPlease", "NO_GETTEXT=YesPlease", "NO_TCLTK=YesPlease", "NO_RUST=YesPlease"]
 install_root = "git/"
 post_install = ["lipo arm64/x86_64 git binaries into universal outputs", "strip debug symbols after checksum manifest is generated"]
@@ -229,8 +229,8 @@ glibc_floor = "2.31"
 linking = "glibc-dynamic-with-static-third-party-libs"
 apt_packages = ["build-essential", "curl", "ca-certificates", "libssl-dev", "zlib1g-dev", "libcurl4-openssl-dev", "libpcre2-dev", "libexpat1-dev", "libnghttp2-dev", "libidn2-dev", "librtmp-dev", "libssh-dev", "libpsl-dev", "libkrb5-dev", "libldap2-dev", "libbrotli-dev", "libzstd-dev"]
 static_libraries = ["curl", "openssl", "zlib", "pcre2", "expat"]
-configure_flags = ["--prefix=/"]
-make_flags = ["NO_GETTEXT=YesPlease", "NO_PERL=YesPlease", "NO_TCLTK=YesPlease", "NO_RUST=YesPlease", "RUNTIME_PREFIX=YesPlease"]
+configure_flags = ["--prefix=/git"]
+make_flags = ["NO_GETTEXT=YesPlease", "NO_TCLTK=YesPlease", "NO_RUST=YesPlease", "RUNTIME_PREFIX=YesPlease"]
 install_root = "git/"
 
 [build.windows.git]

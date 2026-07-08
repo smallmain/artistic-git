@@ -127,6 +127,90 @@ impl GitDistribution {
             windows_ssh_executable,
         })
     }
+
+    fn git_exec_path(&self) -> Option<PathBuf> {
+        first_existing_dist_dir(
+            &self.root,
+            &[
+                "git/libexec/git-core",
+                "git/mingw64/libexec/git-core",
+                "git/usr/libexec/git-core",
+            ],
+        )
+    }
+
+    fn git_template_dir(&self) -> Option<PathBuf> {
+        first_existing_dist_dir(
+            &self.root,
+            &[
+                "git/share/git-core/templates",
+                "git/mingw64/share/git-core/templates",
+            ],
+        )
+    }
+
+    fn git_perl_dirs(&self) -> Vec<PathBuf> {
+        existing_dist_dirs(&self.root, &["git/share/perl5", "git/mingw64/share/perl5"])
+    }
+
+    fn command_path_entries(&self) -> Vec<PathBuf> {
+        let mut entries = Vec::new();
+        push_parent_dir(&mut entries, &self.git_executable);
+        if let Some(exec_path) = self.git_exec_path() {
+            push_unique_path(&mut entries, exec_path);
+        }
+        push_parent_dir(&mut entries, &self.git_lfs_executable);
+        for directory in
+            existing_dist_dirs(&self.root, &["git/cmd", "git/mingw64/bin", "git/usr/bin"])
+        {
+            push_unique_path(&mut entries, directory);
+        }
+        push_platform_tool_path_entries(&mut entries);
+        entries
+    }
+}
+
+fn first_existing_dist_dir(root: &Path, relative_paths: &[&str]) -> Option<PathBuf> {
+    existing_dist_dirs(root, relative_paths).into_iter().next()
+}
+
+fn existing_dist_dirs(root: &Path, relative_paths: &[&str]) -> Vec<PathBuf> {
+    relative_paths
+        .iter()
+        .map(|relative_path| root.join(relative_path))
+        .filter(|path| path.is_dir())
+        .collect()
+}
+
+fn push_parent_dir(entries: &mut Vec<PathBuf>, path: &Path) {
+    if let Some(parent) = path.parent() {
+        push_unique_path(entries, parent.to_path_buf());
+    }
+}
+
+fn push_unique_path(entries: &mut Vec<PathBuf>, path: PathBuf) {
+    if !entries.iter().any(|entry| entry == &path) {
+        entries.push(path);
+    }
+}
+
+fn push_platform_tool_path_entries(entries: &mut Vec<PathBuf>) {
+    #[cfg(unix)]
+    {
+        for directory in ["/usr/bin", "/bin", "/usr/sbin", "/sbin"] {
+            let path = PathBuf::from(directory);
+            if path.is_dir() {
+                push_unique_path(entries, path);
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        if let Some(system_root) = std::env::var_os("SystemRoot") {
+            push_unique_path(entries, PathBuf::from(system_root).join("System32"));
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -543,8 +627,17 @@ pub struct CommandEnvironmentPlan {
 
 impl CommandEnvironmentPlan {
     pub fn isolated(controlled_home: PathBuf, distribution: &GitDistribution) -> Self {
+        let _ = fs::create_dir_all(&controlled_home);
+        let _ = fs::create_dir_all(controlled_home.join(".config"));
+
         let mut variables = BTreeMap::new();
         variables.insert("GIT_CONFIG_NOSYSTEM".to_owned(), OsString::from("1"));
+        variables.insert("GIT_CONFIG_COUNT".to_owned(), OsString::from("1"));
+        variables.insert(
+            "GIT_CONFIG_KEY_0".to_owned(),
+            OsString::from("init.defaultBranch"),
+        );
+        variables.insert("GIT_CONFIG_VALUE_0".to_owned(), OsString::from("main"));
         variables.insert("GIT_TERMINAL_PROMPT".to_owned(), OsString::from("0"));
         variables.insert("HOME".to_owned(), controlled_home.clone().into_os_string());
         variables.insert(
@@ -560,6 +653,25 @@ impl CommandEnvironmentPlan {
             distribution.ssh_askpass.clone().into_os_string(),
         );
         variables.insert("SSH_ASKPASS_REQUIRE".to_owned(), OsString::from("force"));
+
+        if let Some(exec_path) = distribution.git_exec_path() {
+            variables.insert("GIT_EXEC_PATH".to_owned(), exec_path.into_os_string());
+        }
+        if let Some(template_dir) = distribution.git_template_dir() {
+            variables.insert("GIT_TEMPLATE_DIR".to_owned(), template_dir.into_os_string());
+        }
+        let perl_dirs = distribution.git_perl_dirs();
+        if !perl_dirs.is_empty() {
+            if let Ok(perl_path) = std::env::join_paths(perl_dirs) {
+                variables.insert("GITPERLLIB".to_owned(), perl_path);
+            }
+        }
+        let path_entries = distribution.command_path_entries();
+        if !path_entries.is_empty() {
+            if let Ok(path) = std::env::join_paths(path_entries) {
+                variables.insert("PATH".to_owned(), path);
+            }
+        }
 
         #[cfg(windows)]
         {
@@ -1169,8 +1281,48 @@ mod tests {
             environment.variable("GIT_CONFIG_NOSYSTEM"),
             Some(OsStr::new("1"))
         );
-        assert!(environment.removes_variable("PATH"));
-        assert!(environment.removes_variable("GIT_EXEC_PATH"));
+        assert_eq!(
+            environment.variable("GIT_CONFIG_COUNT"),
+            Some(OsStr::new("1"))
+        );
+        assert_eq!(
+            environment.variable("GIT_CONFIG_KEY_0"),
+            Some(OsStr::new("init.defaultBranch"))
+        );
+        assert_eq!(
+            environment.variable("GIT_CONFIG_VALUE_0"),
+            Some(OsStr::new("main"))
+        );
+        assert!(home.is_dir());
+        assert!(!environment.removes_variable("PATH"));
+        assert_path_contains(
+            environment.variable("PATH"),
+            &temp.path().join("git").join("bin"),
+        );
+        assert_path_contains(
+            environment.variable("PATH"),
+            &temp.path().join("git").join("libexec").join("git-core"),
+        );
+        assert_path_contains(environment.variable("PATH"), &temp.path().join("git-lfs"));
+        let expected_exec_path = temp.path().join("git").join("libexec").join("git-core");
+        assert_eq!(
+            environment.variable("GIT_EXEC_PATH"),
+            Some(expected_exec_path.as_os_str())
+        );
+        let expected_template_dir = temp
+            .path()
+            .join("git")
+            .join("share")
+            .join("git-core")
+            .join("templates");
+        assert_eq!(
+            environment.variable("GIT_TEMPLATE_DIR"),
+            Some(expected_template_dir.as_os_str())
+        );
+        assert_path_contains(
+            environment.variable("GITPERLLIB"),
+            &temp.path().join("git").join("share").join("perl5"),
+        );
         assert!(environment.variable("GIT_ASKPASS").is_some());
         assert!(environment.variable("SSH_ASKPASS").is_some());
         assert_eq!(
@@ -1184,7 +1336,7 @@ mod tests {
             runner.distribution().git_executable
         );
         assert_eq!(command_plan.args, vec![OsString::from("status")]);
-        assert!(command_plan.environment.removes_variable("PATH"));
+        assert!(!command_plan.environment.removes_variable("PATH"));
     }
 
     #[test]
@@ -1226,8 +1378,8 @@ mod tests {
                 OsString::from("--progress"),
             ]
         );
-        assert!(plan.environment.removes_variable("PATH"));
-        assert!(plan.environment.removes_variable("GIT_EXEC_PATH"));
+        assert!(!plan.environment.removes_variable("PATH"));
+        assert!(!plan.environment.removes_variable("GIT_EXEC_PATH"));
     }
 
     #[test]
@@ -1737,6 +1889,16 @@ mod tests {
         arg
     }
 
+    fn assert_path_contains(variable: Option<&OsStr>, expected: &Path) {
+        let variable = variable.expect("path variable should be set");
+        assert!(
+            std::env::split_paths(variable).any(|path| path == expected),
+            "{:?} should contain {}",
+            variable,
+            expected.display()
+        );
+    }
+
     fn fake_distribution() -> Result<TestTempDir, Box<dyn std::error::Error>> {
         let temp = TestTempDir::new("ag-git-dist")?;
         let manifest = git_dist_manifest_fixture();
@@ -1745,6 +1907,16 @@ mod tests {
         write_executable_file(&temp.path().join(&manifest.paths.git_lfs_executable))?;
         write_executable_file(&temp.path().join(&manifest.paths.credential_helper))?;
         write_executable_file(&temp.path().join(&manifest.paths.ssh_askpass))?;
+        fs::create_dir_all(temp.path().join("git").join("libexec").join("git-core"))?;
+        fs::create_dir_all(
+            temp.path()
+                .join("git")
+                .join("share")
+                .join("git-core")
+                .join("templates")
+                .join("hooks"),
+        )?;
+        fs::create_dir_all(temp.path().join("git").join("share").join("perl5"))?;
         if let Some(windows_ssh_executable) = &manifest.paths.windows_ssh_executable {
             write_executable_file(&temp.path().join(windows_ssh_executable))?;
         }

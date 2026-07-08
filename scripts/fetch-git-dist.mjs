@@ -279,7 +279,8 @@ async function buildMacosGit({ config, sourceRoot, installRoot }) {
   const arches = recipe?.arches ?? ["arm64", "x86_64"];
   const deploymentTarget = recipe?.deployment_target ?? "13.0";
   const makeFlags = recipe?.make_flags ?? [];
-  const configureFlags = recipe?.configure_flags ?? ["--prefix=/"];
+  const configureFlags = gitConfigureFlags(recipe);
+  const makePrefixFlag = `prefix=${gitInstallPrefix(recipe)}`;
   const archInstalls = [];
 
   for (const arch of arches) {
@@ -312,7 +313,7 @@ async function buildMacosGit({ config, sourceRoot, installRoot }) {
     });
     await runCommand(
       "make",
-      [`-j${parallelism()}`, ...makeFlags, "prefix=/", "all"],
+      [`-j${parallelism()}`, ...makeFlags, makePrefixFlag, "all"],
       {
         cwd: buildRoot,
         env: buildEnv,
@@ -323,7 +324,7 @@ async function buildMacosGit({ config, sourceRoot, installRoot }) {
       "make",
       [
         ...makeFlags,
-        "prefix=/",
+        makePrefixFlag,
         `DESTDIR=${archInstallRoot}`,
         "NO_INSTALL_HARDLINKS=YesPlease",
         "install",
@@ -436,7 +437,8 @@ async function buildLinuxGitNative({ recipe, sourceRoot, installRoot }) {
 function linuxBuildShellScript(recipe, sourceRoot, installRoot) {
   const packages = [...(recipe?.apt_packages ?? []), "pkg-config"];
   const makeFlags = shellWords(recipe?.make_flags ?? []);
-  const configureFlags = shellWords(recipe?.configure_flags ?? ["--prefix=/"]);
+  const configureFlags = shellWords(gitConfigureFlags(recipe));
+  const makePrefixFlag = `prefix=${shellQuote(gitInstallPrefix(recipe))}`;
   return `
 set -euo pipefail
 apt-get update
@@ -461,13 +463,31 @@ for token in $pkg_config_static_libs; do
   esac
 done
 static_link_flags="-Wl,-Bstatic $static_required_libs -Wl,-Bdynamic $dynamic_transitive_libs"
-make -j"$(nproc)" ${makeFlags} prefix=/ CURL_LDFLAGS="$static_link_flags" EXPAT_LIBEXPAT="$static_link_flags" OPENSSL_LINK= OPENSSL_LIBSSL= LIB_4_CRYPTO="$static_link_flags" EXTLIBS="$static_link_flags" all
-make ${makeFlags} prefix=/ DESTDIR=${shellQuote(installRoot)} NO_INSTALL_HARDLINKS=YesPlease CURL_LDFLAGS="$static_link_flags" EXPAT_LIBEXPAT="$static_link_flags" OPENSSL_LINK= OPENSSL_LIBSSL= LIB_4_CRYPTO="$static_link_flags" EXTLIBS="$static_link_flags" install
+make -j"$(nproc)" ${makeFlags} ${makePrefixFlag} CURL_LDFLAGS="$static_link_flags" EXPAT_LIBEXPAT="$static_link_flags" OPENSSL_LINK= OPENSSL_LIBSSL= LIB_4_CRYPTO="$static_link_flags" EXTLIBS="$static_link_flags" all
+make ${makeFlags} ${makePrefixFlag} DESTDIR=${shellQuote(installRoot)} NO_INSTALL_HARDLINKS=YesPlease CURL_LDFLAGS="$static_link_flags" EXPAT_LIBEXPAT="$static_link_flags" OPENSSL_LINK= OPENSSL_LIBSSL= LIB_4_CRYPTO="$static_link_flags" EXTLIBS="$static_link_flags" install
 if find ${shellQuote(installRoot)} -type f -perm /111 -print0 | xargs -0 -r ldd 2>/dev/null | grep -E 'lib(curl|ssl|crypto|z|pcre2|expat)'; then
   echo "git distribution still links dynamic required libraries" >&2
   exit 1
 fi
 	`;
+}
+
+function gitConfigureFlags(recipe) {
+  return recipe?.configure_flags ?? [`--prefix=${gitInstallPrefix(recipe)}`];
+}
+
+function gitInstallPrefix(recipe) {
+  const flags = recipe?.configure_flags ?? [];
+  for (let index = 0; index < flags.length; index += 1) {
+    const flag = flags[index];
+    if (flag === "--prefix" && flags[index + 1]) {
+      return flags[index + 1];
+    }
+    if (flag.startsWith("--prefix=")) {
+      return flag.slice("--prefix=".length);
+    }
+  }
+  return "/git";
 }
 
 function buildHelpers() {

@@ -160,7 +160,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          node scripts/check-git-dist.mjs --target="${{ matrix.target }}" --no-exec
+          node scripts/check-git-dist.mjs --target="${{ matrix.target }}"
 
       - name: Build helper binaries
         if: matrix.placeholderBlocked != true && steps.dist-cache.outputs.cache-hit != 'true'
@@ -185,7 +185,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          node scripts/check-git-dist.mjs --target="${{ matrix.target }}" --no-exec
+          node scripts/check-git-dist.mjs --target="${{ matrix.target }}"
 
       - name: Write target readiness and build evidence report
         shell: bash
