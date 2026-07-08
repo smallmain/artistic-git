@@ -502,7 +502,25 @@ async function revertCommitThroughUi(
   assert.ok(row, `history row for ${message} (${oid}) should exist`);
   await row.click();
   await $('[data-testid="history-revert-open"]').click();
+  const pushCheckbox = await $('[data-testid="history-revert-push-immediately"]');
+  await pushCheckbox.waitForExist({
+    timeout: 30_000,
+    timeoutMsg: "revert push checkbox did not appear for remote repository",
+  });
+  if (!(await pushCheckbox.isSelected())) {
+    await pushCheckbox.click();
+  }
   await $('[data-testid="history-revert-confirm"]').click();
+  await browser.waitUntil(
+    async () => {
+      const status = await $('[data-testid="history-revert-status"]');
+      return (await status.getText()).includes("Created and pushed");
+    },
+    {
+      timeout: 180_000,
+      timeoutMsg: "revert did not report that it was pushed",
+    },
+  );
   await browser.waitUntil(
     async () => {
       const status = fixture.git(["status", "--porcelain=v1"], repositoryPath);
