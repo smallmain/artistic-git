@@ -68,7 +68,7 @@ const allowedUrlPatterns = [
   /^https:\/\/git-lfs\.github\.com\/spec\/v1$/,
   /^https:\/\/schema\.tauri\.app\/config\/2$/,
   /^https:\/\/example\.test\/[^"'`\s)]+$/,
-  /^http:\/\/127\.0\.0\.1(?::\d+)?(?:\/[^"'`\s)]*)?$/,
+  /^http:\/\/127\.0\.0\.1(?::(?:\d+|\{\}))?(?:\/[^"'`\s)]*)?$/,
 ];
 
 const runtimeNetworkApis = [
