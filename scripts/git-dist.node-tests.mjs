@@ -455,6 +455,7 @@ test("readiness report marks Windows blocked without blocking macOS and Linux", 
       process.execPath,
       [
         readinessReportPath,
+        "--",
         `--metadata=${metadataPath}`,
         `--output-dir=${outputDir}`,
       ],
@@ -501,6 +502,14 @@ test("workflow validates restored assembled cache hits before reuse", async () =
   assert.match(workflow, /git-dist-readiness-contract/);
   assert.match(workflow, /Write target readiness report/);
   assert.match(workflow, /git-dist-readiness-\$\{\{ matrix\.target \}\}/);
+  assert.match(
+    workflow,
+    /Validate contract[\s\S]+Set up pnpm[\s\S]+pnpm\/action-setup@v4[\s\S]+Set up Node\.js/,
+  );
+  assert.match(
+    workflow,
+    /Prepare \$\{\{ matrix\.target \}\}[\s\S]+Set up pnpm[\s\S]+pnpm\/action-setup@v4[\s\S]+Set up Node\.js/,
+  );
   assert.match(
     workflow,
     /node scripts\/check-git-dist-openssh-release\.mjs --expect-no-stable-release/,

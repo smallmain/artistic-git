@@ -323,7 +323,9 @@ function parseArgs(argv) {
   };
 
   for (const arg of argv) {
-    if (arg === "--help" || arg === "-h") {
+    if (arg === "--") {
+      continue;
+    } else if (arg === "--help" || arg === "-h") {
       parsed.help = true;
     } else if (arg.startsWith("--target=")) {
       parsed.target = arg.slice("--target=".length);
