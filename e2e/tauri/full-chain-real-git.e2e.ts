@@ -72,6 +72,7 @@ describeRealGit("Artistic Git Tauri real-git full chain", () => {
 
     await syncAllThroughUi();
     await waitForConflictOverlay("tracked.txt");
+    await assertCloseGuardBlocksWindowShortcutDuringConflict();
     assert.match(
       fixture.git(["status", "--porcelain=v1"], localPath),
       /UU tracked\.txt/,
@@ -268,6 +269,73 @@ async function waitForConflictOverlay(relativePath: string) {
       timeoutMsg: `conflict overlay did not show ${relativePath}`,
     },
   );
+}
+
+async function assertCloseGuardBlocksWindowShortcutDuringConflict() {
+  await requestWindowCloseShortcut();
+  await browser.waitUntil(async () => (await closeGuardDialogState()).open, {
+    timeout: 30_000,
+    timeoutMsg:
+      "close guard dialog did not open for Cmd/Ctrl+W during conflict",
+  });
+
+  const state = await closeGuardDialogState();
+  assert.match(state.text, /Close window\?/);
+  assert.match(state.text, /Closing will cancel it and restore/);
+
+  const dismissed = await browser.execute(() => {
+    const dialogs = Array.from(document.querySelectorAll('[role="dialog"]'));
+    const closeDialog = dialogs.find((dialog) =>
+      dialog.textContent?.includes("Close window?"),
+    );
+    const buttons = Array.from(closeDialog?.querySelectorAll("button") ?? []);
+    const cancelButton = buttons.find(
+      (button) => button.textContent?.trim() === "Cancel",
+    );
+    if (!(cancelButton instanceof HTMLButtonElement)) {
+      return false;
+    }
+    cancelButton.click();
+    return true;
+  });
+  assert.equal(dismissed, true);
+
+  await browser.waitUntil(async () => !(await closeGuardDialogState()).open, {
+    timeout: 10_000,
+    timeoutMsg: "close guard dialog did not dismiss",
+  });
+  assert.equal(
+    await $('[data-testid="conflict-resolution-overlay"]').isExisting(),
+    true,
+  );
+}
+
+async function requestWindowCloseShortcut() {
+  await browser.execute((useMetaKey) => {
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        bubbles: true,
+        cancelable: true,
+        code: "KeyW",
+        ctrlKey: !useMetaKey,
+        key: "w",
+        metaKey: useMetaKey,
+      }),
+    );
+  }, process.platform === "darwin");
+}
+
+function closeGuardDialogState() {
+  return browser.execute(() => {
+    const dialogs = Array.from(document.querySelectorAll('[role="dialog"]'));
+    const closeDialog = dialogs.find((dialog) =>
+      dialog.textContent?.includes("Close window?"),
+    );
+    return {
+      open: Boolean(closeDialog),
+      text: closeDialog?.textContent ?? "",
+    };
+  }) as Promise<{ open: boolean; text: string }>;
 }
 
 async function resolveConflictWithOwnVersion(relativePath: string) {

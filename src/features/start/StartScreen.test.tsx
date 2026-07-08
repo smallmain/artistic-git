@@ -118,6 +118,65 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe("StartScreen open repository close guard", () => {
+  it("guards an in-flight repository open as wait-only on close requests", async () => {
+    commandMocks.openRepository.mockImplementation(
+      () => new Promise(() => undefined),
+    );
+    renderWithStore(<StartScreen />);
+
+    chooseRepositoryDirectory();
+
+    await waitFor(() =>
+      expect(commandMocks.openRepository).toHaveBeenCalledWith({
+        path: "/selected/art-project",
+        toolIdentity: null,
+      }),
+    );
+    await waitFor(() =>
+      expect(commandMocks.setWindowCloseGuard).toHaveBeenCalledWith({
+        active: true,
+      }),
+    );
+
+    await emitWindowCloseBlocked({ reason: "closeWindow" });
+    const dialog = await screen.findByRole("dialog", {
+      name: "Close window?",
+    });
+    expect(dialog).toHaveTextContent(
+      "This operation cannot be safely canceled yet. Wait for it to finish, then close again.",
+    );
+    expect(
+      within(dialog).queryByRole("button", { name: "Close and recover" }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Keep waiting" }),
+    );
+
+    expect(commandMocks.closeCurrentWindow).not.toHaveBeenCalled();
+    expect(commandMocks.cancelCloneRepository).not.toHaveBeenCalled();
+  });
+
+  it("cancels pending app quit when a repository open must keep waiting", async () => {
+    commandMocks.openRepository.mockImplementation(
+      () => new Promise(() => undefined),
+    );
+    renderWithStore(<StartScreen />);
+
+    chooseRepositoryDirectory();
+    await emitWindowCloseBlocked({ reason: "quit" });
+    fireEvent.click(
+      within(
+        await screen.findByRole("dialog", { name: "Close window?" }),
+      ).getByRole("button", { name: "Keep waiting" }),
+    );
+
+    expect(commandMocks.cancelPendingWindowExit).toHaveBeenCalledTimes(1);
+    expect(commandMocks.closeCurrentWindow).not.toHaveBeenCalled();
+  });
+});
+
 describe("StartScreen clone flow", () => {
   it("infers the directory name and opens the cloned repository", async () => {
     commandMocks.cloneRepository.mockResolvedValue({
@@ -374,4 +433,16 @@ function openRepositoryResponse(repositoryPath: string) {
     },
     warnings: [],
   };
+}
+
+function chooseRepositoryDirectory(relativePath = "art-project/.git/config") {
+  const input = document.querySelector<HTMLInputElement>('input[type="file"]');
+  expect(input).not.toBeNull();
+  const file = new File([""], "config");
+  Object.defineProperty(file, "webkitRelativePath", {
+    configurable: true,
+    value: relativePath,
+  });
+
+  fireEvent.change(input!, { target: { files: [file] } });
 }

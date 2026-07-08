@@ -596,8 +596,8 @@ export function StartScreen() {
         />
       ) : null}
       <WindowCloseGuard
-        active={isCloning}
-        canRecover={cloneOperationId !== null && !cloneCancelling}
+        active={isCloning || openingPath !== null}
+        canRecover={isCloning && cloneOperationId !== null && !cloneCancelling}
         onRecover={recoverCloneForWindowClose}
       />
     </main>

@@ -45,6 +45,8 @@ const requiredUiTokens = [
   '[data-testid="commit-dialog-submit"]',
   '[data-testid="repository-sync-all"]',
   '[data-testid="conflict-resolution-overlay"]',
+  "assertCloseGuardBlocksWindowShortcutDuringConflict",
+  "Close window?",
   '"history-commit-row"',
   "data-commit-id",
 ];
