@@ -239,6 +239,16 @@ test("release workflow fails publishing when Tauri signing secrets are missing",
       "TAURI_SIGNING_PRIVATE_KEY must be configured in GitHub Secrets before publishing updater artifacts.",
     ),
   );
+  assert.ok(
+    releaseWorkflow.includes(
+      'if [ -z "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" ]; then',
+    ),
+  );
+  assert.ok(
+    releaseWorkflow.includes(
+      "TAURI_SIGNING_PRIVATE_KEY_PASSWORD must be configured in GitHub Secrets before publishing updater artifacts.",
+    ),
+  );
 });
 
 test("release workflow uploads dry-run rehearsal evidence with CI context", () => {

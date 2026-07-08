@@ -28,6 +28,7 @@ const sourceFiles = {
   ci: ".github/workflows/ci.yml",
   commands: "src/lib/ipc/commands.ts",
   crashDialog: "src/components/dialogs/CrashDetailsDialog.tsx",
+  crashInjectionE2e: "e2e/tauri/crash-isolation.e2e.ts",
   i18n: "src/i18n/resources.ts",
   logging: "crates/core/src/logging.rs",
   packageJson: "package.json",
@@ -119,6 +120,33 @@ const evidenceChecks = [
     requirement: "renderer crash reload dialog has a component test",
     source: "appTest",
     pattern: /opens a pending renderer crash after a window reload/,
+  },
+  {
+    id: "tauri-driver-crash-injection-e2e",
+    layer: "renderer",
+    requirement:
+      "tauri-driver E2E invokes renderer crash injection through the live Tauri IPC bridge",
+    source: "crashInjectionE2e",
+    pattern:
+      /renderer crash injection did not reload into CrashDetailsDialog[\s\S]*__TAURI_INTERNALS__[\s\S]*invoke\("inject_renderer_crash"/,
+  },
+  {
+    id: "tauri-driver-crash-injection-dialog-assertion",
+    layer: "renderer",
+    requirement:
+      "tauri-driver E2E observes reload into CrashDetailsDialog and keeps the start screen interactive",
+    source: "crashInjectionE2e",
+    pattern:
+      /state\.text\.includes\(crashSummary\)[\s\S]*state\.text\.includes\("Renderer process for window"\)[\s\S]*startScreenStillInteractive/,
+  },
+  {
+    id: "tauri-driver-crash-injection-runtime-report",
+    layer: "renderer",
+    requirement:
+      "tauri-driver E2E writes a machine-readable crash injection runtime report",
+    source: "crashInjectionE2e",
+    pattern:
+      /kind: "phase9-crash-isolation-runtime"[\s\S]*taskCheckable: true[\s\S]*ARTISTIC_GIT_PHASE9_CRASH_ISOLATION_E2E_REPORT/,
   },
   {
     id: "react-root-boundary",
@@ -246,6 +274,29 @@ const gates = [
     },
   },
   {
+    id: "tauri-driver-crash-injection-runtime-artifact",
+    requirement:
+      "Linux/Windows tauri-driver E2E uploads renderer crash injection runtime evidence",
+    source: "ci",
+    tokens: [
+      "ARTISTIC_GIT_PHASE9_CRASH_ISOLATION_E2E_REPORT",
+      "Upload phase 9 crash isolation E2E evidence",
+      "phase9-crash-isolation-e2e-${{ runner.os }}",
+      "${{ runner.temp }}/phase9-crash-isolation-e2e/",
+    ],
+    extraSources: [
+      {
+        source: "crashInjectionE2e",
+        tokens: [
+          "phase9-crash-isolation-runtime",
+          "inject_renderer_crash",
+          "CrashDetailsDialog",
+          "taskCheckable: true",
+        ],
+      },
+    ],
+  },
+  {
     id: "crash-audit-ci-artifact",
     requirement:
       "CI uploads machine-readable Phase 9C crash isolation audit artifacts",
@@ -272,6 +323,11 @@ const commandReturnAudit = auditTauriCommandsReturnAppResult([
 const gateResults = gates.map((gate) => evaluateGate(gate));
 const knownGaps = buildKnownGaps();
 const platformSupport = buildPlatformSupport(evidence);
+const coverageSegments = buildCoverageSegments({
+  commandReturnAudit,
+  evidence,
+  gates: gateResults,
+});
 
 const failures = [
   ...evidence
@@ -286,6 +342,7 @@ const failures = [
 const report = {
   checkedAt: new Date().toISOString(),
   commandReturnAudit,
+  coverageSegments,
   evidence,
   gates: gateResults,
   gaps: knownGaps,
@@ -296,13 +353,13 @@ const report = {
     nativeWebviewCrash:
       "not-run-by-audit; macOS/iOS native hook is statically wired, Windows/Linux native hook is unsupported in this code path",
     tauriDriverCrashInjection:
-      "gate-wired-no-runtime-artifact; attach a successful tauri-driver run that invokes inject_renderer_crash and observes reload plus CrashDetailsDialog before checking TASKS.md",
+      "runtime-spec-wired; Linux/Windows CI now runs e2e/tauri/crash-isolation.e2e.ts through tauri-driver and uploads phase9-crash-isolation-e2e-* evidence; checking TASKS.md still requires a successful uploaded runtime artifact",
   },
   schemaVersion: 2,
   sources: sourceFiles,
   taskCheckable: false,
   taskCheckableReason:
-    "Static crash-isolation evidence passes, but Windows/Linux native WebView crash detection or successful tauri-driver crash-injection runtime artifacts are still missing.",
+    "Static crash-isolation and CI wiring evidence passes, but this audit does not itself execute tauri-driver; check TASKS.md only after successful phase9-crash-isolation-e2e-* runtime artifacts exist.",
 };
 
 writeReport(report);
@@ -323,14 +380,17 @@ if (failures.length > 0) {
 const suffix = reportPath ? `; wrote ${reportPath}` : "";
 console.log(`Phase 9C crash isolation audit static-pass${suffix}.`);
 console.log(
-  "renderer: injection path and macOS/iOS native terminate hook reload the affected window and surface the pending crash dialog",
+  "native hook: macOS/iOS WebView terminate hook is wired; Windows/Linux are explicitly unsupported without runtime evidence",
+);
+console.log(
+  "renderer reload: injection path and tauri-driver spec are wired, but a successful runtime artifact is still required",
 );
 console.log("react: per-root AppErrorBoundary isolation is covered");
 console.log(
   "rust: Tauri commands return AppResult and panic reports reach the crash dialog",
 );
 console.log(
-  "known gaps: Windows/Linux native WebView crash detection is unsupported in this Tauri hook path; tauri-driver crash-injection runtime artifact is still required before checking TASKS.md",
+  "known gaps: Windows/Linux native WebView crash detection is unsupported in this Tauri hook path; tauri-driver crash-injection runtime is wired but still needs a successful uploaded CI artifact before checking TASKS.md",
 );
 
 function read(relativePath) {
@@ -486,23 +546,145 @@ function buildKnownGaps() {
       id: "windows-native-webview-crash-detection",
       platform: "windows",
       requiredEvidence:
-        "native WebView process termination hook or a successful tauri-driver crash-injection run that observes target-window reload and CrashDetailsDialog",
+        "native WebView process termination hook or a successful phase9-crash-isolation-e2e-Windows artifact observing target-window reload and CrashDetailsDialog",
       status: "unsupported",
     },
     {
       id: "linux-native-webview-crash-detection",
       platform: "linux",
       requiredEvidence:
-        "native WebView process termination hook or a successful tauri-driver crash-injection run that observes target-window reload and CrashDetailsDialog",
+        "native WebView process termination hook or a successful phase9-crash-isolation-e2e-Linux artifact observing target-window reload and CrashDetailsDialog",
       status: "unsupported",
     },
     {
       id: "tauri-driver-crash-injection-runtime-artifact",
       platform: "linux/windows",
       requiredEvidence:
-        "CI artifact from a tauri-driver run invoking inject_renderer_crash and asserting reload plus CrashDetailsDialog",
-      status: "not-run-by-audit",
+        "CI artifact from e2e/tauri/crash-isolation.e2e.ts invoking inject_renderer_crash and asserting reload plus CrashDetailsDialog",
+      status: "ci-wired-pending-successful-run",
     },
+  ];
+}
+
+function buildCoverageSegments({ commandReturnAudit, evidence, gates }) {
+  const evidenceById = new Map(evidence.map((item) => [item.id, item]));
+  const gateById = new Map(gates.map((gate) => [gate.id, gate]));
+
+  const segment = ({
+    id,
+    title,
+    status,
+    summary,
+    evidenceIds = [],
+    gateIds = [],
+    missingRuntimeEvidence = null,
+    notes = [],
+  }) => {
+    const evidenceItems = evidenceIds.map((evidenceId) => {
+      const item = evidenceById.get(evidenceId);
+      return {
+        id: evidenceId,
+        status: item?.status ?? "missing",
+      };
+    });
+    const gateItems = gateIds.map((gateId) => {
+      const item = gateById.get(gateId);
+      return {
+        id: gateId,
+        status: item?.status ?? "missing",
+      };
+    });
+    const failedEvidence = evidenceItems.filter(
+      (item) => item.status !== "pass",
+    );
+    const failedGates = gateItems.filter((item) => item.status !== "pass");
+
+    return {
+      evidence: evidenceItems,
+      gates: gateItems,
+      id,
+      missingRuntimeEvidence,
+      notes,
+      status:
+        failedEvidence.length === 0 && failedGates.length === 0
+          ? status
+          : "failed",
+      summary,
+      title,
+    };
+  };
+
+  return [
+    segment({
+      evidenceIds: [
+        "native-hook-registered-macos-ios",
+        "native-hook-shared-path",
+        "native-hook-platform-gate",
+      ],
+      gateIds: ["windows-linux-native-hook-unsupported"],
+      id: "native-hook-coverage",
+      missingRuntimeEvidence:
+        "Windows/Linux native WebView crash hook is unsupported in the current Tauri API path; require platform hook support or successful phase9-crash-isolation-e2e Windows/Linux artifacts.",
+      status: "partial-platform-coverage",
+      summary:
+        "macOS/iOS native WebView process termination hook is statically wired to the shared renderer crash path; Windows/Linux are explicitly marked unsupported.",
+      title: "Native Hook Coverage",
+    }),
+    segment({
+      evidenceIds: [
+        "renderer-injection-ts-command",
+        "renderer-injection-shared-path",
+        "renderer-reload-target-window",
+        "pending-crash-window-context",
+        "pending-crash-frontend-dialog",
+        "pending-crash-component-test",
+        "tauri-driver-crash-injection-e2e",
+        "tauri-driver-crash-injection-dialog-assertion",
+        "tauri-driver-crash-injection-runtime-report",
+      ],
+      gateIds: [
+        "tauri-driver-injection-gate",
+        "tauri-driver-crash-injection-runtime-artifact",
+      ],
+      id: "renderer-reload-evidence",
+      missingRuntimeEvidence:
+        "A successful uploaded phase9-crash-isolation-e2e-* runtime artifact is still required before this task can be checked.",
+      status: "runtime-artifact-pending",
+      summary:
+        "Renderer crash injection reaches the shared reload path, stores a pending crash, reloads only the affected window, and has a tauri-driver spec wired for runtime evidence.",
+      title: "Renderer Reload Evidence",
+    }),
+    segment({
+      evidenceIds: [
+        "react-root-boundary",
+        "react-boundary-local-reset",
+        "react-boundary-isolation-test",
+      ],
+      id: "react-boundary-evidence",
+      status: "covered",
+      summary:
+        "Each WebView root is wrapped in AppErrorBoundary and component tests cover per-root isolation.",
+      title: "React Boundary Evidence",
+    }),
+    segment({
+      evidenceIds: [
+        "panic-hook-reporter",
+        "panic-hook-tauri-event",
+        "panic-payload-normalized",
+        "panic-frontend-listener",
+        "panic-dialog-component-test",
+      ],
+      id: "rust-panic-hook-evidence",
+      notes: [
+        `Tauri command Result audit: ${commandReturnAudit.status}; ${commandReturnAudit.files
+          .map((file) => `${file.file}:${file.commandCount}`)
+          .join(", ")}`,
+      ],
+      status: commandReturnAudit.status === "pass" ? "covered" : "failed",
+      summary:
+        "Rust commands return AppResult, panic hook reports are emitted as crash-reported events, and frontend tests cover the crash dialog path.",
+      title: "Rust Panic Hook Evidence",
+    }),
   ];
 }
 
@@ -523,6 +705,17 @@ function renderMarkdown(value) {
     `- Result: ${value.result}`,
     `- Task checkable: ${value.taskCheckable}`,
     `- Task reason: ${value.taskCheckableReason}`,
+    "",
+    "## Coverage Segments",
+    "",
+    "| Segment | Status | Summary | Missing Runtime Evidence |",
+    "| --- | --- | --- | --- |",
+    ...value.coverageSegments.map(
+      (segment) =>
+        `| ${segment.title} | ${segment.status} | ${escapePipe(
+          segment.summary,
+        )} | ${escapePipe(segment.missingRuntimeEvidence ?? "")} |`,
+    ),
     "",
     "## Platform Support",
     "",

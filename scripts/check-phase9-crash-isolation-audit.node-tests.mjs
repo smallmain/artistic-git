@@ -38,6 +38,43 @@ test("phase 9 crash isolation audit writes machine-readable gaps and gates", () 
   assert.equal(report.kind, "phase9-crash-isolation");
   assert.equal(report.result, "static-pass");
   assert.equal(report.taskCheckable, false);
+  assert.deepEqual(
+    report.coverageSegments.map((segment) => segment.id),
+    [
+      "native-hook-coverage",
+      "renderer-reload-evidence",
+      "react-boundary-evidence",
+      "rust-panic-hook-evidence",
+    ],
+  );
+
+  const nativeHookCoverage = report.coverageSegments.find(
+    (segment) => segment.id === "native-hook-coverage",
+  );
+  assert.equal(nativeHookCoverage.status, "partial-platform-coverage");
+  assert.match(
+    nativeHookCoverage.missingRuntimeEvidence,
+    /Windows\/Linux native WebView crash hook is unsupported/,
+  );
+
+  const rendererReloadEvidence = report.coverageSegments.find(
+    (segment) => segment.id === "renderer-reload-evidence",
+  );
+  assert.equal(rendererReloadEvidence.status, "runtime-artifact-pending");
+  assert.match(
+    rendererReloadEvidence.missingRuntimeEvidence,
+    /phase9-crash-isolation-e2e-\*/,
+  );
+
+  const rustPanicEvidence = report.coverageSegments.find(
+    (segment) => segment.id === "rust-panic-hook-evidence",
+  );
+  assert.equal(rustPanicEvidence.status, "covered");
+  assert.ok(
+    rustPanicEvidence.notes.some((note) =>
+      note.includes("Tauri command Result audit: pass"),
+    ),
+  );
 
   assert.ok(
     report.gaps.some(
@@ -57,6 +94,27 @@ test("phase 9 crash isolation audit writes machine-readable gaps and gates", () 
     report.gates.some(
       (gate) =>
         gate.id === "tauri-driver-injection-gate" && gate.status === "pass",
+    ),
+  );
+  assert.ok(
+    report.gates.some(
+      (gate) =>
+        gate.id === "tauri-driver-crash-injection-runtime-artifact" &&
+        gate.status === "pass",
+    ),
+  );
+  assert.ok(
+    report.evidence.some(
+      (item) =>
+        item.id === "tauri-driver-crash-injection-e2e" &&
+        item.status === "pass",
+    ),
+  );
+  assert.ok(
+    report.gaps.some(
+      (gap) =>
+        gap.id === "tauri-driver-crash-injection-runtime-artifact" &&
+        gap.status === "ci-wired-pending-successful-run",
     ),
   );
 });

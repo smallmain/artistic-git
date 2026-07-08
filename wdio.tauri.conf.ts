@@ -13,12 +13,19 @@ const tauriDriverPath =
   readNonEmptyEnv("TAURI_DRIVER") ?? defaultTauriDriverPath();
 const gitDistFixturePath =
   readNonEmptyEnv("ARTISTIC_GIT_DIST_DIR") ?? defaultGitDistFixturePath();
+const runRealGitE2e = process.env.ARTISTIC_GIT_E2E_REAL_GIT === "1";
+const e2eSpecs = runRealGitE2e
+  ? [
+      "./e2e/tauri/full-chain-real-git.e2e.ts",
+      "./e2e/tauri/crash-isolation.e2e.ts",
+    ]
+  : ["./e2e/tauri/smoke.e2e.ts", "./e2e/tauri/crash-isolation.e2e.ts"];
 
 process.env.ARTISTIC_GIT_DIST_DIR = gitDistFixturePath;
 
 export const config = {
   runner: "local",
-  specs: ["./e2e/tauri/**/*.e2e.ts"],
+  specs: e2eSpecs,
   maxInstances: 1,
   hostname: driverHost,
   port: driverPort,
@@ -52,6 +59,7 @@ export const config = {
   capabilities: [
     {
       browserName: "tauri",
+      maxInstances: 1,
       "tauri:options": {
         application: appBinaryPath,
       },

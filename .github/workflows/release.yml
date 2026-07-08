@@ -301,6 +301,10 @@ jobs:
             echo "TAURI_SIGNING_PRIVATE_KEY must be configured in GitHub Secrets before publishing updater artifacts." >&2
             exit 1
           fi
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" ]; then
+            echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD must be configured in GitHub Secrets before publishing updater artifacts." >&2
+            exit 1
+          fi
 
       - name: Validate staged embedded Git resources
         shell: bash

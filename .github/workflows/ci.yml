@@ -427,21 +427,90 @@ jobs:
         run: cargo install tauri-driver --version 2.0.6 --locked
 
       - name: Run Tauri E2E on Linux
+        id: tauri_e2e_linux
         if: runner.os == 'Linux'
         env:
           ARTISTIC_GIT_E2E_REAL_GIT: ${{ steps.real-git-e2e.outputs.ready == 'true' && '1' || '0' }}
+          ARTISTIC_GIT_PHASE9_CRASH_ISOLATION_E2E_REPORT: ${{ runner.temp }}/phase9-crash-isolation-e2e/phase9-crash-isolation-e2e-${{ runner.os }}.json
         run: xvfb-run --auto-servernum pnpm e2e:tauri:ci
 
       - name: Run Tauri E2E on Windows
+        id: tauri_e2e_windows
         if: runner.os == 'Windows'
         env:
           ARTISTIC_GIT_E2E_REAL_GIT: ${{ steps.real-git-e2e.outputs.ready == 'true' && '1' || '0' }}
+          ARTISTIC_GIT_PHASE9_CRASH_ISOLATION_E2E_REPORT: ${{ runner.temp }}/phase9-crash-isolation-e2e/phase9-crash-isolation-e2e-${{ runner.os }}.json
         run: pnpm e2e:tauri:ci
+
+      - name: Finalize phase 12 E2E runtime evidence
+        if: always()
+        env:
+          ARTISTIC_GIT_PHASE12_E2E_LINUX_OUTCOME: ${{ steps.tauri_e2e_linux.outcome || 'skipped' }}
+          ARTISTIC_GIT_PHASE12_E2E_WINDOWS_OUTCOME: ${{ steps.tauri_e2e_windows.outcome || 'skipped' }}
+        run: pnpm -s phase12:e2e:finalize
+
+      - name: Upload phase 9 crash isolation E2E evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase9-crash-isolation-e2e-${{ runner.os }}
+          path: ${{ runner.temp }}/phase9-crash-isolation-e2e/
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Upload real Git E2E report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-real-git-report-${{ matrix.os }}
-          path: artifacts/e2e-real-git-report-*
+          path: |
+            artifacts/e2e-real-git-report-*
+            artifacts/phase12-e2e-full-chain-evidence-*
           if-no-files-found: warn
+          retention-days: 14
+
+  phase12-evidence-summary:
+    name: Phase 12 evidence summary
+    needs:
+      - test
+      - e2e
+    if: always()
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Download phase 12 perf reports
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: phase12-perf-*
+          path: ${{ runner.temp }}/phase12-evidence-input
+
+      - name: Download phase 12 E2E reports
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: e2e-real-git-report-*
+          path: ${{ runner.temp }}/phase12-evidence-input
+
+      - name: Generate phase 12 evidence summary
+        run: |
+          node scripts/phase12-evidence-summary.mjs \
+            --artifacts-dir="${{ runner.temp }}/phase12-evidence-input" \
+            --report-dir="${{ runner.temp }}/phase12-evidence-summary"
+
+      - name: Upload phase 12 evidence summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase12-evidence-summary
+          path: ${{ runner.temp }}/phase12-evidence-summary/
+          if-no-files-found: warn
+          retention-days: 14

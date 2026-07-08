@@ -45,8 +45,8 @@ const requiredSecrets = [
     description: "Password for the Tauri updater signing private key.",
   },
   {
-    name: "GITHUB_TOKEN",
-    description: "GitHub token available to the release workflow.",
+    name: "GH_TOKEN",
+    description: "GitHub token available to the release workflow publish step.",
   },
 ];
 

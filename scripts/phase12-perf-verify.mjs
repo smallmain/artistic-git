@@ -63,6 +63,7 @@ const report = {
   status: "running",
   result: "running",
   gitDistDir,
+  gitDistSource: collectGitDistSource(gitDistDir),
   gitDist: {
     dir: gitDistDir,
     manifestPath: gitDistDir ? path.join(gitDistDir, "manifest.json") : null,
@@ -691,6 +692,8 @@ function finishReport(status, extra = {}) {
     checkCount: report.checks.length,
     skipCount: report.skips.length,
     blockerCount: report.blockers.length,
+    gitDistSource: report.gitDistSource.source,
+    gitDistTarget: report.gitDistSource.target,
     gitDistDir,
   };
   report.taskReadiness = buildTaskReadiness(status);
@@ -810,6 +813,19 @@ function collectCiEnvironment() {
   };
 }
 
+function collectGitDistSource(currentGitDistDir) {
+  return {
+    source:
+      nonEmptyEnv("ARTISTIC_GIT_PHASE12_GIT_DIST_SOURCE") ??
+      (currentGitDistDir ? "direct-env" : "none"),
+    artifactName: nonEmptyEnv("ARTISTIC_GIT_PHASE12_GIT_DIST_ARTIFACT_NAME"),
+    runId: nonEmptyEnv("ARTISTIC_GIT_PHASE12_GIT_DIST_RUN_ID"),
+    runUrl: nonEmptyEnv("ARTISTIC_GIT_PHASE12_GIT_DIST_RUN_URL"),
+    target: nonEmptyEnv("ARTISTIC_GIT_PHASE12_GIT_DIST_TARGET"),
+    downloadDir: nonEmptyEnv("ARTISTIC_GIT_PHASE12_GIT_DIST_DOWNLOAD_DIR"),
+  };
+}
+
 function captureCommand(command, args) {
   const result = spawnSync(command, args, {
     cwd: process.cwd(),
@@ -825,6 +841,54 @@ function captureCommand(command, args) {
 
 function buildTaskReadiness(status) {
   const reasons = [];
+  const requiredCheckNames = [
+    "historyPagination",
+    "largeStatus",
+    "largeBinaryLfs",
+  ];
+  const passedCheckNames = new Set(
+    report.checks
+      .filter((check) => check.status === "pass")
+      .map((check) => check.name),
+  );
+  const missingChecks = requiredCheckNames.filter(
+    (name) => !passedCheckNames.has(name),
+  );
+  const artifactBacked =
+    report.gitDistSource.source === "artifact" &&
+    Boolean(report.gitDistSource.artifactName) &&
+    Boolean(report.gitDistSource.runId);
+  const executableEvidenceComplete =
+    report.gitDist.executableEvidence.length >= 2 &&
+    report.gitDist.executableEvidence.every(
+      (executable) =>
+        executable.resolvesInsideDistDir === true &&
+        typeof executable.sha256 === "string" &&
+        executable.sha256.length > 0,
+    );
+  const profileScale = {
+    binaryBytes:
+      typeof report.profile?.binaryBytes === "number"
+        ? report.profile.binaryBytes >= 128 * 1024 * 1024
+        : false,
+    commitCount:
+      typeof report.profile?.commitCount === "number"
+        ? report.profile.commitCount >= 10_000
+        : false,
+    fileCount:
+      typeof report.profile?.fileCount === "number"
+        ? report.profile.fileCount >= 50_000
+        : false,
+  };
+  const profileScaleMeetsHeavyTask = Object.values(profileScale).every(Boolean);
+  const platformEvidenceCheckable =
+    status === "pass" &&
+    heavy &&
+    profileScaleMeetsHeavyTask &&
+    artifactBacked &&
+    executableEvidenceComplete &&
+    missingChecks.length === 0;
+
   if (status === "skipped") {
     reasons.push("A real ARTISTIC_GIT_DIST_DIR was not provided.");
   }
@@ -834,14 +898,31 @@ function buildTaskReadiness(status) {
   if (!heavy) {
     reasons.push("The heavy profile was not run.");
   }
+  if (heavy && !profileScaleMeetsHeavyTask) {
+    reasons.push(
+      "The heavy profile scale was overridden below the TASKS.md requirement.",
+    );
+  }
+  if (status === "pass" && !artifactBacked) {
+    reasons.push(
+      "The perf pass was not backed by a Git Distribution artifact run id.",
+    );
+  }
+  if (missingChecks.length > 0) {
+    reasons.push(`Missing required perf checks: ${missingChecks.join(", ")}.`);
+  }
   reasons.push(
-    "Attach target-platform CI/manual evidence before checking the TASKS.md performance item.",
+    "Use the phase12-evidence-summary artifact to confirm all required targets before checking the TASKS.md performance item.",
   );
 
   return {
     performanceItemCheckable: false,
-    status:
-      status === "pass"
+    platformEvidenceCheckable,
+    profileScale,
+    profileScaleMeetsHeavyTask,
+    status: platformEvidenceCheckable
+      ? "platform-pass"
+      : status === "pass"
         ? "partial-evidence"
         : status === "skipped"
           ? "not-exercised"
@@ -849,8 +930,9 @@ function buildTaskReadiness(status) {
     reasons,
     requiredEvidence: [
       "real ARTISTIC_GIT_DIST_DIR manifest with sha256-verified git and git-lfs executables",
-      "heavy profile run: 10000 commits, 50000 files, 128MB LFS binary unless explicitly overridden",
+      "heavy profile run at or above 10000 commits, 50000 files, and 128MB LFS binary",
       "target platform artifact from CI or recorded manual run",
+      "phase12-evidence-summary.json with tasks.performance.checkable=true",
     ],
   };
 }
