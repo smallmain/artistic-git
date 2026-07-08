@@ -4,6 +4,8 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { createE2eProfile, ensureE2eProfile } from "./e2e/tauri/profile";
+
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
 const driverHost = process.env.TAURI_DRIVER_HOST ?? "127.0.0.1";
 const driverPort = Number.parseInt(process.env.TAURI_DRIVER_PORT ?? "4444", 10);
@@ -14,6 +16,7 @@ const tauriDriverPath =
 const gitDistFixturePath =
   readNonEmptyEnv("ARTISTIC_GIT_DIST_DIR") ?? defaultGitDistFixturePath();
 const e2eLogDir = readNonEmptyEnv("ARTISTIC_GIT_E2E_LOG_DIR");
+const e2eProfile = createE2eProfile();
 const connectionRetryTimeout = readPositiveIntegerEnv(
   "ARTISTIC_GIT_E2E_CONNECTION_RETRY_TIMEOUT_MS",
   240_000,
@@ -47,7 +50,7 @@ const tauriServiceOptions = {
   captureFrontendLogs: true,
   commandTimeout,
   driverProvider: "external",
-  env: tauriDriverEnvironment(gitDistFixturePath),
+  env: tauriDriverEnvironment(gitDistFixturePath, e2eProfile.env),
   frontendLogLevel: "debug",
   logLevel: wdioLogLevel,
   startTimeout,
@@ -96,6 +99,7 @@ export const config = {
     timeout: mochaTimeout,
   },
   onPrepare: () => {
+    ensureE2eProfile(e2eProfile);
     ensureTauriBinary();
   },
 };
@@ -126,11 +130,16 @@ function readPositiveIntegerEnv(name: string, fallback: number) {
   return parsed;
 }
 
-function tauriDriverEnvironment(gitDistPath: string) {
+function tauriDriverEnvironment(
+  gitDistPath: string,
+  profileEnv: NodeJS.ProcessEnv,
+) {
   const env: NodeJS.ProcessEnv = {
     ARTISTIC_GIT_DIST_DIR: gitDistPath,
+    ...profileEnv,
   };
   for (const name of [
+    "APPDATA",
     "CI",
     "DBUS_SESSION_BUS_ADDRESS",
     "DISPLAY",
@@ -140,12 +149,15 @@ function tauriDriverEnvironment(gitDistPath: string) {
     "GTK_USE_PORTAL",
     "HOME",
     "LIBGL_ALWAYS_SOFTWARE",
+    "LOCALAPPDATA",
     "MESA_GL_VERSION_OVERRIDE",
     "NO_AT_BRIDGE",
     "PATH",
     "PIPEWIRE_RUNTIME_DIR",
     "RUST_BACKTRACE",
     "RUST_LOG",
+    "TEMP",
+    "TMP",
     "WEBKIT_DISABLE_DMABUF_RENDERER",
     "WEBKIT_DISABLE_COMPOSITING_MODE",
     "XAUTHORITY",
@@ -161,7 +173,12 @@ function tauriDriverEnvironment(gitDistPath: string) {
   return env;
 }
 
+
 function copyEnvIfSet(target: NodeJS.ProcessEnv, name: string) {
+  if (target[name]) {
+    return;
+  }
+
   const value = readNonEmptyEnv(name);
   if (value !== null) {
     target[name] = value;
