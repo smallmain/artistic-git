@@ -337,6 +337,7 @@ test("source Git build flags disable optional Rust components", async () => {
   assert.match(fetchGitDist, /static_link_flags="-Wl,-Bstatic/);
   assert.match(fetchGitDist, /EXTLIBS="\$static_link_flags"/);
   assert.match(fetchGitDist, /OPENSSL_LIBSSL=/);
+  assert.match(fetchGitDist, /-lgssapi_krb5\|-lkrb5\|-lk5crypto/);
   assert.match(fetchGitDist, /find \$\{shellQuote\(installRoot\)\} -type f/);
 });
 
@@ -701,6 +702,7 @@ test("workflow validates restored assembled cache hits before reuse", async () =
   assert.match(workflow, /--workflow-build/);
   assert.match(workflow, /git-dist-build-evidence-\$\{\{ matrix\.target \}\}/);
   assert.match(workflow, /git-dist-blocker-\$\{\{ matrix\.target \}\}/);
+  assert.match(workflow, /\$\{openssh_args\[@\]\+"\$\{openssh_args\[@\]\}"\}/);
   assert.match(
     workflow,
     /Upload target blocker evidence[\s\S]+if: matrix\.placeholderBlocked == true/,

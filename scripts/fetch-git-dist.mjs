@@ -448,7 +448,7 @@ static_third_party_libs=""
 dynamic_system_libs=""
 for token in $pkg_config_static_libs; do
   case "$token" in
-    -ldl|-lrt|-lpthread|-pthread|-lm|-lc|-lresolv|-lutil)
+    -ldl|-lrt|-lpthread|-pthread|-lm|-lc|-lresolv|-lutil|-lgssapi_krb5|-lkrb5|-lk5crypto|-lcom_err)
       dynamic_system_libs="$dynamic_system_libs $token"
       ;;
     *)
@@ -459,7 +459,7 @@ done
 static_link_flags="-Wl,-Bstatic $static_third_party_libs -Wl,-Bdynamic $dynamic_system_libs"
 make -j"$(nproc)" ${makeFlags} prefix=/ CURL_LDFLAGS="$static_link_flags" EXPAT_LIBEXPAT="$static_link_flags" OPENSSL_LINK= OPENSSL_LIBSSL= LIB_4_CRYPTO="$static_link_flags" EXTLIBS="$static_link_flags" all
 make ${makeFlags} prefix=/ DESTDIR=${shellQuote(installRoot)} NO_INSTALL_HARDLINKS=YesPlease CURL_LDFLAGS="$static_link_flags" EXPAT_LIBEXPAT="$static_link_flags" OPENSSL_LINK= OPENSSL_LIBSSL= LIB_4_CRYPTO="$static_link_flags" EXTLIBS="$static_link_flags" install
-if find ${shellQuote(installRoot)} -type f -perm /111 -print0 | xargs -0 -r ldd 2>/dev/null | grep -E 'lib(curl|ssl|crypto|z|pcre2|expat|nghttp2|idn2|rtmp|ssh|psl|krb5|k5crypto|com_err|ldap|lber|brotli|zstd)'; then
+if find ${shellQuote(installRoot)} -type f -perm /111 -print0 | xargs -0 -r ldd 2>/dev/null | grep -E 'lib(curl|ssl|crypto|z|pcre2|expat|nghttp2|idn2|rtmp|ssh|psl|ldap|lber|brotli|zstd)'; then
   echo "git distribution still links dynamic third-party libraries" >&2
   exit 1
 fi

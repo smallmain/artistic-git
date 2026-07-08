@@ -227,7 +227,7 @@ jobs:
             --readiness-artifact-name="git-dist-readiness-${{ matrix.target }}" \
             --build-evidence-artifact-name="git-dist-build-evidence-${{ matrix.target }}" \
             --blocker-artifact-name="git-dist-blocker-${{ matrix.target }}" \
-            "${openssh_args[@]}" \
+            ${openssh_args[@]+"${openssh_args[@]}"} \
             --output-dir="artifacts/git-dist-readiness-${{ matrix.target }}"
 
       - name: Upload target readiness report
