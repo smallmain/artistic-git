@@ -74,7 +74,14 @@ where
         Ok(response) => {
             restore_auto_stash_after_success(runner, &root, response, auto_stash, &operation_id)
         }
-        Err(error) => Err(error),
+        Err(error) => restore_auto_stash_after_error(
+            runner,
+            &root,
+            &branch_name,
+            auto_stash,
+            &operation_id,
+            error,
+        ),
     }
 }
 
@@ -160,6 +167,12 @@ where
     let root = canonical_repository_path(&request.repository_path, SYNC_ALL_OPERATION)?;
     ensure_committed_head(runner, &root)?;
     ensure_origin(runner, &root)?;
+    run_retryable_git(
+        runner,
+        &root,
+        ["fetch", "origin", "--prune"],
+        SYNC_ALL_OPERATION,
+    )?;
     let operation_id = request
         .operation_id
         .clone()
@@ -1757,6 +1770,39 @@ fn restore_auto_stash_after_success(
     }
 }
 
+fn restore_auto_stash_after_error(
+    runner: &GitRunner,
+    root: &Path,
+    branch_name: &str,
+    auto_stash: Option<StashEntry>,
+    operation_id: &OperationId,
+    error: AppError,
+) -> AppResult<SyncCurrentBranchResponse> {
+    let Some(auto_stash) = auto_stash else {
+        return Err(error);
+    };
+
+    let restore = crate::stash_impl::restore_stash_for_root(
+        runner,
+        root,
+        &auto_stash.selector,
+        true,
+        SYNC_STASH_RESTORE_OPERATION,
+        Some(operation_id),
+    )?;
+    match restore.outcome {
+        StashRestoreOutcome::Applied { .. } => Err(error),
+        StashRestoreOutcome::Conflicts { conflict } => Ok(conflict_response(
+            root,
+            branch_name,
+            upstream_branch(runner, root).ok().flatten(),
+            1,
+            conflict,
+            Some(restore.recovery),
+        )),
+    }
+}
+
 fn has_conflicts(runner: &GitRunner, root: &Path) -> AppResult<bool> {
     Ok(crate::conflicts::list_conflicts(
         runner,
@@ -2634,7 +2680,7 @@ mod tests {
             return;
         };
         let repo = TestRepo::new(&runner, "ag-sync-standalone");
-        repo.git(["init"]);
+        repo.git(["init", "-b", "main"]);
         repo.configure_identity();
         repo.write("tracked.txt", "tracked\n");
         repo.git(["add", "tracked.txt"]);
@@ -2987,7 +3033,11 @@ mod tests {
         fixture.peer.git(["checkout", "feature/batch"]);
         fixture.peer.git(["pull", "--ff-only"]);
         assert_eq!(fixture.peer.read("feature-local.txt"), "feature local\n");
-        assert!(fixture.local.status_clean());
+        assert!(fixture
+            .local
+            .git_output(["status", "--porcelain=v1"])
+            .contains(" M tracked.txt"));
+        assert_no_sync_worktrees(&fixture.local);
     }
 
     #[test]
@@ -3076,7 +3126,7 @@ mod tests {
         };
         let fixture = DoubleClone::new(&runner);
         fixture.create_tracking_branch("stable");
-        fixture.create_tracking_branch("release");
+        fixture.create_tracking_branch_from("release", "stable");
 
         fixture.peer.git(["checkout", "release"]);
         fixture.peer.write("release.txt", "release\n");
@@ -3125,7 +3175,7 @@ mod tests {
         };
         let fixture = DoubleClone::new(&runner);
         fixture.create_tracking_branch("stable");
-        fixture.create_tracking_branch("release");
+        fixture.create_tracking_branch_from("release", "stable");
 
         fixture.peer.git(["checkout", "release"]);
         fixture.peer.write("release-current.txt", "release\n");
@@ -3260,6 +3310,7 @@ mod tests {
         fixture.peer.git(["push"]);
 
         fixture.peer.git(["checkout", "main"]);
+        fixture.peer.git(["merge", "--ff-only", "next"]);
         fixture.peer.write("main-auto.txt", "main update\n");
         fixture.peer.git(["add", "main-auto.txt"]);
         fixture.peer.git(["commit", "-m", "main update for next"]);
@@ -3311,7 +3362,7 @@ mod tests {
         fixture.peer.git(["add", "source.txt"]);
         fixture.peer.git(["commit", "-m", "create remote source"]);
         fixture.peer.git(["push", "-u", "origin", "remote-source"]);
-        fixture.peer.git(["checkout", "main"]);
+        fixture.peer.git(["checkout", "remote-source"]);
         fixture.peer.git(["checkout", "-b", "remote-target"]);
         fixture.peer.write("target.txt", "target\n");
         fixture.peer.git(["add", "target.txt"]);
@@ -3349,13 +3400,15 @@ mod tests {
         assert_eq!(
             fixture
                 .local
-                .git_output(["rev-parse", "--abbrev-ref", "remote-source@{upstream}"]),
+                .git_output(["rev-parse", "--abbrev-ref", "remote-source@{upstream}"])
+                .trim(),
             "origin/remote-source"
         );
         assert_eq!(
             fixture
                 .local
-                .git_output(["rev-parse", "--abbrev-ref", "remote-target@{upstream}"]),
+                .git_output(["rev-parse", "--abbrev-ref", "remote-target@{upstream}"])
+                .trim(),
             "origin/remote-target"
         );
         fixture.peer.git(["fetch", "origin"]);
@@ -3986,6 +4039,21 @@ mod tests {
             ]);
         }
 
+        fn create_tracking_branch_from(&self, branch_name: &str, start_point: &str) {
+            self.local.git(["checkout", start_point]);
+            self.local.git(["checkout", "-b", branch_name]);
+            self.local.git(["push", "-u", "origin", branch_name]);
+            self.local.git(["checkout", "main"]);
+            self.peer.git(["fetch", "origin"]);
+            self.peer.git(["checkout", "main"]);
+            self.peer.git([
+                OsString::from("checkout"),
+                OsString::from("-b"),
+                OsString::from(branch_name),
+                OsString::from(format!("origin/{branch_name}")),
+            ]);
+        }
+
         fn install_one_shot_push_race_hook(&self) {
             let marker = self.local.path.join(".git").join("ag-push-race-once");
             fs::write(&marker, "race\n").expect("write race marker");
@@ -4069,7 +4137,7 @@ exit 1
         fn new(runner: &GitRunner) -> Self {
             let parent = TestTempDir::new("ag-sync-submodule").expect("submodule parent");
             let child = TestRepo::at(runner, parent.path().join("child"));
-            child.git(["init"]);
+            child.git(["init", "-b", "main"]);
             child.configure_identity();
             child.write("tracked.txt", "one\n");
             child.git(["add", "tracked.txt"]);

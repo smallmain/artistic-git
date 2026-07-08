@@ -691,8 +691,10 @@ pub fn normalize_project_path_key(path: impl AsRef<Path>) -> ConfigStoreResult<S
             .join(path)
     };
 
+    let canonicalized = std::fs::canonicalize(&absolute).unwrap_or(absolute);
+
     let mut normalized = PathBuf::new();
-    for component in absolute.components() {
+    for component in canonicalized.components() {
         match component {
             std::path::Component::CurDir => {}
             std::path::Component::ParentDir => {

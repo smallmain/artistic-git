@@ -434,7 +434,7 @@ mod tests {
             return;
         };
         let repo = TestRepo::new(&runner);
-        repo.git(["init"]);
+        repo.git(["init", "-b", "main"]);
 
         let response = fetch_repository(
             &runner,
@@ -460,7 +460,7 @@ mod tests {
             return;
         };
         let remote = TestRepo::new(&runner);
-        remote.git(["init", "--bare"]);
+        remote.git(["init", "--bare", "-b", "main"]);
         let seed = TestRepo::new(&runner);
         seed.init_with_commit();
         seed.git(["checkout", "-b", "feature/stale"]);
@@ -582,7 +582,7 @@ mod tests {
         }
 
         fn init_with_commit(&self) {
-            self.git(["init"]);
+            self.git(["init", "-b", "main"]);
             self.git(["config", "user.name", "Tester"]);
             self.git(["config", "user.email", "tester@example.test"]);
             self.write("tracked.txt", "one\n");

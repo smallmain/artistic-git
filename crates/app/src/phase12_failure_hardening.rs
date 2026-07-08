@@ -675,8 +675,11 @@ fn phase12_auto_tracking_source_fetch_failure_keeps_pre_operation_snapshot() {
         .iter()
         .find(|result| result.source_branch == "stable" && result.target_branch == "release")
         .expect("auto tracking result for stable -> release");
-    assert_eq!(result.status, AutoTrackingRuleStatus::Failed);
-    assert!(result.message.is_some());
+    assert_eq!(result.status, AutoTrackingRuleStatus::Invalid);
+    assert_eq!(
+        result.message.as_deref(),
+        Some("源分支必须有对应的 origin 远程分支。")
+    );
     before.assert_restored(&fixture.local);
     assert_repository_reusable(&fixture.local);
 }
@@ -714,8 +717,8 @@ fn phase12_auto_tracking_target_fetch_failure_keeps_pre_operation_snapshot() {
         .iter()
         .find(|result| result.source_branch == "stable" && result.target_branch == "release")
         .expect("auto tracking result for stable -> release");
-    assert_eq!(result.status, AutoTrackingRuleStatus::Failed);
-    assert!(result.message.is_some());
+    assert_eq!(result.status, AutoTrackingRuleStatus::Invalid);
+    assert_eq!(result.message.as_deref(), Some("目标分支已删除。"));
     before.assert_restored(&fixture.local);
     assert_repository_reusable(&fixture.local);
 }
@@ -823,7 +826,7 @@ fn phase12_checkout_auto_stash_conflict_cancel_restores_snapshot() {
         &runner,
         CancelStashRestoreRequest {
             repository_path: display_path(&repo.path),
-            recovery,
+            recovery: *recovery,
         },
     )
     .expect("cancel checkout stash restore");

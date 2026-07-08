@@ -985,7 +985,7 @@ pub enum BranchOperationResponse {
         repository_path: String,
         branch_name: String,
         conflict: ConflictEnteredEvent,
-        stash_recovery: Option<StashRecoveryPoint>,
+        stash_recovery: Option<Box<StashRecoveryPoint>>,
     },
 }
 
@@ -1376,6 +1376,9 @@ pub struct StashRecoveryPoint {
     pub head_oid: Option<String>,
     pub stash_oid: Option<String>,
     pub stash_selector: Option<String>,
+    pub pre_operation_branch: Option<String>,
+    pub pre_operation_head_oid: Option<String>,
+    pub pre_operation_stash_oid: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]

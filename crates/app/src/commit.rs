@@ -317,7 +317,9 @@ fn commit_local_plan(
         }
     }
 
-    if should_sync_before_commit(runner, root).map_err(LocalCommitFailure::Error)? {
+    if plan.root_submodule_paths.is_empty()
+        && should_sync_before_commit(runner, root).map_err(LocalCommitFailure::Error)?
+    {
         let sync =
             sync_for_commit(runner, root, operation_id).map_err(LocalCommitFailure::Error)?;
         if let Some(conflict_response) = commit_conflict_response(sync, None) {
@@ -763,7 +765,10 @@ fn remote_default_branch(runner: &GitRunner, root: &Path) -> AppResult<Option<St
     if output.status.success() {
         let branch = String::from_utf8_lossy(&output.stdout).trim().to_owned();
         Ok((!branch.is_empty()).then(|| normalize_branch_name(&branch)))
-    } else if output.status.code() == Some(1) || is_missing_ref_output(&output.stderr) {
+    } else if output.status.code() == Some(1)
+        || is_missing_ref_output(&output.stdout)
+        || is_missing_ref_output(&output.stderr)
+    {
         Ok(None)
     } else {
         Err(crate::git_ops::command_failure(&plan, output, OPERATION))
@@ -859,7 +864,10 @@ fn current_branch_optional(runner: &GitRunner, root: &Path) -> AppResult<Option<
         Ok(Some(
             String::from_utf8_lossy(&output.stdout).trim().to_owned(),
         ))
-    } else if output.status.code() == Some(1) {
+    } else if output.status.code() == Some(1)
+        || is_missing_ref_output(&output.stdout)
+        || is_missing_ref_output(&output.stderr)
+    {
         Ok(None)
     } else {
         Err(crate::git_ops::command_failure(&plan, output, OPERATION))
@@ -880,14 +888,15 @@ fn show_ref_optional(runner: &GitRunner, root: &Path, refname: &str) -> AppResul
     let (plan, output) = run_git_raw(
         runner,
         Some(root),
-        ["show-ref", "--verify", "--hash", refname],
+        ["show-ref", "--quiet", "--verify", refname],
         OPERATION,
     )?;
     if output.status.success() {
-        Ok(Some(
-            String::from_utf8_lossy(&output.stdout).trim().to_owned(),
-        ))
-    } else if output.status.code() == Some(1) {
+        Ok(Some(refname.to_owned()))
+    } else if matches!(output.status.code(), Some(1) | Some(128))
+        || is_missing_ref_output(&output.stdout)
+        || is_missing_ref_output(&output.stderr)
+    {
         Ok(None)
     } else {
         Err(crate::git_ops::command_failure(&plan, output, OPERATION))
@@ -960,6 +969,7 @@ fn git_config_value_optional(
 fn is_missing_ref_output(stderr: &[u8]) -> bool {
     let stderr = String::from_utf8_lossy(stderr).to_ascii_lowercase();
     stderr.contains("not a symbolic ref")
+        || stderr.contains("not a valid ref")
         || stderr.contains("no such ref")
         || stderr.contains("not found")
         || stderr.contains("needed a single revision")
@@ -1332,7 +1342,7 @@ mod tests {
         };
         let parent = TestTempDir::new("ag-commit-publish").expect("publish parent");
         let remote = TestRepo::at(&runner, parent.path().join("remote.git"));
-        remote.git(["init", "--bare"]);
+        remote.git(["init", "--bare", "-b", "main"]);
         let repo = TestRepo::at(&runner, parent.path().join("repo"));
         repo.git(["init", "-b", "main"]);
         repo.git(["config", "user.name", "Tester"]);
@@ -1524,7 +1534,14 @@ mod tests {
         allow_file_protocol_for_local_submodule_fixtures(&runner);
         let fixture = SubmoduleCommitFixture::new(&runner);
         let submodule = fixture.local.path.join("deps/lib");
+        let submodule_head = git_output_at(&runner, &submodule, ["rev-parse", "HEAD"]);
+        git_output_at(
+            &runner,
+            &submodule,
+            ["checkout", "--detach", submodule_head.trim()],
+        );
         git_output_at(&runner, &submodule, ["remote", "remove", "origin"]);
+        let _ = run_git_raw(&runner, Some(&submodule), ["branch", "-D", "main"], "test");
         fixture.local.git([
             "config",
             "--file",
@@ -1653,7 +1670,7 @@ mod tests {
         }
 
         fn init_with_commit(&self) {
-            self.git(["init"]);
+            self.git(["init", "-b", "main"]);
             self.configure_identity();
             self.write("tracked.txt", "one\n");
             self.git(["add", "."]);
@@ -1861,7 +1878,7 @@ mod tests {
         fn new(runner: &GitRunner) -> Self {
             let parent = TestTempDir::new("ag-commit-double").expect("double clone parent");
             let remote = TestRepo::at(runner, parent.path().join("remote.git"));
-            remote.git(["init", "--bare"]);
+            remote.git(["init", "--bare", "-b", "main"]);
 
             let seed = TestRepo::at(runner, parent.path().join("seed"));
             seed.git(["init", "-b", "main"]);

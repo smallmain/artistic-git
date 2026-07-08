@@ -556,7 +556,7 @@ mod tests {
         repo.write("feature.txt", "feature\n");
         repo.git(["add", "."]);
         repo.git(["commit", "-m", "feature"]);
-        repo.git(["checkout", "master"]);
+        repo.git(["checkout", "main"]);
         repo.write("main.txt", "main\n");
         repo.git(["add", "."]);
         repo.git(["commit", "-m", "main"]);
@@ -594,7 +594,7 @@ mod tests {
         repo.git(["add", "."]);
         repo.git(["commit", "-m", "feature only"]);
         let feature_oid = repo.git_output(["rev-parse", "HEAD"]).trim().to_owned();
-        repo.git(["checkout", "master"]);
+        repo.git(["checkout", "main"]);
         repo.write("main.txt", "main\n");
         repo.git(["add", "."]);
         repo.git(["commit", "-m", "main only"]);
@@ -656,7 +656,7 @@ mod tests {
             } => {
                 assert!(conflict.operation_id.0.starts_with("revert-"));
                 assert_eq!(conflict.operation_name, OPERATION);
-                assert_eq!(conflict.repository_path, display_path(&repo.path));
+                assert_same_path(&conflict.repository_path, &repo.path);
                 assert!(stash_recovery.is_none());
                 assert!(auto_stash.is_none());
                 assert_eq!(
@@ -975,6 +975,13 @@ mod tests {
         Some((runner, temp))
     }
 
+    fn assert_same_path(actual: impl AsRef<Path>, expected: impl AsRef<Path>) {
+        assert_eq!(
+            fs::canonicalize(actual.as_ref()).expect("actual canonical path"),
+            fs::canonicalize(expected.as_ref()).expect("expected canonical path")
+        );
+    }
+
     struct TestRepo {
         path: PathBuf,
         _temp: Option<TestTempDir>,
@@ -1000,7 +1007,7 @@ mod tests {
         }
 
         fn init_with_commit(&self) {
-            self.git(["init"]);
+            self.git(["init", "-b", "main"]);
             self.git(["config", "user.name", "Tester"]);
             self.git(["config", "user.email", "tester@example.test"]);
             self.write("tracked.txt", "one\n");
@@ -1064,6 +1071,8 @@ mod tests {
                 [
                     OsString::from("init"),
                     OsString::from("--bare"),
+                    OsString::from("-b"),
+                    OsString::from("main"),
                     remote_path.as_os_str().to_owned(),
                 ],
                 "test",

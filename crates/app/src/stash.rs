@@ -211,7 +211,9 @@ pub(crate) fn restore_stash_for_root(
                 outcome: StashRestoreOutcome::Applied { dropped },
             })
         }
-        Err(_error) if repository_has_conflicts(runner, root) => {
+        Err(error)
+            if repository_has_conflicts(runner, root) || is_stash_apply_conflict_error(&error) =>
+        {
             let conflict = ConflictEnteredEvent {
                 operation_id: OperationId(recovery.id.clone()),
                 repository_path: display_path(root),
@@ -266,6 +268,8 @@ pub fn cancel_stash_restore(
     }
     git_stdout(runner, Some(&root), ["clean", "-fd"], "cancelStashRestore")?;
 
+    restore_pre_operation_ref(runner, &root, &recovery)?;
+
     let mut restored = recovery.stash_oid.is_none();
     let mut dropped_recovery_stash = false;
     if let Some(stash_oid) = recovery.stash_oid.as_deref() {
@@ -280,10 +284,46 @@ pub fn cancel_stash_restore(
         restored = true;
     }
 
+    if let Some(stash_oid) = recovery.pre_operation_stash_oid.as_deref() {
+        let selector = selector_for_oid(runner, &root, stash_oid, "cancelStashRestore")?;
+        git_stdout(
+            runner,
+            Some(&root),
+            ["stash", "apply", "--index", selector.as_str()],
+            "cancelStashRestore",
+        )?;
+        let _ = drop_stash_by_oid(runner, &root, stash_oid, "cancelStashRestore")?;
+        restored = true;
+    }
+
     Ok(CancelStashRestoreResponse {
         restored,
         dropped_recovery_stash,
     })
+}
+
+fn restore_pre_operation_ref(
+    runner: &GitRunner,
+    root: &Path,
+    recovery: &StashRecoveryPoint,
+) -> AppResult<()> {
+    if let Some(branch) = recovery.pre_operation_branch.as_deref() {
+        git_stdout(
+            runner,
+            Some(root),
+            ["checkout", branch],
+            "cancelStashRestore",
+        )?;
+    } else if let Some(head_oid) = recovery.pre_operation_head_oid.as_deref() {
+        git_stdout(
+            runner,
+            Some(root),
+            ["checkout", "--detach", head_oid],
+            "cancelStashRestore",
+        )?;
+    }
+
+    Ok(())
 }
 
 fn create_stash_with_message(
@@ -352,6 +392,9 @@ fn create_recovery_point(
             head_oid,
             stash_oid: None,
             stash_selector: None,
+            pre_operation_branch: None,
+            pre_operation_head_oid: None,
+            pre_operation_stash_oid: None,
         });
     }
 
@@ -381,6 +424,9 @@ fn create_recovery_point(
         head_oid,
         stash_oid: Some(stash.oid),
         stash_selector: Some(stash.selector),
+        pre_operation_branch: None,
+        pre_operation_head_oid: None,
+        pre_operation_stash_oid: None,
     })
 }
 
@@ -435,13 +481,14 @@ fn stash_entry_for_selector(
         .next()
         .filter(|value| !value.is_empty())
         .map(str::to_owned);
-    let message = parts.next().unwrap_or(selector).to_owned();
+    let raw_message = parts.next().unwrap_or(selector);
+    let message = display_stash_message(raw_message);
 
     Ok(StashEntry {
         index: 0,
         selector: selector.to_owned(),
         oid,
-        branch: branch_from_stash_message(&message),
+        branch: branch_from_stash_message(raw_message),
         origin: auto_stash_origin(&message),
         is_auto_stash: auto_stash_origin(&message).is_some(),
         message,
@@ -526,14 +573,15 @@ fn parse_stash_record(record: &str) -> Option<StashEntry> {
         .and_then(|value| value.strip_suffix('}'))
         .and_then(|value| value.parse().ok())
         .unwrap_or_default();
-    let message = parts[3].to_owned();
+    let raw_message = parts[3];
+    let message = display_stash_message(raw_message);
     let origin = auto_stash_origin(&message);
 
     Some(StashEntry {
         index,
         selector,
         oid: parts[1].to_owned(),
-        branch: branch_from_stash_message(&message),
+        branch: branch_from_stash_message(raw_message),
         created_at_unix_seconds: empty_to_none(parts[2]).map(str::to_owned),
         is_auto_stash: origin.is_some(),
         origin,
@@ -778,11 +826,37 @@ fn auto_stash_origin(message: &str) -> Option<String> {
     })
 }
 
+fn display_stash_message(message: &str) -> String {
+    message
+        .strip_prefix("On ")
+        .and_then(|value| value.split_once(':').map(|(_, message)| message.trim()))
+        .unwrap_or(message)
+        .to_owned()
+}
+
 fn branch_from_stash_message(message: &str) -> Option<String> {
     message
         .strip_prefix("WIP on ")
         .or_else(|| message.strip_prefix("On "))
         .and_then(|value| value.split_once(':').map(|(branch, _)| branch.to_owned()))
+}
+
+fn is_stash_apply_conflict_error(error: &AppError) -> bool {
+    let mut text = error.summary.clone();
+    if let Some(git) = error.git.as_ref() {
+        text.push('\n');
+        text.push_str(&git.stdout);
+        text.push('\n');
+        text.push_str(&git.stderr);
+    }
+
+    [
+        "would be overwritten by merge",
+        "The following untracked working tree files would be overwritten",
+        "could not restore untracked files from stash",
+    ]
+    .iter()
+    .any(|needle| text.contains(needle))
 }
 
 fn has_local_changes(runner: &GitRunner, root: &Path, operation_name: &str) -> AppResult<bool> {
@@ -1017,8 +1091,28 @@ mod tests {
         .expect("stash entry");
 
         assert!(entry.is_auto_stash);
+        assert_eq!(entry.message, "Auto Stash: switch branch");
         assert_eq!(entry.origin.as_deref(), Some("switch branch"));
         assert_eq!(entry.branch.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn normalizes_explicit_stash_subject_display_message() {
+        let entry = parse_stash_record(concat!(
+            "stash@{0}",
+            "\0",
+            "abc",
+            "\0",
+            "1700000000",
+            "\0",
+            "On main: manual full stash",
+            "\x1e"
+        ))
+        .expect("stash entry");
+
+        assert_eq!(entry.message, "manual full stash");
+        assert_eq!(entry.branch.as_deref(), Some("main"));
+        assert!(!entry.is_auto_stash);
     }
 
     #[test]
@@ -1401,7 +1495,7 @@ mod tests {
         }
 
         fn init_with_commit(&self) {
-            self.git(["init"]);
+            self.git(["init", "-b", "main"]);
             self.git(["config", "user.name", "Tester"]);
             self.git(["config", "user.email", "tester@example.test"]);
             self.write("tracked.txt", "base\n");

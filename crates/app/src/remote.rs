@@ -141,7 +141,7 @@ mod tests {
             return;
         };
         let repo = TestRepo::new(&runner);
-        repo.git(["init"]);
+        repo.git(["init", "-b", "main"]);
 
         let response =
             load_remote_settings(&runner, display_path(&repo.path)).expect("remote settings");
@@ -156,7 +156,7 @@ mod tests {
             return;
         };
         let repo = TestRepo::new(&runner);
-        repo.git(["init"]);
+        repo.git(["init", "-b", "main"]);
         repo.git(["remote", "add", "origin", "https://example.test/old.git"]);
 
         let saved = save_remote_settings(

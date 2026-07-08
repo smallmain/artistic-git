@@ -1064,6 +1064,9 @@ export type StashRecoveryPoint = {
   headOid: string | null;
   stashOid: string | null;
   stashSelector: string | null;
+  preOperationBranch: string | null;
+  preOperationHeadOid: string | null;
+  preOperationStashOid: string | null;
 };
 
 export type StashRestoreOutcome =

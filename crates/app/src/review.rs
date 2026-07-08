@@ -781,7 +781,13 @@ mod tests {
             run_git_raw(
                 runner,
                 None,
-                ["init", "--bare", remote.path().to_str().unwrap()],
+                [
+                    "init",
+                    "--bare",
+                    "-b",
+                    "main",
+                    remote.path().to_str().unwrap(),
+                ],
                 "test",
             )
             .expect("init remote");
@@ -827,7 +833,8 @@ mod tests {
             local.git(["add", "."]);
             local.git(["commit", "-m", "initial"]);
             local.git(["push", "-u", "origin", "main"]);
-            peer.git(["checkout", "main"]);
+            peer.git(["fetch", "origin"]);
+            peer.git(["checkout", "-b", "main", "origin/main"]);
             peer.git(["config", "user.name", "Test User"]);
             peer.git(["config", "user.email", "test@example.com"]);
 

@@ -440,6 +440,8 @@ fn checkout_with_auto_stash(
     operation_id: OperationId,
     operation_name: &str,
 ) -> AppResult<BranchOperationResponse> {
+    let pre_operation_branch = current_branch_optional(runner, root, operation_name)?;
+    let pre_operation_head_oid = head_oid_optional(runner, root, operation_name)?;
     let stash = crate::stash_impl::create_auto_stash(
         runner,
         CreateAutoStashRequest {
@@ -482,17 +484,73 @@ fn checkout_with_auto_stash(
         match response.outcome {
             StashRestoreOutcome::Applied { .. } => {}
             StashRestoreOutcome::Conflicts { conflict } => {
+                let mut recovery = response.recovery;
+                recovery.pre_operation_branch = pre_operation_branch;
+                recovery.pre_operation_head_oid = pre_operation_head_oid;
+                recovery.pre_operation_stash_oid = Some(stash.oid);
                 return Ok(BranchOperationResponse::Conflicts {
                     repository_path: crate::repository::display_path(root),
                     branch_name: branch_name.to_owned(),
                     conflict,
-                    stash_recovery: Some(response.recovery),
+                    stash_recovery: Some(Box::new(recovery)),
                 });
             }
         }
     }
 
     Ok(completed_response(root, branch_name.to_owned()))
+}
+
+fn current_branch_optional(
+    runner: &GitRunner,
+    root: &Path,
+    operation_name: &str,
+) -> AppResult<Option<String>> {
+    let (plan, output) = crate::git_ops::run_git_raw(
+        runner,
+        Some(root),
+        ["symbolic-ref", "--quiet", "--short", "HEAD"],
+        operation_name,
+    )?;
+    if output.status.success() {
+        Ok(Some(
+            String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+        ))
+    } else if output.status.code() == Some(1) {
+        Ok(None)
+    } else {
+        Err(crate::git_ops::command_failure(
+            &plan,
+            output,
+            operation_name,
+        ))
+    }
+}
+
+fn head_oid_optional(
+    runner: &GitRunner,
+    root: &Path,
+    operation_name: &str,
+) -> AppResult<Option<String>> {
+    let (plan, output) = crate::git_ops::run_git_raw(
+        runner,
+        Some(root),
+        ["rev-parse", "--verify", "HEAD"],
+        operation_name,
+    )?;
+    if output.status.success() {
+        Ok(Some(
+            String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+        ))
+    } else if output.status.code() == Some(1) {
+        Ok(None)
+    } else {
+        Err(crate::git_ops::command_failure(
+            &plan,
+            output,
+            operation_name,
+        ))
+    }
 }
 
 fn backup_and_discard_local_changes(
@@ -1453,7 +1511,7 @@ mod tests {
     impl RemoteFixture {
         fn new(runner: &GitRunner) -> Self {
             let remote = TestRepo::new(runner);
-            remote.git(["init", "--bare"]);
+            remote.git(["init", "--bare", "-b", "main"]);
 
             let seed = TestRepo::new(runner);
             seed.init_with_commit();

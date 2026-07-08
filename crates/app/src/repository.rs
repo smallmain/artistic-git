@@ -1592,7 +1592,9 @@ pub fn log_page_with_cancel(
         OsString::from(format!("--max-count={}", limit + 1)),
         OsString::from(format!("--skip={skip}")),
         OsString::from("--format=%H%x00%P%x00%an%x00%ae%x00%at%x00%s%x00%D%x1e"),
-        OsString::from("--all"),
+        OsString::from("--branches"),
+        OsString::from("--tags"),
+        OsString::from("--remotes"),
     ];
 
     run_log_command(
@@ -1633,7 +1635,9 @@ pub fn search_log_with_cancel(
     if let Some(pickaxe) = request.pickaxe.filter(|value| !value.is_empty()) {
         args.push(OsString::from(format!("-S{pickaxe}")));
     }
-    args.push(OsString::from("--all"));
+    args.push(OsString::from("--branches"));
+    args.push(OsString::from("--tags"));
+    args.push(OsString::from("--remotes"));
 
     run_log_command(
         runner,
@@ -2322,6 +2326,12 @@ fn resolve_repository_root(runner: &GitRunner, path: &Path) -> AppResult<PathBuf
     )
     .map_err(|error| {
         if error.category == AppErrorCategory::Expected {
+            if is_bare_repository_path(runner, path) {
+                return logged(AppError::expected(
+                    "不是受支持的 Git 项目类型",
+                    "openRepository",
+                ));
+            }
             logged(AppError::expected("不是有效的 Git 项目", "openRepository"))
         } else {
             error
@@ -2329,6 +2339,17 @@ fn resolve_repository_root(runner: &GitRunner, path: &Path) -> AppResult<PathBuf
     })?;
     let root = PathBuf::from(output.stdout.trim());
     canonicalize_path(&root, "openRepository")
+}
+
+fn is_bare_repository_path(runner: &GitRunner, path: &Path) -> bool {
+    git_stdout(
+        runner,
+        Some(path),
+        ["rev-parse", "--is-bare-repository"],
+        "openRepository",
+    )
+    .map(|output| output.trim() == "true")
+    .unwrap_or(false)
 }
 
 fn reject_unsupported_repository_type(
@@ -2871,7 +2892,10 @@ fn parse_log_records(output: &str) -> Vec<CommitSummary> {
 }
 
 fn parse_stash_record(record: &str) -> Option<StashEntry> {
-    let parts = record.trim_matches('\n').split('\0').collect::<Vec<_>>();
+    let parts = record
+        .trim_matches(|value| value == '\n' || value == '\x1e')
+        .split('\0')
+        .collect::<Vec<_>>();
     if parts.len() < 4 {
         return None;
     }
@@ -2882,10 +2906,9 @@ fn parse_stash_record(record: &str) -> Option<StashEntry> {
         .and_then(|value| value.strip_suffix('}'))
         .and_then(|value| value.parse().ok())
         .unwrap_or_default();
-    let message = parts[3].to_owned();
-    let branch = message
-        .strip_prefix("WIP on ")
-        .and_then(|value| value.split_once(':').map(|(branch, _)| branch.to_owned()));
+    let raw_message = parts[3];
+    let message = display_stash_message(raw_message);
+    let branch = branch_from_stash_message(raw_message);
     let is_auto_stash =
         message.contains("Auto Stash:") || message.to_ascii_lowercase().contains("autostash");
 
@@ -2899,6 +2922,21 @@ fn parse_stash_record(record: &str) -> Option<StashEntry> {
         is_auto_stash,
         origin: is_auto_stash.then(|| "auto-stash".to_owned()),
     })
+}
+
+fn display_stash_message(message: &str) -> String {
+    message
+        .strip_prefix("On ")
+        .and_then(|value| value.split_once(':').map(|(_, message)| message.trim()))
+        .unwrap_or(message)
+        .to_owned()
+}
+
+fn branch_from_stash_message(message: &str) -> Option<String> {
+    message
+        .strip_prefix("WIP on ")
+        .or_else(|| message.strip_prefix("On "))
+        .and_then(|value| value.split_once(':').map(|(branch, _)| branch.to_owned()))
 }
 
 fn local_change_kind(index_status: &str, worktree_status: &str) -> DiffChangeKind {
@@ -4084,13 +4122,13 @@ mod tests {
         };
         let repo = TestRepo::new(&runner);
         repo.init_with_commit();
-        repo.write("tracked.txt", "target\n");
+        repo.write("target.txt", "target\n");
         repo.git(["add", "."]);
-        repo.git(["commit", "-m", "target line"]);
+        repo.git(["commit", "-m", "add target file"]);
         let target = repo.git_output(["rev-parse", "HEAD"]).trim().to_owned();
-        repo.write("tracked.txt", "later\n");
+        repo.write("later.txt", "later\n");
         repo.git(["add", "."]);
-        repo.git(["commit", "-m", "later line"]);
+        repo.git(["commit", "-m", "add later file"]);
         let original_head = repo.git_output(["rev-parse", "HEAD"]).trim().to_owned();
         repo.write("draft.txt", "local draft\n");
         let marker = repo.path.join(".git").join("ag-revert-hook-started");
@@ -4122,7 +4160,8 @@ mod tests {
 
         assert_eq!(error.summary, "operation cancelled");
         assert_eq!(repo.git_output(["rev-parse", "HEAD"]).trim(), original_head);
-        assert_eq!(repo.read("tracked.txt"), "later\n");
+        assert_eq!(repo.read("target.txt"), "target\n");
+        assert_eq!(repo.read("later.txt"), "later\n");
         assert_eq!(repo.read("draft.txt"), "local draft\n");
         assert!(repo
             .git_output(["status", "--porcelain"])
@@ -4336,6 +4375,7 @@ mod tests {
         .expect("stash entry");
 
         assert!(entry.is_auto_stash);
+        assert_eq!(entry.message, "Auto Stash: before checkout");
         assert_eq!(entry.origin.as_deref(), Some("auto-stash"));
     }
 
@@ -4356,7 +4396,7 @@ mod tests {
             return;
         };
         let repo = TestRepo::new(&runner);
-        repo.git(["init"]);
+        repo.git(["init", "-b", "main"]);
         repo.write("nested/file.txt", "hello");
 
         let response = open_repository(
@@ -4369,7 +4409,7 @@ mod tests {
         )
         .expect("open repo");
 
-        assert_eq!(response.repository_path, display_path(&repo.path));
+        assert_same_path(&response.repository_path, &repo.path);
         assert_eq!(response.remote_mode, RepositoryRemoteMode::NoRemote);
         assert!(response
             .warnings
@@ -4389,8 +4429,13 @@ mod tests {
             .trim()
             .to_owned();
         let bare = TestTempDir::new("ag-bare-remote").expect("bare remote");
-        git_stdout(&runner, Some(bare.path()), ["init", "--bare"], "test")
-            .expect("init bare remote");
+        git_stdout(
+            &runner,
+            Some(bare.path()),
+            ["init", "--bare", "-b", "main"],
+            "test",
+        )
+        .expect("init bare remote");
         let bare_path = display_path(bare.path());
         source.git(["remote", "add", "origin", bare_path.as_str()]);
         source.git(vec![
@@ -4468,8 +4513,13 @@ mod tests {
             .trim()
             .to_owned();
         let bare = TestTempDir::new("ag-bare-remote").expect("bare remote");
-        git_stdout(&runner, Some(bare.path()), ["init", "--bare"], "test")
-            .expect("init bare remote");
+        git_stdout(
+            &runner,
+            Some(bare.path()),
+            ["init", "--bare", "-b", "main"],
+            "test",
+        )
+        .expect("init bare remote");
         let bare_path = display_path(bare.path());
         source.git(["remote", "add", "origin", bare_path.as_str()]);
         source.git(vec![
@@ -4548,7 +4598,7 @@ mod tests {
         let child = TestRepo::new(&runner);
         child.init_with_commit();
         let repo = TestRepo::new(&runner);
-        repo.git(["init"]);
+        repo.git(["init", "-b", "main"]);
         repo.git(["config", "user.name", "Tester"]);
         repo.git(["config", "user.email", "tester@example.test"]);
         repo.git(vec![
@@ -4596,7 +4646,7 @@ mod tests {
         child.init_with_commit();
         let old_oid = child.git_output(["rev-parse", "HEAD"]).trim().to_owned();
         let repo = TestRepo::new(&runner);
-        repo.git(["init"]);
+        repo.git(["init", "-b", "main"]);
         repo.git(["config", "user.name", "Tester"]);
         repo.git(["config", "user.email", "tester@example.test"]);
         repo.git(vec![
@@ -4655,7 +4705,7 @@ mod tests {
         child.init_with_commit();
 
         let repo = TestRepo::new(&runner);
-        repo.git(["init"]);
+        repo.git(["init", "-b", "main"]);
         repo.git(["config", "user.name", "Tester"]);
         repo.git(["config", "user.email", "tester@example.test"]);
         repo.write("root.txt", "one\n");
@@ -4790,7 +4840,7 @@ mod tests {
             return;
         };
         let repo = TestRepo::new(&runner);
-        repo.git(["init", "--bare"]);
+        repo.git(["init", "--bare", "-b", "main"]);
 
         let error = open_repository(
             &runner,
@@ -4811,7 +4861,7 @@ mod tests {
             return;
         };
         let repo = TestRepo::new(&runner);
-        repo.git(["init"]);
+        repo.git(["init", "-b", "main"]);
         fs::File::create(repo.path.join(".git/index.lock")).expect("index.lock");
 
         let response = open_repository(
@@ -4837,7 +4887,7 @@ mod tests {
             return;
         };
         let repo = TestRepo::new(&runner);
-        repo.git(["init"]);
+        repo.git(["init", "-b", "main"]);
         repo.git(["config", "user.name", "Tester"]);
         repo.git(["config", "user.email", "tester@example.test"]);
         repo.write("tracked.txt", "one\n");
@@ -5087,7 +5137,7 @@ size 16\n"
             return;
         };
         let repo = TestRepo::new(&runner);
-        repo.git(["init"]);
+        repo.git(["init", "-b", "main"]);
 
         open_repository(
             &runner,
@@ -5195,6 +5245,13 @@ size 16\n"
         .expect("allow file protocol for local submodule fixtures");
     }
 
+    fn assert_same_path(actual: impl AsRef<Path>, expected: impl AsRef<Path>) {
+        assert_eq!(
+            fs::canonicalize(actual.as_ref()).expect("actual canonical path"),
+            fs::canonicalize(expected.as_ref()).expect("expected canonical path")
+        );
+    }
+
     struct TestRepo {
         path: PathBuf,
         _temp: TestTempDir,
@@ -5212,7 +5269,7 @@ size 16\n"
         }
 
         fn init_with_commit(&self) {
-            self.git(["init"]);
+            self.git(["init", "-b", "main"]);
             self.git(["config", "user.name", "Tester"]);
             self.git(["config", "user.email", "tester@example.test"]);
             self.write("tracked.txt", "one\n");
@@ -5276,7 +5333,7 @@ size 16\n"
     }
 
     fn wait_for_path(path: &Path) {
-        for _ in 0..100 {
+        for _ in 0..500 {
             if path.exists() {
                 return;
             }

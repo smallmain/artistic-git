@@ -289,7 +289,7 @@ mod tests {
         }
 
         fn init_with_commit(&self) {
-            self.git(["init"]);
+            self.git(["init", "-b", "main"]);
             self.git(["config", "user.name", "Tester"]);
             self.git(["config", "user.email", "tester@example.test"]);
             self.write("tracked.txt", "one\n");

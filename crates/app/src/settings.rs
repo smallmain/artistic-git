@@ -1008,7 +1008,7 @@ mod tests {
         }
 
         fn init(&self) {
-            self.git(["init"]);
+            self.git(["init", "-b", "main"]);
         }
 
         fn local_config(&self, key: &str) -> Option<String> {
