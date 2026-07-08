@@ -306,6 +306,18 @@ test("assembly fails without helper binaries and does not write an incomplete ma
   }
 });
 
+test("source Git build flags disable optional Rust components", async () => {
+  const config = await loadConfig();
+  assert.ok(
+    config.build.macos.git.make_flags.includes("NO_RUST=YesPlease"),
+    "macOS Git source build must not let Cargo discover the repo workspace",
+  );
+  assert.ok(
+    config.build.linux.git.make_flags.includes("NO_RUST=YesPlease"),
+    "Linux Ubuntu 20.04 build image should not require Cargo for optional Git Rust code",
+  );
+});
+
 test("real Windows fetch still rejects the Win32-OpenSSH placeholder before download", async () => {
   const config = await loadConfig();
   assert.throws(
