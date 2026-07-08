@@ -14,12 +14,10 @@ const tauriDriverPath =
 const gitDistFixturePath =
   readNonEmptyEnv("ARTISTIC_GIT_DIST_DIR") ?? defaultGitDistFixturePath();
 const runRealGitE2e = process.env.ARTISTIC_GIT_E2E_REAL_GIT === "1";
-const e2eSpecs = runRealGitE2e
-  ? [
-      "./e2e/tauri/full-chain-real-git.e2e.ts",
-      "./e2e/tauri/crash-isolation.e2e.ts",
-    ]
-  : ["./e2e/tauri/smoke.e2e.ts", "./e2e/tauri/crash-isolation.e2e.ts"];
+const e2eSpecs = selectE2eSpecs(
+  readNonEmptyEnv("ARTISTIC_GIT_E2E_SPEC_SET"),
+  runRealGitE2e,
+);
 
 process.env.ARTISTIC_GIT_DIST_DIR = gitDistFixturePath;
 
@@ -92,6 +90,25 @@ function defaultTauriBinaryPath() {
 function readNonEmptyEnv(name: string) {
   const value = process.env[name];
   return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
+}
+
+function selectE2eSpecs(specSet: string | null, realGitEnabled: boolean) {
+  switch (specSet) {
+    case "smoke":
+      return ["./e2e/tauri/smoke.e2e.ts"];
+    case "crash":
+      return ["./e2e/tauri/crash-isolation.e2e.ts"];
+    case "real":
+      return ["./e2e/tauri/full-chain-real-git.e2e.ts"];
+    case null:
+      return realGitEnabled
+        ? ["./e2e/tauri/full-chain-real-git.e2e.ts"]
+        : ["./e2e/tauri/smoke.e2e.ts"];
+    default:
+      throw new Error(
+        `Unsupported ARTISTIC_GIT_E2E_SPEC_SET=${specSet}. Use smoke, crash, or real.`,
+      );
+  }
 }
 
 function defaultTauriDriverPath() {

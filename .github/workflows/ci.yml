@@ -429,16 +429,51 @@ jobs:
       - name: Run Tauri E2E on Linux
         id: tauri_e2e_linux
         if: runner.os == 'Linux'
+        shell: bash
         env:
           ARTISTIC_GIT_E2E_REAL_GIT: ${{ steps.real-git-e2e.outputs.ready == 'true' && '1' || '0' }}
-          ARTISTIC_GIT_PHASE9_CRASH_ISOLATION_E2E_REPORT: ${{ runner.temp }}/phase9-crash-isolation-e2e/phase9-crash-isolation-e2e-${{ runner.os }}.json
-        run: xvfb-run --auto-servernum pnpm e2e:tauri:ci
+        run: |
+          set -euo pipefail
+          if [ "${ARTISTIC_GIT_E2E_REAL_GIT}" = "1" ]; then
+            export ARTISTIC_GIT_E2E_SPEC_SET=real
+          else
+            export ARTISTIC_GIT_E2E_SPEC_SET=smoke
+          fi
+          xvfb-run --auto-servernum pnpm e2e:tauri:ci
 
       - name: Run Tauri E2E on Windows
         id: tauri_e2e_windows
         if: runner.os == 'Windows'
         env:
           ARTISTIC_GIT_E2E_REAL_GIT: ${{ steps.real-git-e2e.outputs.ready == 'true' && '1' || '0' }}
+        run: |
+          if ($env:ARTISTIC_GIT_E2E_REAL_GIT -eq "1") {
+            $env:ARTISTIC_GIT_E2E_SPEC_SET = "real"
+          } else {
+            $env:ARTISTIC_GIT_E2E_SPEC_SET = "smoke"
+          }
+          pnpm e2e:tauri:ci
+
+      - name: Run phase 9 crash isolation E2E evidence on Linux
+        id: phase9_crash_e2e_linux
+        if: always() && runner.os == 'Linux'
+        continue-on-error: true
+        shell: bash
+        env:
+          ARTISTIC_GIT_E2E_REAL_GIT: "0"
+          ARTISTIC_GIT_E2E_SKIP_BUILD: "1"
+          ARTISTIC_GIT_E2E_SPEC_SET: crash
+          ARTISTIC_GIT_PHASE9_CRASH_ISOLATION_E2E_REPORT: ${{ runner.temp }}/phase9-crash-isolation-e2e/phase9-crash-isolation-e2e-${{ runner.os }}.json
+        run: xvfb-run --auto-servernum pnpm e2e:tauri:ci
+
+      - name: Run phase 9 crash isolation E2E evidence on Windows
+        id: phase9_crash_e2e_windows
+        if: always() && runner.os == 'Windows'
+        continue-on-error: true
+        env:
+          ARTISTIC_GIT_E2E_REAL_GIT: "0"
+          ARTISTIC_GIT_E2E_SKIP_BUILD: "1"
+          ARTISTIC_GIT_E2E_SPEC_SET: crash
           ARTISTIC_GIT_PHASE9_CRASH_ISOLATION_E2E_REPORT: ${{ runner.temp }}/phase9-crash-isolation-e2e/phase9-crash-isolation-e2e-${{ runner.os }}.json
         run: pnpm e2e:tauri:ci
 
@@ -485,6 +520,7 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: 24
+          package-manager-cache: false
 
       - name: Download phase 12 perf reports
         uses: actions/download-artifact@v4
