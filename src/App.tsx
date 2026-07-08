@@ -22,20 +22,46 @@ import { useWindowStore } from "@/store/window-store";
 import { useTheme } from "@/theme/ThemeProvider";
 
 export function App() {
+  const [globalError, setGlobalError] = React.useState<
+    Error | string | null
+  >(null);
+  const [globalCrash, setGlobalCrash] = React.useState<
+    Error | string | CrashDialogPayload | null
+  >(null);
+  const handleGlobalError = React.useCallback((error: unknown) => {
+    setGlobalError(normalizeThrowable(error));
+  }, []);
+  const handleGlobalCrash = React.useCallback((crash: unknown) => {
+    setGlobalCrash(normalizeCrash(crash));
+  }, []);
+
   return (
     <AppErrorBoundary>
       <AppRouter />
-      <WindowRuntimeBridge />
+      <WindowRuntimeBridge
+        onCrash={handleGlobalCrash}
+        onError={handleGlobalError}
+      />
       <AppMenuBridge />
       <GlobalSettingsModal />
       <HttpsCredentialPromptDialog />
       <SshPassphrasePromptDialog />
-      <GlobalErrorDialogs />
+      <GlobalErrorDialogs
+        crash={globalCrash}
+        error={globalError}
+        setCrash={setGlobalCrash}
+        setError={setGlobalError}
+      />
     </AppErrorBoundary>
   );
 }
 
-function WindowRuntimeBridge() {
+interface WindowRuntimeBridgeProps {
+  onCrash: (crash: unknown) => void;
+  onError: (error: unknown) => void;
+}
+
+function WindowRuntimeBridge({ onCrash, onError }: WindowRuntimeBridgeProps) {
   const setActiveRepositoryPath = useWindowStore(
     (state) => state.setActiveRepositoryPath,
   );
@@ -54,12 +80,10 @@ function WindowRuntimeBridge() {
         const repositoryPath = context.repositoryPath ?? initialRepositoryPath;
         if (repositoryPath) {
           setActiveRepositoryPath(repositoryPath);
-          void registerWindowRepository({ repositoryPath }).catch(
-            dispatchAppError,
-          );
+          void registerWindowRepository({ repositoryPath }).catch(onError);
         }
         if (context.pendingCrash) {
-          dispatchAppCrash(context.pendingCrash);
+          onCrash(context.pendingCrash);
         }
       })
       .catch(() => {
@@ -71,7 +95,7 @@ function WindowRuntimeBridge() {
     return () => {
       cancelled = true;
     };
-  }, [setActiveRepositoryPath, setWindowLabel]);
+  }, [onCrash, onError, setActiveRepositoryPath, setWindowLabel]);
 
   return null;
 }
@@ -181,12 +205,6 @@ function dispatchAppError(error: unknown) {
   );
 }
 
-function dispatchAppCrash(crash: unknown) {
-  window.dispatchEvent(
-    new CustomEvent("artistic-git:crash", { detail: crash }),
-  );
-}
-
 function AppRouter() {
   const onboarded = useWindowStore((state) => state.onboarded);
   const activeRepositoryPath = useWindowStore(
@@ -219,12 +237,21 @@ function GlobalSettingsModal() {
   }
 }
 
-function GlobalErrorDialogs() {
-  const [error, setError] = React.useState<Error | string | null>(null);
-  const [crash, setCrash] = React.useState<
-    Error | string | CrashDialogPayload | null
-  >(null);
+interface GlobalErrorDialogsProps {
+  crash: Error | string | CrashDialogPayload | null;
+  error: Error | string | null;
+  setCrash: React.Dispatch<
+    React.SetStateAction<Error | string | CrashDialogPayload | null>
+  >;
+  setError: React.Dispatch<React.SetStateAction<Error | string | null>>;
+}
 
+function GlobalErrorDialogs({
+  crash,
+  error,
+  setCrash,
+  setError,
+}: GlobalErrorDialogsProps) {
   React.useEffect(() => {
     let unlistenCrashReported: (() => void) | undefined;
     const handleError = (event: ErrorEvent) => {
@@ -260,7 +287,7 @@ function GlobalErrorDialogs() {
       window.removeEventListener("artistic-git:error", handleAppError);
       window.removeEventListener("artistic-git:crash", handleAppCrash);
     };
-  }, []);
+  }, [setCrash, setError]);
 
   return (
     <>

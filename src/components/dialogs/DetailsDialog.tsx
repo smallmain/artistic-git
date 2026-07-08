@@ -6,6 +6,7 @@ import { DialogFrame } from "@/components/dialogs/DialogFrame";
 import { Button } from "@/components/ui/button";
 
 interface DetailsDialogProps {
+  "data-testid"?: string;
   description: string;
   details: string;
   extraActions?: React.ReactNode;
@@ -17,6 +18,7 @@ interface DetailsDialogProps {
 }
 
 export function DetailsDialog({
+  "data-testid": testId,
   description,
   details,
   extraActions,
@@ -34,6 +36,7 @@ export function DetailsDialog({
     <DetailsDialogContent
       description={description}
       details={details}
+      data-testid={testId}
       extraActions={extraActions}
       onCopyDetails={onCopyDetails}
       onOpenChange={onOpenChange}
@@ -44,6 +47,7 @@ export function DetailsDialog({
 }
 
 function DetailsDialogContent({
+  "data-testid": testId,
   description,
   details,
   extraActions,
@@ -77,6 +81,7 @@ function DetailsDialogContent({
 
   return (
     <DialogFrame
+      data-testid={testId}
       description={description}
       onOpenChange={onOpenChange}
       title={title}

@@ -25,6 +25,7 @@ export function CrashDetailsDialog({
 
   return (
     <DetailsDialog
+      data-testid="crash-details-dialog"
       description={t("dialogs.crash.description")}
       details={details}
       extraActions={

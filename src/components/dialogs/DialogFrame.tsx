@@ -9,6 +9,7 @@ interface DialogFrameProps {
   children: React.ReactNode;
   className?: string;
   closeOnEscape?: boolean;
+  "data-testid"?: string;
   description: string;
   footer?: React.ReactNode;
   hideCloseButton?: boolean;
@@ -20,6 +21,7 @@ export function DialogFrame({
   children,
   className,
   closeOnEscape = true,
+  "data-testid": testId,
   description,
   footer,
   hideCloseButton = false,
@@ -62,6 +64,7 @@ export function DialogFrame({
           "flex max-h-full w-full max-w-2xl flex-col rounded-xl border bg-card text-card-foreground shadow-floating focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
           className,
         )}
+        data-testid={testId}
         ref={dialogRef}
         role="dialog"
         tabIndex={-1}

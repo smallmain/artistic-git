@@ -9,8 +9,25 @@ import { waitForStartScreenReady } from "./start-screen";
 
 type CrashDialogState = {
   detailsVisible: boolean;
+  diagnostics: CrashDiagnostics;
   open: boolean;
   text: string;
+};
+
+type CrashDiagnostics = {
+  bodyTextSnippet: string;
+  dialogCount: number;
+  dialogTexts: string[];
+  hasCrashDialogTestId: boolean;
+  hasStartScreen: boolean;
+  injectionError: string | null;
+  readyState: string;
+  title: string;
+};
+
+type CrashInjectionResult = {
+  accepted: boolean;
+  error: string | null;
 };
 
 type TauriInvokeInternals = {
@@ -21,6 +38,7 @@ type TauriInvokeInternals = {
 };
 
 type WindowWithTauriInternals = Window & {
+  __artisticGitCrashInjectionError?: string | null;
   __TAURI_INTERNALS__?: TauriInvokeInternals;
 };
 
@@ -31,6 +49,7 @@ type CrashInjectionRuntimeReport = {
   kind: "phase9-crash-isolation-runtime";
   observations: {
     crashDetailsVisible: boolean;
+    diagnostics: CrashDiagnostics | null;
     dialogTextSnippet: string;
     startScreenStillInteractive: boolean;
   };
@@ -45,6 +64,7 @@ const crashSummary =
   "Phase 9C tauri-driver renderer crash injection reloaded this window.";
 
 let runtimeReport: CrashInjectionRuntimeReport | null = null;
+let lastCrashState: CrashDialogState | null = null;
 
 describe("Artistic Git Tauri crash isolation", () => {
   afterEach(async function () {
@@ -56,6 +76,7 @@ describe("Artistic Git Tauri crash isolation", () => {
         kind: "phase9-crash-isolation-runtime",
         observations: {
           crashDetailsVisible: false,
+          diagnostics: lastCrashState?.diagnostics ?? null,
           dialogTextSnippet: "",
           startScreenStillInteractive: false,
         },
@@ -72,11 +93,13 @@ describe("Artistic Git Tauri crash isolation", () => {
 
   it("injects a renderer crash through Tauri IPC and observes reload plus crash dialog", async () => {
     await waitForStartScreen();
-    await injectRendererCrash(crashSummary);
+    const injection = await injectRendererCrash(crashSummary);
+    assert.equal(injection.accepted, true, injection.error ?? "IPC failed");
 
     await browser.waitUntil(
       async () => {
         const state = await crashDialogState();
+        lastCrashState = state;
         return (
           state.open &&
           state.detailsVisible &&
@@ -105,6 +128,7 @@ describe("Artistic Git Tauri crash isolation", () => {
       kind: "phase9-crash-isolation-runtime",
       observations: {
         crashDetailsVisible: state.detailsVisible,
+        diagnostics: state.diagnostics,
         dialogTextSnippet: state.text.slice(0, 500),
         startScreenStillInteractive,
       },
@@ -145,20 +169,47 @@ function injectRendererCrash(summary: string) {
       throw new Error("Tauri invoke internals are not available in WebDriver");
     }
 
-    void internals.invoke("inject_renderer_crash", {
-      request: { summary: nextSummary },
-    });
-  }, summary);
+    const targetWindow = window as WindowWithTauriInternals;
+    targetWindow.__artisticGitCrashInjectionError = null;
+    void internals
+      .invoke("inject_renderer_crash", {
+        request: { summary: nextSummary },
+      })
+      .catch((error) => {
+        targetWindow.__artisticGitCrashInjectionError =
+          error instanceof Error ? error.message : String(error);
+      });
+
+    return { accepted: true, error: null };
+  }, summary) as Promise<CrashInjectionResult>;
 }
 
 function crashDialogState() {
   return browser.execute(() => {
     const dialogs = Array.from(document.querySelectorAll('[role="dialog"]'));
-    const crashDialog = dialogs.find((dialog) =>
-      dialog.textContent?.includes("Restart app"),
+    const crashDialogByTestId = document.querySelector(
+      '[data-testid="crash-details-dialog"]',
     );
+    const crashDialog =
+      crashDialogByTestId ??
+      dialogs.find((dialog) => dialog.textContent?.includes("Restart app"));
+    const dialogTexts = dialogs.map((dialog) => dialog.textContent ?? "");
 
     return {
+      diagnostics: {
+        bodyTextSnippet: document.body?.innerText.slice(0, 1000) ?? "",
+        dialogCount: dialogs.length,
+        dialogTexts: dialogTexts.map((text) => text.slice(0, 500)),
+        hasCrashDialogTestId: Boolean(crashDialogByTestId),
+        hasStartScreen: Boolean(
+          document.querySelector('[data-testid="start-screen"]'),
+        ),
+        injectionError:
+          (window as WindowWithTauriInternals)
+            .__artisticGitCrashInjectionError ?? null,
+        readyState: document.readyState,
+        title: document.title,
+      },
       detailsVisible: Boolean(
         crashDialog?.textContent?.includes("Renderer process for window"),
       ),
@@ -171,9 +222,9 @@ function crashDialogState() {
 async function dismissCrashDialogIfOpen() {
   const dismissed = await browser.execute(() => {
     const dialogs = Array.from(document.querySelectorAll('[role="dialog"]'));
-    const crashDialog = dialogs.find((dialog) =>
-      dialog.textContent?.includes("Restart app"),
-    );
+    const crashDialog =
+      document.querySelector('[data-testid="crash-details-dialog"]') ??
+      dialogs.find((dialog) => dialog.textContent?.includes("Restart app"));
     const buttons = Array.from(crashDialog?.querySelectorAll("button") ?? []);
     const closeButton = buttons.find(
       (button) => button.textContent?.trim() === "Close",

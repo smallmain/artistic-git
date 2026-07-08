@@ -230,3 +230,28 @@ test("history perf fixture uses linear commit-tree history", async () => {
     "history fixture must not use porcelain commit for every perf commit",
   );
 });
+
+test("temporary fixture cleanup retries without failing passed evidence", async () => {
+  const source = await readFile(scriptPath, "utf8");
+
+  assert.match(
+    source,
+    /cleanupTempRoot\(root\)/,
+    "fixture cleanup goes through the retrying cleanup helper",
+  );
+  assert.match(
+    source,
+    /maxRetries: 10/,
+    "cleanup retries transient recursive removal failures",
+  );
+  assert.match(
+    source,
+    /retryDelay: 100/,
+    "cleanup gives macOS filesystem state time to settle between retries",
+  );
+  assert.match(
+    source,
+    /WARN phase12 perf cleanup failed/,
+    "cleanup failure is reported as a warning instead of replacing pass evidence",
+  );
+});

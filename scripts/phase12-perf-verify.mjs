@@ -210,7 +210,7 @@ try {
     if (keep) {
       console.log(`Keeping perf fixture at ${root}`);
     } else {
-      rmSync(root, { force: true, recursive: true });
+      cleanupTempRoot(root);
     }
   }
 }
@@ -514,6 +514,25 @@ function safeOutput(value) {
     return "<empty>";
   }
   return String(value);
+}
+
+function cleanupTempRoot(rootPath) {
+  try {
+    rmSync(rootPath, {
+      force: true,
+      maxRetries: 10,
+      recursive: true,
+      retryDelay: 100,
+    });
+  } catch (error) {
+    console.warn(
+      `WARN phase12 perf cleanup failed for ${rootPath}: ${formatError(error)}`,
+    );
+  }
+}
+
+function formatError(error) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function buildProfile(isHeavy) {
