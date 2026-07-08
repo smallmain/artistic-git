@@ -1532,13 +1532,18 @@ fn submit_ssh_passphrase_prompt(
 }
 
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(handle_second_instance))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .menu(build_app_menu)
         .on_menu_event(handle_menu_event)
-        .on_window_event(handle_window_event)
+        .on_window_event(handle_window_event);
+
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    let builder = builder.on_web_content_process_terminate(handle_web_content_process_terminate);
+
+    builder
         .setup(|app| {
             let log_dir = app.path().app_log_dir()?;
             let logging_config = artistic_git_core::logging::LoggingConfig::new(log_dir);
@@ -1649,6 +1654,15 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("failed to build Artistic Git")
         .run(handle_run_event);
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+fn handle_web_content_process_terminate(webview: &tauri::Webview<tauri::Wry>) {
+    let label = webview.label().to_owned();
+    let app = webview.app_handle().clone();
+    if let Some(registry) = app.try_state::<WindowRegistry>() {
+        let _ = handle_renderer_crash(&app, &registry, &label, default_renderer_crash_summary());
+    }
 }
 
 fn build_app_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
@@ -2768,6 +2782,12 @@ mod tests {
             close_guard_block_event(&registry, "repo-1", WindowCloseBlockedReason::CloseWindow),
             Some(WindowCloseBlockedEvent {
                 reason: WindowCloseBlockedReason::CloseWindow,
+            })
+        );
+        assert_eq!(
+            close_guard_block_event(&registry, "repo-1", WindowCloseBlockedReason::Quit),
+            Some(WindowCloseBlockedEvent {
+                reason: WindowCloseBlockedReason::Quit,
             })
         );
         assert_eq!(

@@ -918,6 +918,57 @@ describe("RepositoryShell close guard", () => {
     expect(commandMocks.closeCurrentWindow).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps the window open and cancels pending app quit when cancel_operation fails", async () => {
+    const errors: unknown[] = [];
+    const handleError = (event: Event) => {
+      errors.push((event as CustomEvent<unknown>).detail);
+    };
+    window.addEventListener("artistic-git:error", handleError);
+    commandMocks.cancelOperation.mockResolvedValueOnce({ cancelled: false });
+    const activeOperation: OperationProgressEvent = {
+      cancellable: true,
+      label: "sync",
+      operationId: "sync-active",
+      progress: { kind: "indeterminate" },
+      repositoryPath: "/repo/art",
+      windowLabel: "repo-1",
+    };
+
+    try {
+      renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />, {
+        operationsById: {
+          [activeOperation.operationId]: activeOperation,
+        },
+      });
+
+      await emitWindowCloseBlocked({ reason: "quit" });
+      fireEvent.click(
+        within(
+          await screen.findByRole("dialog", { name: "Close window?" }),
+        ).getByRole("button", { name: "Close and recover" }),
+      );
+
+      await waitFor(() =>
+        expect(commandMocks.cancelOperation).toHaveBeenCalledWith({
+          operationId: "sync-active",
+        }),
+      );
+      await waitFor(() => expect(errors).toHaveLength(1));
+      expect(errors[0]).toEqual(
+        new Error(
+          "This operation cannot be safely canceled yet. Wait for it to finish, then close again.",
+        ),
+      );
+      expect(commandMocks.cancelPendingWindowExit).toHaveBeenCalledTimes(1);
+      expect(commandMocks.closeCurrentWindow).not.toHaveBeenCalled();
+      expect(commandMocks.setWindowCloseGuard).not.toHaveBeenLastCalledWith({
+        active: false,
+      });
+    } finally {
+      window.removeEventListener("artistic-git:error", handleError);
+    }
+  });
+
   it("cancels pending app quit when an active backend operation must keep waiting", async () => {
     const activeOperation: OperationProgressEvent = {
       cancellable: false,
