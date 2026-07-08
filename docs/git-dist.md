@@ -87,22 +87,30 @@ Current phase 1A behavior:
 - real fetch mode rejects placeholders before any download.
 - non-placeholder sources are downloaded, SHA-256 checked, and extracted into a
   staging directory.
-- archive-only targets can be assembled from staged archive contents into the
+- archive targets can be assembled from staged archive contents into the
   configured `git-dist/` layout. Assembly strips common single-directory archive
   roots, copies helper binaries, writes `manifest.json`, and records SHA-256
   values only after every required executable is present.
+- macOS Git source tarballs are built on macOS/Xcode runners once per
+  architecture (`arm64`, `x86_64`) with `RUNTIME_PREFIX=YesPlease`; installed
+  trees are merged into a Universal distribution with `lipo`.
+- Linux Git source tarballs are built inside `ubuntu:20.04` with the configured
+  trimmed Git flags. On non-20.04 Linux hosts the script runs the build in
+  Docker; on Ubuntu 20.04 it builds directly. The build fails if the final Git
+  executable still links dynamic `libcurl`, `libssl`, `libcrypto`, `zlib`,
+  `pcre2`, or `expat`.
+- macOS Git LFS downloads both official Darwin archives and combines the
+  architecture binaries into `git-lfs/git-lfs` during assembly.
 - helper binaries may be supplied with `--helper-dir`, with explicit
   `--credential-helper` and `--ssh-askpass` paths, or from
   `target/release` / `target/debug` via `--helper-profile=release|debug|auto`.
-  If helper binaries have not been built, assembly fails with the missing
-  candidates and no incomplete `manifest.json` is written.
-- source builds still stop with an explicit handoff message; no incomplete
-  `manifest.json` is written.
+  `--dev-resources` and `--build-helpers` run the release helper build before
+  assembly. If helper binaries cannot be resolved, assembly fails with the
+  missing candidates and no incomplete `manifest.json` is written.
 
-The source-build handoff is deliberate: macOS and Linux Git builds require the
-CI toolchains described in `git-dist.toml`. Windows real fetch remains blocked
-before download while the Win32-OpenSSH entry is a rejected placeholder, even
-though the archive assembly path is covered by fixture tests.
+Windows real fetch remains blocked before download while the Win32-OpenSSH
+entry is a rejected placeholder, even though MinGit, Git LFS, and archive
+assembly paths are covered by SHA-256 pins and fixture tests.
 
 ## Development Resources
 
@@ -123,8 +131,14 @@ export ARTISTIC_GIT_DIST_DIR="$PWD/src-tauri/resources/git-dist"
 node scripts/check-git-dist.mjs --target=macos-universal --no-exec
 ```
 
-In the current phase 1A state, the macOS and Linux commands still stop at the
-documented source-build handoff until the CI build recipe assembles `git/`.
+`--dev-resources` also builds the release helper binaries automatically, so the
+short form is:
+
+```sh
+pnpm fetch:git-dist -- --dev-resources --target=macos-universal
+export ARTISTIC_GIT_DIST_DIR="$PWD/src-tauri/resources/git-dist"
+node scripts/check-git-dist.mjs --target=macos-universal --no-exec
+```
 
 `src-tauri/resources/git-dist/README.md` is tracked as the mount point
 placeholder, but downloaded archives, extracted tools, and generated
@@ -221,9 +235,12 @@ Build mode uses this policy:
 
 - matrix targets: `windows-x86_64`, `macos-universal`, `linux-x86_64`, each on
   its native GitHub runner image.
-- every matrix job first runs target-scoped real-build policy validation, so
-  placeholder pins fail before cache restore, helper builds, download, or
-  package work.
+- non-placeholder matrix jobs first run target-scoped real-build policy
+  validation, so placeholder pins fail before cache restore, helper builds,
+  download, or package work.
+- placeholder-blocked matrix jobs run the expected-placeholder rejection check
+  and stop without uploading an artifact. This keeps Windows OpenSSH preview
+  status visible without publishing a fake Windows distribution.
 - source archive cache key includes target, `git-dist.toml`, fetch/check
   scripts, lockfiles, and a manual `GIT_DIST_CACHE_VERSION`.
 - assembled distribution cache key includes target, `git-dist.toml`, fetch/check
@@ -238,10 +255,10 @@ Build mode uses this policy:
 - successful jobs upload `artistic-git-dist-<target>` artifacts for later test
   and packaging jobs to consume via `ARTISTIC_GIT_DIST_DIR`.
 
-Current limitation: Windows build mode intentionally fails while the
-Win32-OpenSSH entry remains `placeholder = true` / `stable = false`; macOS and
-Linux still require the documented source-build assembly step before a complete
-manifest can be uploaded.
+Current limitation: Windows build mode intentionally skips artifact generation
+while the Win32-OpenSSH entry remains `placeholder = true` / `stable = false`.
+macOS and Linux now have executable source-build plumbing, but the phase 1A
+checkbox should remain open until CI has produced and validated real artifacts.
 
 Downstream jobs should consume an artifact like this:
 

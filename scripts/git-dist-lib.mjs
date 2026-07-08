@@ -287,24 +287,7 @@ export async function assembleGitDist({
     : path.join(repoRoot, "target"),
   helperProfile = "auto",
 }) {
-  const target = getTarget(config, targetName);
   const sources = getTargetSources(config, targetName);
-  const sourceBuilds = sources.filter(
-    ({ source }) => source.kind === "source-tarball",
-  );
-  if (sourceBuilds.length > 0) {
-    throw new GitDistConfigError(
-      `source build stage is a CI recipe handoff for ${target.manifest_platform}`,
-      [
-        `staged sources: ${sourceBuilds.map(({ ref }) => ref).join(", ")}`,
-        `follow the build.${target.platform}.git recipe in git-dist.toml`,
-        `assemble ${config.resources.layout.manifest} under ${outputDir}`,
-        `then run ARTISTIC_GIT_DIST_DIR=${outputDir} node scripts/check-git-dist.mjs --target=${target.manifest_platform} --no-exec`,
-        "no manifest was written and no system git fallback was attempted",
-      ],
-    );
-  }
-
   const resolvedOutputDir = path.resolve(outputDir);
   const tempOutputDir = path.join(
     path.dirname(resolvedOutputDir),
@@ -316,12 +299,12 @@ export async function assembleGitDist({
 
   try {
     for (const { ref, source } of sources) {
-      if (source.kind !== "archive") {
+      if (source.kind !== "archive" && source.kind !== "source-tarball") {
         throw new GitDistConfigError("git-dist assembly failed", [
           `${ref}.kind=${source.kind} is not supported by archive assembly`,
         ]);
       }
-      await copyArchiveSource({
+      await copyPreparedSource({
         config,
         targetName,
         stagingDir,
@@ -330,6 +313,8 @@ export async function assembleGitDist({
         source,
       });
     }
+
+    await finalizePreparedDist({ config, targetName, tempOutputDir });
 
     await copyGitDistHelpers({
       config,
@@ -404,7 +389,7 @@ export async function resolveGitDistHelperPaths({
   return resolved;
 }
 
-async function copyArchiveSource({
+async function copyPreparedSource({
   config,
   targetName,
   stagingDir,
@@ -440,6 +425,93 @@ async function copyArchiveSource({
     force: true,
     preserveTimestamps: true,
   });
+}
+
+async function finalizePreparedDist({ config, targetName, tempOutputDir }) {
+  if (targetName !== "macos-universal") {
+    return;
+  }
+
+  await finalizeMacosUniversalGitLfs({ config, tempOutputDir });
+}
+
+async function finalizeMacosUniversalGitLfs({ config, tempOutputDir }) {
+  const layout = config.resources.layout;
+  const gitLfsRoot = path.join(
+    tempOutputDir,
+    normalizeResourcePath(layout.git_lfs),
+  );
+  const destination = path.join(
+    tempOutputDir,
+    normalizeResourcePath(layout.git_lfs_executable),
+  );
+
+  if (await pathExists(destination)) {
+    return;
+  }
+
+  const arm64Root = path.join(gitLfsRoot, "arm64");
+  const x86Root = path.join(gitLfsRoot, "x86_64");
+  const arm64Binary = await findExecutableByName(arm64Root, "git-lfs");
+  const x86Binary = await findExecutableByName(x86Root, "git-lfs");
+  if (!arm64Binary || !x86Binary) {
+    throw new GitDistConfigError("git-dist assembly failed", [
+      "macOS universal git-lfs requires both staged arm64 and x86_64 official binaries",
+      `missing arm64 git-lfs under ${arm64Root}: ${arm64Binary ? "no" : "yes"}`,
+      `missing x86_64 git-lfs under ${x86Root}: ${x86Binary ? "no" : "yes"}`,
+    ]);
+  }
+
+  await mkdir(path.dirname(destination), { recursive: true });
+  if ((await sha256File(arm64Binary)) === (await sha256File(x86Binary))) {
+    await cp(arm64Binary, destination, {
+      force: true,
+      preserveTimestamps: true,
+    });
+  } else if (process.platform === "darwin") {
+    const { spawnSync } = await import("node:child_process");
+    const result = spawnSync(
+      "lipo",
+      ["-create", arm64Binary, x86Binary, "-output", destination],
+      { encoding: "utf8" },
+    );
+    if (result.error) {
+      throw new GitDistConfigError("git-dist assembly failed", [
+        `lipo failed to start while creating universal git-lfs: ${result.error.message}`,
+      ]);
+    }
+    if (result.status !== 0) {
+      throw new GitDistConfigError("git-dist assembly failed", [
+        `lipo failed while creating universal git-lfs: ${result.stderr || result.stdout || `exit ${result.status}`}`,
+      ]);
+    }
+  } else {
+    throw new GitDistConfigError("git-dist assembly failed", [
+      "macOS universal git-lfs assembly requires lipo on macOS when architecture binaries differ",
+      `arm64 binary: ${arm64Binary}`,
+      `x86_64 binary: ${x86Binary}`,
+    ]);
+  }
+  await chmod(destination, 0o755).catch(() => {});
+  await rm(arm64Root, { recursive: true, force: true });
+  await rm(x86Root, { recursive: true, force: true });
+}
+
+async function findExecutableByName(root, basename) {
+  const rootStat = await stat(root).catch(() => null);
+  if (!rootStat?.isDirectory()) {
+    return null;
+  }
+
+  const candidates = await directoryCandidates(root, 4);
+  for (const directory of candidates) {
+    const candidate = path.join(directory, basename);
+    const candidateStat = await stat(candidate).catch(() => null);
+    if (candidateStat?.isFile()) {
+      return candidate;
+    }
+  }
+  return null;
 }
 
 async function findArchiveContentRoot(stagedSourceDir, expectedRelativePath) {

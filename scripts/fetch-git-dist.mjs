@@ -3,7 +3,15 @@
 
 import { spawnSync } from "node:child_process";
 import { createWriteStream } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import {
+  chmod,
+  cp,
+  mkdir,
+  readdir,
+  readFile,
+  rm,
+  stat,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -47,7 +55,7 @@ const stagingDir = path.resolve(
 const usage = `Usage:
   node scripts/fetch-git-dist.mjs --schema-only [--target=${supportedTargets.join("|")}]
   node scripts/fetch-git-dist.mjs --print-env [--target=${supportedTargets.join("|")}] [--output=/path/to/git-dist]
-  node scripts/fetch-git-dist.mjs [--target=${supportedTargets.join("|")}] [--output=/path/to/git-dist] [--cache-dir=/path] [--download-only] [--no-extract] [--helper-dir=/path | --credential-helper=/path --ssh-askpass=/path] [--helper-profile=auto|release|debug]
+  node scripts/fetch-git-dist.mjs [--target=${supportedTargets.join("|")}] [--output=/path/to/git-dist] [--cache-dir=/path] [--download-only] [--no-extract] [--build-helpers] [--helper-dir=/path | --credential-helper=/path --ssh-askpass=/path] [--helper-profile=auto|release|debug]
   node scripts/fetch-git-dist.mjs --dev-resources [--target=${supportedTargets.join("|")}] [--download-only]
 
 Default output is $ARTISTIC_GIT_DIST_DIR when set, otherwise a temp directory.
@@ -55,6 +63,9 @@ Default output is $ARTISTIC_GIT_DIST_DIR when set, otherwise a temp directory.
 Archive assembly copies staged archives into the git-dist layout, copies helper
 binaries from explicit paths or target/{release,debug}, and writes manifest.json
 only after every required executable is present and hashed.
+macOS and Linux source-tarball Git entries are built from the checked source
+archive before assembly. Linux builds run inside ubuntu:20.04 via Docker unless
+the script is already running on Ubuntu 20.04.
 The fetch pipeline never searches PATH for git and never falls back to a system Git.`;
 
 if (args.help) {
@@ -137,6 +148,11 @@ async function run() {
     return;
   }
 
+  await buildSourceTarballs({ config, target, sources });
+  if (args.buildHelpers || args.devResources) {
+    buildHelpers();
+  }
+
   const manifest = await assembleGitDist({
     config,
     targetName,
@@ -197,7 +213,11 @@ async function verifySource(ref, source, archivePath) {
 }
 
 async function extractSource(ref, source, archivePath) {
-  const destination = path.join(stagingDir, ref.replaceAll(".", "__"));
+  const destination =
+    source.kind === "source-tarball"
+      ? path.join(stagedSourceDir(ref), "source")
+      : stagedSourceDir(ref);
+  await rm(destination, { recursive: true, force: true });
   await mkdir(destination, { recursive: true });
 
   const command = extractionCommand(archivePath, destination);
@@ -221,6 +241,346 @@ async function extractSource(ref, source, archivePath) {
       `extractor failed for ${ref}: ${result.stderr || result.stdout || `exit ${result.status}`}`,
     );
   }
+}
+
+async function buildSourceTarballs({ config, target, sources }) {
+  for (const { ref, source } of sources) {
+    if (source.kind !== "source-tarball") {
+      continue;
+    }
+    if (source.component !== "git") {
+      fail(`${ref} source builds are only implemented for the git component`);
+    }
+
+    const stagedRoot = stagedSourceDir(ref);
+    const sourceRoot = await findGitSourceRoot(path.join(stagedRoot, "source"));
+    const installRoot = path.join(stagedRoot, "install");
+    await rm(installRoot, { recursive: true, force: true });
+    await mkdir(installRoot, { recursive: true });
+
+    if (target.platform === "macos") {
+      await buildMacosGit({ config, sourceRoot, installRoot });
+    } else if (target.platform === "linux") {
+      await buildLinuxGit({ config, sourceRoot, installRoot });
+    } else {
+      fail(
+        `${ref} has source-tarball kind but ${target.platform} has no source build recipe`,
+      );
+    }
+  }
+}
+
+async function buildMacosGit({ config, sourceRoot, installRoot }) {
+  if (process.platform !== "darwin") {
+    fail("macOS Git source build must run on a macOS/Xcode runner.");
+  }
+
+  const recipe = config.build?.macos?.git;
+  const arches = recipe?.arches ?? ["arm64", "x86_64"];
+  const deploymentTarget = recipe?.deployment_target ?? "13.0";
+  const makeFlags = recipe?.make_flags ?? [];
+  const configureFlags = recipe?.configure_flags ?? ["--prefix=/"];
+  const archInstalls = [];
+
+  for (const arch of arches) {
+    const buildRoot = path.join(path.dirname(installRoot), `build-${arch}`);
+    const archInstallRoot = path.join(
+      path.dirname(installRoot),
+      `install-${arch}`,
+    );
+    await rm(buildRoot, { recursive: true, force: true });
+    await rm(archInstallRoot, { recursive: true, force: true });
+    await cp(sourceRoot, buildRoot, {
+      recursive: true,
+      preserveTimestamps: true,
+    });
+    await mkdir(archInstallRoot, { recursive: true });
+
+    const archFlags = `-arch ${arch} -mmacosx-version-min=${deploymentTarget}`;
+    const buildEnv = {
+      ...process.env,
+      CC: "clang",
+      CFLAGS: [process.env.CFLAGS, archFlags].filter(Boolean).join(" "),
+      LDFLAGS: [process.env.LDFLAGS, archFlags].filter(Boolean).join(" "),
+      MACOSX_DEPLOYMENT_TARGET: deploymentTarget,
+    };
+
+    await runCommand("./configure", configureFlags, {
+      cwd: buildRoot,
+      env: buildEnv,
+      label: `configure git for ${arch}`,
+    });
+    await runCommand(
+      "make",
+      [`-j${parallelism()}`, ...makeFlags, "prefix=/", "all"],
+      {
+        cwd: buildRoot,
+        env: buildEnv,
+        label: `build git for ${arch}`,
+      },
+    );
+    await runCommand(
+      "make",
+      [
+        ...makeFlags,
+        "prefix=/",
+        `DESTDIR=${archInstallRoot}`,
+        "NO_INSTALL_HARDLINKS=YesPlease",
+        "install",
+      ],
+      {
+        cwd: buildRoot,
+        env: buildEnv,
+        label: `install git for ${arch}`,
+      },
+    );
+    archInstalls.push({ arch, path: archInstallRoot });
+  }
+
+  const base =
+    archInstalls.find((entry) => entry.arch === "arm64") ?? archInstalls[0];
+  await rm(installRoot, { recursive: true, force: true });
+  await cp(base.path, installRoot, {
+    recursive: true,
+    preserveTimestamps: true,
+  });
+  await lipoInstallTrees({
+    destinationRoot: installRoot,
+    baseRoot: base.path,
+    otherRoots: archInstalls
+      .filter((entry) => entry.path !== base.path)
+      .map((entry) => entry.path),
+  });
+  await chmodTreeExecutables(installRoot);
+}
+
+async function lipoInstallTrees({ destinationRoot, baseRoot, otherRoots }) {
+  for (const relativePath of await regularFiles(baseRoot)) {
+    const sourcePaths = [path.join(baseRoot, relativePath)];
+    for (const otherRoot of otherRoots) {
+      sourcePaths.push(path.join(otherRoot, relativePath));
+    }
+    const destination = path.join(destinationRoot, relativePath);
+    const allMachO = sourcePaths.every((filePath) => isMachO(filePath));
+    if (!allMachO) {
+      continue;
+    }
+    await runCommand(
+      "lipo",
+      ["-create", ...sourcePaths, "-output", destination],
+      {
+        label: `lipo ${relativePath}`,
+      },
+    );
+    await chmod(destination, 0o755).catch(() => {});
+  }
+}
+
+async function buildLinuxGit({ config, sourceRoot, installRoot }) {
+  const recipe = config.build?.linux?.git;
+  if (process.platform !== "linux") {
+    fail(
+      "Linux Git source build must run on Linux or a Linux runner with Docker.",
+    );
+  }
+
+  if (await isUbuntu2004()) {
+    await buildLinuxGitNative({ recipe, sourceRoot, installRoot });
+    return;
+  }
+
+  const docker = spawnSync("docker", ["--version"], { encoding: "utf8" });
+  if (docker.status !== 0) {
+    fail(
+      "Linux Git source build requires Ubuntu 20.04. Run on Ubuntu 20.04 or install Docker so the script can use ubuntu:20.04.",
+    );
+  }
+
+  await buildLinuxGitInDocker({ recipe, sourceRoot, installRoot });
+}
+
+async function buildLinuxGitInDocker({ recipe, sourceRoot, installRoot }) {
+  await mkdir(installRoot, { recursive: true });
+  const image = recipe?.container_image ?? "ubuntu:20.04";
+  const script = linuxBuildShellScript(recipe, "/src", "/install");
+  await runCommand(
+    "docker",
+    [
+      "run",
+      "--rm",
+      "-v",
+      `${sourceRoot}:/src`,
+      "-v",
+      `${installRoot}:/install`,
+      "-e",
+      "DEBIAN_FRONTEND=noninteractive",
+      image,
+      "bash",
+      "-lc",
+      script,
+    ],
+    { label: "build linux git in ubuntu:20.04 container" },
+  );
+}
+
+async function buildLinuxGitNative({ recipe, sourceRoot, installRoot }) {
+  await runCommand(
+    "bash",
+    ["-lc", linuxBuildShellScript(recipe, sourceRoot, installRoot)],
+    {
+      label: "build linux git on Ubuntu 20.04",
+    },
+  );
+}
+
+function linuxBuildShellScript(recipe, sourceRoot, installRoot) {
+  const packages = [...(recipe?.apt_packages ?? []), "pkg-config"];
+  const makeFlags = shellWords(recipe?.make_flags ?? []);
+  const configureFlags = shellWords(recipe?.configure_flags ?? ["--prefix=/"]);
+  return `
+set -euo pipefail
+apt-get update
+apt-get install -y --no-install-recommends ${shellWords(packages)}
+cd ${shellQuote(sourceRoot)}
+./configure ${configureFlags}
+static_libs="$(pkg-config --static --libs libcurl openssl zlib libpcre2-8 expat)"
+make -j"$(nproc)" ${makeFlags} prefix=/ CURL_LDFLAGS="$static_libs" EXPAT_LIBEXPAT="$static_libs" LIB_4_CRYPTO="$static_libs" LIB_4_PCRE="$static_libs" all
+make ${makeFlags} prefix=/ DESTDIR=${shellQuote(installRoot)} NO_INSTALL_HARDLINKS=YesPlease install
+if ldd ${shellQuote(path.posix.join(installRoot, "bin/git"))} | grep -E 'lib(curl|ssl|crypto|z|pcre2|expat)'; then
+  echo "git binary still links dynamic third-party libraries" >&2
+  exit 1
+fi
+`;
+}
+
+function buildHelpers() {
+  info("building helper binaries with cargo --release");
+  const result = spawnSync(
+    "cargo",
+    ["build", "-p", "artistic-git-helpers", "--bins", "--release"],
+    {
+      cwd: path.dirname(configPath),
+      encoding: "utf8",
+      env: process.env,
+      stdio: "inherit",
+    },
+  );
+  if (result.error) {
+    fail(`helper build failed to start: ${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    fail(`helper build failed with exit ${result.status}`);
+  }
+}
+
+async function findGitSourceRoot(root) {
+  const candidates = await directoryCandidates(root, 3);
+  for (const candidate of candidates) {
+    const makefile = await stat(path.join(candidate, "Makefile")).catch(
+      () => null,
+    );
+    const gitC = await stat(path.join(candidate, "git.c")).catch(() => null);
+    if (makefile?.isFile() && gitC?.isFile()) {
+      return candidate;
+    }
+  }
+  fail(
+    `extracted Git source tree under ${root} does not contain Makefile and git.c`,
+  );
+}
+
+async function directoryCandidates(root, maxDepth) {
+  const candidates = [root];
+  async function walk(directory, depth) {
+    if (depth >= maxDepth) {
+      return;
+    }
+    const entries = await readdir(directory, { withFileTypes: true }).catch(
+      () => [],
+    );
+    for (const entry of entries.sort((left, right) =>
+      left.name.localeCompare(right.name),
+    )) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+      const child = path.join(directory, entry.name);
+      candidates.push(child);
+      await walk(child, depth + 1);
+    }
+  }
+  await walk(root, 0);
+  return candidates;
+}
+
+async function regularFiles(root) {
+  const files = [];
+  async function walk(directory, relativeDirectory) {
+    const entries = await readdir(directory, { withFileTypes: true });
+    for (const entry of entries.sort((left, right) =>
+      left.name.localeCompare(right.name),
+    )) {
+      const absolute = path.join(directory, entry.name);
+      const relative = path.join(relativeDirectory, entry.name);
+      if (entry.isDirectory()) {
+        await walk(absolute, relative);
+      } else if (entry.isFile()) {
+        files.push(relative);
+      }
+    }
+  }
+  await walk(root, "");
+  return files;
+}
+
+function isMachO(filePath) {
+  const result = spawnSync("file", ["-b", filePath], { encoding: "utf8" });
+  return result.status === 0 && /\bMach-O\b/.test(result.stdout);
+}
+
+async function chmodTreeExecutables(root) {
+  for (const relativePath of await regularFiles(root)) {
+    const filePath = path.join(root, relativePath);
+    const mode = await stat(filePath).then((fileStat) => fileStat.mode);
+    if ((mode & 0o111) !== 0) {
+      await chmod(filePath, 0o755).catch(() => {});
+    }
+  }
+}
+
+async function isUbuntu2004() {
+  if (process.env.ARTISTIC_GIT_DIST_FORCE_DOCKER === "1") {
+    return false;
+  }
+  const osRelease = await readFile("/etc/os-release", "utf8").catch(() => "");
+  return /ID=ubuntu/.test(osRelease) && /VERSION_ID="?20\.04"?/.test(osRelease);
+}
+
+async function runCommand(executable, commandArgs, options = {}) {
+  const result = spawnSync(executable, commandArgs, {
+    cwd: options.cwd,
+    env: options.env ?? process.env,
+    encoding: "utf8",
+    stdio: options.stdio ?? "pipe",
+  });
+  if (result.error) {
+    fail(
+      `${options.label ?? executable} failed to start: ${result.error.message}`,
+    );
+  }
+  if (result.status !== 0) {
+    fail(
+      `${options.label ?? executable} failed: ${result.stderr || result.stdout || `exit ${result.status}`}`,
+    );
+  }
+}
+
+function stagedSourceDir(ref) {
+  return path.join(stagingDir, ref.replaceAll(".", "__"));
+}
+
+function parallelism() {
+  return Math.max(1, os.availableParallelism?.() ?? os.cpus().length ?? 1);
 }
 
 function extractionCommand(archivePath, destination) {
@@ -270,6 +630,7 @@ function parseArgs(argv) {
     printEnv: false,
     downloadOnly: false,
     noExtract: false,
+    buildHelpers: false,
     devResources: false,
     target: undefined,
     output: undefined,
@@ -295,6 +656,8 @@ function parseArgs(argv) {
       parsed.downloadOnly = true;
     } else if (arg === "--no-extract") {
       parsed.noExtract = true;
+    } else if (arg === "--build-helpers") {
+      parsed.buildHelpers = true;
     } else if (arg === "--dev-resources") {
       parsed.devResources = true;
     } else if (arg.startsWith("--target=")) {
@@ -336,6 +699,10 @@ function normalizeTargetArg(value) {
 
 function shellQuote(value) {
   return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function shellWords(values) {
+  return values.map((value) => shellQuote(String(value))).join(" ");
 }
 
 function printEnv(dir) {

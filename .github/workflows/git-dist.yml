@@ -73,10 +73,13 @@ jobs:
         include:
           - target: windows-x86_64
             os: windows-2022
+            placeholderBlocked: true
           - target: macos-universal
             os: macos-14
+            placeholderBlocked: false
           - target: linux-x86_64
             os: ubuntu-22.04
+            placeholderBlocked: false
     runs-on: ${{ matrix.os }}
 
     env:
@@ -94,12 +97,22 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Validate target real-build policy
+        if: matrix.placeholderBlocked != true
         run: node scripts/check-git-dist.mjs --schema-only --real-build --target="${{ matrix.target }}"
+
+      - name: Report placeholder-blocked target
+        if: matrix.placeholderBlocked == true
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/check-git-dist.mjs --schema-only --real-build --target="${{ matrix.target }}" --expect-placeholder-rejection
+          echo "::notice title=git-dist target blocked::${{ matrix.target }} is intentionally skipped because git-dist.toml still contains a documented non-stable placeholder source."
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Restore downloaded source cache
+        if: matrix.placeholderBlocked != true
         id: source-cache
         uses: actions/cache@v4
         with:
@@ -109,6 +122,7 @@ jobs:
             git-dist-source-${{ env.GIT_DIST_CACHE_VERSION }}-${{ matrix.target }}-
 
       - name: Restore assembled git-dist cache
+        if: matrix.placeholderBlocked != true
         id: dist-cache
         uses: actions/cache@v4
         with:
@@ -118,21 +132,21 @@ jobs:
             git-dist-artifact-${{ env.GIT_DIST_CACHE_VERSION }}-${{ matrix.target }}-
 
       - name: Validate restored assembled distribution
-        if: steps.dist-cache.outputs.cache-hit == 'true'
+        if: matrix.placeholderBlocked != true && steps.dist-cache.outputs.cache-hit == 'true'
         shell: bash
         run: |
           set -euo pipefail
           node scripts/check-git-dist.mjs --target="${{ matrix.target }}" --no-exec
 
       - name: Build helper binaries
-        if: steps.dist-cache.outputs.cache-hit != 'true'
+        if: matrix.placeholderBlocked != true && steps.dist-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
           cargo build -p artistic-git-helpers --bins --release
 
       - name: Fetch, verify, and assemble distribution
-        if: steps.dist-cache.outputs.cache-hit != 'true'
+        if: matrix.placeholderBlocked != true && steps.dist-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -143,13 +157,14 @@ jobs:
             --staging-dir="${ARTISTIC_GIT_DIST_STAGING_DIR}"
 
       - name: Validate assembled distribution
-        if: steps.dist-cache.outputs.cache-hit != 'true'
+        if: matrix.placeholderBlocked != true && steps.dist-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
           node scripts/check-git-dist.mjs --target="${{ matrix.target }}" --no-exec
 
       - name: Upload reusable git-dist artifact
+        if: matrix.placeholderBlocked != true
         uses: actions/upload-artifact@v4
         with:
           name: artistic-git-dist-${{ matrix.target }}

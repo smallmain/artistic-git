@@ -64,7 +64,9 @@ async function stageWindowsArchives(config, stagingDir) {
         "OpenSSH_for_Windows_10.0 fixture\n",
       );
     } else {
-      throw new Error(`unhandled fixture source component: ${source.component}`);
+      throw new Error(
+        `unhandled fixture source component: ${source.component}`,
+      );
     }
   }
 }
@@ -78,6 +80,39 @@ async function writeWindowsHelpers(helperDir) {
     path.join(helperDir, "artistic-git-ssh-askpass.exe"),
     "ssh askpass fixture\n",
   );
+}
+
+async function writePosixHelpers(helperDir) {
+  await writeExecutable(
+    path.join(helperDir, "artistic-git-credential-helper"),
+    "credential helper fixture\n",
+  );
+  await writeExecutable(
+    path.join(helperDir, "artistic-git-ssh-askpass"),
+    "ssh askpass fixture\n",
+  );
+}
+
+async function stageMacosPreparedSources(config, stagingDir) {
+  for (const { ref, source } of getTargetSources(config, "macos-universal")) {
+    const root = sourceStagingDirectory(stagingDir, ref);
+    if (source.kind === "source-tarball") {
+      await writeExecutable(
+        path.join(root, "install", "bin", "git"),
+        "git version 2.55.0\n",
+      );
+    } else if (source.component === "git_lfs") {
+      const arch = source.resources_path.includes("arm64") ? "arm64" : "x86_64";
+      await writeExecutable(
+        path.join(root, `git-lfs-darwin-${arch}`, "git-lfs"),
+        "git-lfs/3.7.1 universal fixture\n",
+      );
+    } else {
+      throw new Error(
+        `unhandled fixture source component: ${source.component}`,
+      );
+    }
+  }
 }
 
 async function pathExists(filePath) {
@@ -138,11 +173,7 @@ test("assembles staged Windows archives into manifest layout and validates as a 
 
     const check = spawnSync(
       process.execPath,
-      [
-        "scripts/check-git-dist.mjs",
-        `--target=${windowsTarget}`,
-        "--no-exec",
-      ],
+      ["scripts/check-git-dist.mjs", `--target=${windowsTarget}`, "--no-exec"],
       {
         cwd: repoRoot,
         encoding: "utf8",
@@ -153,6 +184,51 @@ test("assembles staged Windows archives into manifest layout and validates as a 
       },
     );
     assert.equal(check.status, 0, check.stderr || check.stdout);
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("assembles a prepared macOS source build and combines staged git-lfs binaries", async () => {
+  const config = await loadConfig();
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-git-dist-"));
+
+  try {
+    const stagingDir = path.join(tmpDir, "staging");
+    const outputDir = path.join(tmpDir, "git-dist");
+    const helperDir = path.join(tmpDir, "helpers");
+    await stageMacosPreparedSources(config, stagingDir);
+    await writePosixHelpers(helperDir);
+
+    const manifest = await assembleGitDist({
+      config,
+      targetName: "macos-universal",
+      stagingDir,
+      outputDir,
+      helperDir,
+    });
+
+    assert.equal(manifest.platform, "macos-universal");
+    assert.equal(
+      await pathExists(path.join(outputDir, "git", "bin", "git")),
+      true,
+    );
+    assert.equal(
+      await pathExists(path.join(outputDir, "git-lfs", "git-lfs")),
+      true,
+    );
+    assert.equal(
+      await pathExists(path.join(outputDir, "git-lfs", "arm64")),
+      false,
+    );
+    assert.equal(
+      manifest.sha256[manifest.paths.gitExecutable],
+      await sha256File(path.join(outputDir, manifest.paths.gitExecutable)),
+    );
+    assert.equal(
+      manifest.sha256[manifest.paths.gitLfsExecutable],
+      await sha256File(path.join(outputDir, manifest.paths.gitLfsExecutable)),
+    );
   } finally {
     await rm(tmpDir, { recursive: true, force: true });
   }
@@ -211,7 +287,10 @@ test("assembly fails without helper binaries and does not write an incomplete ma
         }),
       /git-dist helper binaries are required/,
     );
-    assert.equal(await pathExists(path.join(outputDir, "manifest.json")), false);
+    assert.equal(
+      await pathExists(path.join(outputDir, "manifest.json")),
+      false,
+    );
   } finally {
     await rm(tmpDir, { recursive: true, force: true });
   }
@@ -266,6 +345,10 @@ test("workflow validates restored assembled cache hits before reuse", async () =
   );
   assert.match(
     workflow,
-    /Validate restored assembled distribution[\s\S]+steps\.dist-cache\.outputs\.cache-hit == 'true'[\s\S]+node scripts\/check-git-dist\.mjs --target="\$\{\{ matrix\.target \}\}" --no-exec/,
+    /Report placeholder-blocked target[\s\S]+--expect-placeholder-rejection/,
+  );
+  assert.match(
+    workflow,
+    /Validate restored assembled distribution[\s\S]+matrix\.placeholderBlocked != true && steps\.dist-cache\.outputs\.cache-hit == 'true'[\s\S]+node scripts\/check-git-dist\.mjs --target="\$\{\{ matrix\.target \}\}" --no-exec/,
   );
 });
