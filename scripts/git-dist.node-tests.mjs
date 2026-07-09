@@ -609,12 +609,23 @@ test("source Git build flags disable optional Rust components", async () => {
       `Linux static libcurl link requires ${packageName}`,
     );
   }
+  assert.deepEqual(config.build.linux.git.static_libraries, [
+    "curl",
+    "openssl",
+    "zlib",
+    "pcre2",
+    "expat",
+    "ldap",
+    "lber",
+  ]);
   assert.match(fetchGitDist, /static_link_flags="-Wl,-Bstatic/);
   assert.match(fetchGitDist, /static_required_libs/);
   assert.match(fetchGitDist, /dynamic_transitive_libs/);
   assert.match(fetchGitDist, /EXTLIBS="\$static_link_flags"/);
   assert.match(fetchGitDist, /OPENSSL_LIBSSL=/);
   assert.match(fetchGitDist, /-lcurl\|-lssl\|-lcrypto\|-lz/);
+  assert.match(fetchGitDist, /-lldap\|-llber/);
+  assert.match(fetchGitDist, /lib\(curl\|ssl\|crypto\|z\|pcre2\|expat\|ldap\|lber\)/);
   assert.match(fetchGitDist, /find \$\{shellQuote\(installRoot\)\} -type f/);
   assert.match(fetchGitDist, /function gitInstallPrefix/);
   assert.match(fetchGitDist, /makePrefixFlag/);

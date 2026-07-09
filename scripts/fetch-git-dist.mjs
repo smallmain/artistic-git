@@ -735,7 +735,7 @@ static_required_libs=""
 dynamic_transitive_libs=""
 for token in $pkg_config_static_libs; do
   case "$token" in
-    -lcurl|-lssl|-lcrypto|-lz|-lpcre2-8|-lexpat|-lssh)
+    -lcurl|-lssl|-lcrypto|-lz|-lpcre2-8|-lexpat|-lssh|-lldap|-llber)
       static_required_libs="$static_required_libs $token"
       ;;
     -L*|-Wl,*)
@@ -750,7 +750,7 @@ done
 static_link_flags="-Wl,-Bstatic $static_required_libs -Wl,-Bdynamic $dynamic_transitive_libs"
 make -j"$(nproc)" ${makeFlags} ${makePrefixFlag} CURL_LDFLAGS="$static_link_flags" EXPAT_LIBEXPAT="$static_link_flags" OPENSSL_LINK= OPENSSL_LIBSSL= LIB_4_CRYPTO="$static_link_flags" EXTLIBS="$static_link_flags" all
 make ${makeFlags} ${makePrefixFlag} DESTDIR=${shellQuote(installRoot)} NO_INSTALL_HARDLINKS=YesPlease CURL_LDFLAGS="$static_link_flags" EXPAT_LIBEXPAT="$static_link_flags" OPENSSL_LINK= OPENSSL_LIBSSL= LIB_4_CRYPTO="$static_link_flags" EXTLIBS="$static_link_flags" install
-if find ${shellQuote(installRoot)} -type f -perm /111 -print0 | xargs -0 -r ldd 2>/dev/null | grep -E 'lib(curl|ssl|crypto|z|pcre2|expat)'; then
+if find ${shellQuote(installRoot)} -type f -perm /111 -print0 | xargs -0 -r ldd 2>/dev/null | grep -E 'lib(curl|ssl|crypto|z|pcre2|expat|ldap|lber)'; then
   echo "git distribution still links dynamic required libraries" >&2
   exit 1
 fi
