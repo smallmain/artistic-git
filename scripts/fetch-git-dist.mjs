@@ -493,6 +493,7 @@ async function buildMacosGit({ config, sourceRoot, installRoot }) {
     await cp(sourceRoot, buildRoot, {
       recursive: true,
       preserveTimestamps: true,
+      verbatimSymlinks: true,
     });
     await mkdir(archInstallRoot, { recursive: true });
 
@@ -543,6 +544,7 @@ async function buildMacosGit({ config, sourceRoot, installRoot }) {
   await cp(base.path, installRoot, {
     recursive: true,
     preserveTimestamps: true,
+    verbatimSymlinks: true,
   });
   await lipoInstallTrees({
     destinationRoot: installRoot,

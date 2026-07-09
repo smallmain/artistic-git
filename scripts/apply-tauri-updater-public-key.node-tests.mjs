@@ -3,6 +3,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   applyUpdaterPublicKey,
@@ -53,7 +54,7 @@ test("writes the generated updater public key into tauri config", async () => {
 });
 
 test("detects direct CLI invocation with resolved filesystem paths", () => {
-  const currentFile = new URL(import.meta.url).pathname;
+  const currentFile = fileURLToPath(import.meta.url);
   assert.equal(isDirectCliInvocation(import.meta.url, currentFile), true);
   assert.equal(
     isDirectCliInvocation(

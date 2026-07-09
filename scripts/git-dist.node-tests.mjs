@@ -9,6 +9,7 @@ import {
   mkdtemp,
   readFile,
   rm,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import os from "node:os";
@@ -134,6 +135,19 @@ async function stageMacosPreparedSources(config, stagingDir) {
         path.join(root, "install", "git", "bin", "git"),
         "git version 2.55.0\n",
       );
+      await mkdir(path.join(root, "install", "git", "libexec", "git-core"), {
+        recursive: true,
+      });
+      if (process.platform !== "win32") {
+        await symlink(
+          "git",
+          path.join(root, "install", "git", "bin", "git-upload-pack"),
+        );
+        await symlink(
+          "../../bin/git",
+          path.join(root, "install", "git", "libexec", "git-core", "git-add"),
+        );
+      }
     } else if (source.component === "git_lfs") {
       const arch = source.resources_path.includes("arm64") ? "arm64" : "x86_64";
       await writeExecutable(
@@ -386,6 +400,73 @@ test("git-dist validation rejects regular files missing from manifest sha256", a
     await rm(tmpDir, { recursive: true, force: true });
   }
 });
+
+test(
+  "git-dist manifest covers Git builtin symlinks materialized by artifacts",
+  {
+    skip:
+      process.platform === "win32"
+        ? "fixture requires POSIX symlink behavior"
+        : false,
+  },
+  async () => {
+    const config = await loadConfig();
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-git-dist-alias-"));
+
+    try {
+      const stagingDir = path.join(tmpDir, "staging");
+      const outputDir = path.join(tmpDir, "git-dist");
+      const helperDir = path.join(tmpDir, "helpers");
+      await stageMacosPreparedSources(config, stagingDir);
+      await writePosixHelpers(helperDir);
+
+      const manifest = await assembleGitDist({
+        config,
+        targetName: "macos-universal",
+        stagingDir,
+        outputDir,
+        helperDir,
+      });
+      const gitContents = await readFile(
+        path.join(outputDir, manifest.paths.gitExecutable),
+      );
+      assert.equal(
+        manifest.sha256["git/bin/git-upload-pack"],
+        manifest.sha256[manifest.paths.gitExecutable],
+      );
+      assert.equal(
+        manifest.sha256["git/libexec/git-core/git-add"],
+        manifest.sha256[manifest.paths.gitExecutable],
+      );
+      await rm(path.join(outputDir, "git", "bin", "git-upload-pack"));
+      await rm(path.join(outputDir, "git", "libexec", "git-core", "git-add"));
+      await writeFile(
+        path.join(outputDir, "git", "bin", "git-upload-pack"),
+        gitContents,
+      );
+      await writeFile(
+        path.join(outputDir, "git", "libexec", "git-core", "git-add"),
+        gitContents,
+      );
+
+      const check = spawnSync(
+        process.execPath,
+        ["scripts/check-git-dist.mjs", "--target=macos-universal", "--no-exec"],
+        {
+          cwd: repoRoot,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            ARTISTIC_GIT_DIST_DIR: outputDir,
+          },
+        },
+      );
+      assert.equal(check.status, 0, check.stderr || check.stdout);
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  },
+);
 
 test("assembles a prepared macOS source build and combines staged git-lfs binaries", async () => {
   const config = await loadConfig();

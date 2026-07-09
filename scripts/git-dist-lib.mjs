@@ -8,6 +8,7 @@ import {
   mkdir,
   readdir,
   readFile,
+  realpath,
   rename,
   rm,
   stat,
@@ -456,6 +457,7 @@ async function copyPreparedSource({
     recursive: true,
     force: true,
     preserveTimestamps: true,
+    verbatimSymlinks: true,
   });
 }
 
@@ -675,6 +677,7 @@ async function assertRequiredDistFiles(config, targetName, distRoot, paths) {
 
 export async function regularFileResourcePaths(root) {
   const files = [];
+  const rootRealPath = await realpath(root);
 
   async function walk(directory, relativeDirectory) {
     const entries = await readdir(directory, { withFileTypes: true });
@@ -686,6 +689,19 @@ export async function regularFileResourcePaths(root) {
       if (entry.isDirectory()) {
         await walk(absolutePath, relativePath);
       } else if (entry.isFile()) {
+        files.push(relativePath);
+      } else if (entry.isSymbolicLink()) {
+        const fileStat = await stat(absolutePath).catch(() => null);
+        if (!fileStat?.isFile()) {
+          continue;
+        }
+        const realFilePath = await realpath(absolutePath);
+        if (!isPathInside(realFilePath, rootRealPath)) {
+          throw new GitDistConfigError(
+            "git-dist manifest path resolves outside resource root",
+            [`${relativePath} -> ${realFilePath}`],
+          );
+        }
         files.push(relativePath);
       }
     }
@@ -798,6 +814,14 @@ async function pathExists(filePath) {
   } catch {
     return false;
   }
+}
+
+function isPathInside(filePath, rootPath) {
+  const relative = path.relative(rootPath, filePath);
+  return (
+    relative === "" ||
+    (!relative.startsWith("..") && !path.isAbsolute(relative))
+  );
 }
 
 function normalizeResourcePath(value) {

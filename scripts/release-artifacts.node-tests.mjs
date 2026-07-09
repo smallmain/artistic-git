@@ -84,6 +84,8 @@ async function writeFixtureConfig(tmpDir, { writeManifest = true } = {}) {
 async function writeFixtureGitDist(gitDistDir) {
   const files = new Map([
     ["git/bin/git", "git fixture\n"],
+    ["git/bin/git-upload-pack", "git fixture\n"],
+    ["git/libexec/git-core/git-add", "git fixture\n"],
     ["git-lfs/git-lfs", "git-lfs fixture\n"],
     ["helpers/artistic-git-credential-helper", "credential helper fixture\n"],
     ["helpers/artistic-git-ssh-askpass", "ssh askpass fixture\n"],
@@ -313,7 +315,14 @@ test("resource checker rejects packaged git-dist files missing from manifest sha
           bundleOutput,
           requireBundledResource: true,
         }),
-      /not covered by manifest\.sha256: git\/bin\/stray\.txt/,
+      (error) => {
+        assert.match(
+          error.message,
+          /not covered by manifest\.sha256: git\/bin\/stray\.txt/,
+        );
+        assert.doesNotMatch(error.message, /git\/libexec\/git-core\/git-add/);
+        return true;
+      },
     );
   } finally {
     await rm(tmpDir, { recursive: true, force: true });
