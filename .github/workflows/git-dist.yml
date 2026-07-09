@@ -28,7 +28,7 @@ on:
 
 env:
   NODE_VERSION: "24"
-  GIT_DIST_CACHE_VERSION: "v1"
+  GIT_DIST_CACHE_VERSION: "v2"
 
 jobs:
   contract:
@@ -173,20 +173,27 @@ jobs:
 
       - name: Validate restored assembled distribution
         if: matrix.placeholderBlocked != true && steps.dist-cache.outputs.cache-hit == 'true'
+        id: dist-cache-validation
         shell: bash
         run: |
           set -euo pipefail
-          node scripts/check-git-dist.mjs --target="${{ matrix.target }}"
+          if node scripts/check-git-dist.mjs --target="${{ matrix.target }}"; then
+            echo "valid=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "::warning title=git-dist cache invalid::Restored assembled cache for ${{ matrix.target }} failed validation; deleting it and rebuilding from sources."
+            node --input-type=module -e "import fs from 'node:fs'; fs.rmSync(process.env.ARTISTIC_GIT_DIST_DIR, { recursive: true, force: true });"
+            echo "valid=false" >> "${GITHUB_OUTPUT}"
+          fi
 
       - name: Build helper binaries
-        if: matrix.placeholderBlocked != true && steps.dist-cache.outputs.cache-hit != 'true'
+        if: matrix.placeholderBlocked != true && (steps.dist-cache.outputs.cache-hit != 'true' || steps.dist-cache-validation.outputs.valid != 'true')
         shell: bash
         run: |
           set -euo pipefail
           cargo build -p artistic-git-helpers --bins --release
 
       - name: Fetch, verify, and assemble distribution
-        if: matrix.placeholderBlocked != true && steps.dist-cache.outputs.cache-hit != 'true'
+        if: matrix.placeholderBlocked != true && (steps.dist-cache.outputs.cache-hit != 'true' || steps.dist-cache-validation.outputs.valid != 'true')
         shell: bash
         run: |
           set -euo pipefail
@@ -197,7 +204,7 @@ jobs:
             --staging-dir="${ARTISTIC_GIT_DIST_STAGING_DIR}"
 
       - name: Validate assembled distribution
-        if: matrix.placeholderBlocked != true && steps.dist-cache.outputs.cache-hit != 'true'
+        if: matrix.placeholderBlocked != true && (steps.dist-cache.outputs.cache-hit != 'true' || steps.dist-cache-validation.outputs.valid != 'true')
         shell: bash
         run: |
           set -euo pipefail
@@ -222,6 +229,10 @@ jobs:
           source_cache_restore_key="git-dist-source-${{ env.GIT_DIST_CACHE_VERSION }}-${{ matrix.target }}-"
           dist_cache_key="git-dist-artifact-${{ env.GIT_DIST_CACHE_VERSION }}-${{ matrix.target }}-${{ hashFiles('git-dist.toml', 'scripts/fetch-git-dist.mjs', 'scripts/git-dist-lib.mjs', 'scripts/check-git-dist.mjs', 'crates/helpers/**', 'Cargo.lock') }}"
           dist_cache_restore_key="git-dist-artifact-${{ env.GIT_DIST_CACHE_VERSION }}-${{ matrix.target }}-"
+          dist_cache_hit="${{ steps.dist-cache.outputs.cache-hit }}"
+          if [ "${{ steps.dist-cache-validation.outputs.valid }}" = "false" ]; then
+            dist_cache_hit="false"
+          fi
           node scripts/git-dist-report.mjs \
             --target="${{ matrix.target }}" \
             --workflow-build \
@@ -240,7 +251,7 @@ jobs:
             --runner-arch="${{ runner.arch }}" \
             --job-os="${{ matrix.os }}" \
             --source-cache-hit="${{ steps.source-cache.outputs.cache-hit }}" \
-            --dist-cache-hit="${{ steps.dist-cache.outputs.cache-hit }}" \
+            --dist-cache-hit="${dist_cache_hit}" \
             --source-cache-key="${source_cache_key}" \
             --source-cache-restore-key="${source_cache_restore_key}" \
             --dist-cache-key="${dist_cache_key}" \

@@ -1363,7 +1363,19 @@ test("workflow validates restored assembled cache hits before reuse", async () =
   );
   assert.match(
     workflow,
-    /Validate restored assembled distribution[\s\S]+matrix\.placeholderBlocked != true && steps\.dist-cache\.outputs\.cache-hit == 'true'[\s\S]+node scripts\/check-git-dist\.mjs --target="\$\{\{ matrix\.target \}\}"/,
+    /GIT_DIST_CACHE_VERSION: "v2"/,
+  );
+  assert.match(
+    workflow,
+    /Validate restored assembled distribution[\s\S]+id: dist-cache-validation[\s\S]+node scripts\/check-git-dist\.mjs --target="\$\{\{ matrix\.target \}\}"[\s\S]+Restored assembled cache for \$\{\{ matrix\.target \}\} failed validation[\s\S]+fs\.rmSync\(process\.env\.ARTISTIC_GIT_DIST_DIR/,
+  );
+  assert.match(
+    workflow,
+    /Build helper binaries[\s\S]+steps\.dist-cache\.outputs\.cache-hit != 'true' \|\| steps\.dist-cache-validation\.outputs\.valid != 'true'/,
+  );
+  assert.match(
+    workflow,
+    /dist_cache_hit="\$\{\{ steps\.dist-cache\.outputs\.cache-hit \}\}"[\s\S]+steps\.dist-cache-validation\.outputs\.valid[\s\S]+dist_cache_hit="false"[\s\S]+--dist-cache-hit="\$\{dist_cache_hit\}"/,
   );
 });
 
