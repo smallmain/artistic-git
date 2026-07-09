@@ -136,16 +136,33 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Free Linux release packaging disk space
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/.ghcup \
+            /usr/local/lib/android \
+            /usr/share/dotnet
+          df -h /
+
       - name: Install Linux Tauri dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            desktop-file-utils \
             libwebkit2gtk-4.1-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf \
             libfuse2 \
+            squashfs-tools \
+            zsync \
             pkg-config \
             libssl-dev
 
@@ -347,11 +364,32 @@ jobs:
           node scripts/check-git-dist.mjs --target="${{ matrix.gitDistTarget }}"
 
       - name: Build Tauri bundles
+        if: runner.os != 'Linux'
         env:
-          APPIMAGE_EXTRACT_AND_RUN: "1"
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm tauri build --ci --target "${{ matrix.target }}" --bundles "${{ matrix.bundles }}"
+
+      - name: Build Tauri bundles (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          RUST_LOG: tauri_bundler=debug
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          df -h /
+          du -sh src-tauri/resources/git-dist || true
+          pnpm tauri build --ci --verbose --target "${{ matrix.target }}" --bundles "${{ matrix.bundles }}" || {
+            status=$?
+            df -h /
+            find src-tauri/target -maxdepth 6 \
+              \( -iname '*linuxdeploy*' -o -iname '*.AppImage' -o -iname '*.AppDir' \) \
+              -print || true
+            exit "$status"
+          }
 
       - name: Verify packaged embedded Git resources
         shell: bash

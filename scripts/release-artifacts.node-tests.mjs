@@ -40,6 +40,9 @@ const gitDistWorkflow = await readFile(
 const packageJson = JSON.parse(
   await readFile(path.join(repoRoot, "package.json"), "utf8"),
 );
+const tauriConfig = JSON.parse(
+  await readFile(path.join(repoRoot, "src-tauri", "tauri.conf.json"), "utf8"),
+);
 const verifyGitDistBuildEvidenceScript = path.join(
   repoRoot,
   "scripts",
@@ -364,6 +367,16 @@ test("resource checker requires a square PNG icon for AppImage releases", async 
   }
 });
 
+test("tauri config includes AppImage-compatible PNG icon sizes", () => {
+  for (const icon of [
+    "icons/32x32.png",
+    "icons/128x128.png",
+    "icons/128x128@2x.png",
+  ]) {
+    assert.ok(tauriConfig.bundle.icon.includes(icon), icon);
+  }
+});
+
 test("resource checker fails when required release manifests are missing", async () => {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-resources-"));
 
@@ -522,10 +535,32 @@ test("release workflow checks staged and packaged git-dist resources", () => {
 });
 
 test("release workflow configures Linux AppImage runtime prerequisites", () => {
+  assert.ok(
+    releaseWorkflow.includes("Free Linux release packaging disk space"),
+    "Linux packaging disk cleanup",
+  );
+  assert.ok(
+    releaseWorkflow.includes("/usr/local/lib/android"),
+    "Linux runner disk cleanup paths",
+  );
+  assert.ok(
+    releaseWorkflow.includes("desktop-file-utils \\"),
+    "desktop-file-utils",
+  );
   assert.ok(releaseWorkflow.includes("libfuse2 \\"), "libfuse2");
+  assert.ok(releaseWorkflow.includes("squashfs-tools \\"), "squashfs-tools");
+  assert.ok(releaseWorkflow.includes("zsync \\"), "zsync");
   assert.ok(
     releaseWorkflow.includes('APPIMAGE_EXTRACT_AND_RUN: "1"'),
     "APPIMAGE_EXTRACT_AND_RUN",
+  );
+  assert.ok(
+    releaseWorkflow.includes("pnpm tauri build --ci --verbose"),
+    "Linux Tauri verbose bundling",
+  );
+  assert.ok(
+    releaseWorkflow.includes("du -sh src-tauri/resources/git-dist"),
+    "Linux GitDist size diagnostic",
   );
 });
 
