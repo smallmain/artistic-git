@@ -145,6 +145,7 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf \
+            libfuse2 \
             pkg-config \
             libssl-dev
 
@@ -230,6 +231,7 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf \
+            libfuse2 \
             pkg-config \
             libssl-dev
 
@@ -346,6 +348,7 @@ jobs:
 
       - name: Build Tauri bundles
         env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm tauri build --ci --target "${{ matrix.target }}" --bundles "${{ matrix.bundles }}"

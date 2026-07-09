@@ -521,6 +521,14 @@ test("release workflow checks staged and packaged git-dist resources", () => {
   );
 });
 
+test("release workflow configures Linux AppImage runtime prerequisites", () => {
+  assert.ok(releaseWorkflow.includes("libfuse2 \\"), "libfuse2");
+  assert.ok(
+    releaseWorkflow.includes('APPIMAGE_EXTRACT_AND_RUN: "1"'),
+    "APPIMAGE_EXTRACT_AND_RUN",
+  );
+});
+
 test("CI and git-dist workflows cover release and report contract checks", () => {
   assert.ok(ciWorkflow.includes("run: pnpm release:check"));
   assert.ok(ciWorkflow.includes("if: runner.os == 'Linux'"));
