@@ -582,31 +582,37 @@ async function ensureGitTransportBuiltinWrappers(installRoot) {
   if (!gitBinDir) {
     fail(`source-built git install is missing git/bin under ${installRoot}`);
   }
+  await chmod(gitBinDir, 0o755).catch(() => {});
 
   for (const [wrapperName, builtinName] of gitTransportBuiltinWrappers) {
-    const wrapperPath = path.join(gitExecPath, wrapperName);
-    const wrapperStat = await lstat(wrapperPath).catch(() => null);
-    if (!wrapperStat) {
-      await writeGitBuiltinWrapper({
-        builtinName,
-        gitBinary,
-        wrapperPath,
-      });
-    } else if (!wrapperStat.isFile() && !wrapperStat.isSymbolicLink()) {
-      await rm(wrapperPath, { force: true });
-      await writeGitBuiltinWrapper({
-        builtinName,
-        gitBinary,
-        wrapperPath,
-      });
-    }
-
-    await writeGitBuiltinWrapper({
+    await ensureGitBuiltinWrapper({
       builtinName,
       gitBinary,
       wrapperPath: path.join(gitBinDir, wrapperName),
     });
+    await ensureGitBuiltinWrapper({
+      builtinName,
+      gitBinary,
+      wrapperPath: path.join(gitExecPath, wrapperName),
+    });
   }
+}
+
+async function ensureGitBuiltinWrapper({ builtinName, gitBinary, wrapperPath }) {
+  const wrapperStat = await lstat(wrapperPath).catch(() => null);
+  if (!wrapperStat) {
+    await writeGitBuiltinWrapper({ builtinName, gitBinary, wrapperPath });
+    return;
+  }
+  if (wrapperStat.isFile() && !wrapperStat.isSymbolicLink()) {
+    await chmod(wrapperPath, 0o755).catch(() => {});
+    return;
+  }
+  if (wrapperStat.isSymbolicLink()) {
+    return;
+  }
+  await rm(wrapperPath, { force: true });
+  await writeGitBuiltinWrapper({ builtinName, gitBinary, wrapperPath });
 }
 
 async function writeGitBuiltinWrapper({ builtinName, gitBinary, wrapperPath }) {
