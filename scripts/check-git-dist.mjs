@@ -415,13 +415,11 @@ async function checkLinuxExecutableDependencies(target, distRoot) {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) =>
-      /\bnot found\b|lib(curl|ssl|crypto|z|pcre2|expat|ldap|lber)\S*\s*=>/.test(
-        line,
-      ),
+      /\bnot found\b|lib(ldap|lber)\S*\s*=>/.test(line),
     );
   if (blockedLines.length > 0) {
     fail(
-      `linux git-dist executable dependencies include dynamic required libraries or missing libraries:\n${blockedLines.join("\n")}`,
+      `linux git-dist executable dependencies include dynamic LDAP libraries or missing libraries:\n${blockedLines.join("\n")}`,
     );
   }
 

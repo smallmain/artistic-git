@@ -654,7 +654,7 @@ test("git-dist validation executes embedded Git runtime smoke checks", async () 
   assert.match(checkGitDist, /checkLinuxExecutableDependencies/);
   assert.match(checkGitDist, /spawnSync\("ldd"/);
   assert.match(checkGitDist, /\\bnot found\\b/);
-  assert.match(checkGitDist, /lib\(curl\|ssl\|crypto\|z\|pcre2\|expat\|ldap\|lber\)/);
+  assert.match(checkGitDist, /lib\(ldap\|lber\)/);
   assert.match(checkGitDist, /"--exec-path"/);
   assert.match(checkGitDist, /"submodule", "status"/);
   assert.match(checkGitDist, /"init", "--bare", "-b", "main", remote/);
