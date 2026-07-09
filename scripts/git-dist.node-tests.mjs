@@ -63,8 +63,28 @@ async function stageWindowsArchives(config, stagingDir) {
     const root = sourceStagingDirectory(stagingDir, ref);
     if (source.component === "git") {
       await writeExecutable(
-        path.join(root, "mingit-fixture", "bin", "git.exe"),
+        path.join(root, "mingw64", "bin", "git.exe"),
         "git version 2.55.0.windows.2\n",
+      );
+      await writeExecutable(
+        path.join(root, "usr", "bin", "sh.exe"),
+        "bundled shell fixture\n",
+      );
+      await writeExecutable(
+        path.join(root, "mingw64", "libexec", "git-core", "git-submodule"),
+        "#!/bin/sh\n",
+      );
+      await writeExecutable(
+        path.join(
+          root,
+          "mingw64",
+          "share",
+          "git-core",
+          "templates",
+          "hooks",
+          "pre-commit.sample",
+        ),
+        "sample hook\n",
       );
     } else if (source.component === "git_lfs") {
       await writeExecutable(
@@ -285,8 +305,21 @@ test("assembles staged Windows archives into manifest layout and validates as a 
     }
 
     assert.equal(
-      await pathExists(path.join(outputDir, "git", "mingit-fixture")),
-      false,
+      await pathExists(path.join(outputDir, "git", "usr", "bin", "sh.exe")),
+      true,
+    );
+    assert.equal(
+      await pathExists(
+        path.join(
+          outputDir,
+          "git",
+          "mingw64",
+          "libexec",
+          "git-core",
+          "git-submodule",
+        ),
+      ),
+      true,
     );
     assert.equal(
       await pathExists(path.join(outputDir, "git-lfs", "git-lfs-fixture")),

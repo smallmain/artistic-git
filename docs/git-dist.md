@@ -194,8 +194,11 @@ does not search for a system Git.
 git-dist/
   manifest.json
   git/
-    bin/git(.exe)
+    bin/git
+    mingw64/bin/git.exe
     libexec/git-core/...
+    mingw64/libexec/git-core/...
+    usr/bin/sh.exe
   git-lfs/
     git-lfs(.exe)
   openssh/
