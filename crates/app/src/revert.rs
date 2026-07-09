@@ -1158,8 +1158,8 @@ if [ -f "$marker" ]; then
   git -C "$peer" push
 fi
 "#,
-                marker = display_path(&marker),
-                peer = display_path(&self.peer.path),
+                marker = shell_quote(&marker),
+                peer = shell_quote(&self.peer.path),
             );
             fs::write(&hook, script).expect("write pre-push hook");
             #[cfg(unix)]
@@ -1171,5 +1171,10 @@ fi
                 fs::set_permissions(&hook, permissions).expect("chmod pre-push hook");
             }
         }
+    }
+
+    fn shell_quote(path: &Path) -> String {
+        let value = display_path(path);
+        format!("'{}'", value.replace('\'', "'\\''"))
     }
 }

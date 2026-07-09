@@ -1993,7 +1993,7 @@ fn fake_git_lfs_path(fake_dir: &Path) -> PathBuf {
 #[cfg(windows)]
 fn write_failing_git_lfs(path: &Path, message: &str) {
     let script = format!(
-        "@echo off\r\necho %* | findstr /C:\" track \" >nul\r\nif %errorlevel%==0 (\r\n  echo {message} 1>&2\r\n  exit /b 1\r\n)\r\nexit /b 0\r\n"
+        "@echo off\r\nsetlocal\r\nset \"args= %* \"\r\necho %args% | findstr /C:\" track \" >nul\r\nif %errorlevel%==0 (\r\n  echo {message} 1>&2\r\n  exit /b 1\r\n)\r\nexit /b 0\r\n"
     );
     fs::write(path, script).expect("write fake git-lfs");
 }

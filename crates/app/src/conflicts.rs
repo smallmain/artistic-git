@@ -558,7 +558,7 @@ fn conflict_file_from_entries(
     display: &Path,
     entries: &BTreeMap<PathBuf, BTreeMap<u8, StageEntry>>,
 ) -> ConflictFile {
-    let path_string = display_path(display);
+    let path_string = conflict_display_path(display);
     let has_unmerged_stages = entries.contains_key(path);
     let file_kind = file_kind_for_path(root, path);
     let status = if has_unmerged_stages || worktree_has_markers(root, path) {
@@ -1198,6 +1198,10 @@ fn spawn_error(plan: &GitCommandPlan, source: io::Error, operation_name: &str) -
 
 fn display_path(path: &Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+fn conflict_display_path(path: &Path) -> String {
+    display_path(path).replace('\\', "/")
 }
 
 fn base64_encode(bytes: &[u8]) -> String {
