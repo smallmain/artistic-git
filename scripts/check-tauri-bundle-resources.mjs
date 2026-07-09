@@ -134,6 +134,12 @@ export async function checkTauriBundleResources({
     fail(`bundle.targets is missing: ${missingTargets.join(", ")}`);
   }
 
+  await validateLinuxAppImageIcon({
+    bundle,
+    targets,
+    tauriDir: path.dirname(resolvedConfigPath),
+  });
+
   const resources = requireObject(
     bundle.resources,
     "bundle.resources must map the git-dist directory to the packaged path.",
@@ -209,6 +215,65 @@ export async function checkTauriBundleResources({
     manifestPath,
     bundledManifestPaths,
     bundledManifestChecks,
+  };
+}
+
+async function validateLinuxAppImageIcon({ bundle, targets, tauriDir }) {
+  if (!targets.includes("appimage")) {
+    return;
+  }
+
+  const icons = bundle.icon;
+  if (!Array.isArray(icons) || icons.length === 0) {
+    fail("bundle.icon must include a square PNG icon for Linux AppImage.");
+  }
+
+  const pngIcons = icons.filter((icon) =>
+    String(icon).toLowerCase().endsWith(".png"),
+  );
+  if (pngIcons.length === 0) {
+    fail("bundle.icon must include a square PNG icon for Linux AppImage.");
+  }
+
+  const checked = [];
+  for (const icon of pngIcons) {
+    const normalized = normalizeResourcePath(icon);
+    if (
+      normalized.startsWith("/") ||
+      normalized === "." ||
+      normalized.split("/").some((part) => part === ".." || part === "")
+    ) {
+      fail(`bundle.icon path must stay inside src-tauri: ${icon}`);
+    }
+    const iconPath = path.join(tauriDir, normalized);
+    const dimensions = await readPngDimensions(iconPath).catch(() => null);
+    if (!dimensions) {
+      fail(`bundle.icon PNG is missing or invalid: ${iconPath}`);
+    }
+    checked.push(`${normalized} (${dimensions.width}x${dimensions.height})`);
+    if (dimensions.width === dimensions.height) {
+      return;
+    }
+  }
+
+  fail(
+    `bundle.icon must include at least one square PNG icon for Linux AppImage; checked ${checked.join(", ")}`,
+  );
+}
+
+async function readPngDimensions(filePath) {
+  const buffer = await readFile(filePath);
+  const pngSignature = "89504e470d0a1a0a";
+  if (
+    buffer.length < 24 ||
+    buffer.subarray(0, 8).toString("hex") !== pngSignature ||
+    buffer.subarray(12, 16).toString("ascii") !== "IHDR"
+  ) {
+    throw new Error(`invalid PNG: ${filePath}`);
+  }
+  return {
+    width: buffer.readUInt32BE(16),
+    height: buffer.readUInt32BE(20),
   };
 }
 

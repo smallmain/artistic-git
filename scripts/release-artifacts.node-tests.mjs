@@ -1,6 +1,7 @@
 /* global process */
 
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -44,13 +45,24 @@ const verifyGitDistBuildEvidenceScript = path.join(
   "scripts",
   "verify-git-dist-build-evidence.mjs",
 );
+const fixturePng = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
+  "base64",
+);
 
-async function writeFixtureConfig(tmpDir, { writeManifest = true } = {}) {
+async function writeFixtureConfig(
+  tmpDir,
+  { writeManifest = true, writeIcon = true } = {},
+) {
   const tauriDir = path.join(tmpDir, "src-tauri");
   const gitDistDir = path.join(tauriDir, "resources", "git-dist");
   await mkdir(gitDistDir, { recursive: true });
   if (writeManifest) {
     await writeFile(path.join(gitDistDir, "manifest.json"), "{}\n");
+  }
+  if (writeIcon) {
+    await mkdir(path.join(tauriDir, "icons"), { recursive: true });
+    await writeFile(path.join(tauriDir, "icons", "icon.png"), fixturePng);
   }
 
   const configPath = path.join(tauriDir, "tauri.conf.json");
@@ -61,6 +73,7 @@ async function writeFixtureConfig(tmpDir, { writeManifest = true } = {}) {
         bundle: {
           active: true,
           targets: requiredTargets,
+          icon: ["icons/icon.png"],
           createUpdaterArtifacts: true,
           resources: {
             "resources/git-dist/": "git-dist/",
@@ -323,6 +336,28 @@ test("resource checker rejects packaged git-dist files missing from manifest sha
         assert.doesNotMatch(error.message, /git\/libexec\/git-core\/git-add/);
         return true;
       },
+    );
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("resource checker requires a square PNG icon for AppImage releases", async () => {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-resources-icon-"));
+
+  try {
+    const { configPath } = await writeFixtureConfig(tmpDir, {
+      writeIcon: false,
+    });
+
+    await assert.rejects(
+      () =>
+        checkTauriBundleResources({
+          configPath,
+          requireManifest: true,
+          releaseMode: true,
+        }),
+      /bundle\.icon PNG is missing or invalid/,
     );
   } finally {
     await rm(tmpDir, { recursive: true, force: true });
