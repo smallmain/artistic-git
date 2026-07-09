@@ -25,17 +25,21 @@ const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
 );
-const releaseWorkflow = await readFile(
-  path.join(repoRoot, ".github", "workflows", "release.yml"),
-  "utf8",
+const normalizeNewlines = (text) => text.replace(/\r\n/g, "\n");
+const releaseWorkflow = normalizeNewlines(
+  await readFile(
+    path.join(repoRoot, ".github", "workflows", "release.yml"),
+    "utf8",
+  ),
 );
-const ciWorkflow = await readFile(
-  path.join(repoRoot, ".github", "workflows", "ci.yml"),
-  "utf8",
+const ciWorkflow = normalizeNewlines(
+  await readFile(path.join(repoRoot, ".github", "workflows", "ci.yml"), "utf8"),
 );
-const gitDistWorkflow = await readFile(
-  path.join(repoRoot, ".github", "workflows", "git-dist.yml"),
-  "utf8",
+const gitDistWorkflow = normalizeNewlines(
+  await readFile(
+    path.join(repoRoot, ".github", "workflows", "git-dist.yml"),
+    "utf8",
+  ),
 );
 const packageJson = JSON.parse(
   await readFile(path.join(repoRoot, "package.json"), "utf8"),
