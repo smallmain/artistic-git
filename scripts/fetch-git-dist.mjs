@@ -747,6 +747,7 @@ for token in $pkg_config_static_libs; do
       ;;
   esac
 done
+dynamic_transitive_libs="$dynamic_transitive_libs -lgnutls -lsasl2"
 static_link_flags="-Wl,-Bstatic $static_required_libs -Wl,-Bdynamic $dynamic_transitive_libs"
 make -j"$(nproc)" ${makeFlags} ${makePrefixFlag} CURL_LDFLAGS="$static_link_flags" EXPAT_LIBEXPAT="$static_link_flags" OPENSSL_LINK= OPENSSL_LIBSSL= LIB_4_CRYPTO="$static_link_flags" EXTLIBS="$static_link_flags" all
 make ${makeFlags} ${makePrefixFlag} DESTDIR=${shellQuote(installRoot)} NO_INSTALL_HARDLINKS=YesPlease CURL_LDFLAGS="$static_link_flags" EXPAT_LIBEXPAT="$static_link_flags" OPENSSL_LINK= OPENSSL_LIBSSL= LIB_4_CRYPTO="$static_link_flags" EXTLIBS="$static_link_flags" install

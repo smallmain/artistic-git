@@ -605,6 +605,8 @@ test("source Git build flags disable optional Rust components", async () => {
     "libpsl-dev",
     "libkrb5-dev",
     "libldap2-dev",
+    "libgnutls28-dev",
+    "libsasl2-dev",
     "libbrotli-dev",
     "libzstd-dev",
   ]) {
@@ -629,6 +631,7 @@ test("source Git build flags disable optional Rust components", async () => {
   assert.match(fetchGitDist, /OPENSSL_LIBSSL=/);
   assert.match(fetchGitDist, /-lcurl\|-lssl\|-lcrypto\|-lz/);
   assert.match(fetchGitDist, /-lldap\|-llber/);
+  assert.match(fetchGitDist, /-lgnutls -lsasl2/);
   assert.match(fetchGitDist, /lib\(curl\|ssl\|crypto\|z\|pcre2\|expat\|ldap\|lber\)/);
   assert.match(fetchGitDist, /find \$\{shellQuote\(installRoot\)\} -type f/);
   assert.match(fetchGitDist, /function gitInstallPrefix/);
