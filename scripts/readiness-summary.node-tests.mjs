@@ -12,6 +12,8 @@ const repoRoot = path.resolve(
   "..",
 );
 const readinessScript = path.join(repoRoot, "scripts", "readiness-summary.mjs");
+const testCurrentHeadSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const testStaleHeadSha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
 test("readiness summary aggregates remaining Windows and release blockers", async () => {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-readiness-"));
@@ -53,7 +55,7 @@ test("readiness summary aggregates remaining Windows and release blockers", asyn
     );
     assert.equal(
       summary.source.selectedReleaseRehearsal.workflowSha,
-      "release-sha-skipped",
+      testCurrentHeadSha,
     );
     assert.equal(summary.source.releaseRehearsalCandidates.length, 1);
     assert.ok(
@@ -200,6 +202,104 @@ test("readiness summary reports ready when all consumed evidence is checkable", 
   }
 });
 
+test("readiness summary blocks stale phase 12 evidence", async () => {
+  const tmpDir = await mkdtemp(
+    path.join(os.tmpdir(), "ag-readiness-stale-phase12-"),
+  );
+  const artifactsDir = path.join(tmpDir, "artifacts");
+  const reportDir = path.join(tmpDir, "summary");
+
+  try {
+    await writeJson(
+      path.join(artifactsDir, "phase12", "phase12-evidence-summary.json"),
+      phase12Summary({
+        e2eCheckable: true,
+        perfCheckable: true,
+        sha: testStaleHeadSha,
+        windowsReusable: true,
+      }),
+    );
+    await writeJson(
+      path.join(artifactsDir, "release", "release-rehearsal-checklist.json"),
+      releaseRehearsal({ status: "pass" }),
+    );
+
+    const result = runReadiness(artifactsDir, reportDir);
+    assert.equal(result.status, 0, result.stderr);
+
+    const summary = await readJson(
+      path.join(reportDir, "readiness-summary.json"),
+    );
+    assert.equal(summary.overallStatus, "blocked");
+    assert.equal(
+      summary.source.selectedPhase12Summary.freshness.status,
+      "stale",
+    );
+    assert.ok(
+      summary.remainingBlockers.some(
+        (blocker) =>
+          blocker.itemId === "phase12-e2e-full-chain" &&
+          blocker.category === "stale-evidence" &&
+          blocker.message.includes(testStaleHeadSha),
+      ),
+    );
+    assert.ok(
+      summary.remainingBlockers.some(
+        (blocker) =>
+          blocker.itemId === "windows-git-dist" &&
+          blocker.category === "stale-evidence",
+      ),
+    );
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("readiness summary blocks stale passed release rehearsal evidence", async () => {
+  const tmpDir = await mkdtemp(
+    path.join(os.tmpdir(), "ag-readiness-stale-release-"),
+  );
+  const artifactsDir = path.join(tmpDir, "artifacts");
+  const reportDir = path.join(tmpDir, "summary");
+
+  try {
+    await writeJson(
+      path.join(artifactsDir, "phase12", "phase12-evidence-summary.json"),
+      phase12Summary({
+        e2eCheckable: true,
+        perfCheckable: true,
+        windowsReusable: true,
+      }),
+    );
+    await writeJson(
+      path.join(artifactsDir, "release", "release-rehearsal-checklist.json"),
+      releaseRehearsal({ sha: testStaleHeadSha, status: "pass" }),
+    );
+
+    const result = runReadiness(artifactsDir, reportDir);
+    assert.equal(result.status, 0, result.stderr);
+
+    const summary = await readJson(
+      path.join(reportDir, "readiness-summary.json"),
+    );
+    assert.equal(summary.overallStatus, "blocked");
+    assert.equal(
+      summary.source.selectedReleaseRehearsal.freshness.status,
+      "stale",
+    );
+    assert.ok(
+      summary.remainingBlockers.some(
+        (blocker) =>
+          blocker.itemId === "release-rehearsal" &&
+          blocker.category === "stale-evidence" &&
+          blocker.message.includes(testStaleHeadSha),
+      ),
+    );
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
 function runReadiness(artifactsDir, reportDir) {
   return spawnSync(
     process.execPath,
@@ -207,6 +307,7 @@ function runReadiness(artifactsDir, reportDir) {
       readinessScript,
       `--artifacts-dir=${artifactsDir}`,
       `--report-dir=${reportDir}`,
+      `--expected-head-sha=${testCurrentHeadSha}`,
     ],
     {
       cwd: repoRoot,
@@ -224,7 +325,12 @@ async function writeJson(filePath, value) {
   await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-function phase12Summary({ e2eCheckable, perfCheckable, windowsReusable }) {
+function phase12Summary({
+  e2eCheckable,
+  perfCheckable,
+  sha = testCurrentHeadSha,
+  windowsReusable,
+}) {
   const windowsGitDist = windowsReusable
     ? gitDistTarget({
         reusableArtifactCheckable: true,
@@ -242,6 +348,9 @@ function phase12Summary({ e2eCheckable, perfCheckable, windowsReusable }) {
     schemaVersion: 2,
     kind: "phase12-evidence-summary",
     generatedAt: "2026-07-09T00:00:00.000Z",
+    source: {
+      currentHeadSha: sha,
+    },
     gitDistribution: {
       requiredTargets: ["linux-x86_64", "macos-universal", "windows-x86_64"],
       targets: {
@@ -341,7 +450,7 @@ function opensshBlocker() {
 function releaseRehearsal({
   artifactName = "release-rehearsal-Windows",
   generatedAt = "2026-07-09T00:02:00.000Z",
-  sha,
+  sha = testCurrentHeadSha,
   status,
 }) {
   const pass = status === "pass";

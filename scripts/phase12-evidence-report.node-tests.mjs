@@ -15,6 +15,8 @@ const summaryScriptPath = path.join(
   import.meta.dirname,
   "phase12-evidence-summary.mjs",
 );
+const testCurrentHeadSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const testStaleHeadSha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
 async function readJson(filePath) {
   return JSON.parse(await readFile(filePath, "utf8"));
@@ -200,6 +202,7 @@ test("summary separates Linux/Windows E2E from three-platform perf evidence", as
         summaryScriptPath,
         `--artifacts-dir=${artifactsDir}`,
         `--report-dir=${reportDir}`,
+        `--current-head-sha=${testCurrentHeadSha}`,
       ],
       { encoding: "utf8" },
     );
@@ -300,6 +303,7 @@ test("summary rejects heavy perf reports whose scale was overridden smaller", as
         summaryScriptPath,
         `--artifacts-dir=${artifactsDir}`,
         `--report-dir=${reportDir}`,
+        `--current-head-sha=${testCurrentHeadSha}`,
         "--e2e-required-targets=linux-x86_64",
         "--perf-required-targets=linux-x86_64",
       ],
@@ -352,6 +356,7 @@ test("summary rejects artifact-backed reports with executable hash mismatches", 
         summaryScriptPath,
         `--artifacts-dir=${artifactsDir}`,
         `--report-dir=${reportDir}`,
+        `--current-head-sha=${testCurrentHeadSha}`,
         "--e2e-required-targets=linux-x86_64",
         "--perf-required-targets=linux-x86_64",
       ],
@@ -408,6 +413,7 @@ test("summary rejects artifact-backed reports without matching git-dist build ev
         summaryScriptPath,
         `--artifacts-dir=${artifactsDir}`,
         `--report-dir=${reportDir}`,
+        `--current-head-sha=${testCurrentHeadSha}`,
         "--e2e-required-targets=linux-x86_64",
         "--perf-required-targets=linux-x86_64",
       ],
@@ -473,6 +479,7 @@ test("summary rejects artifact-backed reports whose run id differs from git-dist
         summaryScriptPath,
         `--artifacts-dir=${artifactsDir}`,
         `--report-dir=${reportDir}`,
+        `--current-head-sha=${testCurrentHeadSha}`,
         "--e2e-required-targets=linux-x86_64",
         "--perf-required-targets=linux-x86_64",
       ],
@@ -494,6 +501,134 @@ test("summary rejects artifact-backed reports whose run id differs from git-dist
     assert.match(
       perfTarget.reasons.join("\n"),
       /gitDistSource\.runId runtime-run does not match git-dist build evidence runId build-run/,
+    );
+  } finally {
+    await rm(tmpDir, { force: true, recursive: true });
+  }
+});
+
+test("summary rejects runtime evidence from a stale commit", async () => {
+  const tmpDir = await mkdtemp(
+    path.join(os.tmpdir(), "ag-phase12-stale-runtime-"),
+  );
+  const artifactsDir = path.join(tmpDir, "artifacts");
+  const reportDir = path.join(tmpDir, "summary");
+
+  try {
+    await writeJson(
+      path.join(artifactsDir, "e2e-linux", "runtime.json"),
+      e2eReport({
+        sha: testStaleHeadSha,
+        status: "pass",
+        target: "linux-x86_64",
+      }),
+    );
+    await writeJson(
+      path.join(artifactsDir, "perf-linux", "report.json"),
+      perfReport({
+        status: "pass",
+        target: "linux-x86_64",
+      }),
+    );
+    await writeJson(
+      path.join(artifactsDir, "git-dist-linux", "git-dist-build-evidence.json"),
+      gitDistBuildEvidence({ target: "linux-x86_64" }),
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        summaryScriptPath,
+        `--artifacts-dir=${artifactsDir}`,
+        `--report-dir=${reportDir}`,
+        `--current-head-sha=${testCurrentHeadSha}`,
+        "--e2e-required-targets=linux-x86_64",
+        "--perf-required-targets=linux-x86_64",
+      ],
+      { encoding: "utf8" },
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    const summary = await readJson(
+      path.join(reportDir, "phase12-evidence-summary.json"),
+    );
+    const e2eTarget = summary.tasks.e2eFullChain.targets["linux-x86_64"];
+    const perfTarget = summary.tasks.performance.targets["linux-x86_64"];
+    assert.equal(e2eTarget.checkable, false);
+    assert.equal(perfTarget.checkable, true);
+    assert.match(
+      e2eTarget.reasons.join("\n"),
+      /E2E linux-x86_64 runtime evidence commit b{40} does not match current HEAD a{40}/,
+    );
+  } finally {
+    await rm(tmpDir, { force: true, recursive: true });
+  }
+});
+
+test("summary rejects git-dist build evidence from a stale commit", async () => {
+  const tmpDir = await mkdtemp(
+    path.join(os.tmpdir(), "ag-phase12-stale-git-dist-build-"),
+  );
+  const artifactsDir = path.join(tmpDir, "artifacts");
+  const reportDir = path.join(tmpDir, "summary");
+
+  try {
+    await writeJson(
+      path.join(artifactsDir, "e2e-linux", "runtime.json"),
+      e2eReport({
+        status: "pass",
+        target: "linux-x86_64",
+      }),
+    );
+    await writeJson(
+      path.join(artifactsDir, "perf-linux", "report.json"),
+      perfReport({
+        status: "pass",
+        target: "linux-x86_64",
+      }),
+    );
+    await writeJson(
+      path.join(artifactsDir, "git-dist-linux", "git-dist-build-evidence.json"),
+      gitDistBuildEvidence({
+        runCommitSha: testStaleHeadSha,
+        target: "linux-x86_64",
+      }),
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        summaryScriptPath,
+        `--artifacts-dir=${artifactsDir}`,
+        `--report-dir=${reportDir}`,
+        `--current-head-sha=${testCurrentHeadSha}`,
+        "--e2e-required-targets=linux-x86_64",
+        "--perf-required-targets=linux-x86_64",
+      ],
+      { encoding: "utf8" },
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    const summary = await readJson(
+      path.join(reportDir, "phase12-evidence-summary.json"),
+    );
+    const e2eTarget = summary.tasks.e2eFullChain.targets["linux-x86_64"];
+    const perfTarget = summary.tasks.performance.targets["linux-x86_64"];
+    const gitDistTarget = summary.gitDistribution.targets["linux-x86_64"];
+    assert.equal(e2eTarget.checkable, false);
+    assert.equal(perfTarget.checkable, false);
+    assert.equal(gitDistTarget.reusableArtifactCheckable, false);
+    assert.match(
+      e2eTarget.reasons.join("\n"),
+      /git-dist linux-x86_64 reusable build evidence is not checkable/,
+    );
+    assert.match(
+      perfTarget.reasons.join("\n"),
+      /git-dist linux-x86_64 reusable build evidence is not checkable/,
+    );
+    assert.match(
+      gitDistTarget.blockers.join("\n"),
+      /git-dist linux-x86_64 build evidence commit b{40} does not match current HEAD a{40}/,
     );
   } finally {
     await rm(tmpDir, { force: true, recursive: true });
@@ -569,6 +704,7 @@ test("summary selects the newest equal-score evidence candidate per target", asy
         summaryScriptPath,
         `--artifacts-dir=${artifactsDir}`,
         `--report-dir=${reportDir}`,
+        `--current-head-sha=${testCurrentHeadSha}`,
         "--e2e-required-targets=linux-x86_64",
         "--perf-required-targets=linux-x86_64",
       ],
@@ -605,7 +741,9 @@ function perfReport({
     commitCount: 10_000,
     fileCount: 50_000,
   },
+  repositoryHead = testCurrentHeadSha,
   runId = "28915237870",
+  sha = testCurrentHeadSha,
   source = "artifact",
   status,
   target,
@@ -617,6 +755,12 @@ function perfReport({
     generatedAt,
     status,
     result: status,
+    ci: sha ? { sha } : {},
+    environment: {
+      repository: {
+        head: repositoryHead,
+      },
+    },
     profileName: "heavy",
     heavy: true,
     profile,
@@ -639,6 +783,7 @@ function e2eReport({
   executableOverrides = {},
   generatedAt = "2026-07-09T00:00:00.000Z",
   runId = "28915237870",
+  sha = testCurrentHeadSha,
   source = "artifact",
   status,
   target,
@@ -651,6 +796,7 @@ function e2eReport({
     status,
     result: status,
     target,
+    ci: sha ? { sha } : {},
     availabilityReport: {
       status: pass ? "ready" : status,
     },
@@ -698,6 +844,7 @@ function executableEvidence(key, overrides = {}) {
 function gitDistBuildEvidence({
   blocked = false,
   generatedAt = "2026-07-09T00:00:00.000Z",
+  runCommitSha = testCurrentHeadSha,
   runId = "28915237870",
   sourceArchiveValidation = null,
   target,
@@ -708,6 +855,7 @@ function gitDistBuildEvidence({
       schemaVersion: 1,
       mode: "build",
       run: {
+        commitSha: runCommitSha,
         runId,
       },
       target: {

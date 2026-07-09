@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /* global console, process */
 
+import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -35,6 +36,11 @@ const perfRequiredTargets =
     : cli.requiredTargets.length > 0
       ? cli.requiredTargets
       : ["linux-x86_64", "macos-universal", "windows-x86_64"];
+const currentHeadSha = normalizeOptionalString(
+  cli.currentHeadSha ??
+    process.env.ARTISTIC_GIT_PHASE12_EVIDENCE_CURRENT_HEAD_SHA ??
+    resolveCurrentHeadSha(),
+);
 const reports = loadReports(artifactsDir);
 const e2eReports = reports.filter(
   (entry) => entry.content.kind === "phase12-e2e-full-chain-runtime",
@@ -86,6 +92,7 @@ const summary = {
     performance: perfRequiredTargets,
   },
   source: {
+    currentHeadSha,
     jsonFileCount: reports.length,
     e2eReportCount: e2eReports.length,
     perfReportCount: perfReports.length,
@@ -339,6 +346,11 @@ function validateGitDistBuildEvidence(report, target) {
       `workflowBuild.target.name is ${build?.target?.name ?? "missing"}, expected ${target}`,
     );
   }
+  validateFreshSha({
+    actualSha: build?.run?.commitSha,
+    evidenceKind: `git-dist ${target} build evidence`,
+    reasons,
+  });
   if (build?.mode !== "build") {
     reasons.push(`workflowBuild.mode is ${build?.mode ?? "missing"}`);
   }
@@ -478,6 +490,11 @@ function validateSourceArchiveValidation(evidence) {
 
 function validateE2eReport(report, target) {
   const reasons = [];
+  validateFreshSha({
+    actualSha: report.ci?.sha,
+    evidenceKind: `E2E ${target} runtime evidence`,
+    reasons,
+  });
   if (report.status !== "pass") {
     reasons.push(`status is ${report.status}`);
   }
@@ -506,6 +523,11 @@ function validateE2eReport(report, target) {
 function validatePerfReport(report, target) {
   const reasons = [];
   const requiredChecks = ["historyPagination", "largeStatus", "largeBinaryLfs"];
+  validateFreshSha({
+    actualSha: report.ci?.sha ?? report.environment?.repository?.head,
+    evidenceKind: `Performance ${target} runtime evidence`,
+    reasons,
+  });
   if (report.status !== "pass" || report.result !== "pass") {
     reasons.push(`status/result is ${report.status}/${report.result}`);
   }
@@ -627,6 +649,22 @@ function validateExecutableEvidence(report, reasons) {
   }
 }
 
+function validateFreshSha({ actualSha, evidenceKind, reasons }) {
+  if (!currentHeadSha) {
+    return;
+  }
+  const normalizedActual = normalizeOptionalString(actualSha);
+  if (!normalizedActual) {
+    reasons.push(`${evidenceKind} is missing commit SHA evidence`);
+    return;
+  }
+  if (!sameCommitSha(normalizedActual, currentHeadSha)) {
+    reasons.push(
+      `${evidenceKind} commit ${normalizedActual} does not match current HEAD ${currentHeadSha}`,
+    );
+  }
+}
+
 function mergeValidations(...validations) {
   const reasons = validations.flatMap((validation) => validation.reasons ?? []);
   if (reasons.length === 0) {
@@ -655,6 +693,29 @@ function normalizeComparable(value) {
     return null;
   }
   return String(value);
+}
+
+function normalizeOptionalString(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const normalized = String(value).trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function sameCommitSha(left, right) {
+  const normalizedLeft = left.toLowerCase();
+  const normalizedRight = right.toLowerCase();
+  if (normalizedLeft === normalizedRight) {
+    return true;
+  }
+  const minimumPrefixLength = 7;
+  return (
+    normalizedLeft.length >= minimumPrefixLength &&
+    normalizedRight.length >= minimumPrefixLength &&
+    (normalizedLeft.startsWith(normalizedRight) ||
+      normalizedRight.startsWith(normalizedLeft))
+  );
 }
 
 function validateHeavyProfileScale(report, reasons) {
@@ -767,6 +828,18 @@ function reportRunId(entry) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function resolveCurrentHeadSha() {
+  const result = spawnSync("git", ["rev-parse", "--verify", "HEAD"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    maxBuffer: 1024 * 1024,
+  });
+  if (result.status !== 0) {
+    return null;
+  }
+  return result.stdout.trim();
+}
+
 function renderMarkdown(value) {
   const lines = [
     "# Phase 12 Evidence Summary",
@@ -831,6 +904,7 @@ function renderMarkdown(value) {
 function parseArgs(args) {
   const parsed = {
     artifactsDir: null,
+    currentHeadSha: null,
     e2eRequiredTargets: [],
     perfRequiredTargets: [],
     reportDir: null,
@@ -842,6 +916,8 @@ function parseArgs(args) {
     }
     if (arg.startsWith("--artifacts-dir=")) {
       parsed.artifactsDir = arg.slice("--artifacts-dir=".length);
+    } else if (arg.startsWith("--current-head-sha=")) {
+      parsed.currentHeadSha = arg.slice("--current-head-sha=".length);
     } else if (arg.startsWith("--e2e-required-targets=")) {
       parsed.e2eRequiredTargets = parseTargetList(
         arg.slice("--e2e-required-targets=".length),

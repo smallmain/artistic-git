@@ -238,7 +238,10 @@ const rehearsal = {
         ).valid
       : false,
     workflowAttempt: process.env.ARTISTIC_GIT_RELEASE_WORKFLOW_ATTEMPT ?? null,
-    workflowSha: process.env.ARTISTIC_GIT_RELEASE_WORKFLOW_SHA ?? null,
+    workflowSha:
+      process.env.ARTISTIC_GIT_RELEASE_WORKFLOW_SHA ??
+      process.env.GITHUB_SHA ??
+      null,
     plannedVersion: process.env.ARTISTIC_GIT_RELEASE_PLAN_VERSION ?? null,
     plannedTag: process.env.ARTISTIC_GIT_RELEASE_PLAN_TAG ?? null,
     releaseModeReason: process.env.ARTISTIC_GIT_RELEASE_MODE_REASON ?? null,

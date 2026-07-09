@@ -30,6 +30,16 @@ test("dry-run checklist remains skipped and writes machine-readable evidence", a
   assert.match(result.stdout, /Status: skipped/);
 });
 
+test("dry-run checklist records GITHUB_SHA when workflow SHA is not provided", async () => {
+  const githubSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const result = await runChecklist({
+    GITHUB_SHA: githubSha,
+  });
+
+  assert.equal(result.status, 0);
+  assert.equal(result.report.ciDryRunArtifact.workflowSha, githubSha);
+});
+
 test("operator-confirmed mode blocks when required evidence is missing", async () => {
   const result = await runChecklist({
     ARTISTIC_GIT_RELEASE_REHEARSAL_DRY_RUN: "0",

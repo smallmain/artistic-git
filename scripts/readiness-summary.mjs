@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /* global console, process */
 
+import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -24,14 +25,23 @@ const reportDir = path.resolve(
     process.env.ARTISTIC_GIT_READINESS_REPORT_DIR ??
     path.join("artifacts", "readiness-summary"),
 );
+const expectedHead = resolveExpectedHead();
 
 const reports = loadReports(artifactsDirs.map((dir) => path.resolve(dir)));
-const phase12Summary = selectLatest((content) => {
-  return content.kind === "phase12-evidence-summary";
-});
+const phase12Summaries = reports.filter(
+  (entry) => entry.content.kind === "phase12-evidence-summary",
+);
+const phase12Summary = selectFreshest(
+  phase12Summaries,
+  phase12SummaryCommitSha,
+);
+const selectedPhase12Summary = phase12Summary
+  ? phase12SummaryEvidence(phase12Summary)
+  : null;
+const selectedPhase12Freshness = selectedPhase12Summary?.freshness ?? null;
 const releaseRehearsalReports = reports
   .filter((entry) => entry.content.kind === "release-rehearsal-checklist")
-  .sort(compareReportsByNewest);
+  .sort(compareReportsByFreshnessThenNewest(releaseRehearsalCommitSha));
 const releaseRehearsal = releaseRehearsalReports[0] ?? null;
 const opensshReport = selectLatest((content) => {
   return Boolean(content.opensshRelease);
@@ -70,8 +80,11 @@ const summary = {
   artifactsDirs: artifactsDirs.map((dir) => path.resolve(dir)),
   overallStatus: remainingBlockers.length === 0 ? "ready" : "blocked",
   source: {
+    expectedHeadSha: expectedHead.sha,
+    expectedHeadShaSource: expectedHead.source,
     jsonFileCount: reports.length,
     phase12SummaryPath: phase12Summary?.filePath ?? null,
+    selectedPhase12Summary,
     releaseRehearsalPath: releaseRehearsal?.filePath ?? null,
     releaseRehearsalCandidateCount: releaseRehearsalCandidates.length,
     selectedReleaseRehearsal: releaseRehearsalCandidates[0] ?? null,
@@ -102,7 +115,17 @@ console.log(
 );
 
 function evaluateOpenSshGate() {
+  const freshnessBlocker = phase12FreshnessBlocker({
+    id: "win32-openssh-gate",
+    title: "Win32-OpenSSH release gate",
+    nextAction:
+      "Regenerate phase12-evidence-summary for the current HEAD before using Windows git-dist readiness.",
+    target: "windows-x86_64",
+  });
   const windowsTarget = gitDistTarget("windows-x86_64");
+  if (freshnessBlocker && windowsTarget) {
+    return freshnessBlocker;
+  }
   if (windowsTarget?.reusableArtifactCheckable === true) {
     return readyItem({
       id: "win32-openssh-gate",
@@ -164,6 +187,16 @@ function evaluateOpenSshGate() {
 }
 
 function evaluateWindowsGitDist() {
+  const freshnessBlocker = phase12FreshnessBlocker({
+    id: "windows-git-dist",
+    title: "Windows reusable git distribution",
+    nextAction:
+      "Regenerate phase12-evidence-summary for the current HEAD, then re-check Windows reusable git-dist evidence.",
+    target: "windows-x86_64",
+  });
+  if (freshnessBlocker) {
+    return freshnessBlocker;
+  }
   const target = gitDistTarget("windows-x86_64");
   if (target?.reusableArtifactCheckable === true) {
     return readyItem({
@@ -194,6 +227,15 @@ function evaluateWindowsGitDist() {
 }
 
 function evaluateGitLfsDistribution() {
+  const freshnessBlocker = phase12FreshnessBlocker({
+    id: "git-lfs-distribution",
+    title: "Three-platform git-lfs distribution",
+    nextAction:
+      "Regenerate phase12-evidence-summary for the current HEAD, then re-check all git-lfs distribution targets.",
+  });
+  if (freshnessBlocker) {
+    return freshnessBlocker;
+  }
   const targets = ["macos-universal", "linux-x86_64", "windows-x86_64"].map(
     (target) => [target, gitDistTarget(target)],
   );
@@ -228,6 +270,16 @@ function evaluateGitLfsDistribution() {
 }
 
 function evaluateDevResourcesScript() {
+  const freshnessBlocker = phase12FreshnessBlocker({
+    id: "dev-resources-script",
+    title: "Local dev resources script",
+    nextAction:
+      "Regenerate phase12-evidence-summary for the current HEAD before using it to validate local dev resources.",
+    target: "windows-x86_64",
+  });
+  if (freshnessBlocker) {
+    return freshnessBlocker;
+  }
   const windows = gitDistTarget("windows-x86_64");
   if (windows?.reusableArtifactCheckable === true) {
     return readyItem({
@@ -259,6 +311,14 @@ function evaluateDevResourcesScript() {
 }
 
 function evaluatePhase12Task({ id, nextAction, taskKey, title }) {
+  const freshnessBlocker = phase12FreshnessBlocker({
+    id,
+    title,
+    nextAction,
+  });
+  if (freshnessBlocker) {
+    return freshnessBlocker;
+  }
   const task = phase12Summary?.content.tasks?.[taskKey];
   if (task?.checkable === true) {
     return readyItem({
@@ -295,7 +355,30 @@ function evaluatePhase12Task({ id, nextAction, taskKey, title }) {
 
 function evaluateReleaseRehearsal() {
   const rehearsal = releaseRehearsal?.content;
+  const freshness = releaseRehearsal
+    ? evidenceFreshness(releaseRehearsalCommitSha(rehearsal))
+    : null;
   if (rehearsal?.status === "pass") {
+    if (isBlockingFreshness(freshness)) {
+      return blockedItem({
+        id: "release-rehearsal",
+        title: "0.1.0 release rehearsal",
+        evidencePath: releaseRehearsal.filePath,
+        details: {
+          status: rehearsal.status,
+          release: rehearsal.release,
+          taskCheckbox: rehearsal.taskCheckbox,
+          freshness,
+        },
+        blocker: {
+          category: freshnessCategory(freshness),
+          message: freshnessMessage("Release rehearsal evidence", freshness),
+          nextAction:
+            "Run the protected Release workflow for the current HEAD and attach that release rehearsal evidence.",
+          sourceKind: "release-rehearsal-checklist",
+        },
+      });
+    }
     return readyItem({
       id: "release-rehearsal",
       title: "0.1.0 release rehearsal",
@@ -304,6 +387,7 @@ function evaluateReleaseRehearsal() {
         status: rehearsal.status,
         release: rehearsal.release,
         taskCheckbox: rehearsal.taskCheckbox,
+        freshness,
       },
     });
   }
@@ -318,6 +402,7 @@ function evaluateReleaseRehearsal() {
           missingEvidence: rehearsal.missingEvidence ?? [],
           missingSecrets: rehearsal.missingSecrets ?? [],
           taskCheckbox: rehearsal.taskCheckbox,
+          freshness,
         }
       : null,
     blocker: {
@@ -342,11 +427,37 @@ function evaluateReleaseRehearsal() {
   });
 }
 
+function phase12FreshnessBlocker({ id, nextAction, target = null, title }) {
+  if (!phase12Summary || !isBlockingFreshness(selectedPhase12Freshness)) {
+    return null;
+  }
+  return blockedItem({
+    id,
+    title,
+    evidencePath: phase12Summary.filePath,
+    details: {
+      phase12Summary: selectedPhase12Summary,
+      freshness: selectedPhase12Freshness,
+    },
+    blocker: {
+      category: freshnessCategory(selectedPhase12Freshness),
+      message: freshnessMessage(
+        "Phase 12 evidence summary",
+        selectedPhase12Freshness,
+      ),
+      nextAction,
+      sourceKind: "phase12-evidence-summary",
+      target,
+    },
+  });
+}
+
 function gitDistTarget(targetName) {
   const fromSummary = gitDistribution?.targets?.[targetName];
   if (fromSummary) {
     return {
       ...fromSummary,
+      freshness: selectedPhase12Freshness,
       evidencePath:
         fromSummary.buildEvidencePath ??
         fromSummary.blockerEvidencePath ??
@@ -361,27 +472,37 @@ function gitDistTarget(targetName) {
   if (build) {
     const workflowBuild = build.content.workflowBuild;
     const sourceArchive = workflowBuild.sourceArchiveValidation ?? null;
+    const freshness = evidenceFreshness(workflowBuild.run?.commitSha);
+    const freshnessBlockers = isBlockingFreshness(freshness)
+      ? [freshnessMessage(`git-dist ${targetName} build evidence`, freshness)]
+      : [];
+    const reusableArtifactProduced =
+      workflowBuild.validationSummary?.reusableArtifactProduced === true;
     return {
       status:
-        workflowBuild.validationSummary?.reusableArtifactProduced === true
+        reusableArtifactProduced && freshnessBlockers.length === 0
           ? "reusable-ready"
           : sourceArchive
             ? "source-partial"
             : (workflowBuild.target?.status ?? "blocked"),
       reusableArtifactCheckable:
-        workflowBuild.validationSummary?.reusableArtifactProduced === true,
+        reusableArtifactProduced && freshnessBlockers.length === 0,
       sourceArchiveCheckable: Boolean(sourceArchive?.summary?.checked),
       buildEvidencePath: build.filePath,
       blockerEvidencePath:
         workflowBuild.target?.blocked === true ? build.filePath : null,
       evidencePath: build.filePath,
-      blockers: Array.isArray(workflowBuild.target?.blockers)
-        ? workflowBuild.target.blockers.map((blocker) =>
-            blocker.reason
-              ? `${blocker.component}: ${blocker.reason}`
-              : String(blocker),
-          )
-        : [],
+      blockers: [
+        ...(Array.isArray(workflowBuild.target?.blockers)
+          ? workflowBuild.target.blockers.map((blocker) =>
+              blocker.reason
+                ? `${blocker.component}: ${blocker.reason}`
+                : String(blocker),
+            )
+          : []),
+        ...freshnessBlockers,
+      ],
+      freshness,
       runId: workflowBuild.run?.runId ?? null,
       artifactName: workflowBuild.target?.artifactName ?? null,
     };
@@ -463,6 +584,22 @@ function selectLatest(predicate) {
     .sort(compareReportsByNewest)[0];
 }
 
+function selectFreshest(entries, shaSelector) {
+  return [...entries].sort(compareReportsByFreshnessThenNewest(shaSelector))[0];
+}
+
+function compareReportsByFreshnessThenNewest(shaSelector) {
+  return (left, right) => {
+    const freshnessDelta =
+      freshnessRank(evidenceFreshness(shaSelector(right.content))) -
+      freshnessRank(evidenceFreshness(shaSelector(left.content)));
+    if (freshnessDelta !== 0) {
+      return freshnessDelta;
+    }
+    return compareReportsByNewest(left, right);
+  };
+}
+
 function compareReportsByNewest(left, right) {
   const timeDelta = reportTime(right) - reportTime(left);
   if (timeDelta !== 0) {
@@ -479,9 +616,22 @@ function reportTime(entry) {
   return entry.mtimeMs;
 }
 
+function phase12SummaryEvidence(entry) {
+  const content = entry.content;
+  const sha = phase12SummaryCommitSha(content);
+  return {
+    filePath: entry.filePath,
+    generatedAt: content.generatedAt ?? null,
+    status: content.overallStatus ?? null,
+    currentHeadSha: sha,
+    freshness: evidenceFreshness(sha),
+  };
+}
+
 function releaseRehearsalEvidence(entry) {
   const content = entry.content;
   const dryRunArtifact = content.ciDryRunArtifact ?? {};
+  const workflowSha = releaseRehearsalCommitSha(content);
   return {
     filePath: entry.filePath,
     generatedAt: content.generatedAt ?? null,
@@ -494,11 +644,148 @@ function releaseRehearsalEvidence(entry) {
     workflowRunUrl: dryRunArtifact.workflowRunUrl ?? null,
     workflowRunUrlValid: dryRunArtifact.workflowRunUrlValid ?? null,
     workflowAttempt: dryRunArtifact.workflowAttempt ?? null,
-    workflowSha: dryRunArtifact.workflowSha ?? null,
+    workflowSha,
+    freshness: evidenceFreshness(workflowSha),
     plannedVersion: dryRunArtifact.plannedVersion ?? null,
     plannedTag: dryRunArtifact.plannedTag ?? null,
     releaseModeReason: dryRunArtifact.releaseModeReason ?? null,
   };
+}
+
+function phase12SummaryCommitSha(content) {
+  return normalizeOptionalString(
+    content.source?.currentHeadSha ??
+      content.source?.workflowSha ??
+      content.provenance?.workflowSha,
+  );
+}
+
+function releaseRehearsalCommitSha(content) {
+  return normalizeOptionalString(content.ciDryRunArtifact?.workflowSha);
+}
+
+function evidenceFreshness(actualSha) {
+  const normalizedActual = normalizeOptionalString(actualSha);
+  if (!expectedHead.sha) {
+    return {
+      status: "unknown-expected-head",
+      expectedSha: null,
+      actualSha: normalizedActual,
+    };
+  }
+  if (!normalizedActual) {
+    return {
+      status: "missing-provenance",
+      expectedSha: expectedHead.sha,
+      actualSha: null,
+    };
+  }
+  if (sameCommitSha(normalizedActual, expectedHead.sha)) {
+    return {
+      status: "current",
+      expectedSha: expectedHead.sha,
+      actualSha: normalizedActual,
+    };
+  }
+  return {
+    status: "stale",
+    expectedSha: expectedHead.sha,
+    actualSha: normalizedActual,
+  };
+}
+
+function freshnessRank(freshness) {
+  switch (freshness?.status) {
+    case "current":
+      return 3;
+    case "unknown-expected-head":
+      return 2;
+    case "stale":
+      return 1;
+    case "missing-provenance":
+      return 0;
+    default:
+      return -1;
+  }
+}
+
+function isBlockingFreshness(freshness) {
+  return (
+    freshness &&
+    freshness.status !== "current" &&
+    freshness.status !== "unknown-expected-head"
+  );
+}
+
+function freshnessCategory(freshness) {
+  if (freshness?.status === "stale") {
+    return "stale-evidence";
+  }
+  if (freshness?.status === "missing-provenance") {
+    return "missing-provenance";
+  }
+  return freshness?.status ?? "missing-provenance";
+}
+
+function freshnessMessage(label, freshness) {
+  if (freshness?.status === "missing-provenance") {
+    return `${label} is missing commit SHA provenance for current HEAD ${freshness.expectedSha}.`;
+  }
+  if (freshness?.status === "stale") {
+    return `${label} commit ${freshness.actualSha} does not match current HEAD ${freshness.expectedSha}.`;
+  }
+  return `${label} freshness is ${freshness?.status ?? "unknown"}.`;
+}
+
+function normalizeOptionalString(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const normalized = String(value).trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function sameCommitSha(left, right) {
+  const normalizedLeft = left.toLowerCase();
+  const normalizedRight = right.toLowerCase();
+  return normalizedLeft === normalizedRight;
+}
+
+function resolveExpectedHead() {
+  const cliSha = normalizeOptionalString(cli.expectedHeadSha);
+  if (cliSha) {
+    return { sha: cliSha, source: "cli" };
+  }
+  const envSha = normalizeOptionalString(
+    process.env.ARTISTIC_GIT_READINESS_EXPECTED_HEAD_SHA,
+  );
+  if (envSha) {
+    return {
+      sha: envSha,
+      source: "ARTISTIC_GIT_READINESS_EXPECTED_HEAD_SHA",
+    };
+  }
+  const githubSha = normalizeOptionalString(process.env.GITHUB_SHA);
+  if (githubSha) {
+    return { sha: githubSha, source: "GITHUB_SHA" };
+  }
+  const gitSha = resolveCurrentHeadSha();
+  if (gitSha) {
+    return { sha: gitSha, source: "git" };
+  }
+  return { sha: null, source: "unresolved" };
+}
+
+function resolveCurrentHeadSha() {
+  const result = spawnSync("git", ["rev-parse", "--verify", "HEAD"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    maxBuffer: 1024 * 1024,
+  });
+  if (result.status !== 0) {
+    return null;
+  }
+  return normalizeOptionalString(result.stdout);
 }
 
 function loadReports(rootDirs) {
@@ -572,6 +859,7 @@ function renderMarkdown(value) {
 function parseArgs(args) {
   const parsed = {
     artifactsDirs: [],
+    expectedHeadSha: null,
     reportDir: null,
   };
   for (const arg of args) {
@@ -580,6 +868,8 @@ function parseArgs(args) {
     }
     if (arg.startsWith("--artifacts-dir=")) {
       parsed.artifactsDirs.push(arg.slice("--artifacts-dir=".length));
+    } else if (arg.startsWith("--expected-head-sha=")) {
+      parsed.expectedHeadSha = arg.slice("--expected-head-sha=".length);
     } else if (arg.startsWith("--report-dir=")) {
       parsed.reportDir = arg.slice("--report-dir=".length);
     } else {
