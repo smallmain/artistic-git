@@ -58,7 +58,7 @@
   - 有远程但某分支无上游（仅本地分支）：该分支的提交/撤回跳过前置同步；“立即推送”勾选含义 = `git push -u origin <分支>` 首次发布该分支；分支级同步按钮 = 发布分支（拉取侧为空集，与“同步始终双向”自洽）；项目级批量同步不自动发布仅本地分支（避免误发布私人实验分支）。
 - 认证：同时支持 SSH 和 HTTPS 两种远程认证方式，克隆输入框同时接受两种地址，不做转换。
   - SSH：host key 校验使用 `accept-new` 策略（首次连接自动信任，后续指纹变更则报错），避免交互式确认卡死流程。
-    - ssh 二进制来源（按平台）：Windows 捆绑**钉死版本的 Win32-OpenSSH 官方发行包**（MinGit 不含 ssh；随 resources 分发并校验 SHA-256，不依赖系统自带 OpenSSH 以免版本浮动）；macOS 13+ / Linux 用**系统 ssh**（这两平台自带现代 OpenSSH，且密钥本就放 `~/.ssh` 与系统生态互通）。统一通过 `-c core.sshCommand="<ssh 路径> -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=~/.ssh/known_hosts"` 注入，不落盘。
+    - ssh 二进制来源（按平台）：Windows 捆绑**钉死版本的 Win32-OpenSSH 官方发行包**（MinGit 不含 ssh；随 resources 分发并校验 SHA-256，不依赖系统自带 OpenSSH 以免版本浮动）；Win32-OpenSSH 版本选择规则为**优先官方 stable `OpenSSH-Win64.zip`，若官方没有 stable Win64 包则允许钉死最新官方 preview 包作为显式 fallback，且一旦 stable 出现 CI gate 必须失败并要求切回 stable**；macOS 13+ / Linux 用**系统 ssh**（这两平台自带现代 OpenSSH，且密钥本就放 `~/.ssh` 与系统生态互通）。统一通过 `-c core.sshCommand="<ssh 路径> -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=~/.ssh/known_hosts"` 注入，不落盘。
     - 密码短语（passphrase）：注入极小的 `SSH_ASKPASS` 帮助程序 + `SSH_ASKPASS_REQUIRE=force`，ssh 需要密码短语时经本地 IPC 回调主进程弹出输入框，彻底不依赖 TTY、永不卡死；用户首次输入后主进程在内存缓存，后续操作（含定时 Fetch）静默返回、不再打扰；不自主管理 ssh-agent（若系统已把密钥加载进 agent，ssh 优先用 agent、askpass 不触发）。
     - 后台绝不弹框：定时 Fetch 等后台只读操作标记为 `non-interactive`，需要密码短语而内存无缓存时直接归入“可预期认证/网络失败”走离线图标，仅用户主动发起的操作才允许 askpass 弹框。
     - 跨会话记忆（可选）：提供“记住密码短语”开关，勾选后存入系统钥匙串（与 HTTPS 凭据同一套存储）；默认关闭。

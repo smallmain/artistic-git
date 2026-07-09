@@ -3,14 +3,16 @@
 # This file is the single source of truth for the embedded Git, Git LFS, and
 # Windows OpenSSH distribution. Schema-only checks may keep documented
 # placeholders, but real build/fetch/package mode must reject every placeholder
-# pin and every non-stable source.
+# pin and every unapproved non-stable source. Win32-OpenSSH is stable-first:
+# select a stable official package when available; if none exists, an explicitly
+# approved latest preview fallback may be used with pinned SHA-256 evidence.
 
 schema_version = 1
 
 [meta]
 last_verified = "2026-07-09"
 version_source_policy = "official release pages or official source mirrors only"
-notes = "Win32-OpenSSH currently has no modern stable GitHub release; GitHub API metadata scan reports 10.0.0.0p2-Preview as latest and zero stable OpenSSH-Win64.zip releases, so it remains a rejected placeholder."
+notes = "Win32-OpenSSH follows a stable-first policy. GitHub API metadata scan reports 10.0.0.0p2-Preview as latest and zero stable OpenSSH-Win64.zip releases, so this pin is an explicit preview fallback until a stable official package appears."
 
 [versions]
 git = "2.55.0"
@@ -23,7 +25,8 @@ helper = "0.1.0"
 [validation]
 schema_only_allows_placeholders = true
 real_build_rejects_placeholders = true
-real_build_rejects_non_stable_sources = true
+real_build_rejects_unapproved_non_stable_sources = true
+preview_fallback_requires_no_stable_release = true
 checksum_algorithm = "sha256"
 zero_sha256_is_placeholder = true
 allow_system_git_fallback = false
@@ -127,8 +130,9 @@ checksum.algorithm = "sha256"
 checksum.value = "23f50f3458c4c5d0b12217c6a5ddfde0137210a30fa870e98b29827f7b43aba5"
 checksum.source = "github-release-asset-digest"
 checksum.url = "https://github.com/PowerShell/Win32-OpenSSH/releases/tag/10.0.0.0p2-Preview"
-placeholder = true
-placeholder_reason = "Official release metadata scan reports 10.0.0.0p2-Preview as latest, with preview/non-production ready release notes even though GitHub prerelease=false; no stable OpenSSH-Win64.zip Win32-OpenSSH GitHub release was found on 2026-07-09."
+placeholder = false
+fallback_when_no_stable = true
+fallback_reason = "Stable-first exception: official release metadata scan reports 10.0.0.0p2-Preview as latest, with preview/non-production ready release notes even though GitHub prerelease=false; no stable OpenSSH-Win64.zip Win32-OpenSSH GitHub release was found on 2026-07-09."
 resources_path = "openssh/"
 
 [sources.macos.universal.git]
@@ -248,4 +252,4 @@ source_ref = "sources.windows.x86_64.win32_openssh"
 strategy = "download-official-release"
 windows_only = true
 install_root = "openssh/"
-blocked_until = "official stable Win32-OpenSSH release is selected or risk exception is documented outside placeholder mode"
+fallback_policy = "prefer official stable OpenSSH-Win64.zip; when none exists, use the pinned latest official preview package and fail the release gate as soon as a stable package appears"

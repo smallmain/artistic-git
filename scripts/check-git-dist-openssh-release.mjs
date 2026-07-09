@@ -10,12 +10,14 @@ const maxReleasePages = 10;
 const args = parseArgs(process.argv.slice(2));
 
 const usage = `Usage:
-  node scripts/check-git-dist-openssh-release.mjs --expect-no-stable-release
-  node scripts/check-git-dist-openssh-release.mjs --expect-no-stable-release --metadata=/path/to/releases.json
+  node scripts/check-git-dist-openssh-release.mjs --verify-preferred-release-policy
+  node scripts/check-git-dist-openssh-release.mjs --verify-preferred-release-policy --metadata=/path/to/releases.json
 
 Checks GitHub release metadata for Win32-OpenSSH releases. Tags, names, or
 release notes containing Preview/Beta/RC/Alpha are treated as non-stable even
-when the GitHub prerelease flag is false.`;
+when the GitHub prerelease flag is false. The selected policy is: use a stable
+OpenSSH-Win64.zip release when one exists; otherwise accept the latest preview
+OpenSSH-Win64.zip release as an explicit fallback.`;
 
 if (args.help) {
   console.log(usage);
@@ -32,9 +34,9 @@ function fail(message) {
 }
 
 async function run() {
-  if (!args.expectNoStableRelease) {
+  if (!args.verifyPreferredReleasePolicy) {
     fail(
-      "--expect-no-stable-release is required until the Windows pin is resolved.",
+      "--verify-preferred-release-policy is required to confirm the stable-first preview fallback rule.",
     );
   }
 
@@ -55,7 +57,7 @@ async function run() {
       .map((entry) => releaseLabel(entry.release))
       .join(", ");
     fail(
-      `found stable Win32-OpenSSH release(s) with ${args.asset}: ${stableLabels}. Update git-dist.toml, remove the placeholder gate, and run real artifact validation before checking Windows/three-platform 1A items.`,
+      `found stable Win32-OpenSSH release(s) with ${args.asset}: ${stableLabels}. Update git-dist.toml to the stable release, remove preview fallback metadata, and run real artifact validation before checking Windows/three-platform 1A items.`,
     );
   }
 
@@ -64,12 +66,24 @@ async function run() {
       ? `contains ${args.asset}`
       : `does not contain ${args.asset}`;
     fail(
-      `latest Win32-OpenSSH release appears stable (${label}, published ${latest.published_at}) and ${assetNote}. Update git-dist.toml, remove the placeholder gate, and run real artifact validation before checking Windows/three-platform 1A items.`,
+      `latest Win32-OpenSSH release appears stable (${label}, published ${latest.published_at}) and ${assetNote}. Update git-dist.toml to the stable release, remove preview fallback metadata, and run real artifact validation before checking Windows/three-platform 1A items.`,
+    );
+  }
+
+  if (stability.channel !== "preview") {
+    fail(
+      `latest Win32-OpenSSH release is non-stable but not an accepted preview fallback (${label}, published ${latest.published_at}; reason: ${stability.reason}; scanned ${releaseScan.checkedReleaseCount} non-draft releases, stable ${args.asset} releases=0).`,
+    );
+  }
+
+  if (!stability.hasRequiredAsset) {
+    fail(
+      `latest Win32-OpenSSH preview fallback does not contain ${args.asset} (${label}, published ${latest.published_at}; scanned ${releaseScan.checkedReleaseCount} non-draft releases, stable ${args.asset} releases=0).`,
     );
   }
 
   info(
-    `latest release remains non-stable (${label}, published ${latest.published_at}; reason: ${stability.reason}; scanned ${releaseScan.checkedReleaseCount} non-draft releases, stable ${args.asset} releases=0). Windows git-dist stays placeholder-blocked.`,
+    `no stable ${args.asset} release was found; latest preview fallback is accepted (${label}, published ${latest.published_at}; reason: ${stability.reason}; scanned ${releaseScan.checkedReleaseCount} non-draft releases, stable ${args.asset} releases=0).`,
   );
 }
 
@@ -144,6 +158,11 @@ function scanReleases(releases, requiredAssetName) {
     stableWithRequiredAsset: checked.filter(
       (entry) => entry.stability.stable && entry.stability.hasRequiredAsset,
     ),
+    previewWithRequiredAsset: checked.filter(
+      (entry) =>
+        entry.stability.channel === "preview" &&
+        entry.stability.hasRequiredAsset,
+    ),
   };
 }
 
@@ -151,6 +170,7 @@ function classifyRelease(release, requiredAssetName) {
   if (release.prerelease === true) {
     return {
       stable: false,
+      channel: "prerelease",
       reason: "github-prerelease=true",
       hasRequiredAsset: hasAsset(release, requiredAssetName),
     };
@@ -162,6 +182,7 @@ function classifyRelease(release, requiredAssetName) {
   if (channel) {
     return {
       stable: false,
+      channel: channel.toLowerCase(),
       reason: `${channel.toLowerCase()} label`,
       hasRequiredAsset: hasAsset(release, requiredAssetName),
     };
@@ -171,6 +192,7 @@ function classifyRelease(release, requiredAssetName) {
   if (bodyChannel) {
     return {
       stable: false,
+      channel: bodyChannel.toLowerCase(),
       reason: `${bodyChannel.toLowerCase()} release notes`,
       hasRequiredAsset: hasAsset(release, requiredAssetName),
     };
@@ -179,6 +201,7 @@ function classifyRelease(release, requiredAssetName) {
   if (/\bnon[- ]production ready\b/i.test(body)) {
     return {
       stable: false,
+      channel: "non-production",
       reason: "release notes say non-production ready",
       hasRequiredAsset: hasAsset(release, requiredAssetName),
     };
@@ -186,6 +209,7 @@ function classifyRelease(release, requiredAssetName) {
 
   return {
     stable: true,
+    channel: "stable",
     reason: "no prerelease/channel marker",
     hasRequiredAsset: hasAsset(release, requiredAssetName),
   };
@@ -205,7 +229,7 @@ function hasAsset(release, requiredAssetName) {
 function parseArgs(argv) {
   const parsed = {
     help: false,
-    expectNoStableRelease: false,
+    verifyPreferredReleasePolicy: false,
     metadata: undefined,
     repo: defaultRepo,
     asset: defaultAsset,
@@ -215,8 +239,11 @@ function parseArgs(argv) {
   for (const arg of argv) {
     if (arg === "--help" || arg === "-h") {
       parsed.help = true;
-    } else if (arg === "--expect-no-stable-release") {
-      parsed.expectNoStableRelease = true;
+    } else if (
+      arg === "--verify-preferred-release-policy" ||
+      arg === "--expect-no-stable-release"
+    ) {
+      parsed.verifyPreferredReleasePolicy = true;
     } else if (arg.startsWith("--metadata=")) {
       parsed.metadata = arg.slice("--metadata=".length);
     } else if (arg.startsWith("--repo=")) {

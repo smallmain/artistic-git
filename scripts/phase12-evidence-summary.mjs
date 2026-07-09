@@ -426,6 +426,10 @@ function sourceArchiveValidationFromStandalone(evidence) {
           status: source.status,
           stable: source.stable,
           placeholder: source.placeholder,
+          channel: source.channel ?? null,
+          fallbackWhenNoStable: source.fallbackWhenNoStable === true,
+          fallbackReason: source.fallbackReason ?? null,
+          releaseReady: source.releaseReady === true,
           reason: source.reason,
           expectedSha256: source.checksum?.expectedSha256 ?? null,
           actualSha256: source.actualSha256 ?? null,
@@ -451,7 +455,7 @@ function validateSourceArchiveValidation(evidence) {
     typeof evidence.summary?.checked !== "number" ||
     evidence.summary.checked < 1
   ) {
-    reasons.push("source archive evidence checked no stable sources");
+    reasons.push("source archive evidence checked no release-ready sources");
   }
   if (!Array.isArray(evidence.sources)) {
     reasons.push("source archive evidence sources are missing");
@@ -459,8 +463,10 @@ function validateSourceArchiveValidation(evidence) {
     for (const source of evidence.sources) {
       if (source.status === "checked") {
         checkedComponents.push(source.component);
-        if (!source.stable || source.placeholder) {
-          reasons.push(`${source.component} checked source is not stable`);
+        if (!sourceIsReleaseReady(source)) {
+          reasons.push(
+            `${source.component} checked source is not release-ready`,
+          );
         }
         if (
           !source.expectedSha256 ||
@@ -486,6 +492,15 @@ function validateSourceArchiveValidation(evidence) {
     checkedComponents,
     blockedComponents,
   };
+}
+
+function sourceIsReleaseReady(source) {
+  return (
+    source.placeholder !== true &&
+    (source.stable === true ||
+      (source.channel === "preview" && source.fallbackWhenNoStable === true) ||
+      source.releaseReady === true)
+  );
 }
 
 function validateE2eReport(report, target) {

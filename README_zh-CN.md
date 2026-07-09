@@ -59,10 +59,10 @@ Git 仓库。当前版本钉死、CI artifact/cache 策略与构建限制见
 真实 Git Tauri E2E 的环境准备与 skipped/failed 报告语义见
 [docs/e2e-real-git.md](docs/e2e-real-git.md)。
 
-在 Win32-OpenSSH 仍是记录明确的 preview 占位源期间，
-`pnpm git-dist:check:real` 只有在确认 real build 模式会拒绝该占位源时才通过。
-真正的下载、构建与打包任务仍会阻断，直到替换为稳定官方包，或在占位模式之外记录
-单独的发布风险例外。
+Win32-OpenSSH 采用 stable 优先规则：有官方稳定 `OpenSSH-Win64.zip` 时必须选
+stable；没有 stable 时，允许使用钉死 SHA-256 的最新官方 preview 包作为显式
+fallback。`pnpm git-dist:check:real` 会校验每个 git-dist 源都是 stable 或已批准
+fallback。
 
 ## 发布基线
 

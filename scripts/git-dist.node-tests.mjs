@@ -23,6 +23,7 @@ import {
   loadGitDistConfig,
   repoRoot,
   sha256File,
+  sourceIsReleaseReady,
   sourceStagingDirectory,
   validateGitDistConfig,
 } from "./git-dist-lib.mjs";
@@ -537,47 +538,27 @@ test("git-dist validation executes embedded Git runtime smoke checks", async () 
   );
 });
 
-test("real Windows fetch still rejects the Win32-OpenSSH placeholder before download", async () => {
+test("real Windows source policy accepts the Win32-OpenSSH preview fallback", async () => {
   const config = await loadConfig();
-  assert.throws(
-    () =>
-      validateGitDistConfig(config, {
-        targetName: windowsTarget,
-        realBuild: true,
-        allowPlaceholders: false,
-      }),
-    (error) =>
-      error.details?.some((detail) =>
-        detail.startsWith("real build mode rejects placeholder pins:"),
-      ),
+  assert.doesNotThrow(() =>
+    validateGitDistConfig(config, {
+      targetName: windowsTarget,
+      realBuild: true,
+      allowPlaceholders: false,
+    }),
   );
 
-  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-git-dist-"));
-  try {
-    const result = spawnSync(
-      process.execPath,
-      [
-        "scripts/fetch-git-dist.mjs",
-        `--target=${windowsTarget}`,
-        `--output=${path.join(tmpDir, "git-dist")}`,
-        `--cache-dir=${path.join(tmpDir, "cache")}`,
-        `--staging-dir=${path.join(tmpDir, "staging")}`,
-      ],
-      {
-        cwd: repoRoot,
-        encoding: "utf8",
-      },
-    );
-
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /real build mode rejects placeholder pins/);
-    assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /downloading/);
-  } finally {
-    await rm(tmpDir, { recursive: true, force: true });
-  }
+  const opensshSource = getTargetSources(config, windowsTarget).find(
+    ({ source }) => source.component === "win32_openssh",
+  ).source;
+  assert.equal(opensshSource.stable, false);
+  assert.equal(opensshSource.placeholder, false);
+  assert.equal(opensshSource.channel, "preview");
+  assert.equal(opensshSource.fallback_when_no_stable, true);
+  assert.equal(sourceIsReleaseReady(opensshSource), true);
 });
 
-test("source evidence mode checks available Windows archives while skipping OpenSSH", async () => {
+test("source evidence mode checks selected Windows archives while leaving OpenSSH unselected", async () => {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-git-dist-"));
   const gitContent = Buffer.from("mingit fixture archive\n");
   const gitLfsContent = Buffer.from("git-lfs fixture archive\n");
@@ -622,9 +603,10 @@ test("source evidence mode checks available Windows archives while skipping Open
       ),
     );
     assert.equal(evidence.target.name, windowsTarget);
-    assert.equal(evidence.status, "partial");
+    assert.equal(evidence.status, "passed");
     assert.equal(evidence.summary.checked, 2);
-    assert.equal(evidence.summary.skippedBlocked, 1);
+    assert.equal(evidence.summary.skippedBlocked, 0);
+    assert.equal(evidence.summary.skippedUnselected, 1);
     assert.deepEqual(
       evidence.sources
         .filter((source) => source.status === "checked")
@@ -635,7 +617,7 @@ test("source evidence mode checks available Windows archives while skipping Open
     assert.equal(
       evidence.sources.find((source) => source.component === "win32_openssh")
         ?.status,
-      "skipped-blocked",
+      "skipped-unselected",
     );
     for (const source of evidence.sources.filter(
       (entry) => entry.status === "checked",
@@ -735,7 +717,7 @@ test("dev resources mode rejects partial or redirected output modes", () => {
   }
 });
 
-test("Win32-OpenSSH release gate treats Preview tags as non-stable even when GitHub prerelease is false", async () => {
+test("Win32-OpenSSH release gate accepts latest Preview fallback when no stable asset exists", async () => {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-git-dist-"));
   try {
     const metadataPath = path.join(tmpDir, "openssh-releases.json");
@@ -757,7 +739,7 @@ test("Win32-OpenSSH release gate treats Preview tags as non-stable even when Git
       process.execPath,
       [
         opensshReleaseCheckPath,
-        "--expect-no-stable-release",
+        "--verify-preferred-release-policy",
         `--metadata=${metadataPath}`,
       ],
       {
@@ -767,14 +749,14 @@ test("Win32-OpenSSH release gate treats Preview tags as non-stable even when Git
     );
 
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.match(result.stdout, /latest release remains non-stable/);
+    assert.match(result.stdout, /latest preview fallback is accepted/);
     assert.match(result.stdout, /preview label/);
   } finally {
     await rm(tmpDir, { recursive: true, force: true });
   }
 });
 
-test("Win32-OpenSSH release gate treats non-production release notes as non-stable", async () => {
+test("Win32-OpenSSH release gate accepts preview release notes as fallback", async () => {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-git-dist-"));
   try {
     const metadataPath = path.join(tmpDir, "openssh-releases.json");
@@ -797,7 +779,7 @@ test("Win32-OpenSSH release gate treats non-production release notes as non-stab
       process.execPath,
       [
         opensshReleaseCheckPath,
-        "--expect-no-stable-release",
+        "--verify-preferred-release-policy",
         `--metadata=${metadataPath}`,
       ],
       {
@@ -807,7 +789,7 @@ test("Win32-OpenSSH release gate treats non-production release notes as non-stab
     );
 
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.match(result.stdout, /latest release remains non-stable/);
+    assert.match(result.stdout, /latest preview fallback is accepted/);
     assert.match(result.stdout, /preview release notes/);
   } finally {
     await rm(tmpDir, { recursive: true, force: true });
@@ -844,7 +826,7 @@ test("Win32-OpenSSH release gate scans all non-draft releases for stable Win64 a
       process.execPath,
       [
         opensshReleaseCheckPath,
-        "--expect-no-stable-release",
+        "--verify-preferred-release-policy",
         `--metadata=${metadataPath}`,
       ],
       {
@@ -891,7 +873,7 @@ test("Win32-OpenSSH release gate fails when the latest release is stable", async
       process.execPath,
       [
         opensshReleaseCheckPath,
-        "--expect-no-stable-release",
+        "--verify-preferred-release-policy",
         `--metadata=${metadataPath}`,
       ],
       {
@@ -908,7 +890,7 @@ test("Win32-OpenSSH release gate fails when the latest release is stable", async
   }
 });
 
-test("readiness report marks Windows blocked without blocking macOS and Linux", async () => {
+test("readiness report marks Windows ready when preview fallback is accepted", async () => {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-git-dist-"));
   try {
     const metadataPath = path.join(tmpDir, "openssh-releases.json");
@@ -942,7 +924,7 @@ test("readiness report marks Windows blocked without blocking macOS and Linux", 
     );
 
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.match(result.stdout, /windows-x86_64 \| blocked/);
+    assert.match(result.stdout, /windows-x86_64 \| ready/);
     assert.match(result.stdout, /macos-universal \| ready/);
     assert.match(result.stdout, /linux-x86_64 \| ready/);
 
@@ -952,7 +934,7 @@ test("readiness report marks Windows blocked without blocking macOS and Linux", 
     assert.equal(
       report.targets.find((target) => target.target === "windows-x86_64")
         ?.status,
-      "blocked",
+      "ready",
     );
     assert.equal(
       report.targets.find((target) => target.target === "macos-universal")
@@ -963,10 +945,12 @@ test("readiness report marks Windows blocked without blocking macOS and Linux", 
       report.targets.find((target) => target.target === "linux-x86_64")?.status,
       "ready",
     );
-    assert.equal(report.opensshRelease.status, "non-stable");
+    assert.equal(report.opensshRelease.status, "preview-fallback-selected");
     assert.equal(report.opensshRelease.latest.hasRequiredAsset, true);
+    assert.equal(report.opensshRelease.latest.channel, "preview");
     assert.equal(report.opensshRelease.scan.checkedReleaseCount, 1);
     assert.equal(report.opensshRelease.scan.stableWithRequiredAssetCount, 0);
+    assert.equal(report.opensshRelease.scan.previewWithRequiredAssetCount, 1);
   } finally {
     await rm(tmpDir, { recursive: true, force: true });
   }
@@ -1054,7 +1038,7 @@ test("workflow build evidence records cache validation and reusable artifact ind
   }
 });
 
-test("workflow build evidence writes blocker artifact for placeholder-blocked Windows", async () => {
+test("workflow build evidence treats Windows preview fallback as reusable", async () => {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-git-dist-"));
   try {
     const metadataPath = path.join(tmpDir, "openssh-releases.json");
@@ -1102,39 +1086,35 @@ test("workflow build evidence writes blocker artifact for placeholder-blocked Wi
         "utf8",
       ),
     );
-    const blockerReport = JSON.parse(
-      await readFile(path.join(outputDir, "git-dist-blocker.json"), "utf8"),
-    );
 
-    assert.equal(report.workflowBuild.target.blocked, true);
+    assert.equal(report.workflowBuild.target.blocked, false);
     assert.equal(
       report.workflowBuild.validationSummary.status,
-      "placeholder-blocked",
+      "validated-fresh-build",
     );
     assert.equal(
       report.workflowBuild.artifactIndex.find(
         (artifact) => artifact.kind === "reusable-git-dist",
       )?.produced,
-      false,
+      true,
     );
     assert.equal(
       report.workflowBuild.artifactIndex.find(
         (artifact) => artifact.kind === "blocker-evidence",
-      )?.produced,
-      true,
+      ),
+      undefined,
     );
-    assert.equal(blockerReport.opensshRelease.status, "non-stable");
-    assert.equal(blockerReport.workflowBuild.target.name, "windows-x86_64");
     assert.equal(
       await pathExists(path.join(outputDir, "git-dist-blocker.md")),
-      true,
+      false,
     );
+    assert.equal(report.opensshRelease.status, "preview-fallback-selected");
   } finally {
     await rm(tmpDir, { recursive: true, force: true });
   }
 });
 
-test("workflow build evidence records partial source checks for blocked Windows", async () => {
+test("workflow build evidence records full source checks for Windows preview fallback", async () => {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-git-dist-"));
   try {
     const metadataPath = path.join(tmpDir, "openssh-releases.json");
@@ -1168,10 +1148,10 @@ test("workflow build evidence records partial source checks for blocked Windows"
           manifestPlatform: windowsTarget,
           artifactName: `artistic-git-dist-${windowsTarget}`,
         },
-        status: "partial",
+        status: "passed",
         summary: {
-          checked: 2,
-          skippedBlocked: 1,
+          checked: 3,
+          skippedBlocked: 0,
           skippedUnselected: 0,
         },
         sources: [
@@ -1204,11 +1184,17 @@ test("workflow build evidence records partial source checks for blocked Windows"
           {
             ref: "sources.windows.x86_64.win32_openssh",
             component: "win32_openssh",
-            status: "skipped-blocked",
+            status: "checked",
             stable: false,
-            placeholder: true,
-            reason: "preview release",
+            placeholder: false,
+            channel: "preview",
+            fallbackWhenNoStable: true,
+            fallbackReason: "no stable Win32 asset exists",
+            releaseReady: true,
+            reason: "downloaded archive matched configured SHA-256",
             checksum: { expectedSha256: "c".repeat(64) },
+            actualSha256: "c".repeat(64),
+            cachePath: ".cache/git-dist/OpenSSH-Win64.zip",
             url: "https://example.test/OpenSSH-Win64.zip",
             assetName: "OpenSSH-Win64.zip",
           },
@@ -1246,24 +1232,27 @@ test("workflow build evidence records partial source checks for blocked Windows"
         "utf8",
       ),
     );
-    assert.equal(report.workflowBuild.target.blocked, true);
+    assert.equal(report.workflowBuild.target.blocked, false);
     assert.equal(
       report.workflowBuild.validationSummary.reusableArtifactProduced,
-      false,
+      true,
     );
-    assert.equal(
-      report.workflowBuild.sourceArchiveValidation.status,
-      "partial",
-    );
+    assert.equal(report.workflowBuild.sourceArchiveValidation.status, "passed");
     assert.equal(
       report.workflowBuild.sourceArchiveValidation.summary.checked,
-      2,
+      3,
     );
     assert.equal(
       report.workflowBuild.sourceArchiveValidation.sources.find(
         (source) => source.component === "win32_openssh",
       )?.status,
-      "skipped-blocked",
+      "checked",
+    );
+    assert.equal(
+      report.workflowBuild.sourceArchiveValidation.sources.find(
+        (source) => source.component === "win32_openssh",
+      )?.fallbackWhenNoStable,
+      true,
     );
     assert.equal(
       report.workflowBuild.artifactIndex.find(
@@ -1271,10 +1260,11 @@ test("workflow build evidence records partial source checks for blocked Windows"
       )?.name,
       "git-dist-source-evidence-windows-x86_64",
     );
-    assert.ok(
-      report.workflowBuild.validationSummary.commands.some((command) =>
-        command.includes("--source-evidence-only"),
-      ),
+    assert.equal(
+      report.workflowBuild.artifactIndex.find(
+        (artifact) => artifact.kind === "reusable-git-dist",
+      )?.produced,
+      true,
     );
   } finally {
     await rm(tmpDir, { recursive: true, force: true });
@@ -1285,6 +1275,10 @@ test("workflow validates restored assembled cache hits before reuse", async () =
   const workflow = await readFile(workflowPath, "utf8");
   assert.match(workflow, /id: dist-cache/);
   assert.match(workflow, /Check Win32-OpenSSH release gate/);
+  assert.match(
+    workflow,
+    /target: windows-x86_64\s+os: windows-2022\s+placeholderBlocked: false/,
+  );
   assert.match(workflow, /Write git-dist readiness report/);
   assert.match(workflow, /git-dist-readiness-contract/);
   assert.match(workflow, /Write target readiness and build evidence report/);
@@ -1307,7 +1301,11 @@ test("workflow validates restored assembled cache hits before reuse", async () =
   );
   assert.match(
     workflow,
-    /node scripts\/check-git-dist-openssh-release\.mjs --expect-no-stable-release/,
+    /node scripts\/check-git-dist-openssh-release\.mjs --verify-preferred-release-policy/,
+  );
+  assert.match(
+    workflow,
+    /Verify real build source policy[\s\S]+node scripts\/check-git-dist\.mjs --schema-only --real-build/,
   );
   assert.match(
     workflow,
@@ -1315,11 +1313,11 @@ test("workflow validates restored assembled cache hits before reuse", async () =
   );
   assert.match(
     workflow,
-    /Report placeholder-blocked target[\s\S]+--expect-placeholder-rejection/,
+    /Report source-policy-blocked target[\s\S]+--expect-placeholder-rejection/,
   );
   assert.match(
     workflow,
-    /Check available source archives for placeholder-blocked target[\s\S]+--source-evidence-only[\s\S]+--skip-blocked-sources[\s\S]+--components=git,git_lfs/,
+    /Check available source archives for source-policy-blocked target[\s\S]+--source-evidence-only[\s\S]+--skip-blocked-sources[\s\S]+--components=git,git_lfs/,
   );
   assert.match(workflow, /source_evidence_args=\(\)/);
   assert.match(

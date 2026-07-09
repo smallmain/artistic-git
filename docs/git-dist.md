@@ -8,23 +8,24 @@ failure.
 
 ## Pinned Versions
 
-The current pins were verified from official sources on 2026-07-08:
+The current pins were verified from official sources on 2026-07-09:
 
-| Component              | Version              | Official URL                                                                  | Status      |
-| ---------------------- | -------------------- | ----------------------------------------------------------------------------- | ----------- |
-| Git source             | `2.55.0`             | `https://www.kernel.org/pub/software/scm/git/git-2.55.0.tar.xz`               | stable      |
-| Git for Windows MinGit | `2.55.0.windows.2`   | `https://github.com/git-for-windows/git/releases/tag/v2.55.0.windows.2`       | stable      |
-| Git LFS                | `3.7.1`              | `https://github.com/git-lfs/git-lfs/releases/tag/v3.7.1`                      | stable      |
-| Win32-OpenSSH          | `10.0.0.0p2-Preview` | `https://github.com/PowerShell/Win32-OpenSSH/releases/tag/10.0.0.0p2-Preview` | placeholder |
+| Component              | Version              | Official URL                                                                  | Status           |
+| ---------------------- | -------------------- | ----------------------------------------------------------------------------- | ---------------- |
+| Git source             | `2.55.0`             | `https://www.kernel.org/pub/software/scm/git/git-2.55.0.tar.xz`               | stable           |
+| Git for Windows MinGit | `2.55.0.windows.2`   | `https://github.com/git-for-windows/git/releases/tag/v2.55.0.windows.2`       | stable           |
+| Git LFS                | `3.7.1`              | `https://github.com/git-lfs/git-lfs/releases/tag/v3.7.1`                      | stable           |
+| Win32-OpenSSH          | `10.0.0.0p2-Preview` | `https://github.com/PowerShell/Win32-OpenSSH/releases/tag/10.0.0.0p2-Preview` | preview fallback |
 
-Win32-OpenSSH has no modern stable official GitHub release at the time of this
-pin. The latest official package is explicitly marked preview/non-production
-ready, so it is recorded in `git-dist.toml` with its real SHA-256 but remains
-`placeholder = true` and `stable = false`. Real build mode rejects it until a
-stable source is selected or a separate risk exception is documented.
+Win32-OpenSSH is stable-first. If an official stable `OpenSSH-Win64.zip`
+release exists, `git-dist.toml` must pin that stable release. If no stable
+official Win64 asset exists, the latest official preview package may be used as
+an explicit fallback with `stable = false`, `channel = "preview"`,
+`placeholder = false`, `fallback_when_no_stable = true`, and a pinned SHA-256.
 `scripts/check-git-dist-openssh-release.mjs` checks GitHub release metadata and
 treats `Preview`, `Beta`, `RC`, or `Alpha` in the tag/name as non-stable even
-when GitHub reports `prerelease=false`.
+when GitHub reports `prerelease=false`; only `Preview` is accepted as the
+fallback channel.
 
 ## Configuration
 
@@ -38,7 +39,8 @@ when GitHub reports `prerelease=false`.
   `checksum.source`, and `checksum.url`
 - Tauri resource layout shared by development and packaged builds
 - build recipes for macOS and Linux Git artifacts
-- validation policy that permits placeholders only in schema-only mode
+- validation policy that permits placeholders only in schema-only mode and
+  permits Win32-OpenSSH preview fallback only when no stable Win64 asset exists
 
 Schema-only validation:
 
@@ -47,33 +49,33 @@ node scripts/check-git-dist.mjs --schema-only
 node scripts/fetch-git-dist.mjs --schema-only --target=linux-x86_64
 ```
 
-Real build policy validation fails while any selected source is a placeholder:
+Real build policy validation fails while any selected source is a placeholder
+or an unapproved non-stable source:
 
 ```sh
 node scripts/check-git-dist.mjs --schema-only --real-build
 ```
 
-That failure is intentional until the Windows OpenSSH pin is resolved.
-The package script is wired for CI-friendly reporting of that expected block:
+The package script is wired for the release-ready policy check:
 
 ```sh
 pnpm git-dist:check:real
 ```
 
-It succeeds only when real build mode rejects the documented placeholder. Once
-all pins are release-ready, this command will fail and tell the caller to
-remove the expected-placeholder mode.
+It succeeds only when every selected source is either stable or an approved
+preview fallback.
 
-The Win32-OpenSSH release metadata gate is separate so the placeholder decision
-is regularly rechecked against GitHub API data:
+The Win32-OpenSSH release metadata gate is separate so the stable-first
+decision is regularly rechecked against GitHub API data:
 
 ```sh
-node scripts/check-git-dist-openssh-release.mjs --expect-no-stable-release
+node scripts/check-git-dist-openssh-release.mjs --verify-preferred-release-policy
 ```
 
-It passes only while the latest non-draft release is still marked by channel
-text such as `Preview`. If the latest release becomes stable, it fails with the
-required next steps: update `git-dist.toml`, remove the placeholder gate, and
+It passes when no stable `OpenSSH-Win64.zip` release exists and the latest
+non-draft release is an official preview package containing that asset. If a
+stable Win64 release appears, it fails with the required next steps: update
+`git-dist.toml` to the stable release, remove preview fallback metadata, and
 run real artifact validation before checking Windows or three-platform 1A
 items.
 
@@ -85,7 +87,7 @@ node scripts/git-dist-report.mjs --include-openssh-release --output-dir=artifact
 ```
 
 The JSON report marks each target as `ready` or `blocked`, includes every
-placeholder/non-stable source blocker, and records the latest Win32-OpenSSH
+placeholder or unapproved source blocker, and records the latest Win32-OpenSSH
 release metadata when requested. A `blocked` report is evidence for why a target
 was skipped; it is not a substitute for a real embedded Git artifact.
 
@@ -114,8 +116,9 @@ Current phase 1A behavior:
   so `pnpm tauri:dev` and local Rust tests can point at the same resource tree.
   It always assembles a runnable tree and rejects `--output`, `--download-only`,
   and `--no-extract` to avoid leaving the ignored mount in a partial state.
-- real fetch mode rejects placeholders before any download.
-- non-placeholder sources are downloaded, SHA-256 checked, and extracted into a
+- real fetch mode rejects placeholders and unapproved non-stable sources before
+  any download.
+- release-ready sources are downloaded, SHA-256 checked, and extracted into a
   staging directory.
 - archive targets can be assembled from staged archive contents into the
   configured `git-dist/` layout. Assembly strips common single-directory archive
@@ -138,9 +141,10 @@ Current phase 1A behavior:
   assembly. If helper binaries cannot be resolved, assembly fails with the
   missing candidates and no incomplete `manifest.json` is written.
 
-Windows real fetch remains blocked before download while the Win32-OpenSSH
-entry is a rejected placeholder, even though MinGit, Git LFS, and archive
-assembly paths are covered by SHA-256 pins and fixture tests.
+Windows real fetch is enabled when the Win32-OpenSSH release gate confirms that
+no stable `OpenSSH-Win64.zip` exists and the pinned latest preview fallback is
+still current. MinGit, Git LFS, Win32-OpenSSH, and archive assembly paths are
+covered by SHA-256 pins and fixture tests.
 
 ## Development Resources
 
@@ -264,23 +268,24 @@ executable exists with the recorded SHA-256.
 that touch the git-dist pipeline. Manual `workflow_dispatch` runs expose two
 modes:
 
-- `contract` validates config, source layout, SHA-256 fields, placeholder
-  rejection, Win32-OpenSSH release metadata, and Tauri bundle resource mapping
+- `contract` validates config, source layout, SHA-256 fields, real-build source
+  policy, Win32-OpenSSH release metadata, and Tauri bundle resource mapping
   without downloading binaries. The Win32-OpenSSH gate pages through release
-  metadata and rejects Preview/Beta/RC/Alpha labels or release notes, including
-  notes that say non-production ready.
+  metadata, prefers a stable `OpenSSH-Win64.zip` release when present, and only
+  accepts latest `Preview` as fallback when no stable Win64 asset exists.
 - `build` runs a target matrix and prepares reusable git-dist artifacts.
 
 Build mode uses this policy:
 
 - matrix targets: `windows-x86_64`, `macos-universal`, `linux-x86_64`, each on
   its native GitHub runner image.
-- non-placeholder matrix jobs first run target-scoped real-build policy
-  validation, so placeholder pins fail before cache restore, helper builds,
-  download, or package work.
-- placeholder-blocked matrix jobs run the expected-placeholder rejection check
-  and stop without uploading an artifact. This keeps Windows OpenSSH preview
-  status visible without publishing a fake Windows distribution.
+- matrix jobs first run target-scoped real-build policy validation, so
+  placeholder pins and unapproved non-stable sources fail before cache restore,
+  helper builds, download, or package work.
+- source-policy-blocked matrix jobs run the expected-placeholder rejection check
+  and stop without uploading an artifact. This branch is inactive for the
+  current Windows pin because the approved Win32-OpenSSH preview fallback is
+  release-ready.
 - contract and build jobs upload `git-dist-readiness-*` artifacts containing
   `git-dist-readiness.json` and `git-dist-readiness.md`, so downstream release
   checks can distinguish real target readiness from documented external blocks
@@ -290,11 +295,10 @@ Build mode uses this policy:
   manifest, target status, produced artifact index, source/archive provenance,
   source-cache hit state, assembled-cache hit state, and the validation command
   path used for either a cache hit or a fresh build.
-- placeholder-blocked jobs upload `git-dist-blocker-<target>` with
-  `git-dist-blocker.json` and `.md`. For Windows this is the auditable proof
-  that Win32-OpenSSH is still blocked; it is intentionally separate from
-  `artistic-git-dist-windows-x86_64`, which must remain absent until the
-  OpenSSH pin is stable.
+- source-policy-blocked jobs upload `git-dist-blocker-<target>` with
+  `git-dist-blocker.json` and `.md`. That artifact is only for targets blocked
+  by placeholders or unapproved non-stable sources; current Windows builds
+  should instead upload `artistic-git-dist-windows-x86_64` after validation.
 - source archive cache key includes target, `git-dist.toml`, fetch/check
   scripts, lockfiles, and a manual `GIT_DIST_CACHE_VERSION`.
 - assembled distribution cache key includes target, `git-dist.toml`, fetch/check
@@ -305,8 +309,8 @@ Build mode uses this policy:
 - cache miss builds the helper binaries, then runs
   `scripts/fetch-git-dist.mjs --target=<target>` with explicit output,
   source-cache, and staging directories.
-- placeholder versions, placeholder URLs, non-stable sources, or zero SHA-256
-  values fail before download/build/package
+- placeholder versions, placeholder URLs, unapproved non-stable sources, or
+  zero SHA-256 values fail before download/build/package
 - successful jobs upload `artistic-git-dist-<target>` artifacts for later test
   and packaging jobs to consume via `ARTISTIC_GIT_DIST_DIR`.
 
@@ -321,17 +325,12 @@ git-dist-build-evidence-<target>/
   git-dist-build-evidence.md
 ```
 
-For macOS and Linux, `workflowBuild.validationSummary.reusableArtifactProduced`
+For every target, `workflowBuild.validationSummary.reusableArtifactProduced`
 must be `true` before a downstream job consumes
-`artistic-git-dist-<target>`. For Windows, the expected current state is
-`placeholder-blocked`, `reusableArtifactProduced = false`, and a separate
-`git-dist-blocker-windows-x86_64` artifact containing the OpenSSH blocker.
-
-Current limitation: Windows build mode intentionally skips artifact generation
-while the Win32-OpenSSH entry remains `placeholder = true` / `stable = false`.
-macOS and Linux have produced and validated reusable artifacts; the phase 1A
-Windows and all-platform checkboxes stay open until a stable Win32-OpenSSH pin
-allows `artistic-git-dist-windows-x86_64` to be built.
+`artistic-git-dist-<target>`. Windows is expected to produce
+`artistic-git-dist-windows-x86_64` under the approved preview fallback policy;
+if a stable Win32-OpenSSH package appears, the release gate fails until the
+config is updated to that stable pin.
 
 Downstream jobs should consume an artifact like this:
 

@@ -66,11 +66,10 @@ current pins, CI artifact/cache policy, and build limitations.
 Real Git Tauri E2E setup and skipped/failed report semantics are documented in
 [docs/e2e-real-git.md](docs/e2e-real-git.md).
 
-While the Win32-OpenSSH pin remains a documented preview placeholder,
-`pnpm git-dist:check:real` is expected to pass only by confirming that real
-build mode rejects the placeholder. Direct real build/fetch/package jobs stay
-blocked until that source is replaced with a stable official package or a
-separate release risk exception is recorded.
+Win32-OpenSSH is selected by a stable-first rule: use an official stable
+`OpenSSH-Win64.zip` when available; otherwise use the pinned latest official
+preview package as an explicit fallback. `pnpm git-dist:check:real` validates
+that every git-dist source is stable or an approved fallback.
 
 ## Release Baseline
 

@@ -58,12 +58,15 @@ test("readiness summary aggregates remaining Windows and release blockers", asyn
       testCurrentHeadSha,
     );
     assert.equal(summary.source.releaseRehearsalCandidates.length, 1);
-    assert.ok(
+    assert.equal(
+      summary.items.find((item) => item.id === "win32-openssh-gate")?.status,
+      "ready",
+    );
+    assert.equal(
       summary.remainingBlockers.some(
-        (blocker) =>
-          blocker.itemId === "win32-openssh-gate" &&
-          blocker.category === "external-upstream",
+        (blocker) => blocker.itemId === "win32-openssh-gate",
       ),
+      false,
     );
     assert.ok(
       summary.remainingBlockers.some(
@@ -428,7 +431,7 @@ function opensshBlocker() {
     opensshRelease: {
       repo: "PowerShell/Win32-OpenSSH",
       requiredAsset: "OpenSSH-Win64.zip",
-      status: "non-stable",
+      status: "preview-fallback-selected",
       latest: {
         tagName: "10.0.0.0p2-Preview",
         name: "10.0.0.0p2-Preview",
@@ -436,11 +439,23 @@ function opensshBlocker() {
         prerelease: false,
         draft: false,
         hasRequiredAsset: true,
+        channel: "preview",
       },
       scan: {
         checkedReleaseCount: 54,
         stableWithRequiredAssetCount: 0,
         stableWithRequiredAsset: [],
+        previewWithRequiredAssetCount: 1,
+        previewWithRequiredAsset: [
+          {
+            tagName: "10.0.0.0p2-Preview",
+            name: "10.0.0.0p2-Preview",
+            publishedAt: "2025-10-27T18:58:57Z",
+            hasRequiredAsset: true,
+            channel: "preview",
+            reason: "preview label",
+          },
+        ],
       },
       reason: "preview label",
     },

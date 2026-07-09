@@ -9,6 +9,8 @@ import {
   getTarget,
   getTargetSources,
   loadGitDistConfig,
+  sourceIsReleaseReady,
+  sourceReadinessReason,
   supportedTargets,
   validateGitDistConfig,
 } from "./git-dist-lib.mjs";
@@ -25,7 +27,7 @@ const usage = `Usage:
   node scripts/git-dist-report.mjs --include-openssh-release [--metadata=/path/to/releases.json] [--output-json=/path] [--output-md=/path]
 
 Writes a machine-readable report for the embedded git-dist build readiness.
-The report distinguishes release-ready targets from documented placeholder
+The report distinguishes release-ready targets from documented source policy
 blocks; it never treats a blocked target as a real artifact. Build evidence
 mode adds a workflow run manifest, artifact index, cache validation summary,
 and target provenance for workflow_dispatch build runs.`;
@@ -140,6 +142,10 @@ function targetReadiness(config, targetName) {
         stable: source.stable === true,
         placeholder: source.placeholder === true,
         placeholderReason: source.placeholder_reason ?? null,
+        channel: source.channel ?? null,
+        fallbackWhenNoStable: source.fallback_when_no_stable === true,
+        fallbackReason: source.fallback_reason ?? null,
+        releaseReady: sourceIsReleaseReady(source),
         releaseUrl: source.release_url ?? null,
         assetName: source.asset_name ?? null,
         url: source.url,
@@ -156,15 +162,18 @@ function targetReadiness(config, targetName) {
   );
 
   const blockers = sources
-    .filter((source) => source.placeholder || !source.stable)
+    .filter((source) => !source.releaseReady)
     .map((source) => ({
       ref: source.ref,
       component: source.component,
-      reason:
-        source.placeholderReason ??
-        (source.stable
-          ? "source is marked as a placeholder"
-          : "source is not marked stable"),
+      reason: sourceReadinessReason({
+        placeholder: source.placeholder,
+        placeholder_reason: source.placeholderReason,
+        stable: source.stable,
+        channel: source.channel,
+        fallback_when_no_stable: source.fallbackWhenNoStable,
+        fallback_reason: source.fallbackReason,
+      }),
     }));
 
   try {
@@ -273,6 +282,10 @@ function workflowBuildEvidence(target, sourceEvidence) {
       stable: source.stable,
       placeholder: source.placeholder,
       placeholderReason: source.placeholderReason,
+      channel: source.channel,
+      fallbackWhenNoStable: source.fallbackWhenNoStable,
+      fallbackReason: source.fallbackReason,
+      releaseReady: source.releaseReady,
       releaseUrl: source.releaseUrl,
       assetName: source.assetName,
       url: source.url,
@@ -319,7 +332,7 @@ function artifactIndexEvidence(target, blocked, sourceArchiveValidation) {
       purpose:
         "embedded Git distribution tree for downstream test and package jobs",
       reason: blocked
-        ? "target is blocked by documented non-stable or placeholder source pins"
+        ? "target is blocked by documented placeholder or unapproved source pins"
         : "target passed workflow validation and uploads a reusable distribution artifact",
     },
   ];
@@ -375,7 +388,7 @@ function sourceArchiveValidationEvidence(target, sourceEvidence) {
       command: null,
       reason:
         target.status === "blocked"
-          ? "target is placeholder-blocked before source archive fetch"
+          ? "target is source-policy-blocked before source archive fetch"
           : "fresh-build fetch validation checks source archives before assembly",
     };
   }
@@ -401,6 +414,10 @@ function sourceArchiveValidationEvidence(target, sourceEvidence) {
       status: source.status,
       stable: source.stable,
       placeholder: source.placeholder,
+      channel: source.channel ?? null,
+      fallbackWhenNoStable: source.fallbackWhenNoStable === true,
+      fallbackReason: source.fallbackReason ?? null,
+      releaseReady: source.releaseReady === true,
       reason: source.reason,
       expectedSha256: source.checksum?.expectedSha256 ?? null,
       actualSha256: source.actualSha256 ?? null,
@@ -410,7 +427,7 @@ function sourceArchiveValidationEvidence(target, sourceEvidence) {
     })),
     command: `node scripts/fetch-git-dist.mjs --target="${target.target}" --source-evidence-only --skip-blocked-sources --components=git,git_lfs --cache-dir="$ARTISTIC_GIT_DIST_CACHE_DIR" --evidence-dir="<evidence-dir>"`,
     reason:
-      "stable source archives were downloaded and checked by configured SHA-256 while blocked sources were recorded without assembly",
+      "release-ready source archives were downloaded and checked by configured SHA-256 while blocked sources were recorded without assembly",
   };
 }
 
@@ -426,7 +443,7 @@ function cacheValidationEvidence(target, blocked) {
       path: nullable(args.sourceCacheDir),
       validation: blocked
         ? skippedValidation(
-            "target is placeholder-blocked before cache restore",
+            "target is source-policy-blocked before cache restore",
           )
         : sourceCacheValidation(sourceCacheHit, distCacheHit, target.target),
     },
@@ -437,7 +454,7 @@ function cacheValidationEvidence(target, blocked) {
       path: nullable(args.distDir),
       validation: blocked
         ? skippedValidation(
-            "target is placeholder-blocked before cache restore",
+            "target is source-policy-blocked before cache restore",
           )
         : assembledCacheValidation(distCacheHit, target.target),
     },
@@ -498,7 +515,7 @@ function validationSummary(target, blocked, cache, sourceArchiveValidation) {
       commands.push(sourceArchiveValidation.command);
     }
     return {
-      status: "placeholder-blocked",
+      status: "source-policy-blocked",
       reusableArtifactProduced: false,
       commands,
       reason: sourceArchiveValidation.produced
@@ -572,13 +589,20 @@ async function openSshReleaseReadiness() {
   const releaseScan = scanReleases(releases, args.asset);
   const stableWithRequiredAssetCount =
     releaseScan.stableWithRequiredAsset.length;
+  const previewFallback =
+    !stability.stable &&
+    stability.channel === "preview" &&
+    stability.hasRequiredAsset &&
+    stableWithRequiredAssetCount === 0;
   return {
     repo: args.repo,
     requiredAsset: args.asset,
     status:
       stability.stable || stableWithRequiredAssetCount > 0
         ? "stable-release-available"
-        : "non-stable",
+        : previewFallback
+          ? "preview-fallback-selected"
+          : "non-stable",
     latest: {
       tagName: latest.tag_name ?? null,
       name: latest.name ?? null,
@@ -586,6 +610,7 @@ async function openSshReleaseReadiness() {
       prerelease: latest.prerelease === true,
       draft: latest.draft === true,
       hasRequiredAsset: stability.hasRequiredAsset,
+      channel: stability.channel,
     },
     scan: {
       checkedReleaseCount: releaseScan.checkedReleaseCount,
@@ -596,6 +621,19 @@ async function openSshReleaseReadiness() {
           name: entry.release.name ?? null,
           publishedAt: entry.release.published_at ?? null,
           hasRequiredAsset: entry.stability.hasRequiredAsset,
+          channel: entry.stability.channel,
+          reason: entry.stability.reason,
+        }),
+      ),
+      previewWithRequiredAssetCount:
+        releaseScan.previewWithRequiredAsset.length,
+      previewWithRequiredAsset: releaseScan.previewWithRequiredAsset.map(
+        (entry) => ({
+          tagName: entry.release.tag_name ?? null,
+          name: entry.release.name ?? null,
+          publishedAt: entry.release.published_at ?? null,
+          hasRequiredAsset: entry.stability.hasRequiredAsset,
+          channel: entry.stability.channel,
           reason: entry.stability.reason,
         }),
       ),
@@ -674,6 +712,11 @@ function scanReleases(releases, requiredAssetName) {
     stableWithRequiredAsset: checked.filter(
       (entry) => entry.stability.stable && entry.stability.hasRequiredAsset,
     ),
+    previewWithRequiredAsset: checked.filter(
+      (entry) =>
+        entry.stability.channel === "preview" &&
+        entry.stability.hasRequiredAsset,
+    ),
   };
 }
 
@@ -681,6 +724,7 @@ function classifyRelease(release, requiredAssetName) {
   if (release.prerelease === true) {
     return {
       stable: false,
+      channel: "prerelease",
       reason: "github-prerelease=true",
       hasRequiredAsset: hasAsset(release, requiredAssetName),
     };
@@ -692,6 +736,7 @@ function classifyRelease(release, requiredAssetName) {
   if (channel) {
     return {
       stable: false,
+      channel: channel.toLowerCase(),
       reason: `${channel.toLowerCase()} label`,
       hasRequiredAsset: hasAsset(release, requiredAssetName),
     };
@@ -701,6 +746,7 @@ function classifyRelease(release, requiredAssetName) {
   if (bodyChannel) {
     return {
       stable: false,
+      channel: bodyChannel.toLowerCase(),
       reason: `${bodyChannel.toLowerCase()} release notes`,
       hasRequiredAsset: hasAsset(release, requiredAssetName),
     };
@@ -709,6 +755,7 @@ function classifyRelease(release, requiredAssetName) {
   if (/\bnon[- ]production ready\b/i.test(body)) {
     return {
       stable: false,
+      channel: "non-production",
       reason: "release notes say non-production ready",
       hasRequiredAsset: hasAsset(release, requiredAssetName),
     };
@@ -716,6 +763,7 @@ function classifyRelease(release, requiredAssetName) {
 
   return {
     stable: true,
+    channel: "stable",
     reason: "no prerelease/channel marker",
     hasRequiredAsset: hasAsset(release, requiredAssetName),
   };

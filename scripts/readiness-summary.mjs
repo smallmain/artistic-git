@@ -158,9 +158,25 @@ function evaluateOpenSshGate() {
     .filter(Boolean)
     .join(" / ");
   const status = release.status;
+  if (status === "preview-fallback-selected") {
+    return readyItem({
+      id: "win32-openssh-gate",
+      title: "Win32-OpenSSH release gate",
+      evidencePath: opensshReport.filePath,
+      details: {
+        resolution:
+          "no stable OpenSSH-Win64.zip release was found; latest preview fallback is accepted by policy",
+        latest: release.latest ?? null,
+        requiredAsset: release.requiredAsset ?? null,
+        scan: release.scan ?? null,
+        status,
+      },
+    });
+  }
+
   const message =
-    status === "non-stable"
-      ? `Win32-OpenSSH remains non-stable (${latestLabel || "unknown latest"}; stable ${release.requiredAsset} releases=${stableCount}).`
+    status === "stable-release-available"
+      ? `Win32-OpenSSH stable release is available (${latestLabel || "unknown latest"}; stable ${release.requiredAsset} releases=${stableCount}).`
       : `Win32-OpenSSH gate requires action (${latestLabel || status}; stable ${release.requiredAsset} releases=${stableCount}).`;
   return blockedItem({
     id: "win32-openssh-gate",
@@ -173,13 +189,12 @@ function evaluateOpenSshGate() {
       status,
     },
     blocker: {
-      category:
-        status === "non-stable" ? "external-upstream" : "action-required",
+      category: "action-required",
       message,
       nextAction:
-        status === "non-stable"
-          ? "Wait for an official stable PowerShell/Win32-OpenSSH release with OpenSSH-Win64.zip."
-          : "Update git-dist.toml, remove the placeholder gate, and rerun Windows reusable git-dist validation.",
+        status === "stable-release-available"
+          ? "Update git-dist.toml to the stable Win32-OpenSSH release, remove preview fallback metadata, and rerun Windows reusable git-dist validation."
+          : "Review Win32-OpenSSH release metadata; only stable releases or latest preview fallback with OpenSSH-Win64.zip are accepted.",
       sourceKind: "openssh-release",
       target: "windows-x86_64",
     },
@@ -219,7 +234,7 @@ function evaluateWindowsGitDist() {
       category: "missing-artifact",
       message: `Windows reusable git-dist artifact is not checkable.${sourceNote}`,
       nextAction:
-        "Resolve the Win32-OpenSSH stable release blocker, then run Git Distribution build mode until artistic-git-dist-windows-x86_64 is produced and validated.",
+        "Run Git Distribution build mode with the accepted Win32-OpenSSH preview fallback until artistic-git-dist-windows-x86_64 is produced and validated.",
       sourceKind: "git-distribution",
       target: "windows-x86_64",
     },
@@ -262,7 +277,7 @@ function evaluateGitLfsDistribution() {
       category: "missing-artifact",
       message: `git-lfs cannot be marked three-platform complete; reusable git-dist evidence is missing for ${missing.join(", ")}.`,
       nextAction:
-        "Produce reusable git-dist artifacts for all three targets, including Windows after Win32-OpenSSH is stable.",
+        "Produce reusable git-dist artifacts for all three targets, including Windows with the accepted Win32-OpenSSH fallback policy.",
       sourceKind: "git-distribution",
       target: missing.join(","),
     },
@@ -301,7 +316,7 @@ function evaluateDevResourcesScript() {
     blocker: {
       category: "missing-artifact",
       message:
-        "The local dev resources script cannot be fully checked until Windows can legally produce complete git-dist resources.",
+        "The local dev resources script cannot be fully checked until Windows produces complete git-dist resources.",
       nextAction:
         "After Windows reusable git-dist is produced, run pnpm fetch:git-dist -- --dev-resources --target=windows-x86_64 and verify ARTISTIC_GIT_DIST_DIR output.",
       sourceKind: "git-distribution",

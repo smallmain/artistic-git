@@ -26,6 +26,8 @@ import {
   getTargetSources,
   loadGitDistConfig,
   sha256File,
+  sourceIsReleaseReady,
+  sourceReadinessReason,
   supportedTargets,
   validateGitDistConfig,
 } from "./git-dist-lib.mjs";
@@ -70,8 +72,8 @@ Default output is $ARTISTIC_GIT_DIST_DIR when set, otherwise a temp directory.
 --dev-resources writes to src-tauri/resources/git-dist for local Tauri runs.
 --dev-resources always assembles a runnable resource tree; do not combine it
 with --output, --download-only, or --no-extract.
---source-evidence-only downloads and SHA-verifies selected stable source
-archives for a target, records placeholder/non-stable sources as skipped when
+--source-evidence-only downloads and SHA-verifies selected release-ready source
+archives for a target, records placeholder/unapproved sources as skipped when
 --skip-blocked-sources is set, and never extracts or assembles a git-dist tree.
 Archive assembly copies staged archives into the git-dist layout, copies helper
 binaries from explicit paths or target/{release,debug}, and writes manifest.json
@@ -209,19 +211,19 @@ async function writeSourceEvidence(config) {
 
   for (const { ref, source } of sources) {
     const entry = sourceEvidenceBaseEntry({ config, ref, source });
-    const blocked = source.placeholder === true || source.stable !== true;
+    const blocked = !sourceIsReleaseReady(source);
     if (blocked) {
       if (!args.skipBlockedSources) {
         fail(
-          `${ref} is blocked by placeholder/non-stable source; pass --skip-blocked-sources to record it without downloading`,
+          `${ref} is blocked by placeholder/unapproved source; pass --skip-blocked-sources to record it without downloading`,
         );
       }
       evidenceSources.push({
         ...entry,
         status: "skipped-blocked",
-        reason: sourceBlockerReason(source),
+        reason: sourceReadinessReason(source),
       });
-      info(`skipped blocked source ${ref}: ${sourceBlockerReason(source)}`);
+      info(`skipped blocked source ${ref}: ${sourceReadinessReason(source)}`);
       continue;
     }
 
@@ -310,6 +312,10 @@ function sourceEvidenceBaseEntry({ config, ref, source }) {
     stable: source.stable === true,
     placeholder: source.placeholder === true,
     placeholderReason: source.placeholder_reason ?? null,
+    channel: source.channel ?? null,
+    fallbackWhenNoStable: source.fallback_when_no_stable === true,
+    fallbackReason: source.fallback_reason ?? null,
+    releaseReady: sourceIsReleaseReady(source),
     releaseUrl: source.release_url ?? null,
     assetName: source.asset_name ?? null,
     url: source.url,
@@ -321,15 +327,6 @@ function sourceEvidenceBaseEntry({ config, ref, source }) {
     },
     resourcesPath: source.resources_path ?? null,
   };
-}
-
-function sourceBlockerReason(source) {
-  return (
-    source.placeholder_reason ??
-    (source.stable === true
-      ? "source is marked as a placeholder"
-      : "source is not marked stable")
-  );
 }
 
 function renderSourceEvidenceMarkdown(evidence) {

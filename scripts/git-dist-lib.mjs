@@ -214,6 +214,38 @@ export function getSourceByRef(config, ref) {
   return ref.split(".").reduce((node, key) => node?.[key], config);
 }
 
+export function sourceAllowsPreviewFallback(source) {
+  return (
+    source?.placeholder === false &&
+    source?.stable === false &&
+    String(source?.channel ?? "").toLowerCase() === "preview" &&
+    source?.fallback_when_no_stable === true
+  );
+}
+
+export function sourceIsReleaseReady(source) {
+  return (
+    source?.placeholder === false &&
+    (source?.stable === true || sourceAllowsPreviewFallback(source))
+  );
+}
+
+export function sourceReadinessReason(source) {
+  if (source?.placeholder === true) {
+    return source.placeholder_reason ?? "source is marked as a placeholder";
+  }
+  if (sourceAllowsPreviewFallback(source)) {
+    return (
+      source.fallback_reason ??
+      "preview source accepted because no stable release is available"
+    );
+  }
+  if (source?.stable === false) {
+    return "source is not stable and has no approved preview fallback";
+  }
+  return "source is release-ready";
+}
+
 export function expectedManifestPaths(config, targetName) {
   const target = getTarget(config, targetName);
   const layout = config.resources.layout;
@@ -821,6 +853,38 @@ function validateSource(config, ref, source, errors, warnings) {
     errors.push(`${ref}.stable must be true or false`);
   }
 
+  if (source.channel !== undefined && typeof source.channel !== "string") {
+    errors.push(`${ref}.channel must be a string when present`);
+  }
+
+  if (
+    source.fallback_when_no_stable !== undefined &&
+    typeof source.fallback_when_no_stable !== "boolean"
+  ) {
+    errors.push(`${ref}.fallback_when_no_stable must be true or false`);
+  }
+
+  if (source.fallback_when_no_stable === true) {
+    if (source.placeholder !== false || source.stable !== false) {
+      errors.push(
+        `${ref}.fallback_when_no_stable is only valid for non-placeholder non-stable sources`,
+      );
+    }
+    if (String(source.channel ?? "").toLowerCase() !== "preview") {
+      errors.push(
+        `${ref}.fallback_when_no_stable requires channel = "preview"`,
+      );
+    }
+    if (
+      typeof source.fallback_reason !== "string" ||
+      source.fallback_reason.length === 0
+    ) {
+      errors.push(
+        `${ref}.fallback_reason must explain the approved preview fallback`,
+      );
+    }
+  }
+
   try {
     assertRelativeResourcePath(source.resources_path, `${ref}.resources_path`);
   } catch (error) {
@@ -865,7 +929,7 @@ function collectSourcePlaceholders(config, ref, source) {
   if (source.placeholder) {
     placeholders.push(`${ref}.placeholder=true`);
   }
-  if (source.stable === false) {
+  if (source.stable === false && !sourceAllowsPreviewFallback(source)) {
     placeholders.push(`${ref}.stable=false`);
   }
   if (typeof source.url === "string" && source.url.startsWith("TODO:")) {

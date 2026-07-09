@@ -61,14 +61,14 @@ jobs:
             node scripts/fetch-git-dist.mjs --schema-only --target="${target}"
           done
 
-      - name: Verify real build mode rejects placeholders
+      - name: Verify real build source policy
         shell: bash
         run: |
           set -euo pipefail
-          node scripts/check-git-dist.mjs --schema-only --real-build --expect-placeholder-rejection
+          node scripts/check-git-dist.mjs --schema-only --real-build
 
       - name: Check Win32-OpenSSH release gate
-        run: node scripts/check-git-dist-openssh-release.mjs --expect-no-stable-release
+        run: node scripts/check-git-dist-openssh-release.mjs --verify-preferred-release-policy
 
       - name: Write git-dist readiness report
         run: |
@@ -97,7 +97,7 @@ jobs:
         include:
           - target: windows-x86_64
             os: windows-2022
-            placeholderBlocked: true
+            placeholderBlocked: false
           - target: macos-universal
             os: macos-14
             placeholderBlocked: false
@@ -127,15 +127,15 @@ jobs:
         if: matrix.placeholderBlocked != true
         run: node scripts/check-git-dist.mjs --schema-only --real-build --target="${{ matrix.target }}"
 
-      - name: Report placeholder-blocked target
+      - name: Report source-policy-blocked target
         if: matrix.placeholderBlocked == true
         shell: bash
         run: |
           set -euo pipefail
           node scripts/check-git-dist.mjs --schema-only --real-build --target="${{ matrix.target }}" --expect-placeholder-rejection
-          echo "::notice title=git-dist target blocked::${{ matrix.target }} is intentionally skipped because git-dist.toml still contains a documented non-stable placeholder source."
+          echo "::notice title=git-dist target blocked::${{ matrix.target }} is intentionally skipped because git-dist.toml still contains a documented placeholder or unapproved source."
 
-      - name: Check available source archives for placeholder-blocked target
+      - name: Check available source archives for source-policy-blocked target
         if: matrix.placeholderBlocked == true
         shell: bash
         run: |
