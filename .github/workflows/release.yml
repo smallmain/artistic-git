@@ -263,6 +263,18 @@ jobs:
           run-id: ${{ needs.plan.outputs.git_dist_run_id }}
           github-token: ${{ github.token }}
 
+      - name: Activate staged embedded Git resources
+        shell: bash
+        env:
+          RUN_ID: ${{ needs.plan.outputs.git_dist_run_id }}
+          ARTIFACT_NAME: artistic-git-dist-${{ matrix.gitDistTarget }}
+          DIST_DIR: src-tauri/resources/git-dist
+          GIT_DIST_TARGET: ${{ matrix.gitDistTarget }}
+          RUN_URL: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, needs.plan.outputs.git_dist_run_id) }}
+        run: |
+          set -euo pipefail
+          node scripts/activate-phase12-git-dist.mjs
+
       - name: Download git-dist build evidence
         uses: actions/download-artifact@v4
         with:

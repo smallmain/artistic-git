@@ -36,6 +36,13 @@ export async function applyUpdaterPublicKey({ configPath, publicKey }) {
   await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
 }
 
+export function isDirectCliInvocation(metaUrl, argvPath) {
+  if (!argvPath) {
+    return false;
+  }
+  return path.resolve(fileURLToPath(metaUrl)) === path.resolve(argvPath);
+}
+
 function parseArgs(argv) {
   const args = [...argv];
   let configPath = path.join(repoRoot, "src-tauri", "tauri.conf.json");
@@ -57,7 +64,7 @@ Injects the generated Tauri updater public key into tauri.conf.json for release 
   return { configPath };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isDirectCliInvocation(import.meta.url, process.argv[1])) {
   try {
     const { configPath } = parseArgs(process.argv.slice(2));
     await applyUpdaterPublicKey({

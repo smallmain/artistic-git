@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   applyUpdaterPublicKey,
+  isDirectCliInvocation,
   validateUpdaterPublicKey,
 } from "./apply-tauri-updater-public-key.mjs";
 
@@ -49,4 +50,16 @@ test("writes the generated updater public key into tauri config", async () => {
   assert.deepEqual(config.plugins.updater.endpoints, [
     "https://example.test/latest.json",
   ]);
+});
+
+test("detects direct CLI invocation with resolved filesystem paths", () => {
+  const currentFile = new URL(import.meta.url).pathname;
+  assert.equal(isDirectCliInvocation(import.meta.url, currentFile), true);
+  assert.equal(
+    isDirectCliInvocation(
+      import.meta.url,
+      path.join(path.dirname(currentFile), "other.mjs"),
+    ),
+    false,
+  );
 });

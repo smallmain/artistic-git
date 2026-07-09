@@ -435,6 +435,10 @@ test("release workflow checks staged and packaged git-dist resources", () => {
       "name: artistic-git-dist-${{ matrix.gitDistTarget }}",
     ),
   );
+  assert.ok(releaseWorkflow.includes("Activate staged embedded Git resources"));
+  assert.ok(
+    releaseWorkflow.includes("node scripts/activate-phase12-git-dist.mjs"),
+  );
   assert.ok(
     releaseWorkflow.includes(
       "node scripts/check-tauri-bundle-resources.mjs --require-manifest --release",
