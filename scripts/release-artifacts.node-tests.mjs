@@ -36,6 +36,9 @@ const gitDistWorkflow = await readFile(
   path.join(repoRoot, ".github", "workflows", "git-dist.yml"),
   "utf8",
 );
+const packageJson = JSON.parse(
+  await readFile(path.join(repoRoot, "package.json"), "utf8"),
+);
 const verifyGitDistBuildEvidenceScript = path.join(
   repoRoot,
   "scripts",
@@ -432,6 +435,10 @@ test("release workflow checks staged and packaged git-dist resources", () => {
 test("CI and git-dist workflows cover release and report contract checks", () => {
   assert.ok(ciWorkflow.includes("run: pnpm release:check"));
   assert.ok(ciWorkflow.includes("if: runner.os == 'Linux'"));
+  assert.match(
+    packageJson.scripts["release:check"],
+    /pnpm phase12:evidence:test/,
+  );
   for (const token of [
     "release_rehearsal_run_id:",
     "Resolve release rehearsal evidence artifacts",

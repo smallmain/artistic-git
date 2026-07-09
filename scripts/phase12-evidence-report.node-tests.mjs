@@ -261,29 +261,68 @@ test("summary rejects heavy perf reports whose scale was overridden smaller", as
   }
 });
 
-function e2eReport({ source = "artifact", status, target }) {
-  const pass = status === "pass";
-  return {
-    schemaVersion: 1,
-    kind: "phase12-e2e-full-chain-runtime",
-    status,
-    result: status,
-    target,
-    availabilityReport: {
-      status: pass ? "ready" : status,
-    },
-    gitDistSource: gitDistSource({ source, target }),
-    gitDist: gitDistEvidence(pass),
-    wdio: {
-      selectedOutcome: pass ? "success" : "skipped",
-    },
-    taskReadiness: {
-      platformEvidenceCheckable: pass,
-    },
-  };
-}
+test("summary rejects artifact-backed reports with executable hash mismatches", async () => {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-phase12-sha-"));
+  const artifactsDir = path.join(tmpDir, "artifacts");
+  const reportDir = path.join(tmpDir, "summary");
+
+  try {
+    await writeJson(
+      path.join(artifactsDir, "e2e-linux", "runtime.json"),
+      e2eReport({
+        executableOverrides: {
+          gitExecutable: { sha256: "actual-git-sha" },
+        },
+        status: "pass",
+        target: "linux-x86_64",
+      }),
+    );
+    await writeJson(
+      path.join(artifactsDir, "perf-linux", "report.json"),
+      perfReport({
+        executableOverrides: {
+          gitLfsExecutable: { manifestSha256: "manifest-lfs-sha" },
+        },
+        status: "pass",
+        target: "linux-x86_64",
+      }),
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        summaryScriptPath,
+        `--artifacts-dir=${artifactsDir}`,
+        `--report-dir=${reportDir}`,
+        "--e2e-required-targets=linux-x86_64",
+        "--perf-required-targets=linux-x86_64",
+      ],
+      { encoding: "utf8" },
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    const summary = await readJson(
+      path.join(reportDir, "phase12-evidence-summary.json"),
+    );
+    const e2eTarget = summary.tasks.e2eFullChain.targets["linux-x86_64"];
+    const perfTarget = summary.tasks.performance.targets["linux-x86_64"];
+    assert.equal(e2eTarget.checkable, false);
+    assert.equal(perfTarget.checkable, false);
+    assert.match(
+      e2eTarget.reasons.join("\n"),
+      /gitExecutable sha256 does not match manifestSha256/,
+    );
+    assert.match(
+      perfTarget.reasons.join("\n"),
+      /gitLfsExecutable sha256 does not match manifestSha256/,
+    );
+  } finally {
+    await rm(tmpDir, { force: true, recursive: true });
+  }
+});
 
 function perfReport({
+  executableOverrides = {},
   profile = {
     binaryBytes: 128 * 1024 * 1024,
     commitCount: 10_000,
@@ -303,7 +342,7 @@ function perfReport({
     heavy: true,
     profile,
     gitDistSource: gitDistSource({ source, target }),
-    gitDist: gitDistEvidence(pass),
+    gitDist: gitDistEvidence(pass, executableOverrides),
     checks: pass
       ? [
           { name: "historyPagination", status: "pass" },
@@ -311,6 +350,33 @@ function perfReport({
           { name: "largeBinaryLfs", status: "pass" },
         ]
       : [],
+    taskReadiness: {
+      platformEvidenceCheckable: pass,
+    },
+  };
+}
+
+function e2eReport({
+  executableOverrides = {},
+  source = "artifact",
+  status,
+  target,
+}) {
+  const pass = status === "pass";
+  return {
+    schemaVersion: 1,
+    kind: "phase12-e2e-full-chain-runtime",
+    status,
+    result: status,
+    target,
+    availabilityReport: {
+      status: pass ? "ready" : status,
+    },
+    gitDistSource: gitDistSource({ source, target }),
+    gitDist: gitDistEvidence(pass, executableOverrides),
+    wdio: {
+      selectedOutcome: pass ? "success" : "skipped",
+    },
     taskReadiness: {
       platformEvidenceCheckable: pass,
     },
@@ -326,23 +392,24 @@ function gitDistSource({ source, target }) {
   };
 }
 
-function gitDistEvidence(pass) {
+function gitDistEvidence(pass, overrides = {}) {
   return {
     executableEvidence: pass
       ? [
-          executableEvidence("gitExecutable"),
-          executableEvidence("gitLfsExecutable"),
+          executableEvidence("gitExecutable", overrides.gitExecutable),
+          executableEvidence("gitLfsExecutable", overrides.gitLfsExecutable),
         ]
       : [],
   };
 }
 
-function executableEvidence(key) {
+function executableEvidence(key, overrides = {}) {
   return {
     key,
     resolvesInsideDistDir: true,
     sha256: `${key}-sha256`,
     manifestSha256: `${key}-sha256`,
+    ...overrides,
   };
 }
 

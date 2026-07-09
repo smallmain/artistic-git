@@ -43,8 +43,19 @@ test("readiness summary aggregates remaining Windows and release blockers", asyn
       path.join(reportDir, "readiness-summary.json"),
     );
     assert.equal(summary.kind, "readiness-summary");
+    assert.equal(summary.schemaVersion, 2);
     assert.equal(summary.overallStatus, "blocked");
     assert.equal(summary.items.length, 7);
+    assert.equal(summary.source.releaseRehearsalCandidateCount, 1);
+    assert.equal(
+      summary.source.selectedReleaseRehearsal.artifactName,
+      "release-rehearsal-Windows",
+    );
+    assert.equal(
+      summary.source.selectedReleaseRehearsal.workflowSha,
+      "release-sha-skipped",
+    );
+    assert.equal(summary.source.releaseRehearsalCandidates.length, 1);
     assert.ok(
       summary.remainingBlockers.some(
         (blocker) =>
@@ -67,6 +78,90 @@ test("readiness summary aggregates remaining Windows and release blockers", asyn
       ),
     );
     assert.match(result.stdout, /Readiness summary: blocked/);
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("readiness summary lists all release rehearsal candidates and selects the newest", async () => {
+  const tmpDir = await mkdtemp(
+    path.join(os.tmpdir(), "ag-readiness-release-candidates-"),
+  );
+  const artifactsDir = path.join(tmpDir, "artifacts");
+  const reportDir = path.join(tmpDir, "summary");
+
+  try {
+    await writeJson(
+      path.join(artifactsDir, "phase12", "phase12-evidence-summary.json"),
+      phase12Summary({
+        e2eCheckable: false,
+        perfCheckable: false,
+        windowsReusable: false,
+      }),
+    );
+    await writeJson(
+      path.join(
+        artifactsDir,
+        "release-rehearsal-Linux",
+        "release-rehearsal-checklist.json",
+      ),
+      releaseRehearsal({
+        artifactName: "release-rehearsal-Linux",
+        generatedAt: "2026-07-09T00:01:00.000Z",
+        sha: "release-sha-linux",
+        status: "skipped",
+      }),
+    );
+    await writeJson(
+      path.join(
+        artifactsDir,
+        "release-rehearsal-Windows",
+        "release-rehearsal-checklist.json",
+      ),
+      releaseRehearsal({
+        artifactName: "release-rehearsal-Windows",
+        generatedAt: "2026-07-09T00:03:00.000Z",
+        sha: "release-sha-windows",
+        status: "skipped",
+      }),
+    );
+
+    const result = runReadiness(artifactsDir, reportDir);
+    assert.equal(result.status, 0, result.stderr);
+
+    const summary = await readJson(
+      path.join(reportDir, "readiness-summary.json"),
+    );
+    assert.equal(summary.source.releaseRehearsalCandidateCount, 2);
+    assert.equal(
+      summary.source.selectedReleaseRehearsal.artifactName,
+      "release-rehearsal-Windows",
+    );
+    assert.equal(
+      summary.source.selectedReleaseRehearsal.workflowSha,
+      "release-sha-windows",
+    );
+    assert.deepEqual(
+      summary.source.releaseRehearsalCandidates.map(
+        (candidate) => candidate.artifactName,
+      ),
+      ["release-rehearsal-Windows", "release-rehearsal-Linux"],
+    );
+    assert.ok(
+      summary.source.releaseRehearsalCandidates.every(
+        (candidate) => candidate.workflowRunUrlValid === true,
+      ),
+    );
+
+    const markdown = await readFile(
+      path.join(reportDir, "readiness-summary.md"),
+      "utf8",
+    );
+    assert.match(markdown, /Release rehearsal evidence candidates: 2/);
+    assert.match(
+      markdown,
+      /Selected release rehearsal evidence: release-rehearsal-Windows/,
+    );
   } finally {
     await rm(tmpDir, { recursive: true, force: true });
   }
@@ -243,12 +338,18 @@ function opensshBlocker() {
   };
 }
 
-function releaseRehearsal({ status }) {
+function releaseRehearsal({
+  artifactName = "release-rehearsal-Windows",
+  generatedAt = "2026-07-09T00:02:00.000Z",
+  sha,
+  status,
+}) {
   const pass = status === "pass";
   return {
     schemaVersion: 2,
     kind: "release-rehearsal-checklist",
-    generatedAt: "2026-07-09T00:02:00.000Z",
+    generatedAt,
+    mode: pass ? "operator-confirmed rehearsal" : "dry-run checklist",
     dryRun: !pass,
     status,
     result: status,
@@ -260,6 +361,17 @@ function releaseRehearsal({ status }) {
       ? []
       : ["ARTISTIC_GIT_RELEASE_REHEARSAL_OPERATOR_CONFIRMED"],
     missingSecrets: [],
+    ciDryRunArtifact: {
+      expectedArtifactName: artifactName,
+      workflowRunUrl:
+        "https://github.com/smallmain/artistic-git/actions/runs/1",
+      workflowRunUrlValid: true,
+      workflowAttempt: "1",
+      workflowSha: sha ?? `release-sha-${status}`,
+      plannedVersion: "0.1.0",
+      plannedTag: "v0.1.0",
+      releaseModeReason: pass ? "operator-confirmed" : "dry-run",
+    },
     blockers: pass
       ? []
       : [

@@ -559,6 +559,8 @@ function validateExecutableEvidence(report, reasons) {
       executable.manifestSha256.length === 0
     ) {
       reasons.push(`${key} is missing sha256/manifestSha256 evidence`);
+    } else if (executable.sha256 !== executable.manifestSha256) {
+      reasons.push(`${key} sha256 does not match manifestSha256`);
     }
   }
 }

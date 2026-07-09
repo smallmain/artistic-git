@@ -39,7 +39,7 @@
     "release:artifacts:test": "node --test scripts/release-artifacts.node-tests.mjs",
     "release:git-dist-build-evidence:test": "node --test scripts/verify-git-dist-build-evidence.node-tests.mjs",
     "release:resources:check": "node scripts/check-tauri-bundle-resources.mjs",
-    "release:check": "pnpm release:version:test && pnpm release:updater-pubkey:test && pnpm release:artifacts:test && pnpm release:git-dist-build-evidence:test && pnpm release:rehearsal:checklist:test && pnpm readiness:summary:test && pnpm release:resources:check",
+    "release:check": "pnpm release:version:test && pnpm release:updater-pubkey:test && pnpm release:artifacts:test && pnpm release:git-dist-build-evidence:test && pnpm release:rehearsal:checklist:test && pnpm phase12:evidence:test && pnpm readiness:summary:test && pnpm release:resources:check",
     "release:rehearsal:checklist": "node scripts/release-rehearsal-checklist.mjs",
     "release:rehearsal:checklist:test": "node --test scripts/release-rehearsal-checklist.node-tests.mjs",
     "readiness:summary": "node scripts/readiness-summary.mjs",

@@ -29,13 +29,17 @@ const reports = loadReports(artifactsDirs.map((dir) => path.resolve(dir)));
 const phase12Summary = selectLatest((content) => {
   return content.kind === "phase12-evidence-summary";
 });
-const releaseRehearsal = selectLatest((content) => {
-  return content.kind === "release-rehearsal-checklist";
-});
+const releaseRehearsalReports = reports
+  .filter((entry) => entry.content.kind === "release-rehearsal-checklist")
+  .sort(compareReportsByNewest);
+const releaseRehearsal = releaseRehearsalReports[0] ?? null;
 const opensshReport = selectLatest((content) => {
   return Boolean(content.opensshRelease);
 });
 const gitDistribution = phase12Summary?.content.gitDistribution ?? null;
+const releaseRehearsalCandidates = releaseRehearsalReports.map(
+  releaseRehearsalEvidence,
+);
 
 const items = [
   evaluateOpenSshGate(),
@@ -60,7 +64,7 @@ const items = [
 ];
 const remainingBlockers = items.flatMap((item) => item.blockers);
 const summary = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   kind: "readiness-summary",
   generatedAt: new Date().toISOString(),
   artifactsDirs: artifactsDirs.map((dir) => path.resolve(dir)),
@@ -69,6 +73,9 @@ const summary = {
     jsonFileCount: reports.length,
     phase12SummaryPath: phase12Summary?.filePath ?? null,
     releaseRehearsalPath: releaseRehearsal?.filePath ?? null,
+    releaseRehearsalCandidateCount: releaseRehearsalCandidates.length,
+    selectedReleaseRehearsal: releaseRehearsalCandidates[0] ?? null,
+    releaseRehearsalCandidates,
     opensshEvidencePath: opensshReport?.filePath ?? null,
     gitDistBuildReportCount: reports.filter(
       (entry) => entry.content.workflowBuild?.schemaVersion === 1,
@@ -453,7 +460,15 @@ function blockedItem({
 function selectLatest(predicate) {
   return reports
     .filter((entry) => predicate(entry.content))
-    .sort((left, right) => reportTime(right) - reportTime(left))[0];
+    .sort(compareReportsByNewest)[0];
+}
+
+function compareReportsByNewest(left, right) {
+  const timeDelta = reportTime(right) - reportTime(left);
+  if (timeDelta !== 0) {
+    return timeDelta;
+  }
+  return left.filePath.localeCompare(right.filePath);
 }
 
 function reportTime(entry) {
@@ -462,6 +477,28 @@ function reportTime(entry) {
     return parsed;
   }
   return entry.mtimeMs;
+}
+
+function releaseRehearsalEvidence(entry) {
+  const content = entry.content;
+  const dryRunArtifact = content.ciDryRunArtifact ?? {};
+  return {
+    filePath: entry.filePath,
+    generatedAt: content.generatedAt ?? null,
+    mode: content.mode ?? null,
+    status: content.status ?? null,
+    result: content.result ?? null,
+    dryRun: content.dryRun ?? null,
+    taskCheckbox: content.taskCheckbox ?? null,
+    artifactName: dryRunArtifact.expectedArtifactName ?? null,
+    workflowRunUrl: dryRunArtifact.workflowRunUrl ?? null,
+    workflowRunUrlValid: dryRunArtifact.workflowRunUrlValid ?? null,
+    workflowAttempt: dryRunArtifact.workflowAttempt ?? null,
+    workflowSha: dryRunArtifact.workflowSha ?? null,
+    plannedVersion: dryRunArtifact.plannedVersion ?? null,
+    plannedTag: dryRunArtifact.plannedTag ?? null,
+    releaseModeReason: dryRunArtifact.releaseModeReason ?? null,
+  };
 }
 
 function loadReports(rootDirs) {
@@ -509,6 +546,8 @@ function renderMarkdown(value) {
     "",
     `Status: ${value.overallStatus}`,
     `Blockers: ${value.remainingBlockers.length}`,
+    `Release rehearsal evidence candidates: ${value.source.releaseRehearsalCandidateCount}`,
+    `Selected release rehearsal evidence: ${value.source.selectedReleaseRehearsal?.artifactName ?? value.source.releaseRehearsalPath ?? "n/a"}`,
     "",
     "| Item | Status | Evidence |",
     "| --- | --- | --- |",
