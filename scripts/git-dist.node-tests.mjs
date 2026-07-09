@@ -588,6 +588,10 @@ test("source Git build flags disable optional Rust components", async () => {
     config.build.linux.git.make_flags.includes("NO_RUST=YesPlease"),
     "Linux Ubuntu 20.04 build image should not require Cargo for optional Git Rust code",
   );
+  assert.ok(
+    config.build.linux.git.make_flags.includes("USE_CURL_FOR_IMAP_SEND="),
+    "Linux Git source build should not link optional git-imap-send against libcurl LDAP dependencies",
+  );
   assert.equal(
     config.build.linux.git.make_flags.includes("NO_PERL=YesPlease"),
     false,

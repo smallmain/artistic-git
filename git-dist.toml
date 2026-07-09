@@ -234,7 +234,7 @@ linking = "glibc-dynamic-with-static-third-party-libs"
 apt_packages = ["build-essential", "curl", "ca-certificates", "libssl-dev", "zlib1g-dev", "libcurl4-openssl-dev", "libpcre2-dev", "libexpat1-dev", "libnghttp2-dev", "libidn2-dev", "librtmp-dev", "libssh-dev", "libpsl-dev", "libkrb5-dev", "libldap2-dev", "libbrotli-dev", "libzstd-dev"]
 static_libraries = ["curl", "openssl", "zlib", "pcre2", "expat", "ldap", "lber"]
 configure_flags = ["--prefix=/git"]
-make_flags = ["NO_GETTEXT=YesPlease", "NO_TCLTK=YesPlease", "NO_RUST=YesPlease", "RUNTIME_PREFIX=YesPlease"]
+make_flags = ["NO_GETTEXT=YesPlease", "NO_TCLTK=YesPlease", "NO_RUST=YesPlease", "RUNTIME_PREFIX=YesPlease", "USE_CURL_FOR_IMAP_SEND="]
 install_root = "git/"
 
 [build.windows.git]
