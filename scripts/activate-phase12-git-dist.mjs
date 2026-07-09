@@ -79,10 +79,6 @@ if (activeDistDir) {
 }
 
 function restoreExecutableBits(rootDir) {
-  if (process.platform === "win32") {
-    return [];
-  }
-
   const manifestPath = path.join(rootDir, "manifest.json");
   if (!existsSync(manifestPath)) {
     return [];
@@ -106,6 +102,9 @@ function restoreExecutableBits(rootDir) {
       );
     }
     if (!statSync(realPath).isFile()) {
+      continue;
+    }
+    if (process.platform === "win32") {
       continue;
     }
     chmodSync(
