@@ -842,11 +842,11 @@ fn unresolved_paths_from_entries(
     let mut unresolved = BTreeSet::new();
 
     for path in entries.keys() {
-        unresolved.insert(display_path(path));
+        unresolved.insert(conflict_display_path(path));
     }
     for path in paths {
         if worktree_has_markers(root, path) {
-            unresolved.insert(display_path(path));
+            unresolved.insert(conflict_display_path(path));
         }
     }
 
@@ -865,11 +865,11 @@ fn unresolved_paths_from_resolved_entries(
         let display = submodule_path
             .map(|prefix| prefix.join(path))
             .unwrap_or_else(|| path.to_path_buf());
-        unresolved.insert(display_path(&display));
+        unresolved.insert(conflict_display_path(&display));
     }
     for path in paths {
         if worktree_has_markers(root, &path.path) {
-            unresolved.insert(display_path(&path.display_path));
+            unresolved.insert(conflict_display_path(&path.display_path));
         }
     }
 
@@ -1200,8 +1200,14 @@ fn display_path(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
+#[cfg(windows)]
 fn conflict_display_path(path: &Path) -> String {
     display_path(path).replace('\\', "/")
+}
+
+#[cfg(not(windows))]
+fn conflict_display_path(path: &Path) -> String {
+    display_path(path)
 }
 
 fn base64_encode(bytes: &[u8]) -> String {
@@ -1361,6 +1367,17 @@ mod tests {
                 "src/conflict.txt".to_owned()
             ]
         );
+    }
+
+    #[test]
+    fn conflict_display_paths_preserve_platform_path_semantics() {
+        let displayed = conflict_display_path(Path::new("literal\\name.txt"));
+
+        if cfg!(windows) {
+            assert_eq!(displayed, "literal/name.txt");
+        } else {
+            assert_eq!(displayed, "literal\\name.txt");
+        }
     }
 
     #[test]
