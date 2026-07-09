@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  realpathSync,
   readFileSync,
   rmSync,
   statSync,
@@ -713,17 +714,41 @@ async function waitForRepository(repositoryPath: string) {
   await browser.waitUntil(
     async () =>
       existsSync(path.join(repositoryPath, ".git")) &&
-      (await elementWithAttribute(
-        "repository-shell",
-        "data-repository-path",
-        repositoryPath,
-      )) !== null &&
+      (await repositoryShellForPath(repositoryPath)) !== null &&
       (await $('[data-testid="history-scroll-viewport"]').isExisting()),
     {
       timeout: 90_000,
       timeoutMsg: `cloned repository did not open in the UI at ${repositoryPath}`,
     },
   );
+}
+
+async function repositoryShellForPath(repositoryPath: string) {
+  const elements = await $$('[data-testid="repository-shell"]');
+  for (const element of elements) {
+    const candidate = await element.getAttribute("data-repository-path");
+    if (candidate && sameFilesystemPath(candidate, repositoryPath)) {
+      return element;
+    }
+  }
+  return null;
+}
+
+function sameFilesystemPath(left: string, right: string) {
+  const leftPath = comparableFilesystemPath(left);
+  const rightPath = comparableFilesystemPath(right);
+  if (process.platform === "win32") {
+    return leftPath.toLowerCase() === rightPath.toLowerCase();
+  }
+  return leftPath === rightPath;
+}
+
+function comparableFilesystemPath(value: string) {
+  try {
+    return realpathSync.native(value);
+  } catch {
+    return path.resolve(value);
+  }
 }
 
 function assertClean(fixture: RealGitFixture, repositoryPath: string) {

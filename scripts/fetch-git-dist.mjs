@@ -6,6 +6,7 @@ import { createWriteStream } from "node:fs";
 import {
   chmod,
   cp,
+  lstat,
   mkdir,
   readdir,
   readFile,
@@ -580,9 +581,12 @@ async function ensureGitTransportBuiltinWrappers(installRoot) {
 
   for (const [wrapperName, builtinName] of gitTransportBuiltinWrappers) {
     const wrapperPath = path.join(gitExecPath, wrapperName);
-    const wrapperStat = await stat(wrapperPath).catch(() => null);
-    if (wrapperStat?.isFile()) {
+    const wrapperStat = await lstat(wrapperPath).catch(() => null);
+    if (wrapperStat?.isFile() && !wrapperStat.isSymbolicLink()) {
       continue;
+    }
+    if (wrapperStat) {
+      await rm(wrapperPath, { force: true });
     }
     await writeFile(
       wrapperPath,
