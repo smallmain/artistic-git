@@ -28,7 +28,7 @@ on:
 
 env:
   NODE_VERSION: "24"
-  GIT_DIST_CACHE_VERSION: "v2"
+  GIT_DIST_CACHE_VERSION: "v3"
 
 jobs:
   contract:

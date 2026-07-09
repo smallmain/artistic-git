@@ -217,6 +217,7 @@ async function checkDistRoot(config) {
 
   checkManifestPaths(config, manifest);
   await checkManifestExecutablesAndChecksums(config, manifest, distRoot);
+  await checkLinuxExecutableDependencies(target, distRoot);
 
   if (!noExec && targetName === getHostTarget()) {
     const gitExecutable = path.join(distRoot, manifest.paths.gitExecutable);
@@ -380,6 +381,53 @@ async function checkNoUnmanifestedFiles(config, manifest, distRoot) {
       `git-dist contains regular files not covered by manifest.sha256: ${unmanifested.join(", ")}`,
     );
   }
+}
+
+async function checkLinuxExecutableDependencies(target, distRoot) {
+  if (target.platform !== "linux" || process.platform !== "linux" || noExec) {
+    return;
+  }
+
+  const executablePaths = [];
+  for (const relativePath of await regularFileResourcePaths(distRoot)) {
+    const absolutePath = path.join(distRoot, relativePath);
+    try {
+      await access(absolutePath, constants.X_OK);
+    } catch {
+      continue;
+    }
+    executablePaths.push(absolutePath);
+  }
+
+  if (executablePaths.length === 0) {
+    fail("linux git-dist must contain executable files for dependency audit");
+  }
+
+  const result = spawnSync("ldd", executablePaths, {
+    encoding: "utf8",
+    maxBuffer: 50 * 1024 * 1024,
+  });
+  if (result.error) {
+    fail(`linux git-dist dependency audit could not run ldd: ${result.error.message}`);
+  }
+
+  const blockedLines = `${result.stdout}\n${result.stderr}`
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) =>
+      /\bnot found\b|lib(curl|ssl|crypto|z|pcre2|expat|ldap|lber)\S*\s*=>/.test(
+        line,
+      ),
+    );
+  if (blockedLines.length > 0) {
+    fail(
+      `linux git-dist executable dependencies include dynamic required libraries or missing libraries:\n${blockedLines.join("\n")}`,
+    );
+  }
+
+  info(
+    `linux git-dist executable dependency audit passed for ${executablePaths.length} files.`,
+  );
 }
 
 function runVersionCheck(executable, versionArgs, label, expectedVersion, env) {

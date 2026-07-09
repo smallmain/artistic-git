@@ -648,6 +648,10 @@ test("git-dist validation executes embedded Git runtime smoke checks", async () 
   const workflow = await readFile(workflowPath, "utf8");
 
   assert.match(checkGitDist, /runGitRuntimeSmoke/);
+  assert.match(checkGitDist, /checkLinuxExecutableDependencies/);
+  assert.match(checkGitDist, /spawnSync\("ldd"/);
+  assert.match(checkGitDist, /\\bnot found\\b/);
+  assert.match(checkGitDist, /lib\(curl\|ssl\|crypto\|z\|pcre2\|expat\|ldap\|lber\)/);
   assert.match(checkGitDist, /"--exec-path"/);
   assert.match(checkGitDist, /"submodule", "status"/);
   assert.match(checkGitDist, /"init", "--bare", "-b", "main", remote/);
@@ -1459,7 +1463,7 @@ test("workflow validates restored assembled cache hits before reuse", async () =
   );
   assert.match(
     workflow,
-    /GIT_DIST_CACHE_VERSION: "v2"/,
+    /GIT_DIST_CACHE_VERSION: "v3"/,
   );
   assert.match(
     workflow,
