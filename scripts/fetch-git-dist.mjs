@@ -579,6 +579,7 @@ async function ensureGitTransportBuiltinWrappers(installRoot) {
     );
   }
 
+  await chmod(gitExecPath, 0o755).catch(() => {});
   for (const [wrapperName, builtinName] of gitTransportBuiltinWrappers) {
     const wrapperPath = path.join(gitExecPath, wrapperName);
     const wrapperStat = await lstat(wrapperPath).catch(() => null);

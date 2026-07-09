@@ -480,10 +480,18 @@ async function runGitRuntimeSmoke({ gitExecutable, distRoot, runtimeEnv }) {
       "git-upload-archive",
       "git-upload-pack",
     ]) {
-      const helperPath = path.join(expectedExecPath, helper);
-      const helperStat = await stat(helperPath).catch(() => null);
-      if (!helperStat?.isFile()) {
-        fail(`embedded git smoke is missing transport helper ${helperPath}`);
+      const helperCandidates =
+        process.platform === "win32" ? [`${helper}.exe`, helper] : [helper];
+      const helperPath = await firstExistingFile(
+        expectedExecPath,
+        helperCandidates,
+      );
+      if (!helperPath) {
+        fail(
+          `embedded git smoke is missing transport helper ${helperCandidates
+            .map((candidate) => path.join(expectedExecPath, candidate))
+            .join(" or ")}`,
+        );
       }
     }
     const observedExecPath = runGitSmokeCommand(
@@ -603,6 +611,17 @@ function runGitSmokeCommand(gitExecutable, args, cwd, env) {
 
 function firstExistingDirectory(distRoot, relativePaths) {
   return existingDirectories(distRoot, relativePaths)[0] ?? null;
+}
+
+async function firstExistingFile(distRoot, relativePaths) {
+  for (const relativePath of relativePaths) {
+    const candidate = path.join(distRoot, relativePath);
+    const candidateStat = await stat(candidate).catch(() => null);
+    if (candidateStat?.isFile()) {
+      return candidate;
+    }
+  }
+  return null;
 }
 
 function existingDirectories(distRoot, relativePaths) {
