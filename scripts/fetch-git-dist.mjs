@@ -578,23 +578,47 @@ async function ensureGitTransportBuiltinWrappers(installRoot) {
       `source-built git install is missing libexec git binary: ${gitBinary}`,
     );
   }
+  const gitBinDir = await firstExistingDirectory(installRoot, ["git/bin"]);
+  if (!gitBinDir) {
+    fail(`source-built git install is missing git/bin under ${installRoot}`);
+  }
 
-  await chmod(gitExecPath, 0o755).catch(() => {});
   for (const [wrapperName, builtinName] of gitTransportBuiltinWrappers) {
     const wrapperPath = path.join(gitExecPath, wrapperName);
     const wrapperStat = await lstat(wrapperPath).catch(() => null);
-    if (wrapperStat?.isFile() && !wrapperStat.isSymbolicLink()) {
-      continue;
-    }
-    if (wrapperStat) {
+    if (!wrapperStat) {
+      await writeGitBuiltinWrapper({
+        builtinName,
+        gitBinary,
+        wrapperPath,
+      });
+    } else if (!wrapperStat.isFile() && !wrapperStat.isSymbolicLink()) {
       await rm(wrapperPath, { force: true });
+      await writeGitBuiltinWrapper({
+        builtinName,
+        gitBinary,
+        wrapperPath,
+      });
     }
-    await writeFile(
-      wrapperPath,
-      `#!/bin/sh\nexec "$(dirname "$0")/git" ${builtinName} "$@"\n`,
-    );
-    await chmod(wrapperPath, 0o755);
+
+    await writeGitBuiltinWrapper({
+      builtinName,
+      gitBinary,
+      wrapperPath: path.join(gitBinDir, wrapperName),
+    });
   }
+}
+
+async function writeGitBuiltinWrapper({ builtinName, gitBinary, wrapperPath }) {
+  const relativeGit = path
+    .relative(path.dirname(wrapperPath), gitBinary)
+    .split(path.sep)
+    .join("/");
+  await writeFile(
+    wrapperPath,
+    `#!/bin/sh\nexec "$(dirname "$0")/${relativeGit}" ${builtinName} "$@"\n`,
+  );
+  await chmod(wrapperPath, 0o755);
 }
 
 async function firstExistingDirectory(root, relativePaths) {

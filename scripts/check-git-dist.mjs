@@ -475,23 +475,21 @@ async function runGitRuntimeSmoke({ gitExecutable, distRoot, runtimeEnv }) {
     if (!expectedExecPath) {
       fail("embedded git smoke could not find git libexec/git-core in dist");
     }
-    for (const helper of [
-      "git-receive-pack",
-      "git-upload-archive",
-      "git-upload-pack",
-    ]) {
-      const helperCandidates =
-        process.platform === "win32" ? [`${helper}.exe`, helper] : [helper];
-      const helperPath = await firstExistingFile(
-        expectedExecPath,
-        helperCandidates,
-      );
-      if (!helperPath) {
-        fail(
-          `embedded git smoke is missing transport helper ${helperCandidates
-            .map((candidate) => path.join(expectedExecPath, candidate))
-            .join(" or ")}`,
-        );
+    if (process.platform !== "win32") {
+      for (const helper of [
+        "git-receive-pack",
+        "git-upload-archive",
+        "git-upload-pack",
+      ]) {
+        const helperPath = await firstExistingFile(distRoot, [
+          path.join("git", "bin", helper),
+          path.join("git", "libexec", "git-core", helper),
+          path.join("git", "usr", "bin", helper),
+          path.join("git", "usr", "libexec", "git-core", helper),
+        ]);
+        if (!helperPath) {
+          fail(`embedded git smoke is missing transport helper ${helper}`);
+        }
       }
     }
     const observedExecPath = runGitSmokeCommand(
