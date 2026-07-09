@@ -72,6 +72,64 @@ test("E2E finalizer keeps missing Windows git-dist as skipped evidence", async (
   }
 });
 
+test("E2E finalizer rejects executable hash mismatches before summary aggregation", async () => {
+  const tmpDir = await mkdtemp(
+    path.join(os.tmpdir(), "ag-phase12-e2e-sha-mismatch-"),
+  );
+  const availabilityPath = path.join(tmpDir, "availability.json");
+  const reportPath = path.join(tmpDir, "runtime.json");
+
+  try {
+    await writeJson(availabilityPath, {
+      schemaVersion: 2,
+      status: "ready",
+      reason: null,
+      gitDistSource: {
+        source: "artifact",
+        artifactName: "artistic-git-dist-linux-x86_64",
+        runId: "28915237870",
+        target: "linux-x86_64",
+      },
+      gitDist: {
+        executableEvidence: [
+          executableEvidence("gitExecutable", {
+            sha256: "actual-git-sha",
+          }),
+          executableEvidence("gitLfsExecutable"),
+        ],
+      },
+    });
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        finalizeScriptPath,
+        `--availability-report=${availabilityPath}`,
+        `--report=${reportPath}`,
+        "--linux-outcome=success",
+      ],
+      {
+        encoding: "utf8",
+        env: { ...process.env, RUNNER_OS: "Linux" },
+      },
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    const report = await readJson(reportPath);
+    assert.equal(report.kind, "phase12-e2e-full-chain-runtime");
+    assert.equal(report.status, "blocker");
+    assert.equal(report.target, "linux-x86_64");
+    assert.equal(report.wdio.selectedOutcome, "success");
+    assert.equal(report.taskReadiness.platformEvidenceCheckable, false);
+    assert.match(
+      report.taskReadiness.reasons.join("\n"),
+      /gitExecutable sha256 does not match manifestSha256/,
+    );
+  } finally {
+    await rm(tmpDir, { force: true, recursive: true });
+  }
+});
+
 test("summary separates Linux/Windows E2E from three-platform perf evidence", async () => {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-phase12-summary-"));
   const artifactsDir = path.join(tmpDir, "artifacts");
@@ -321,6 +379,127 @@ test("summary rejects artifact-backed reports with executable hash mismatches", 
   }
 });
 
+test("summary rejects artifact-backed reports without matching git-dist build evidence", async () => {
+  const tmpDir = await mkdtemp(
+    path.join(os.tmpdir(), "ag-phase12-missing-git-dist-evidence-"),
+  );
+  const artifactsDir = path.join(tmpDir, "artifacts");
+  const reportDir = path.join(tmpDir, "summary");
+
+  try {
+    await writeJson(
+      path.join(artifactsDir, "e2e-linux", "runtime.json"),
+      e2eReport({
+        status: "pass",
+        target: "linux-x86_64",
+      }),
+    );
+    await writeJson(
+      path.join(artifactsDir, "perf-linux", "report.json"),
+      perfReport({
+        status: "pass",
+        target: "linux-x86_64",
+      }),
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        summaryScriptPath,
+        `--artifacts-dir=${artifactsDir}`,
+        `--report-dir=${reportDir}`,
+        "--e2e-required-targets=linux-x86_64",
+        "--perf-required-targets=linux-x86_64",
+      ],
+      { encoding: "utf8" },
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    const summary = await readJson(
+      path.join(reportDir, "phase12-evidence-summary.json"),
+    );
+    const e2eTarget = summary.tasks.e2eFullChain.targets["linux-x86_64"];
+    const perfTarget = summary.tasks.performance.targets["linux-x86_64"];
+    assert.equal(e2eTarget.checkable, false);
+    assert.equal(perfTarget.checkable, false);
+    assert.match(
+      e2eTarget.reasons.join("\n"),
+      /git-dist linux-x86_64 build evidence is missing for artifact-backed report/,
+    );
+    assert.match(
+      perfTarget.reasons.join("\n"),
+      /git-dist linux-x86_64 build evidence is missing for artifact-backed report/,
+    );
+  } finally {
+    await rm(tmpDir, { force: true, recursive: true });
+  }
+});
+
+test("summary rejects artifact-backed reports whose run id differs from git-dist build evidence", async () => {
+  const tmpDir = await mkdtemp(
+    path.join(os.tmpdir(), "ag-phase12-git-dist-run-mismatch-"),
+  );
+  const artifactsDir = path.join(tmpDir, "artifacts");
+  const reportDir = path.join(tmpDir, "summary");
+
+  try {
+    await writeJson(
+      path.join(artifactsDir, "e2e-linux", "runtime.json"),
+      e2eReport({
+        runId: "runtime-run",
+        status: "pass",
+        target: "linux-x86_64",
+      }),
+    );
+    await writeJson(
+      path.join(artifactsDir, "perf-linux", "report.json"),
+      perfReport({
+        runId: "runtime-run",
+        status: "pass",
+        target: "linux-x86_64",
+      }),
+    );
+    await writeJson(
+      path.join(artifactsDir, "git-dist-linux", "git-dist-build-evidence.json"),
+      gitDistBuildEvidence({
+        runId: "build-run",
+        target: "linux-x86_64",
+      }),
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        summaryScriptPath,
+        `--artifacts-dir=${artifactsDir}`,
+        `--report-dir=${reportDir}`,
+        "--e2e-required-targets=linux-x86_64",
+        "--perf-required-targets=linux-x86_64",
+      ],
+      { encoding: "utf8" },
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    const summary = await readJson(
+      path.join(reportDir, "phase12-evidence-summary.json"),
+    );
+    const e2eTarget = summary.tasks.e2eFullChain.targets["linux-x86_64"];
+    const perfTarget = summary.tasks.performance.targets["linux-x86_64"];
+    assert.equal(e2eTarget.checkable, false);
+    assert.equal(perfTarget.checkable, false);
+    assert.match(
+      e2eTarget.reasons.join("\n"),
+      /gitDistSource\.runId runtime-run does not match git-dist build evidence runId build-run/,
+    );
+    assert.match(
+      perfTarget.reasons.join("\n"),
+      /gitDistSource\.runId runtime-run does not match git-dist build evidence runId build-run/,
+    );
+  } finally {
+    await rm(tmpDir, { force: true, recursive: true });
+  }
+});
+
 function perfReport({
   executableOverrides = {},
   profile = {
@@ -328,6 +507,7 @@ function perfReport({
     commitCount: 10_000,
     fileCount: 50_000,
   },
+  runId = "28915237870",
   source = "artifact",
   status,
   target,
@@ -341,7 +521,7 @@ function perfReport({
     profileName: "heavy",
     heavy: true,
     profile,
-    gitDistSource: gitDistSource({ source, target }),
+    gitDistSource: gitDistSource({ runId, source, target }),
     gitDist: gitDistEvidence(pass, executableOverrides),
     checks: pass
       ? [
@@ -358,6 +538,7 @@ function perfReport({
 
 function e2eReport({
   executableOverrides = {},
+  runId = "28915237870",
   source = "artifact",
   status,
   target,
@@ -372,7 +553,7 @@ function e2eReport({
     availabilityReport: {
       status: pass ? "ready" : status,
     },
-    gitDistSource: gitDistSource({ source, target }),
+    gitDistSource: gitDistSource({ runId, source, target }),
     gitDist: gitDistEvidence(pass, executableOverrides),
     wdio: {
       selectedOutcome: pass ? "success" : "skipped",
@@ -383,11 +564,11 @@ function e2eReport({
   };
 }
 
-function gitDistSource({ source, target }) {
+function gitDistSource({ runId = "28915237870", source, target }) {
   return {
     source,
     artifactName: `artistic-git-dist-${target}`,
-    runId: "28915237870",
+    runId,
     target,
   };
 }
@@ -415,6 +596,7 @@ function executableEvidence(key, overrides = {}) {
 
 function gitDistBuildEvidence({
   blocked = false,
+  runId = "28915237870",
   sourceArchiveValidation = null,
   target,
 }) {
@@ -423,7 +605,7 @@ function gitDistBuildEvidence({
       schemaVersion: 1,
       mode: "build",
       run: {
-        runId: "28915237870",
+        runId,
       },
       target: {
         name: target,

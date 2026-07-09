@@ -34,22 +34,16 @@ const outcomes = {
   ),
 };
 const selectedOutcome = selectOutcome(outcomes, runnerLabel);
-const { status, reasons } = evaluateStatus(availability, selectedOutcome);
-const artifactBacked =
-  availability?.gitDistSource?.source === "artifact" &&
-  Boolean(availability?.gitDistSource?.artifactName) &&
-  Boolean(availability?.gitDistSource?.runId);
-const executableEvidenceComplete =
-  Array.isArray(availability?.gitDist?.executableEvidence) &&
-  availability.gitDist.executableEvidence.length >= 2 &&
-  availability.gitDist.executableEvidence.every(
-    (executable) =>
-      executable.resolvesInsideDistDir === true &&
-      typeof executable.sha256 === "string" &&
-      executable.sha256.length > 0,
-  );
+const statusEvaluation = evaluateStatus(availability, selectedOutcome);
+const artifactEvidence = validateArtifactEvidence(availability);
+const reasons = [...statusEvaluation.reasons];
+let status = statusEvaluation.status;
+if (status === "pass" && !artifactEvidence.checkable) {
+  status = "blocker";
+  reasons.push(...artifactEvidence.reasons);
+}
 const platformEvidenceCheckable =
-  status === "pass" && artifactBacked && executableEvidenceComplete;
+  status === "pass" && artifactEvidence.checkable;
 
 const report = {
   schemaVersion: 1,
@@ -154,6 +148,51 @@ function evaluateStatus(currentAvailability, selectedWdioOutcome) {
   return {
     status: "pass",
     reasons: [],
+  };
+}
+
+function validateArtifactEvidence(currentAvailability) {
+  const reasons = [];
+  const source = currentAvailability?.gitDistSource;
+  if (source?.source !== "artifact") {
+    reasons.push(`gitDistSource.source is ${source?.source ?? "missing"}`);
+  }
+  if (!source?.runId) {
+    reasons.push("gitDistSource.runId is missing");
+  }
+  if (!source?.artifactName) {
+    reasons.push("gitDistSource.artifactName is missing");
+  }
+
+  const executables = currentAvailability?.gitDist?.executableEvidence;
+  if (!Array.isArray(executables) || executables.length < 2) {
+    reasons.push("gitDist.executableEvidence is incomplete");
+  } else {
+    for (const key of ["gitExecutable", "gitLfsExecutable"]) {
+      const executable = executables.find((entry) => entry.key === key);
+      if (!executable) {
+        reasons.push(`gitDist.executableEvidence is missing ${key}`);
+        continue;
+      }
+      if (executable.resolvesInsideDistDir !== true) {
+        reasons.push(`${key} does not resolve inside ARTISTIC_GIT_DIST_DIR`);
+      }
+      if (
+        typeof executable.sha256 !== "string" ||
+        executable.sha256.length === 0 ||
+        typeof executable.manifestSha256 !== "string" ||
+        executable.manifestSha256.length === 0
+      ) {
+        reasons.push(`${key} is missing sha256/manifestSha256 evidence`);
+      } else if (executable.sha256 !== executable.manifestSha256) {
+        reasons.push(`${key} sha256 does not match manifestSha256`);
+      }
+    }
+  }
+
+  return {
+    checkable: reasons.length === 0,
+    reasons,
   };
 }
 

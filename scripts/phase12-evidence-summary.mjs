@@ -150,7 +150,14 @@ function evaluateTask({
       .filter((entry) => inferReportTarget(entry.content) === target)
       .map((entry) => ({
         ...entry,
-        validation: validator(entry.content, target),
+        validation: mergeValidations(
+          validator(entry.content, target),
+          validateRuntimeGitDistBuildEvidence(
+            entry.content,
+            target,
+            currentGitDistribution.targets[target] ?? null,
+          ),
+        ),
       }))
       .sort((left, right) => score(right.validation) - score(left.validation));
     const selected = candidates[0] ?? null;
@@ -166,6 +173,7 @@ function evaluateTask({
       continue;
     }
 
+    const gitDistEvidence = currentGitDistribution.targets[target] ?? null;
     const targetResult = {
       status: selected.validation.status,
       checkable: selected.validation.checkable,
@@ -174,9 +182,7 @@ function evaluateTask({
       artifactName: selected.content.gitDistSource?.artifactName ?? null,
       runId: selected.content.gitDistSource?.runId ?? null,
       source: selected.content.gitDistSource?.source ?? null,
-      gitDistEvidence:
-        currentGitDistribution.targets[inferReportTarget(selected.content)] ??
-        null,
+      gitDistEvidence,
     };
     targets[target] = targetResult;
     if (!targetResult.checkable) {
@@ -537,6 +543,56 @@ function validateArtifactBacked(report, target, reasons) {
   }
 }
 
+function validateRuntimeGitDistBuildEvidence(report, target, gitDistEvidence) {
+  const source = report.gitDistSource;
+  if (source?.source !== "artifact") {
+    return {
+      checkable: true,
+      status: "pass",
+      reasons: [],
+    };
+  }
+
+  const reasons = [];
+  if (!gitDistEvidence?.buildEvidencePath) {
+    reasons.push(
+      `git-dist ${target} build evidence is missing for artifact-backed report`,
+    );
+  } else {
+    if (gitDistEvidence.reusableArtifactCheckable !== true) {
+      reasons.push(
+        `git-dist ${target} reusable build evidence is not checkable`,
+      );
+    }
+
+    const sourceRunId = normalizeComparable(source.runId);
+    const buildRunId = normalizeComparable(gitDistEvidence.runId);
+    if (!buildRunId) {
+      reasons.push(`git-dist ${target} build evidence runId is missing`);
+    } else if (sourceRunId && sourceRunId !== buildRunId) {
+      reasons.push(
+        `gitDistSource.runId ${sourceRunId} does not match git-dist build evidence runId ${buildRunId}`,
+      );
+    }
+
+    const sourceArtifactName = normalizeComparable(source.artifactName);
+    const buildArtifactName = normalizeComparable(gitDistEvidence.artifactName);
+    if (!buildArtifactName) {
+      reasons.push(`git-dist ${target} build evidence artifactName is missing`);
+    } else if (sourceArtifactName && sourceArtifactName !== buildArtifactName) {
+      reasons.push(
+        `gitDistSource.artifactName ${sourceArtifactName} does not match git-dist build evidence artifactName ${buildArtifactName}`,
+      );
+    }
+  }
+
+  return {
+    checkable: reasons.length === 0,
+    status: reasons.length === 0 ? "pass" : "blocked",
+    reasons,
+  };
+}
+
 function validateExecutableEvidence(report, reasons) {
   const executables = report.gitDist?.executableEvidence;
   if (!Array.isArray(executables) || executables.length < 2) {
@@ -563,6 +619,36 @@ function validateExecutableEvidence(report, reasons) {
       reasons.push(`${key} sha256 does not match manifestSha256`);
     }
   }
+}
+
+function mergeValidations(...validations) {
+  const reasons = validations.flatMap((validation) => validation.reasons ?? []);
+  if (reasons.length === 0) {
+    return {
+      checkable: true,
+      status: "pass",
+      reasons,
+    };
+  }
+  const firstFailing = validations.find(
+    (validation) =>
+      (validation.reasons?.length ?? 0) > 0 && validation.status !== "pass",
+  );
+  return {
+    checkable: false,
+    status:
+      firstFailing?.status && firstFailing.status !== "pass"
+        ? firstFailing.status
+        : "blocked",
+    reasons,
+  };
+}
+
+function normalizeComparable(value) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  return String(value);
 }
 
 function validateHeavyProfileScale(report, reasons) {
