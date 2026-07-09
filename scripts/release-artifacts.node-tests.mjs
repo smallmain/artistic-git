@@ -535,31 +535,45 @@ test("release workflow checks staged and packaged git-dist resources", () => {
 });
 
 test("release workflow configures Linux AppImage runtime prerequisites", () => {
+  const packageStart = releaseWorkflow.indexOf("\n  package:\n");
+  const publishStart = releaseWorkflow.indexOf("\n  publish:\n");
+  assert.notEqual(packageStart, -1, "package job block");
+  assert.notEqual(publishStart, -1, "publish job block");
+  assert.ok(publishStart > packageStart, "publish job follows package job");
+  const packageJob = releaseWorkflow.slice(packageStart, publishStart);
   assert.ok(
-    releaseWorkflow.includes("Free Linux release packaging disk space"),
+    packageJob.includes("Free Linux release packaging disk space"),
     "Linux packaging disk cleanup",
   );
   assert.ok(
-    releaseWorkflow.includes("/usr/local/lib/android"),
+    packageJob.includes("/usr/local/lib/android"),
     "Linux runner disk cleanup paths",
   );
   assert.ok(
-    releaseWorkflow.includes("desktop-file-utils \\"),
+    packageJob.includes("desktop-file-utils \\"),
     "desktop-file-utils",
   );
-  assert.ok(releaseWorkflow.includes("libfuse2 \\"), "libfuse2");
-  assert.ok(releaseWorkflow.includes("squashfs-tools \\"), "squashfs-tools");
-  assert.ok(releaseWorkflow.includes("zsync \\"), "zsync");
+  assert.ok(packageJob.includes("file \\"), "file");
+  assert.ok(packageJob.includes("libfuse2 \\"), "libfuse2");
+  assert.ok(packageJob.includes("squashfs-tools \\"), "squashfs-tools");
+  assert.ok(packageJob.includes("zsync \\"), "zsync");
   assert.ok(
-    releaseWorkflow.includes('APPIMAGE_EXTRACT_AND_RUN: "1"'),
+    packageJob.includes("command -v desktop-file-validate"),
+    "desktop-file-validate validation",
+  );
+  assert.ok(packageJob.includes("command -v file"), "file check");
+  assert.ok(packageJob.includes("command -v mksquashfs"), "mksquashfs check");
+  assert.ok(packageJob.includes("command -v zsync"), "zsync check");
+  assert.ok(
+    packageJob.includes('APPIMAGE_EXTRACT_AND_RUN: "1"'),
     "APPIMAGE_EXTRACT_AND_RUN",
   );
   assert.ok(
-    releaseWorkflow.includes("pnpm tauri build --ci --verbose"),
+    packageJob.includes("pnpm tauri build --ci --verbose"),
     "Linux Tauri verbose bundling",
   );
   assert.ok(
-    releaseWorkflow.includes("du -sh src-tauri/resources/git-dist"),
+    packageJob.includes("du -sh src-tauri/resources/git-dist"),
     "Linux GitDist size diagnostic",
   );
 });
