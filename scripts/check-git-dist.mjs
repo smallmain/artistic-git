@@ -24,6 +24,7 @@ import {
   getTarget,
   isPlaceholderChecksum,
   loadGitDistConfig,
+  regularFileResourcePaths,
   requiredExecutableKeysForTarget,
   sha256File,
   supportedTargets,
@@ -353,6 +354,31 @@ async function checkManifestExecutablesAndChecksums(
         );
       }
     }
+  }
+
+  await checkNoUnmanifestedFiles(config, manifest, distRoot);
+}
+
+async function checkNoUnmanifestedFiles(config, manifest, distRoot) {
+  const allowedUnmanifestedPaths = new Set([
+    config.resources.layout.manifest,
+    "README.md",
+  ]);
+  const manifestShaPaths = new Set(Object.keys(manifest.sha256 ?? {}));
+  const unmanifested = [];
+  for (const relativePath of await regularFileResourcePaths(distRoot)) {
+    if (
+      allowedUnmanifestedPaths.has(relativePath) ||
+      manifestShaPaths.has(relativePath)
+    ) {
+      continue;
+    }
+    unmanifested.push(relativePath);
+  }
+  if (unmanifested.length > 0) {
+    fail(
+      `git-dist contains regular files not covered by manifest.sha256: ${unmanifested.join(", ")}`,
+    );
   }
 }
 

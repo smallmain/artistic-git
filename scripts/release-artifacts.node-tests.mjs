@@ -279,6 +279,47 @@ test("resource checker rejects packaged git-dist sha mismatches", async () => {
   }
 });
 
+test("resource checker rejects packaged git-dist files missing from manifest sha256", async () => {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-resources-extra-"));
+
+  try {
+    const { configPath } = await writeFixtureConfig(tmpDir);
+    const bundleOutput = path.join(tmpDir, "target", "release");
+    const packagedGitDist = path.join(
+      bundleOutput,
+      "bundle",
+      "app",
+      "git-dist",
+    );
+    await writeFixtureGitDist(packagedGitDist);
+    await writeFile(
+      path.join(packagedGitDist, "README.md"),
+      "mount placeholder\n",
+    );
+    await mkdir(path.join(packagedGitDist, "git", "bin"), {
+      recursive: true,
+    });
+    await writeFile(
+      path.join(packagedGitDist, "git", "bin", "stray.txt"),
+      "stray\n",
+    );
+
+    await assert.rejects(
+      () =>
+        checkTauriBundleResources({
+          configPath,
+          requireManifest: true,
+          releaseMode: true,
+          bundleOutput,
+          requireBundledResource: true,
+        }),
+      /not covered by manifest\.sha256: git\/bin\/stray\.txt/,
+    );
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test("resource checker fails when required release manifests are missing", async () => {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-resources-"));
 

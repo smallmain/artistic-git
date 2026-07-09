@@ -22,6 +22,9 @@ pnpm fetch:git-dist -- --dev-resources --target=macos-universal
 export ARTISTIC_GIT_DIST_DIR="$PWD/src-tauri/resources/git-dist"
 ```
 
+`--dev-resources` must produce a complete runnable tree; it is intentionally
+incompatible with `--output`, `--download-only`, and `--no-extract`.
+
 Run:
 
 ```sh

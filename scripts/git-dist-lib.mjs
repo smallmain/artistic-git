@@ -641,7 +641,7 @@ async function assertRequiredDistFiles(config, targetName, distRoot, paths) {
   }
 }
 
-async function regularFileResourcePaths(root) {
+export async function regularFileResourcePaths(root) {
   const files = [];
 
   async function walk(directory, relativeDirectory) {

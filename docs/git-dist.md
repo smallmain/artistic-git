@@ -112,6 +112,8 @@ Current phase 1A behavior:
   output directory.
 - `--dev-resources` uses `src-tauri/resources/git-dist` as the output directory
   so `pnpm tauri:dev` and local Rust tests can point at the same resource tree.
+  It always assembles a runnable tree and rejects `--output`, `--download-only`,
+  and `--no-extract` to avoid leaving the ignored mount in a partial state.
 - real fetch mode rejects placeholders before any download.
 - non-placeholder sources are downloaded, SHA-256 checked, and extracted into a
   staging directory.
@@ -167,6 +169,10 @@ pnpm fetch:git-dist -- --dev-resources --target=macos-universal
 export ARTISTIC_GIT_DIST_DIR="$PWD/src-tauri/resources/git-dist"
 node scripts/check-git-dist.mjs --target=macos-universal
 ```
+
+Do not combine `--dev-resources` with `--output`, `--download-only`, or
+`--no-extract`; the repository-local mount is only valid after a complete
+assembly that writes `manifest.json`.
 
 `src-tauri/resources/git-dist/README.md` is tracked as the mount point
 placeholder, but downloaded archives, extracted tools, and generated

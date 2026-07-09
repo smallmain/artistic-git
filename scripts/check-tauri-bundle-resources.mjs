@@ -6,6 +6,8 @@ import { access, readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { regularFileResourcePaths } from "./git-dist-lib.mjs";
+
 export const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
@@ -229,6 +231,7 @@ async function validateBundledGitDistManifest(manifestPath) {
     `packaged git-dist manifest must contain sha256: ${manifestPath}`,
   );
   const checked = [];
+  const checkedPaths = new Set();
   for (const [key, relativePath] of Object.entries(paths)) {
     const normalized = assertRelativeManifestPath(
       relativePath,
@@ -250,7 +253,43 @@ async function validateBundledGitDistManifest(manifestPath) {
         `packaged git-dist sha256 mismatch for ${normalized}: expected ${expectedSha}, got ${actualSha}`,
       );
     }
+    checkedPaths.add(normalized);
     checked.push({ key, path: normalized, sha256: actualSha });
+  }
+  for (const [relativePath, expectedSha] of Object.entries(sha256)) {
+    const normalized = assertRelativeManifestPath(
+      relativePath,
+      `sha256 key ${relativePath}`,
+      manifestPath,
+    );
+    const filePath = path.join(root, normalized);
+    const fileStat = await stat(filePath).catch(() => null);
+    if (!fileStat?.isFile()) {
+      fail(`packaged git-dist manifest.sha256 file is missing: ${filePath}`);
+    }
+    const actualSha = await sha256File(filePath);
+    if (actualSha !== String(expectedSha).toLowerCase()) {
+      fail(
+        `packaged git-dist sha256 mismatch for ${normalized}: expected ${expectedSha}, got ${actualSha}`,
+      );
+    }
+    checkedPaths.add(normalized);
+  }
+  const allowedUnmanifestedPaths = new Set(["manifest.json", "README.md"]);
+  const unmanifested = [];
+  for (const relativePath of await regularFileResourcePaths(root)) {
+    if (
+      allowedUnmanifestedPaths.has(relativePath) ||
+      checkedPaths.has(relativePath)
+    ) {
+      continue;
+    }
+    unmanifested.push(relativePath);
+  }
+  if (unmanifested.length > 0) {
+    fail(
+      `packaged git-dist contains regular files not covered by manifest.sha256: ${unmanifested.join(", ")}`,
+    );
   }
   return { manifestPath, checked };
 }

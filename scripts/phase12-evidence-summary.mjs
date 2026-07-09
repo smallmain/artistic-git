@@ -159,7 +159,11 @@ function evaluateTask({
           ),
         ),
       }))
-      .sort((left, right) => score(right.validation) - score(left.validation));
+      .sort(
+        (left, right) =>
+          score(right.validation) - score(left.validation) ||
+          compareReportsByNewest(left, right),
+      );
     const selected = candidates[0] ?? null;
     if (!selected) {
       const reason = `${taskName} is missing ${target} evidence.`;
@@ -227,16 +231,18 @@ function evaluateGitDistributionEvidence({
       .sort(
         (left, right) =>
           scoreGitDistBuild(right.validation) -
-          scoreGitDistBuild(left.validation),
+            scoreGitDistBuild(left.validation) ||
+          compareReportsByNewest(left, right),
       );
     const selectedBuild = buildCandidates[0] ?? null;
     const selectedSource =
-      sourceReports.find((entry) => entry.content.target?.name === target) ??
-      null;
+      sourceReports
+        .filter((entry) => entry.content.target?.name === target)
+        .sort(compareReportsByNewest)[0] ?? null;
     const selectedBlocker =
-      blockerReports.find(
-        (entry) => entry.content.workflowBuild?.target?.name === target,
-      ) ?? null;
+      blockerReports
+        .filter((entry) => entry.content.workflowBuild?.target?.name === target)
+        .sort(compareReportsByNewest)[0] ?? null;
 
     const sourceArchiveValidation =
       selectedBuild?.content.workflowBuild?.sourceArchiveValidation ??
@@ -686,9 +692,11 @@ function loadReports(rootDir) {
   }
   return listJsonFiles(rootDir).flatMap((filePath) => {
     try {
+      const stat = statSync(filePath);
       return [
         {
           filePath,
+          mtimeMs: stat.mtimeMs,
           content: JSON.parse(readFileSync(filePath, "utf8")),
         },
       ];
@@ -705,7 +713,7 @@ function listJsonFiles(rootDir) {
     const current = stack.pop();
     const stat = statSync(current);
     if (stat.isDirectory()) {
-      for (const entry of readdirSync(current)) {
+      for (const entry of readdirSync(current).sort()) {
         stack.push(path.join(current, entry));
       }
     } else if (current.endsWith(".json")) {
@@ -717,6 +725,46 @@ function listJsonFiles(rootDir) {
 
 function inferReportTarget(report) {
   return report.target ?? report.gitDistSource?.target ?? null;
+}
+
+function compareReportsByNewest(left, right) {
+  const timeDelta = reportTime(right) - reportTime(left);
+  if (timeDelta !== 0) {
+    return timeDelta;
+  }
+  const runDelta = reportRunId(right) - reportRunId(left);
+  if (runDelta !== 0) {
+    return runDelta;
+  }
+  const mtimeDelta = (right.mtimeMs ?? 0) - (left.mtimeMs ?? 0);
+  if (mtimeDelta !== 0) {
+    return mtimeDelta;
+  }
+  return left.filePath.localeCompare(right.filePath);
+}
+
+function reportTime(entry) {
+  const value =
+    entry.content.generatedAt ??
+    entry.content.workflowBuild?.generatedAt ??
+    entry.content.workflowBuild?.run?.createdAt ??
+    entry.content.ci?.createdAt ??
+    null;
+  const parsed = Date.parse(value ?? "");
+  if (Number.isFinite(parsed)) {
+    return parsed;
+  }
+  return entry.mtimeMs ?? 0;
+}
+
+function reportRunId(entry) {
+  const value =
+    entry.content.gitDistSource?.runId ??
+    entry.content.workflowBuild?.run?.runId ??
+    entry.content.ci?.runId ??
+    null;
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function renderMarkdown(value) {

@@ -31,6 +31,7 @@ import {
 } from "./git-dist-lib.mjs";
 
 const args = parseArgs(process.argv.slice(2));
+validateArgCombinations(args);
 const targetName = normalizeTargetArg(args.target ?? getHostTarget());
 const configFilePath = path.resolve(args.config ?? defaultConfigPath);
 const devResourcesDir = path.join(
@@ -63,10 +64,12 @@ const usage = `Usage:
   node scripts/fetch-git-dist.mjs --print-env [--target=${supportedTargets.join("|")}] [--output=/path/to/git-dist] [--config=/path/to/git-dist.toml]
   node scripts/fetch-git-dist.mjs --source-evidence-only --skip-blocked-sources [--target=${supportedTargets.join("|")}] [--components=git,git_lfs] [--cache-dir=/path] [--evidence-dir=/path] [--config=/path/to/git-dist.toml]
   node scripts/fetch-git-dist.mjs [--target=${supportedTargets.join("|")}] [--output=/path/to/git-dist] [--cache-dir=/path] [--download-only] [--no-extract] [--build-helpers] [--helper-dir=/path | --credential-helper=/path --ssh-askpass=/path] [--helper-profile=auto|release|debug]
-  node scripts/fetch-git-dist.mjs --dev-resources [--target=${supportedTargets.join("|")}] [--download-only]
+  node scripts/fetch-git-dist.mjs --dev-resources [--target=${supportedTargets.join("|")}] [--helper-profile=auto|release|debug]
 
 Default output is $ARTISTIC_GIT_DIST_DIR when set, otherwise a temp directory.
 --dev-resources writes to src-tauri/resources/git-dist for local Tauri runs.
+--dev-resources always assembles a runnable resource tree; do not combine it
+with --output, --download-only, or --no-extract.
 --source-evidence-only downloads and SHA-verifies selected stable source
 archives for a target, records placeholder/non-stable sources as skipped when
 --skip-blocked-sources is set, and never extracts or assembles a git-dist tree.
@@ -991,6 +994,29 @@ function parseArgs(argv) {
   }
 
   return parsed;
+}
+
+function validateArgCombinations(parsed) {
+  if (parsed.help) {
+    return;
+  }
+  const conflicts = [];
+  if (parsed.devResources) {
+    if (parsed.output) {
+      conflicts.push("--output");
+    }
+    if (parsed.downloadOnly) {
+      conflicts.push("--download-only");
+    }
+    if (parsed.noExtract) {
+      conflicts.push("--no-extract");
+    }
+    if (conflicts.length > 0) {
+      fail(
+        `--dev-resources writes the runnable Tauri resource tree and cannot be combined with ${conflicts.join(", ")}`,
+      );
+    }
+  }
 }
 
 function normalizeTargetArg(value) {

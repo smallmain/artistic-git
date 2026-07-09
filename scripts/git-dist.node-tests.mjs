@@ -310,6 +310,49 @@ test("assembles staged Windows archives into manifest layout and validates as a 
   }
 });
 
+test("git-dist validation rejects regular files missing from manifest sha256", async () => {
+  const config = await loadConfig();
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-git-dist-extra-"));
+
+  try {
+    const stagingDir = path.join(tmpDir, "staging");
+    const outputDir = path.join(tmpDir, "git-dist");
+    const helperDir = path.join(tmpDir, "helpers");
+    await stageWindowsArchives(config, stagingDir);
+    await writeWindowsHelpers(helperDir);
+
+    await assembleGitDist({
+      config,
+      targetName: windowsTarget,
+      stagingDir,
+      outputDir,
+      helperDir,
+    });
+    await writeFile(path.join(outputDir, "README.md"), "mount placeholder\n");
+    await mkdir(path.join(outputDir, "git", "bin"), { recursive: true });
+    await writeFile(path.join(outputDir, "git", "bin", "stray.txt"), "stray\n");
+
+    const check = spawnSync(
+      process.execPath,
+      ["scripts/check-git-dist.mjs", `--target=${windowsTarget}`, "--no-exec"],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          ARTISTIC_GIT_DIST_DIR: outputDir,
+        },
+      },
+    );
+    assert.notEqual(check.status, 0);
+    assert.match(check.stderr, /not covered by manifest\.sha256/);
+    assert.match(check.stderr, /git\/bin\/stray\.txt/);
+    assert.doesNotMatch(check.stderr, /README\.md/);
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test("assembles a prepared macOS source build and combines staged git-lfs binaries", async () => {
   const config = await loadConfig();
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-git-dist-"));
@@ -661,6 +704,35 @@ test("dev resources print-env points at the Tauri git-dist resource mount", () =
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /ARTISTIC_GIT_DIST_DIR/);
   assert.match(result.stdout, /src-tauri\/resources\/git-dist/);
+});
+
+test("dev resources mode rejects partial or redirected output modes", () => {
+  for (const conflict of [
+    "--download-only",
+    "--no-extract",
+    `--output=${path.join(os.tmpdir(), "ag-dev-resource-output")}`,
+  ]) {
+    const result = spawnSync(
+      process.execPath,
+      [
+        fetchGitDistPath,
+        "--dev-resources",
+        "--target=macos-universal",
+        conflict,
+      ],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+      },
+    );
+
+    assert.notEqual(result.status, 0, conflict);
+    assert.match(result.stderr, /--dev-resources/);
+    assert.match(
+      result.stderr,
+      new RegExp(escapeRegExp(conflict.split("=")[0])),
+    );
+  }
 });
 
 test("Win32-OpenSSH release gate treats Preview tags as non-stable even when GitHub prerelease is false", async () => {
@@ -1263,3 +1335,7 @@ test("workflow validates restored assembled cache hits before reuse", async () =
     /Validate restored assembled distribution[\s\S]+matrix\.placeholderBlocked != true && steps\.dist-cache\.outputs\.cache-hit == 'true'[\s\S]+node scripts\/check-git-dist\.mjs --target="\$\{\{ matrix\.target \}\}"/,
   );
 });
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}

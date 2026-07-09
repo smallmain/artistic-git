@@ -500,8 +500,106 @@ test("summary rejects artifact-backed reports whose run id differs from git-dist
   }
 });
 
+test("summary selects the newest equal-score evidence candidate per target", async () => {
+  const tmpDir = await mkdtemp(
+    path.join(os.tmpdir(), "ag-phase12-newest-candidate-"),
+  );
+  const artifactsDir = path.join(tmpDir, "artifacts");
+  const reportDir = path.join(tmpDir, "summary");
+
+  try {
+    await writeJson(
+      path.join(artifactsDir, "e2e-linux-old", "runtime.json"),
+      e2eReport({
+        generatedAt: "2026-07-09T00:00:00.000Z",
+        status: "pass",
+        target: "linux-x86_64",
+      }),
+    );
+    await writeJson(
+      path.join(artifactsDir, "e2e-linux-new", "runtime.json"),
+      e2eReport({
+        generatedAt: "2026-07-09T00:05:00.000Z",
+        status: "pass",
+        target: "linux-x86_64",
+      }),
+    );
+    await writeJson(
+      path.join(artifactsDir, "perf-linux-old", "report.json"),
+      perfReport({
+        generatedAt: "2026-07-09T00:00:00.000Z",
+        status: "pass",
+        target: "linux-x86_64",
+      }),
+    );
+    await writeJson(
+      path.join(artifactsDir, "perf-linux-new", "report.json"),
+      perfReport({
+        generatedAt: "2026-07-09T00:05:00.000Z",
+        status: "pass",
+        target: "linux-x86_64",
+      }),
+    );
+    await writeJson(
+      path.join(
+        artifactsDir,
+        "git-dist-linux-old",
+        "git-dist-build-evidence.json",
+      ),
+      gitDistBuildEvidence({
+        generatedAt: "2026-07-09T00:00:00.000Z",
+        target: "linux-x86_64",
+      }),
+    );
+    await writeJson(
+      path.join(
+        artifactsDir,
+        "git-dist-linux-new",
+        "git-dist-build-evidence.json",
+      ),
+      gitDistBuildEvidence({
+        generatedAt: "2026-07-09T00:05:00.000Z",
+        target: "linux-x86_64",
+      }),
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        summaryScriptPath,
+        `--artifacts-dir=${artifactsDir}`,
+        `--report-dir=${reportDir}`,
+        "--e2e-required-targets=linux-x86_64",
+        "--perf-required-targets=linux-x86_64",
+      ],
+      { encoding: "utf8" },
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    const summary = await readJson(
+      path.join(reportDir, "phase12-evidence-summary.json"),
+    );
+
+    assert.match(
+      summary.tasks.e2eFullChain.targets["linux-x86_64"].reportPath,
+      /e2e-linux-new/,
+    );
+    assert.match(
+      summary.tasks.performance.targets["linux-x86_64"].reportPath,
+      /perf-linux-new/,
+    );
+    assert.match(
+      summary.gitDistribution.targets["linux-x86_64"].buildEvidencePath,
+      /git-dist-linux-new/,
+    );
+  } finally {
+    await rm(tmpDir, { force: true, recursive: true });
+  }
+});
+
 function perfReport({
   executableOverrides = {},
+  generatedAt = "2026-07-09T00:00:00.000Z",
   profile = {
     binaryBytes: 128 * 1024 * 1024,
     commitCount: 10_000,
@@ -516,6 +614,7 @@ function perfReport({
   return {
     schemaVersion: 2,
     kind: "phase12-perf",
+    generatedAt,
     status,
     result: status,
     profileName: "heavy",
@@ -538,6 +637,7 @@ function perfReport({
 
 function e2eReport({
   executableOverrides = {},
+  generatedAt = "2026-07-09T00:00:00.000Z",
   runId = "28915237870",
   source = "artifact",
   status,
@@ -547,6 +647,7 @@ function e2eReport({
   return {
     schemaVersion: 1,
     kind: "phase12-e2e-full-chain-runtime",
+    generatedAt,
     status,
     result: status,
     target,
@@ -596,11 +697,13 @@ function executableEvidence(key, overrides = {}) {
 
 function gitDistBuildEvidence({
   blocked = false,
+  generatedAt = "2026-07-09T00:00:00.000Z",
   runId = "28915237870",
   sourceArchiveValidation = null,
   target,
 }) {
   return {
+    generatedAt,
     workflowBuild: {
       schemaVersion: 1,
       mode: "build",
