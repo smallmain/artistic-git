@@ -1,7 +1,8 @@
 use std::sync::{
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicU64, Ordering},
     Arc, Mutex,
 };
+use std::time::Duration;
 
 use artistic_git_contracts::{AppError, AppResult};
 use artistic_git_git_runner::OperationBusy;
@@ -13,14 +14,19 @@ use tauri::{
 use tauri_plugin_updater::{Update, UpdaterExt};
 
 const UPDATE_STATUS_EVENT: &str = "update-status";
+const UPDATE_CHECK_OPERATION: &str = "checkForUpdates";
 const INSTALL_OPERATION: &str = "installReadyUpdate";
 const INSTALL_GATE_OPERATION: &str = "updateInstallGate";
 const PROMPT_ROUTE_OPERATION: &str = "updatePromptRoute";
+const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(30);
+const UPDATE_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const UPDATE_READ_TIMEOUT: Duration = Duration::from_secs(2 * 60);
+const UPDATE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(6 * 60 * 60);
 
 #[derive(Default)]
 pub struct UpdaterRuntimeState {
-    checking: AtomicBool,
     next_request_id: AtomicU64,
+    active_check: Mutex<Option<ActiveCheck>>,
     ready: Mutex<Option<ReadyUpdate>>,
     ready_prompt: Mutex<Option<UpdateStatusEvent>>,
 }
@@ -29,6 +35,28 @@ pub struct UpdaterRuntimeState {
 struct ReadyUpdate {
     update: Update,
     bytes: Arc<Vec<u8>>,
+}
+
+struct ActiveCheck {
+    status: UpdateStatusEvent,
+    manual_observers: Vec<ManualCheckObserver>,
+}
+
+#[derive(Clone)]
+struct ManualCheckObserver {
+    request_id: String,
+    target_window_label: Option<String>,
+}
+
+enum BeginCheckOutcome<'a> {
+    Started(CheckGuard<'a>),
+    Observed(ManualCheckObservation<'a>),
+    Busy,
+}
+
+struct ManualCheckObservation<'a> {
+    _active_check: std::sync::MutexGuard<'a, Option<ActiveCheck>>,
+    event: UpdateStatusEvent,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -127,45 +155,64 @@ pub async fn check_for_updates(
         &request_window_label,
         focused_update_window_label(&app_handle),
     );
-
-    let Some(_guard) = state.try_begin_check() else {
-        let event = UpdateStatusEvent {
-            request_id,
-            source,
-            target_window_label,
-            status: UpdateStatus::Failed {
-                message: "an update check is already in progress".to_owned(),
-                visible: source == UpdateCheckSource::Manual,
-            },
-        };
-        emit_manual_or_success_status(&app_handle, &event);
-        return Ok(event);
+    let checking_event = UpdateStatusEvent {
+        request_id: request_id.clone(),
+        source,
+        target_window_label: target_window_label.clone(),
+        status: UpdateStatus::Checking,
     };
 
-    emit_status(
-        &app_handle,
-        &UpdateStatusEvent {
-            request_id: request_id.clone(),
-            source,
-            target_window_label: target_window_label.clone(),
-            status: UpdateStatus::Checking,
-        },
-    );
+    let _guard = match state.begin_check(checking_event.clone())? {
+        BeginCheckOutcome::Started(guard) => guard,
+        BeginCheckOutcome::Observed(observation) => {
+            let event = observation.event.clone();
+            // Keep the active-check mutex locked until the snapshot is emitted so
+            // later progress cannot overtake it and regress the visible status.
+            emit_status(&app_handle, &event);
+            drop(observation);
+            return Ok(event);
+        }
+        BeginCheckOutcome::Busy => {
+            let event = UpdateStatusEvent {
+                request_id,
+                source,
+                target_window_label,
+                status: UpdateStatus::Failed {
+                    message: "an update check is already in progress".to_owned(),
+                    visible: source == UpdateCheckSource::Manual,
+                },
+            };
+            emit_manual_or_success_status(&app_handle, &event);
+            return Ok(event);
+        }
+    };
 
-    let updater = match app_handle.updater() {
+    emit_check_status(&app_handle, &state, &checking_event)?;
+
+    let updater = match app_handle
+        .updater_builder()
+        .timeout(UPDATE_CHECK_TIMEOUT)
+        .configure_client(|client| {
+            client
+                .connect_timeout(UPDATE_CONNECT_TIMEOUT)
+                .read_timeout(UPDATE_READ_TIMEOUT)
+        })
+        .build()
+    {
         Ok(updater) => updater,
         Err(error) => {
-            return Ok(failed_status(
+            return failed_check_status(
                 &app_handle,
+                &state,
                 request_id,
                 source,
                 target_window_label,
                 format!("failed to initialize updater: {error}"),
-            ));
+            );
         }
     };
 
-    let update = match updater.check().await {
+    let mut update = match updater.check().await {
         Ok(Some(update)) => update,
         Ok(None) => {
             state.clear_ready_update()?;
@@ -175,19 +222,21 @@ pub async fn check_for_updates(
                 target_window_label,
                 status: UpdateStatus::NotAvailable,
             };
-            emit_status(&app_handle, &event);
+            emit_check_status(&app_handle, &state, &event)?;
             return Ok(event);
         }
         Err(error) => {
-            return Ok(failed_status(
+            return failed_check_status(
                 &app_handle,
+                &state,
                 request_id,
                 source,
                 target_window_label,
                 format!("failed to check for updates: {error}"),
-            ));
+            );
         }
     };
+    update.timeout = Some(UPDATE_DOWNLOAD_TIMEOUT);
 
     let version = update.version.clone();
     let notes = update.body.clone();
@@ -202,12 +251,13 @@ pub async fn check_for_updates(
             notes,
             reason,
         );
-        emit_status(&app_handle, &event);
+        emit_check_status(&app_handle, &state, &event)?;
         return Ok(event);
     }
 
-    emit_status(
+    emit_check_status(
         &app_handle,
+        &state,
         &UpdateStatusEvent {
             request_id: request_id.clone(),
             source,
@@ -217,7 +267,7 @@ pub async fn check_for_updates(
                 notes: notes.clone(),
             },
         },
-    );
+    )?;
 
     let mut downloaded_bytes = 0_u64;
     let download_result = update
@@ -233,21 +283,25 @@ pub async fn check_for_updates(
                     let progress = total_bytes
                         .filter(|total| *total > 0)
                         .map(|total| (downloaded_bytes as f64 / total as f64).min(1.0));
-                    emit_status(
-                        &app_handle,
-                        &UpdateStatusEvent {
-                            request_id: request_id.clone(),
-                            source,
-                            target_window_label: target_window_label.clone(),
-                            status: UpdateStatus::Downloading {
-                                version: version.clone(),
-                                notes: notes.clone(),
-                                downloaded_bytes,
-                                total_bytes,
-                                progress,
-                            },
+                    let event = UpdateStatusEvent {
+                        request_id: request_id.clone(),
+                        source,
+                        target_window_label: target_window_label.clone(),
+                        status: UpdateStatus::Downloading {
+                            version: version.clone(),
+                            notes: notes.clone(),
+                            downloaded_bytes,
+                            total_bytes,
+                            progress,
                         },
-                    );
+                    };
+                    if let Some(runtime_state) = app_handle.try_state::<UpdaterRuntimeState>() {
+                        if emit_check_status(&app_handle, &runtime_state, &event).is_err() {
+                            emit_status(&app_handle, &event);
+                        }
+                    } else {
+                        emit_status(&app_handle, &event);
+                    }
                 }
             },
             || {},
@@ -257,13 +311,14 @@ pub async fn check_for_updates(
     let bytes = match download_result {
         Ok(bytes) => bytes,
         Err(error) => {
-            return Ok(failed_status(
+            return failed_check_status(
                 &app_handle,
+                &state,
                 request_id,
                 source,
                 target_window_label,
                 format!("failed to download update: {error}"),
-            ));
+            );
         }
     };
 
@@ -278,8 +333,10 @@ pub async fn check_for_updates(
         target_window_label,
         status: UpdateStatus::Ready { version, notes },
     };
-    state.store_ready_update(update, bytes, event.clone())?;
-    emit_status(&app_handle, &event);
+    let observed_events = state.record_check_status(event.clone())?;
+    let prompt_event = canonical_prompt_event(&event, &observed_events);
+    state.store_ready_update(update, bytes, prompt_event)?;
+    emit_recorded_check_status(&app_handle, &event, observed_events);
     Ok(event)
 }
 
@@ -429,13 +486,14 @@ fn release_available_status(
     }
 }
 
-fn failed_status(
+fn failed_check_status(
     app_handle: &AppHandle,
+    state: &UpdaterRuntimeState,
     request_id: String,
     source: UpdateCheckSource,
     target_window_label: Option<String>,
     message: String,
-) -> UpdateStatusEvent {
+) -> AppResult<UpdateStatusEvent> {
     let event = UpdateStatusEvent {
         request_id,
         source,
@@ -445,8 +503,67 @@ fn failed_status(
             visible: source == UpdateCheckSource::Manual,
         },
     };
-    emit_manual_or_success_status(app_handle, &event);
-    event
+    emit_check_status(app_handle, state, &event)?;
+    Ok(event)
+}
+
+fn emit_check_status(
+    app_handle: &AppHandle,
+    state: &UpdaterRuntimeState,
+    event: &UpdateStatusEvent,
+) -> AppResult<()> {
+    let observed_events = state.record_check_status(event.clone())?;
+    emit_recorded_check_status(app_handle, event, observed_events);
+    Ok(())
+}
+
+fn emit_recorded_check_status(
+    app_handle: &AppHandle,
+    event: &UpdateStatusEvent,
+    observed_events: Vec<UpdateStatusEvent>,
+) {
+    if should_emit_primary_check_status(event, !observed_events.is_empty()) {
+        emit_manual_or_success_status(app_handle, event);
+    }
+    for observed_event in observed_events {
+        emit_status(app_handle, &observed_event);
+    }
+}
+
+fn should_emit_primary_check_status(event: &UpdateStatusEvent, has_observers: bool) -> bool {
+    !(has_observers
+        && event.source == UpdateCheckSource::Automatic
+        && matches!(
+            event.status,
+            UpdateStatus::Ready { .. } | UpdateStatus::ReleaseAvailable { .. }
+        ))
+}
+
+fn canonical_prompt_event(
+    event: &UpdateStatusEvent,
+    observed_events: &[UpdateStatusEvent],
+) -> UpdateStatusEvent {
+    observed_events
+        .last()
+        .cloned()
+        .unwrap_or_else(|| event.clone())
+}
+
+fn observed_manual_status(
+    event: &UpdateStatusEvent,
+    observer: &ManualCheckObserver,
+) -> UpdateStatusEvent {
+    let mut status = event.status.clone();
+    if let UpdateStatus::Failed { visible, .. } = &mut status {
+        *visible = true;
+    }
+
+    UpdateStatusEvent {
+        request_id: observer.request_id.clone(),
+        source: UpdateCheckSource::Manual,
+        target_window_label: observer.target_window_label.clone(),
+        status,
+    }
 }
 
 fn emit_manual_or_success_status(app_handle: &AppHandle, event: &UpdateStatusEvent) {
@@ -736,11 +853,55 @@ impl UpdaterRuntimeState {
         format!("update-check-{id}")
     }
 
-    fn try_begin_check(&self) -> Option<CheckGuard<'_>> {
-        self.checking
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .ok()
-            .map(|_| CheckGuard { state: self })
+    fn begin_check(&self, status: UpdateStatusEvent) -> AppResult<BeginCheckOutcome<'_>> {
+        let mut active_check_guard = self.active_check_lock()?;
+        if let Some(active_check) = active_check_guard.as_mut() {
+            if status.source != UpdateCheckSource::Manual {
+                return Ok(BeginCheckOutcome::Busy);
+            }
+
+            let observer = ManualCheckObserver {
+                request_id: status.request_id,
+                target_window_label: status.target_window_label,
+            };
+            let event = observed_manual_status(&active_check.status, &observer);
+            active_check
+                .manual_observers
+                .retain(|existing| existing.target_window_label != observer.target_window_label);
+            active_check.manual_observers.push(observer);
+            return Ok(BeginCheckOutcome::Observed(ManualCheckObservation {
+                _active_check: active_check_guard,
+                event,
+            }));
+        }
+
+        *active_check_guard = Some(ActiveCheck {
+            status,
+            manual_observers: Vec::new(),
+        });
+        Ok(BeginCheckOutcome::Started(CheckGuard { state: self }))
+    }
+
+    fn record_check_status(&self, status: UpdateStatusEvent) -> AppResult<Vec<UpdateStatusEvent>> {
+        let mut active_check = self.active_check_lock()?;
+        let Some(active_check) = active_check.as_mut() else {
+            return Ok(Vec::new());
+        };
+        active_check.status = status;
+        Ok(active_check
+            .manual_observers
+            .iter()
+            .map(|observer| observed_manual_status(&active_check.status, observer))
+            .collect())
+    }
+
+    fn active_check_lock(&self) -> AppResult<std::sync::MutexGuard<'_, Option<ActiveCheck>>> {
+        self.active_check.lock().map_err(|_| {
+            artistic_git_app::unexpected_command_error(
+                "update check state is unavailable",
+                UPDATE_CHECK_OPERATION,
+            )
+        })
     }
 
     fn clear_ready_update(&self) -> AppResult<()> {
@@ -841,7 +1002,9 @@ struct CheckGuard<'a> {
 
 impl Drop for CheckGuard<'_> {
     fn drop(&mut self) {
-        self.state.checking.store(false, Ordering::Release);
+        if let Ok(mut active_check) = self.state.active_check.lock() {
+            *active_check = None;
+        }
     }
 }
 
@@ -923,6 +1086,232 @@ mod tests {
             ),
             Some("repo-1".to_owned())
         );
+    }
+
+    #[test]
+    fn check_guard_releases_the_active_check() {
+        let state = UpdaterRuntimeState::default();
+        let guard = match state
+            .begin_check(checking_status_event(
+                "auto-1",
+                UpdateCheckSource::Automatic,
+            ))
+            .expect("begin automatic check")
+        {
+            BeginCheckOutcome::Started(guard) => guard,
+            _ => panic!("first check should start"),
+        };
+
+        assert!(matches!(
+            state
+                .begin_check(checking_status_event(
+                    "auto-2",
+                    UpdateCheckSource::Automatic,
+                ))
+                .expect("reject overlapping automatic check"),
+            BeginCheckOutcome::Busy
+        ));
+
+        drop(guard);
+        assert!(matches!(
+            state
+                .begin_check(checking_status_event("manual-1", UpdateCheckSource::Manual,))
+                .expect("begin check after guard drop"),
+            BeginCheckOutcome::Started(_)
+        ));
+    }
+
+    #[test]
+    fn manual_check_observes_automatic_download_progress() {
+        let state = UpdaterRuntimeState::default();
+        let _guard = match state
+            .begin_check(checking_status_event(
+                "auto-1",
+                UpdateCheckSource::Automatic,
+            ))
+            .expect("begin automatic check")
+        {
+            BeginCheckOutcome::Started(guard) => guard,
+            _ => panic!("automatic check should start"),
+        };
+        let progress = downloading_status_event("auto-1", 25, 100);
+
+        assert_eq!(
+            state
+                .record_check_status(progress.clone())
+                .expect("record automatic progress"),
+            Vec::new()
+        );
+        let observation = match state
+            .begin_check(checking_status_event("manual-2", UpdateCheckSource::Manual))
+            .expect("observe active check")
+        {
+            BeginCheckOutcome::Observed(observation) => observation,
+            _ => panic!("manual check should observe the automatic check"),
+        };
+        let observed = observation.event.clone();
+
+        assert_eq!(observed.request_id, "manual-2");
+        assert_eq!(observed.source, UpdateCheckSource::Manual);
+        assert_eq!(observed.target_window_label.as_deref(), Some("main"));
+        assert_eq!(observed.status, progress.status);
+        assert!(matches!(
+            state.active_check.try_lock(),
+            Err(std::sync::TryLockError::WouldBlock)
+        ));
+        drop(observation);
+
+        let next_progress = downloading_status_event("auto-1", 50, 100);
+        let mirrored = state
+            .record_check_status(next_progress.clone())
+            .expect("record observed progress");
+        assert_eq!(mirrored.len(), 1);
+        let mirrored = &mirrored[0];
+        assert_eq!(mirrored.request_id, "manual-2");
+        assert_eq!(mirrored.source, UpdateCheckSource::Manual);
+        assert_eq!(mirrored.status, next_progress.status);
+    }
+
+    #[test]
+    fn active_check_mirrors_progress_to_each_observing_window() {
+        let state = UpdaterRuntimeState::default();
+        let _guard = match state
+            .begin_check(checking_status_event(
+                "auto-1",
+                UpdateCheckSource::Automatic,
+            ))
+            .expect("begin automatic check")
+        {
+            BeginCheckOutcome::Started(guard) => guard,
+            _ => panic!("automatic check should start"),
+        };
+
+        for (request_id, target_window_label) in [("manual-1", "repo-1"), ("manual-2", "repo-2")] {
+            let mut request = checking_status_event(request_id, UpdateCheckSource::Manual);
+            request.target_window_label = Some(target_window_label.to_owned());
+            let observation = match state.begin_check(request).expect("observe active check") {
+                BeginCheckOutcome::Observed(observation) => observation,
+                _ => panic!("manual check should observe the automatic check"),
+            };
+            drop(observation);
+        }
+
+        let mirrored = state
+            .record_check_status(downloading_status_event("auto-1", 75, 100))
+            .expect("record observed progress");
+        assert_eq!(mirrored.len(), 2);
+        assert_eq!(mirrored[0].request_id, "manual-1");
+        assert_eq!(mirrored[0].target_window_label.as_deref(), Some("repo-1"));
+        assert_eq!(mirrored[1].request_id, "manual-2");
+        assert_eq!(mirrored[1].target_window_label.as_deref(), Some("repo-2"));
+    }
+
+    #[test]
+    fn latest_manual_check_replaces_the_observer_for_its_window() {
+        let state = UpdaterRuntimeState::default();
+        let _guard = match state
+            .begin_check(checking_status_event(
+                "auto-1",
+                UpdateCheckSource::Automatic,
+            ))
+            .expect("begin automatic check")
+        {
+            BeginCheckOutcome::Started(guard) => guard,
+            _ => panic!("automatic check should start"),
+        };
+
+        for request_id in ["manual-1", "manual-2"] {
+            let observation = match state
+                .begin_check(checking_status_event(request_id, UpdateCheckSource::Manual))
+                .expect("observe active check")
+            {
+                BeginCheckOutcome::Observed(observation) => observation,
+                _ => panic!("manual check should observe the automatic check"),
+            };
+            drop(observation);
+        }
+
+        let mirrored = state
+            .record_check_status(downloading_status_event("auto-1", 75, 100))
+            .expect("record observed progress");
+        assert_eq!(mirrored.len(), 1);
+        assert_eq!(mirrored[0].request_id, "manual-2");
+    }
+
+    #[test]
+    fn observed_automatic_failure_is_visible_to_manual_check() {
+        let state = UpdaterRuntimeState::default();
+        let _guard = match state
+            .begin_check(checking_status_event(
+                "auto-1",
+                UpdateCheckSource::Automatic,
+            ))
+            .expect("begin automatic check")
+        {
+            BeginCheckOutcome::Started(guard) => guard,
+            _ => panic!("automatic check should start"),
+        };
+        let observation = match state
+            .begin_check(checking_status_event("manual-2", UpdateCheckSource::Manual))
+            .expect("observe active check")
+        {
+            BeginCheckOutcome::Observed(observation) => observation,
+            _ => panic!("manual check should observe the automatic check"),
+        };
+        drop(observation);
+
+        let events = state
+            .record_check_status(UpdateStatusEvent {
+                request_id: "auto-1".to_owned(),
+                source: UpdateCheckSource::Automatic,
+                target_window_label: Some("main".to_owned()),
+                status: UpdateStatus::Failed {
+                    message: "download timed out".to_owned(),
+                    visible: false,
+                },
+            })
+            .expect("record automatic failure");
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+
+        assert_eq!(event.source, UpdateCheckSource::Manual);
+        assert!(matches!(
+            event.status,
+            UpdateStatus::Failed { visible: true, .. }
+        ));
+    }
+
+    #[test]
+    fn observed_automatic_ready_status_suppresses_the_original_prompt() {
+        let event = ready_prompt_event(Some("repo-1"));
+        assert_eq!(event.source, UpdateCheckSource::Automatic);
+
+        assert!(should_emit_primary_check_status(&event, false));
+        assert!(!should_emit_primary_check_status(&event, true));
+    }
+
+    #[test]
+    fn latest_manual_observer_is_the_canonical_ready_prompt() {
+        let automatic = ready_prompt_event(Some("repo-1"));
+        let observed = vec![
+            UpdateStatusEvent {
+                request_id: "manual-1".to_owned(),
+                source: UpdateCheckSource::Manual,
+                target_window_label: Some("repo-2".to_owned()),
+                status: automatic.status.clone(),
+            },
+            UpdateStatusEvent {
+                request_id: "manual-2".to_owned(),
+                source: UpdateCheckSource::Manual,
+                target_window_label: Some("repo-3".to_owned()),
+                status: automatic.status.clone(),
+            },
+        ];
+
+        let canonical = canonical_prompt_event(&automatic, &observed);
+        assert_eq!(canonical.request_id, "manual-2");
+        assert_eq!(canonical.source, UpdateCheckSource::Manual);
+        assert_eq!(canonical.target_window_label.as_deref(), Some("repo-3"));
     }
 
     #[test]
@@ -1112,6 +1501,34 @@ mod tests {
             status: UpdateStatus::Ready {
                 version: "0.2.0".to_owned(),
                 notes: Some("Release notes".to_owned()),
+            },
+        }
+    }
+
+    fn checking_status_event(request_id: &str, source: UpdateCheckSource) -> UpdateStatusEvent {
+        UpdateStatusEvent {
+            request_id: request_id.to_owned(),
+            source,
+            target_window_label: Some("main".to_owned()),
+            status: UpdateStatus::Checking,
+        }
+    }
+
+    fn downloading_status_event(
+        request_id: &str,
+        downloaded_bytes: u64,
+        total_bytes: u64,
+    ) -> UpdateStatusEvent {
+        UpdateStatusEvent {
+            request_id: request_id.to_owned(),
+            source: UpdateCheckSource::Automatic,
+            target_window_label: Some("main".to_owned()),
+            status: UpdateStatus::Downloading {
+                version: "0.2.0".to_owned(),
+                notes: Some("Release notes".to_owned()),
+                downloaded_bytes,
+                total_bytes: Some(total_bytes),
+                progress: Some(downloaded_bytes as f64 / total_bytes as f64),
             },
         }
     }
