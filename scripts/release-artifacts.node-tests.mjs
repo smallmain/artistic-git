@@ -509,6 +509,32 @@ test("release workflow uploads all platform assets and generated latest.json", (
   );
 });
 
+test("release workflow installs pnpm before setting up Node in the publish job", () => {
+  const publishStart = releaseWorkflow.indexOf("\n  publish:\n");
+  assert.notEqual(publishStart, -1, "publish job block");
+  const publishJob = releaseWorkflow.slice(publishStart);
+  const pnpmSetup = publishJob.indexOf("- name: Set up pnpm");
+  const nodeSetup = publishJob.indexOf("- name: Set up Node.js");
+
+  assert.notEqual(pnpmSetup, -1, "publish job pnpm setup");
+  assert.notEqual(nodeSetup, -1, "publish job Node setup");
+  assert.ok(pnpmSetup < nodeSetup, "pnpm must be available to setup-node");
+});
+
+test("release workflow applies the release version to displayed app versions", () => {
+  for (const manifest of [
+    '"package.json"',
+    '"src-tauri/tauri.conf.json"',
+    '"src-tauri/Cargo.toml"',
+    '"crates/app/Cargo.toml"',
+  ]) {
+    assert.ok(releaseWorkflow.includes(manifest), manifest);
+  }
+  assert.ok(
+    releaseWorkflow.includes("cargo metadata --format-version 1 --no-deps"),
+  );
+});
+
 test("release workflow checks staged and packaged git-dist resources", () => {
   assert.ok(
     releaseWorkflow.includes(

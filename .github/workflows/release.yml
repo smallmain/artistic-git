@@ -349,7 +349,20 @@ jobs:
             json.version = version;
             await writeFile(file, `${JSON.stringify(json, null, 2)}\n`);
           }
+
+          for (const file of ["src-tauri/Cargo.toml", "crates/app/Cargo.toml"]) {
+            const manifest = await readFile(file, "utf8");
+            const packageVersion = /^version = "[^"]+"$/m;
+            if (!packageVersion.test(manifest)) {
+              throw new Error(`Missing package version in ${file}`);
+            }
+            await writeFile(
+              file,
+              manifest.replace(packageVersion, `version = "${version}"`),
+            );
+          }
           NODE
+          cargo metadata --format-version 1 --no-deps >/dev/null
 
       - name: Inject updater public key
         env:
@@ -568,6 +581,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
 
       - name: Set up Node.js
         uses: actions/setup-node@v5
