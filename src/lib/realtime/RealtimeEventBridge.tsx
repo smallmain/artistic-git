@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 
-import type { listenAppEvent } from "@/lib/ipc/events";
+import type { ConflictClearedEvent, listenAppEvent } from "@/lib/ipc/events";
 import type {
   ConflictEnteredEvent,
   FetchStateEvent,
@@ -15,6 +15,7 @@ type RealtimeUnsubscribe = () => void;
 
 interface RealtimeEventBridgeProps {
   listen?: AppEventListener;
+  onConflictCleared?: (event: ConflictClearedEvent) => void;
   onConflictEntered?: (event: ConflictEnteredEvent) => void;
   onFetchState?: (event: FetchStateEvent) => void;
   onOperationProgress?: (event: OperationProgressEvent) => void;
@@ -24,6 +25,7 @@ interface RealtimeEventBridgeProps {
 
 export function RealtimeEventBridge({
   listen,
+  onConflictCleared,
   onConflictEntered,
   onFetchState,
   onOperationProgress,
@@ -38,6 +40,7 @@ export function RealtimeEventBridge({
 
     void installRealtimeEventBridge({
       listen,
+      onConflictCleared,
       onConflictEntered,
       onFetchState,
       onOperationProgress,
@@ -63,6 +66,7 @@ export function RealtimeEventBridge({
     };
   }, [
     listen,
+    onConflictCleared,
     onConflictEntered,
     onFetchState,
     onOperationProgress,

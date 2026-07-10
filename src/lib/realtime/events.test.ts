@@ -1,7 +1,7 @@
 import { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
 
-import type { AppEventName } from "@/lib/ipc/events";
+import type { AppEventName, ConflictClearedEvent } from "@/lib/ipc/events";
 import type {
   ConflictEnteredEvent,
   FetchStateEvent,
@@ -96,12 +96,13 @@ describe("realtime query invalidation", () => {
     expect(invalidateQueries).not.toHaveBeenCalled();
   });
 
-  it("subscribes to repo-changed, fetch-state, conflict-entered, and operation-progress events", async () => {
+  it("subscribes to repository, conflict, fetch, and operation events", async () => {
     const queryClient = new QueryClient();
     const invalidateQueries = vi
       .spyOn(queryClient, "invalidateQueries")
       .mockResolvedValue();
     const onRepoChanged = vi.fn();
+    const onConflictCleared = vi.fn();
     const onConflictEntered = vi.fn();
     const onFetchState = vi.fn();
     const onOperationProgress = vi.fn();
@@ -124,6 +125,9 @@ describe("realtime query invalidation", () => {
       operationName: "Rebase",
       repositoryPath: "/repo/art",
     };
+    const conflictClearedPayload: ConflictClearedEvent = {
+      repositoryPath: "/repo/art",
+    };
     const fetchPayload: FetchStateEvent = {
       lastSuccessAt: null,
       message: "offline",
@@ -141,6 +145,7 @@ describe("realtime query invalidation", () => {
 
     const unsubscribe = await installRealtimeEventBridge({
       listen,
+      onConflictCleared,
       onConflictEntered,
       onFetchState,
       onOperationProgress,
@@ -150,12 +155,17 @@ describe("realtime query invalidation", () => {
 
     handlers.get("repo-changed")?.({ payload });
     handlers.get("conflict-entered")?.({ payload: conflictPayload });
+    handlers.get("conflict-cleared")?.({ payload: conflictClearedPayload });
     handlers.get("fetch-state")?.({ payload: fetchPayload });
     handlers.get("operation-progress")?.({ payload: progressPayload });
 
     expect(listen).toHaveBeenCalledWith("repo-changed", expect.any(Function));
     expect(listen).toHaveBeenCalledWith(
       "conflict-entered",
+      expect.any(Function),
+    );
+    expect(listen).toHaveBeenCalledWith(
+      "conflict-cleared",
       expect.any(Function),
     );
     expect(listen).toHaveBeenCalledWith("fetch-state", expect.any(Function));
@@ -165,6 +175,7 @@ describe("realtime query invalidation", () => {
     );
     expect(onRepoChanged).toHaveBeenCalledWith(payload);
     expect(onConflictEntered).toHaveBeenCalledWith(conflictPayload);
+    expect(onConflictCleared).toHaveBeenCalledWith(conflictClearedPayload);
     expect(onFetchState).toHaveBeenCalledWith(fetchPayload);
     expect(onOperationProgress).toHaveBeenCalledWith(progressPayload);
     expect(invalidateQueries).toHaveBeenCalledWith({
@@ -173,7 +184,7 @@ describe("realtime query invalidation", () => {
 
     unsubscribe();
 
-    expect(unlisten).toHaveBeenCalledTimes(4);
+    expect(unlisten).toHaveBeenCalledTimes(5);
   });
 
   it("filters operation-progress events before notifying listeners", async () => {

@@ -15,6 +15,7 @@ import type {
   UpdateInstallGateResponse,
   UpdateStatusEvent,
 } from "@/lib/ipc/update-types";
+import type { ConflictClearedEvent } from "@/lib/ipc/events";
 import { RealtimeEventBridge } from "@/lib/realtime";
 
 export interface RecentProject {
@@ -278,6 +279,12 @@ export function WindowStoreProvider({
     },
     [storeApi],
   );
+  const clearConflict = React.useCallback(
+    (event: ConflictClearedEvent) => {
+      storeApi.getState().clearConflict(event.repositoryPath);
+    },
+    [storeApi],
+  );
   const setFetchState = React.useCallback(
     (event: FetchStateEvent) => {
       storeApi.getState().setFetchState(event);
@@ -300,6 +307,7 @@ export function WindowStoreProvider({
     <WindowStoreContext.Provider value={storeApi}>
       {enableRealtimeEvents ? (
         <RealtimeEventBridge
+          onConflictCleared={clearConflict}
           onConflictEntered={setConflictEntered}
           onFetchState={setFetchState}
           onOperationProgress={setOperationProgress}

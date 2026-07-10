@@ -89,6 +89,7 @@ import type {
   StashDetailsResponse,
   StashRecoveryPoint,
 } from "@/lib/ipc/generated";
+import { emitAppEvent } from "@/lib/ipc/events";
 import { repoQueryKeys } from "@/lib/realtime/query-keys";
 import { cn } from "@/lib/utils";
 import { useWindowStore } from "@/store/window-store";
@@ -1623,6 +1624,13 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         });
       }
       clearConflict(conflictRepositoryPath);
+      void Promise.resolve()
+        .then(() =>
+          emitAppEvent("conflict-cleared", {
+            repositoryPath: conflictRepositoryPath,
+          }),
+        )
+        .catch(() => undefined);
     },
     [clearConflict, conflict],
   );

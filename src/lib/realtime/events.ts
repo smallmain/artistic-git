@@ -1,6 +1,10 @@
 import type { QueryClient } from "@tanstack/react-query";
 
-import { listenAppEvent, type AppEventPayloads } from "@/lib/ipc/events";
+import {
+  listenAppEvent,
+  type AppEventPayloads,
+  type ConflictClearedEvent,
+} from "@/lib/ipc/events";
 import type {
   ConflictEnteredEvent,
   FetchStateEvent,
@@ -14,6 +18,7 @@ type RealtimeUnsubscribe = () => void;
 
 export interface RealtimeEventBridgeOptions {
   listen?: AppEventListener;
+  onConflictCleared?: (event: ConflictClearedEvent) => void;
   onConflictEntered?: (event: ConflictEnteredEvent) => void;
   onFetchState?: (event: FetchStateEvent) => void;
   onOperationProgress?: (event: OperationProgressEvent) => void;
@@ -52,6 +57,7 @@ export function invalidateFetchStateQueries(
 
 export async function installRealtimeEventBridge({
   listen = listenAppEvent,
+  onConflictCleared,
   onConflictEntered,
   onFetchState,
   onOperationProgress,
@@ -69,6 +75,11 @@ export async function installRealtimeEventBridge({
     const payload = event.payload as AppEventPayloads["conflict-entered"];
 
     onConflictEntered?.(payload);
+  });
+  const unlistenConflictCleared = await listen("conflict-cleared", (event) => {
+    const payload = event.payload as AppEventPayloads["conflict-cleared"];
+
+    onConflictCleared?.(payload);
   });
   const unlistenFetchState = await listen("fetch-state", (event) => {
     const payload = event.payload as AppEventPayloads["fetch-state"];
@@ -94,6 +105,7 @@ export async function installRealtimeEventBridge({
   return () => {
     unlistenRepoChanged();
     unlistenConflictEntered();
+    unlistenConflictCleared();
     unlistenFetchState();
     unlistenOperationProgress();
   };

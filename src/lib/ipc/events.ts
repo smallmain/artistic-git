@@ -18,11 +18,16 @@ import type {
   UpdateStatusEvent,
 } from "./update-types";
 
+export interface ConflictClearedEvent {
+  repositoryPath: string;
+}
+
 export type AppEventName =
   | "repo-changed"
   | "operation-progress"
   | "fetch-state"
   | "conflict-entered"
+  | "conflict-cleared"
   | "update-status"
   | "update-install-gate-request"
   | "update-install-gate-response"
@@ -33,6 +38,7 @@ export interface AppEventPayloads {
   "operation-progress": OperationProgressEvent;
   "fetch-state": FetchStateEvent;
   "conflict-entered": ConflictEnteredEvent;
+  "conflict-cleared": ConflictClearedEvent;
   "update-status": UpdateStatusEvent;
   "update-install-gate-request": UpdateInstallGateRequestEvent;
   "update-install-gate-response": UpdateInstallGateWindowResponseEvent;
