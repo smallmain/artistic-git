@@ -58,6 +58,54 @@ function requireObject(value, message) {
   return value;
 }
 
+async function validateLinuxBundleResourceConfig(tauriDir) {
+  const configPath = path.join(tauriDir, "tauri.linux.conf.json");
+  if (!(await pathExists(configPath))) {
+    return null;
+  }
+
+  let config;
+  try {
+    config = JSON.parse(await readFile(configPath, "utf8"));
+  } catch (error) {
+    fail(
+      `Linux Tauri config is not valid JSON: ${configPath}: ${error.message}`,
+    );
+  }
+
+  const bundle = requireObject(
+    config.bundle,
+    `Linux Tauri config must contain bundle settings: ${configPath}`,
+  );
+  if (bundle.resources !== null) {
+    fail(
+      "Linux Tauri config must set bundle.resources to null so linuxdeploy does not rewrite embedded Git executables.",
+    );
+  }
+
+  const linux = requireObject(
+    bundle.linux,
+    `Linux Tauri config must contain bundle.linux settings: ${configPath}`,
+  );
+  for (const target of ["appimage", "deb"]) {
+    const targetConfig = requireObject(
+      linux[target],
+      `Linux Tauri config must contain bundle.linux.${target}: ${configPath}`,
+    );
+    const files = requireObject(
+      targetConfig.files,
+      `Linux Tauri config must contain bundle.linux.${target}.files: ${configPath}`,
+    );
+    if (files["usr/share/artistic-git/git-dist"] !== "resources/git-dist") {
+      fail(
+        `Linux Tauri ${target} files must map usr/share/artistic-git/git-dist to resources/git-dist.`,
+      );
+    }
+  }
+
+  return configPath;
+}
+
 export async function findBundledGitDistManifests(buildOutput) {
   const root = path.resolve(buildOutput);
   const rootStat = await stat(root).catch(() => null);
@@ -157,6 +205,7 @@ export async function checkTauriBundleResources({
 
   const [source] = gitDistEntry;
   const tauriDir = path.dirname(resolvedConfigPath);
+  const linuxConfigPath = await validateLinuxBundleResourceConfig(tauriDir);
   const sourcePath = path.resolve(tauriDir, source);
   const sourceStat = await stat(sourcePath).catch(() => null);
   if (!sourceStat?.isDirectory()) {
@@ -213,6 +262,7 @@ export async function checkTauriBundleResources({
   return {
     sourcePath,
     manifestPath,
+    linuxConfigPath,
     bundledManifestPaths,
     bundledManifestChecks,
   };
@@ -435,7 +485,7 @@ function usage() {
   node scripts/check-tauri-bundle-resources.mjs
   node scripts/check-tauri-bundle-resources.mjs --require-manifest
   node scripts/check-tauri-bundle-resources.mjs --require-manifest --release
-  node scripts/check-tauri-bundle-resources.mjs --require-manifest --release --bundle-output src-tauri/target/<triple>/release --require-bundled-resource
+  node scripts/check-tauri-bundle-resources.mjs --require-manifest --release --bundle-output target/<triple>/release --require-bundled-resource
 
 Checks that Tauri bundles the embedded git-dist resource tree at the packaged
 resource path expected by release builds. --require-manifest is for real release

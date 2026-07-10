@@ -47,6 +47,12 @@ const packageJson = JSON.parse(
 const tauriConfig = JSON.parse(
   await readFile(path.join(repoRoot, "src-tauri", "tauri.conf.json"), "utf8"),
 );
+const tauriLinuxConfig = JSON.parse(
+  await readFile(
+    path.join(repoRoot, "src-tauri", "tauri.linux.conf.json"),
+    "utf8",
+  ),
+);
 const verifyGitDistBuildEvidenceScript = path.join(
   repoRoot,
   "scripts",
@@ -378,6 +384,19 @@ test("tauri config includes AppImage-compatible PNG icon sizes", () => {
     "icons/128x128@2x.png",
   ]) {
     assert.ok(tauriConfig.bundle.icon.includes(icon), icon);
+  }
+});
+
+test("linux bundles keep git-dist outside linuxdeploy's usr/lib ELF scan", () => {
+  assert.equal(tauriLinuxConfig.bundle.resources, null);
+  for (const target of ["appimage", "deb"]) {
+    assert.equal(
+      tauriLinuxConfig.bundle.linux[target].files[
+        "usr/share/artistic-git/git-dist"
+      ],
+      "resources/git-dist",
+      target,
+    );
   }
 });
 

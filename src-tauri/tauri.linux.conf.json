@@ -1,0 +1,17 @@
+{
+  "bundle": {
+    "resources": null,
+    "linux": {
+      "appimage": {
+        "files": {
+          "usr/share/artistic-git/git-dist": "resources/git-dist"
+        }
+      },
+      "deb": {
+        "files": {
+          "usr/share/artistic-git/git-dist": "resources/git-dist"
+        }
+      }
+    }
+  }
+}

@@ -2721,7 +2721,37 @@ fn git_dist_root(app: &tauri::App) -> Result<PathBuf, Box<dyn std::error::Error>
         return Ok(PathBuf::from(path));
     }
 
-    Ok(app.path().resource_dir()?.join("git-dist"))
+    let resource_dir = app.path().resource_dir()?;
+
+    #[cfg(target_os = "linux")]
+    {
+        return Ok(linux_bundled_git_dist_root(&resource_dir)?);
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(resource_dir.join("git-dist"))
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_bundled_git_dist_root(resource_dir: &Path) -> Result<PathBuf, std::io::Error> {
+    let usr_dir = resource_dir
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| {
+            std::io::Error::other(format!(
+                "Linux resource directory is not under usr/lib: {}",
+                resource_dir.display()
+            ))
+        })?;
+
+    let shared_dist = usr_dir.join("share").join("artistic-git").join("git-dist");
+    if shared_dist.is_dir() {
+        Ok(shared_dist)
+    } else {
+        Ok(resource_dir.join("git-dist"))
+    }
 }
 
 fn boxed_setup_error(message: String) -> Box<dyn std::error::Error> {
@@ -2878,6 +2908,32 @@ fn emit_fetch_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn linux_git_dist_root_uses_packaged_usr_share_directory() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let resource_dir = temp.path().join("usr/lib/Artistic Git");
+        let shared_dist = temp.path().join("usr/share/artistic-git/git-dist");
+        fs::create_dir_all(&resource_dir).expect("resource dir");
+        fs::create_dir_all(&shared_dist).expect("shared git-dist");
+
+        assert_eq!(
+            linux_bundled_git_dist_root(&resource_dir).expect("Linux resource path"),
+            shared_dist
+        );
+    }
+
+    #[test]
+    fn linux_git_dist_root_falls_back_to_development_resource_directory() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let resource_dir = temp.path().join("target/debug");
+        fs::create_dir_all(&resource_dir).expect("resource dir");
+
+        assert_eq!(
+            linux_bundled_git_dist_root(&resource_dir).expect("Linux resource path"),
+            resource_dir.join("git-dist")
+        );
+    }
 
     #[test]
     fn window_menu_url_encoding_keeps_safe_path_characters() {
