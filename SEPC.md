@@ -8,7 +8,7 @@
   - 手动检查：立即显示“发现新版本”弹窗与下载进度，其余同上；检查失败提示“检查失败”（自动检查失败则静默忽略，下小时重试）。
   - 安全约束：有 git 操作正在执行、或存在未完成的冲突解决/审查模式时，“立即重启更新”按钮禁用并提示原因，绝不在操作中途重启。
   - 多窗口：更新提示只在一个窗口弹出——弹在最近获得焦点的窗口，该窗口关闭则转移到下一个最近焦点窗口；重启安装会关闭所有窗口，任一窗口有进行中操作都阻止。
-- 支持 GitHub Actions 编译构建，并支持手动触发和推送 main 自动触发；main 自动发布受 GitHub Environment 或仓库变量闸门保护，未开启闸门时只执行测试与 dry-run 打包。
+- 支持 GitHub Actions 编译构建，并支持手动触发和推送 main 自动触发；发布仅允许来源为 main 且仓库变量 `ENABLE_MAIN_RELEASE=true`，不使用人工审批，未开启闸门时只执行测试与 dry-run 打包。
 - 版本号自动递增，自动上传二进制文件到 Github Releases，自动收集提交信息作为更新日志。
 - 需要编译所有平台的产物。
 - 对于核心逻辑需要编写严格的单元测试和端到端测试（不关心测试时长，用真实临时项目测试，而不是 fake/mock 命令），该工具涉及到资产丢失问题，需要首要保证安全性和稳定性。
@@ -336,7 +336,7 @@
   - Linux 非对称：**AppImage 支持应用内自动更新**；**`.deb` 不自更新**（归系统包管理器），其“检查更新”降级为提示 + 打开 Release 页面手动升级。
 - 代码签名：暂无 Apple Developer 账号与 Windows 代码签名证书，不做 OS 级签名（Tauri 更新签名照做，更新安全不受影响）；README 说明 macOS 首次打开需右键→打开、Windows SmartScreen 的绕过步骤；后续有证书再补。
 - 版本号策略：初始版本 `0.1.0`（`1.0.0` 留给功能完备里程碑）；基于约定式提交（Conventional Commits）自动判定递增级别——仅 fix → patch；含 feat / refactor 等 → minor；含破坏性变更（BREAKING CHANGE / `!`）→ major；无法从提交解析出级别时默认 patch。
-  - 推送到 main 自动构建发布：解析自上一 tag 以来的提交信息，计算版本号并打 tag；该流程受 GitHub Environment 或仓库变量（如 `ENABLE_MAIN_RELEASE=true`）闸门保护，闸门未开启时只执行测试与 dry-run 打包，不创建公开 Release、tag 或 `latest.json`。
+  - 推送到 main 自动构建发布：解析自上一 tag 以来的提交信息，计算版本号并打 tag；该流程仅在来源为 main 且仓库变量 `ENABLE_MAIN_RELEASE=true` 时发布，不使用人工审批，闸门未开启时只执行测试与 dry-run 打包，不创建公开 Release、tag 或 `latest.json`。
   - 手动触发（workflow_dispatch）默认同样自动计算，亦可手动指定版本级别覆盖。
   - 更新日志 = 自上一个 tag 以来的所有提交信息。
   - PR 只跑测试，不发布。

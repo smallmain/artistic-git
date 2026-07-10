@@ -67,6 +67,12 @@ test("operator-confirmed mode passes with all release and update markers", async
   assert.equal(result.report.taskCheckbox, "eligible-after-artifact-review");
   assert.deepEqual(result.report.missingSecrets, []);
   assert.deepEqual(result.report.missingEvidence, []);
+  assert.deepEqual(
+    result.report.operatorConfirmation.requiredMarkers.map(
+      (marker) => marker.name,
+    ),
+    ["ARTISTIC_GIT_RELEASE_REHEARSAL_OPERATOR_CONFIRMED"],
+  );
 });
 
 test("operator-confirmed mode rejects malformed update rehearsal records", async () => {
@@ -164,7 +170,6 @@ function buildCompleteOperatorEnv() {
     GH_TOKEN: "present",
     TAURI_UPDATER_PUBLIC_KEY: "present",
     ARTISTIC_GIT_RELEASE_REHEARSAL_OPERATOR_CONFIRMED: "1",
-    ARTISTIC_GIT_RELEASE_PROTECTED_ENVIRONMENT_APPROVED: "1",
     ARTISTIC_GIT_RELEASE_010_RUN_URL:
       "https://github.com/smallmain/artistic-git/actions/runs/100",
     ARTISTIC_GIT_RELEASE_010_ARTIFACT_URL:

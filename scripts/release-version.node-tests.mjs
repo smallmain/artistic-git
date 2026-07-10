@@ -214,7 +214,7 @@ test("builds Tauri latest.json from signed release artifacts", async () => {
     assert.equal(latestJson.platforms["linux-x86_64"].signature, "linuxsig");
     assert.match(
       latestJson.platforms["darwin-x86_64"].url,
-      /Artistic%20Git\.app\.tar\.gz$/,
+      /Artistic\.Git\.app\.tar\.gz$/,
     );
   } finally {
     await rm(tmpDir, { recursive: true, force: true });

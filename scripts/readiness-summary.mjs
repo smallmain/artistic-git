@@ -389,7 +389,7 @@ function evaluateReleaseRehearsal() {
           category: freshnessCategory(freshness),
           message: freshnessMessage("Release rehearsal evidence", freshness),
           nextAction:
-            "Run the protected Release workflow for the current HEAD and attach that release rehearsal evidence.",
+            "Run the Release workflow for the current HEAD and attach that release rehearsal evidence.",
           sourceKind: "release-rehearsal-checklist",
         },
       });
@@ -426,7 +426,7 @@ function evaluateReleaseRehearsal() {
         ? `Release rehearsal status is ${rehearsal.status}; TASKS.md checkbox remains ${rehearsal.taskCheckbox ?? "unchecked"}.`
         : "Release rehearsal checklist evidence is missing.",
       nextAction:
-        "Run the protected Release workflow with signing secrets, install-smoke all three platform assets, and record the 0.1.0 to 0.1.1 updater rehearsal.",
+        "Run the Release workflow with signing secrets, install-smoke all three platform assets, and record the 0.1.0 to 0.1.1 updater rehearsal.",
       sourceKind: "release-rehearsal-checklist",
     },
     extraBlockers: Array.isArray(rehearsal?.blockers)

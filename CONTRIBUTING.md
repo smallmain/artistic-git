@@ -18,8 +18,8 @@ maps to a major bump, and unparsed commit messages fall back to patch.
 
 ## Release Safety
 
-- `main` release publishing is disabled unless `ENABLE_MAIN_RELEASE=true` and
-  the GitHub `release` Environment permits the job.
+- Release publishing is disabled unless the source ref is `main` and
+  `ENABLE_MAIN_RELEASE=true`; it does not use an Environment approval step.
 - Unsigned release outputs are CI/development artifacts only. Do not add
   Gatekeeper, SmartScreen, or package-manager bypass instructions for official
   releases.

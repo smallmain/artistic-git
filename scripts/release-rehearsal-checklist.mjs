@@ -66,13 +66,7 @@ const operatorMarkers = [
     name: "ARTISTIC_GIT_RELEASE_REHEARSAL_OPERATOR_CONFIRMED",
     expectedValue: "1",
     description:
-      "Operator confirms the evidence markers come from a real protected release rehearsal, not from local placeholders.",
-  },
-  {
-    name: "ARTISTIC_GIT_RELEASE_PROTECTED_ENVIRONMENT_APPROVED",
-    expectedValue: "1",
-    description:
-      "GitHub release environment approval was granted for package and publish jobs.",
+      "Operator confirms the evidence markers come from a real signed release rehearsal, not from local placeholders.",
   },
 ];
 
@@ -274,7 +268,7 @@ const rehearsal = {
         {
           id: "dry-run",
           message:
-            "Dry-run checklist artifact generated; signed release, protected environment approval, installation, and updater rehearsal were not executed.",
+            "Dry-run checklist artifact generated; signed release, installation, and updater rehearsal were not executed.",
         },
       ]
     : [],
@@ -299,7 +293,7 @@ const rehearsal = {
       : "must-remain-unchecked",
   cannotCheckTask:
     status !== "pass"
-      ? "TASKS.md release rehearsal remains unchecked until signed artifacts are built, approved through the release environment, installed, and update-tested from 0.1.0 to 0.1.1 on macOS, Windows, and Linux with valid GitHub evidence URLs."
+      ? "TASKS.md release rehearsal remains unchecked until signed artifacts are built, published, installed, and update-tested from 0.1.0 to 0.1.1 on macOS, Windows, and Linux with valid GitHub evidence URLs."
       : null,
 };
 
@@ -667,7 +661,7 @@ function renderMarkdown(content) {
   const lines = [
     "# Artistic Git 0.1.0 release rehearsal checklist",
     "",
-    "This script is a checklist entry point, not a local substitute for the formal release rehearsal. The TASKS.md release item can only be checked after signed artifacts are built, approved, installed, and update-tested on all three target platforms.",
+    "This script is a checklist entry point, not a local substitute for the formal release rehearsal. The TASKS.md release item can only be checked after signed artifacts are built, published, installed, and update-tested on all three target platforms.",
     "",
     `Mode: ${content.mode}`,
     `Status: ${content.status}`,

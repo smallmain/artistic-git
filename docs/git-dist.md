@@ -367,10 +367,10 @@ produce a patch bump, `feat` and `refactor` commits produce a minor bump,
 fall back to a patch bump. With no previous tag, the initial version is
 `0.1.0`.
 
-`main` pushes and manual dispatches publish only when `ENABLE_MAIN_RELEASE=true`
-and the GitHub `release` Environment allows the job. Otherwise the workflow
-runs tests and a Tauri `--no-bundle` dry-run package build without creating a
-GitHub Release.
+`main` pushes and manual dispatches publish only from `main` when
+`ENABLE_MAIN_RELEASE=true`; no GitHub Environment or manual approval is used.
+Otherwise the workflow runs tests and a Tauri `--no-bundle` dry-run package
+build without creating a GitHub Release.
 Manual dispatches may keep the automatic bump or override it with `patch`,
 `minor`, or `major`.
 

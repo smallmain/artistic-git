@@ -39,7 +39,9 @@ function encodeReleaseAssetUrl({ repo, tag, filename }) {
     fail(`invalid GitHub repo: ${repo}`);
   }
   const encodedTag = encodeURIComponent(tag);
+  // GitHub normalizes spaces to periods in uploaded release asset names.
   const encodedFile = filename
+    .replaceAll(" ", ".")
     .split("/")
     .map((segment) => encodeURIComponent(segment))
     .join("/");

@@ -583,7 +583,7 @@ graph TD
 ## 阶段 10 — 构建发布管线（依赖 1A；**自阶段 1 后可随时并行推进**） **\[P\]**
 
 - [x] Tauri 打包配置：macOS 13+ Universal `.dmg` + `.app.tar.gz` + 更新签名；Windows x64 NSIS `.exe`（**perUser/currentUser** 安装，自更新免 UAC 可静默）；Linux `.AppImage`（主推，自带 webkit，glibc 2.31+）+ `.deb`（Ubuntu 22.04+ / webkit2gtk-4.1）
-- [x] Release 工作流：推送 main 自动构建发布，但受 GitHub Environment 或仓库变量（如 `ENABLE_MAIN_RELEASE=true`）闸门保护，未开启时只测试 + dry-run 打包；`workflow_dispatch` 手动触发（默认自动计算版本，可手动指定级别覆盖）；PR 只测试不发布
+- [x] Release 工作流：推送 main 自动构建发布，但仅在来源为 main 且仓库变量 `ENABLE_MAIN_RELEASE=true` 时发布，不使用人工审批；未开启时只测试 + dry-run 打包；`workflow_dispatch` 手动触发（默认自动计算版本，可手动指定级别覆盖）；PR 只测试不发布
 - [x] 版本计算：初始 `0.1.0`；解析自上一 tag 提交（Conventional Commits）：仅 fix→patch；feat/refactor→minor；BREAKING CHANGE/`!`→major；无法解析→patch；自动打 tag
 - [x] 更新日志 = 自上一 tag 以来所有提交信息，写入 Release notes
 - [x] 上传全平台二进制到 GitHub Releases + 生成 `latest.json`；Tauri 更新签名（私钥存 GitHub Secrets）；仓库与 Releases 公开
@@ -716,6 +716,7 @@ graph TD
   - 进展备注（2026-07-09）：打包后 `check-tauri-bundle-resources --require-bundled-resource` 现在也会拒绝 packaged `git-dist` 中未被 `manifest.sha256` 覆盖的 regular file（仅允许 `manifest.json` 与 mount `README.md`），防止旧残留随 release asset 打包但不进入校验证据链；正式演练仍缺 operator/secrets/安装/updater evidence，本项继续不勾选。
   - 进展备注（2026-07-09）：release rehearsal dry-run evidence 现在在缺少 `ARTISTIC_GIT_RELEASE_WORKFLOW_SHA` 时回退记录 `GITHUB_SHA`；`readiness-summary` 会优先选择当前提交证据，并把 stale/missing-provenance 的 release rehearsal pass evidence 判为 blocker。该 gate 只防止旧演练证据误勾当前提交，正式 protected environment/secrets/三平台安装/updater 证据仍缺，本项继续不勾选。
   - 阻塞复核（2026-07-09）：GitDist、E2E full-chain 与 performance 闭环后，`readiness-summary` 只剩 `release-rehearsal` 一个 blocker。当前仓库未配置 release variables/secrets，`release` protected environment 不存在，也没有 `0.1.0` / `0.1.1` release assets、三平台安装冒烟记录或 `0.1.0`→`0.1.1` updater rehearsal 证据；该项必须等真实 protected Release workflow、Tauri signing secrets、三平台安装 smoke 和 updater 演练记录后才能勾选。
+  - 流程变更（2026-07-10）：按维护者决定废弃 GitHub `release` Environment 人工审批及 `ARTISTIC_GIT_RELEASE_PROTECTED_ENVIRONMENT_APPROVED` evidence marker；发布改为仅由 main ref、`ENABLE_MAIN_RELEASE`、git-dist 与签名密钥 gate 约束。历史记录中的 protected-environment approval 要求不再适用；三平台真实安装与 updater 演练证据要求不变。
 
 **验收**：三平台 CI（单元 + 集成）与 Linux/Windows E2E 全绿；发布演练成功。
 

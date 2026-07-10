@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: "Publish when ENABLE_MAIN_RELEASE=true and the release environment approves."
+        description: "Publish from main when ENABLE_MAIN_RELEASE=true."
         type: boolean
         default: false
       bump:
@@ -100,7 +100,7 @@ jobs:
           elif [ "$EVENT_NAME" = "push" ] && [ "$REF_NAME" = "main" ] && [ "$ENABLE_MAIN_RELEASE" = "true" ]; then
             publish_release=true
             reason="release: main push with ENABLE_MAIN_RELEASE=true"
-          elif [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$DISPATCH_PUBLISH" = "true" ] && [ "$ENABLE_MAIN_RELEASE" = "true" ]; then
+          elif [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$REF_NAME" = "main" ] && [ "$DISPATCH_PUBLISH" = "true" ] && [ "$ENABLE_MAIN_RELEASE" = "true" ]; then
             publish_release=true
             reason="release: manual publish with ENABLE_MAIN_RELEASE=true"
           fi
@@ -214,7 +214,6 @@ jobs:
     name: Package release (${{ matrix.os }})
     needs: plan
     if: needs.plan.outputs.publish_release == 'true'
-    environment: release
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -575,7 +574,6 @@ jobs:
     name: Publish GitHub Release
     needs: [plan, package]
     if: needs.plan.outputs.publish_release == 'true'
-    environment: release
     runs-on: ubuntu-22.04
 
     steps:

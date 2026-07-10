@@ -191,7 +191,11 @@ test("builds latest.json with all signed Tauri updater platforms", async () => {
     assert.equal(latestJson.platforms["linux-x86_64"].signature, "linuxsig");
     assert.equal(
       latestJson.platforms["windows-x86_64"].url,
-      "https://github.com/smallmain/artistic-git/releases/download/v1.2.3/Artistic%20Git_1.2.3_x64-setup.exe.zip",
+      "https://github.com/smallmain/artistic-git/releases/download/v1.2.3/Artistic.Git_1.2.3_x64-setup.exe.zip",
+    );
+    assert.equal(
+      latestJson.platforms["darwin-aarch64"].url,
+      "https://github.com/smallmain/artistic-git/releases/download/v1.2.3/Artistic.Git.app.tar.gz",
     );
   } finally {
     await rm(tmpDir, { recursive: true, force: true });
@@ -519,6 +523,15 @@ test("release workflow installs pnpm before setting up Node in the publish job",
   assert.notEqual(pnpmSetup, -1, "publish job pnpm setup");
   assert.notEqual(nodeSetup, -1, "publish job Node setup");
   assert.ok(pnpmSetup < nodeSetup, "pnpm must be available to setup-node");
+});
+
+test("release workflow publishes only from main without environment approval", () => {
+  assert.ok(!releaseWorkflow.includes("environment: release"));
+  assert.equal(
+    releaseWorkflow.match(/\[ "\$REF_NAME" = "main" \]/g)?.length,
+    2,
+    "push and manual publishing must both require main",
+  );
 });
 
 test("release workflow applies the release version to displayed app versions", () => {

@@ -88,10 +88,10 @@ the macOS app to `/Applications` and use right-click → Open once to approve it
 in Gatekeeper. On Windows, SmartScreen may require More info → Run anyway.
 
 The release workflow runs on `main` pushes and `workflow_dispatch`, but it
-publishes only when `ENABLE_MAIN_RELEASE=true` and the `release` GitHub
-Environment allows the job. When the gate is not enabled, the workflow runs
-tests and a Tauri `--no-bundle` dry-run build without publishing. Manual runs
-can keep the automatic version calculation or override the SemVer bump level.
+publishes only from `main` when `ENABLE_MAIN_RELEASE=true`. No GitHub
+Environment or manual approval step is used. When the gate is not enabled, the
+workflow runs tests and a Tauri `--no-bundle` dry-run build without publishing.
+Manual runs can keep the automatic version calculation or override the SemVer bump level.
 Publishing also requires a completed Git Distribution workflow run id, supplied
 as the `git_dist_run_id` dispatch input or the `GIT_DIST_RUN_ID` repository
 variable, so each platform package stages and verifies the matching
