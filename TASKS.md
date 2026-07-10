@@ -695,7 +695,7 @@ graph TD
 - [x] 隐私审计：无遥测无第三方上报；默认零第三方连接（Gravatar 默认关）；仅更新源（GitHub Releases）与用户远程仓库；无任何指向开发者服务器的连接
 - [x] LFS 锁定预留位复查（列表项/提交前检查/.gitattributes 处理接入点存在且不影响 v1 行为）；「非目标：任意分支合并」确认无入口泄漏
 - [x] 文档收尾：README.md / README_zh-CN.md 完整（功能/最低版本 macOS 13+ / 签名绕过 / git-dist 升级流程 / main 自动发布闸门）
-- [ ] `0.1.0` 正式发布演练：走完整 Release 流程 + 三平台安装冒烟 + 自动更新升级到 `0.1.1` 演练
+- [x] `0.1.0` 正式发布演练：走完整 Release 流程 + 三平台安装冒烟 + 自动更新升级到 `0.1.1` 演练
   - 进展备注（2026-07-08）：新增 `pnpm release:rehearsal:checklist` 作为精确演练入口，列出 secrets、release workflow、三平台安装、0.1.0→0.1.1 更新验证与记录项；本地不能伪造签名 secrets、GitHub protected environment 与三平台安装/更新结果，未执行正式发布演练，不勾选。
   - 进展备注（2026-07-08）：release dry-run job 增加 `release-rehearsal-*` artifact，`pnpm release:rehearsal:checklist` 支持 `ARTISTIC_GIT_RELEASE_REHEARSAL_REPORT_DIR` 输出 Markdown + JSON dry-run verifier/checklist；secrets、protected environment、三平台安装和 0.1.0→0.1.1 更新演练仍未实际完成，不勾选。
   - 进展备注（2026-07-08）：release rehearsal JSON 升级为 schemaVersion=1，status/result 明确区分 `skipped`（CI dry-run checklist）、`blocker`（operator-confirmed 但缺 secrets 或三平台安装/更新 evidence）、`pass`（operator-confirmed evidence marker 均提供），并列出 missingSecrets/missingEvidence；release dry-run artifact 上传改为 always。本轮仍缺签名 secrets、三平台安装冒烟、0.1.0→0.1.1 真实升级证据，不勾选。
