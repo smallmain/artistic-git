@@ -526,16 +526,25 @@ test("release workflow checks staged and packaged git-dist resources", () => {
   assert.ok(releaseWorkflow.includes("Verify packaged embedded Git resources"));
   assert.ok(
     releaseWorkflow.includes(
-      '--bundle-output "src-tauri/target/${{ matrix.target }}/release"',
+      '--bundle-output "${{ steps.packaged-resource-output.outputs.path }}"',
     ),
   );
   assert.ok(releaseWorkflow.includes("--require-bundled-resource"));
-  assert.ok(releaseWorkflow.includes('"src-tauri/target/release/bundle"'));
   assert.ok(
     releaseWorkflow.includes(
-      '"src-tauri/target/${{ matrix.target }}/release/bundle"',
+      "Install Windows bundle for resource verification",
     ),
   );
+  assert.ok(
+    releaseWorkflow.includes(
+      'Test-Path (Join-Path $installDir "git-dist/manifest.json")',
+    ),
+  );
+  assert.ok(releaseWorkflow.includes('"target/release/bundle"'));
+  assert.ok(
+    releaseWorkflow.includes('"target/${{ matrix.target }}/release/bundle"'),
+  );
+  assert.ok(!releaseWorkflow.includes("src-tauri/target/"));
 });
 
 test("release workflow configures Linux AppImage runtime prerequisites", () => {
@@ -553,10 +562,7 @@ test("release workflow configures Linux AppImage runtime prerequisites", () => {
     packageJob.includes("/usr/local/lib/android"),
     "Linux runner disk cleanup paths",
   );
-  assert.ok(
-    packageJob.includes("desktop-file-utils \\"),
-    "desktop-file-utils",
-  );
+  assert.ok(packageJob.includes("desktop-file-utils \\"), "desktop-file-utils");
   assert.ok(packageJob.includes("file \\"), "file");
   assert.ok(packageJob.includes("libfuse2 \\"), "libfuse2");
   assert.ok(packageJob.includes("squashfs-tools \\"), "squashfs-tools");

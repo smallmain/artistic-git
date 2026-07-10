@@ -408,11 +408,41 @@ jobs:
           pnpm tauri build --ci --verbose --target "${{ matrix.target }}" --bundles "${{ matrix.bundles }}" || {
             status=$?
             df -h /
-            find src-tauri/target -maxdepth 6 \
+            find target -maxdepth 6 \
               \( -iname '*linuxdeploy*' -o -iname '*.AppImage' -o -iname '*.AppDir' \) \
               -print || true
             exit "$status"
           }
+
+      - name: Install Windows bundle for resource verification
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -Path "target/${{ matrix.target }}/release/bundle/nsis" -Filter "*.exe" | Select-Object -First 1
+          if (-not $installer) {
+            throw "NSIS installer was not produced."
+          }
+
+          $installDir = Join-Path $env:RUNNER_TEMP "artistic-git-bundle-check"
+          Remove-Item -Recurse -Force $installDir -ErrorAction SilentlyContinue
+          $process = Start-Process -FilePath $installer.FullName -ArgumentList @("/S", "/D=$installDir") -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "NSIS installer exited with code $($process.ExitCode)."
+          }
+          if (-not (Test-Path (Join-Path $installDir "git-dist/manifest.json"))) {
+            throw "Installed NSIS bundle is missing git-dist/manifest.json."
+          }
+
+      - name: Resolve packaged resource output
+        id: packaged-resource-output
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            echo "path=${RUNNER_TEMP}/artistic-git-bundle-check" >> "$GITHUB_OUTPUT"
+          else
+            echo "path=target/${{ matrix.target }}/release" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Verify packaged embedded Git resources
         shell: bash
@@ -421,7 +451,7 @@ jobs:
           node scripts/check-tauri-bundle-resources.mjs \
             --require-manifest \
             --release \
-            --bundle-output "src-tauri/target/${{ matrix.target }}/release" \
+            --bundle-output "${{ steps.packaged-resource-output.outputs.path }}" \
             --require-bundled-resource
 
       - name: Stage release assets
@@ -430,8 +460,8 @@ jobs:
           set -euo pipefail
           mkdir -p release-assets
           bundle_dirs=(
-            "src-tauri/target/release/bundle"
-            "src-tauri/target/${{ matrix.target }}/release/bundle"
+            "target/release/bundle"
+            "target/${{ matrix.target }}/release/bundle"
           )
           for bundle_dir in "${bundle_dirs[@]}"; do
             if [ ! -d "$bundle_dir" ]; then
