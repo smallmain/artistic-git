@@ -7,6 +7,7 @@ import {
 } from "@/lib/ipc/commands";
 import { emitAppEvent, listenAppEvent } from "@/lib/ipc/events";
 import type {
+  UpdateCheckSource,
   UpdateInstallGateResponse,
   UpdateStatusEvent,
 } from "@/lib/ipc/update-types";
@@ -173,9 +174,6 @@ export function UpdaterRuntimeBridge() {
       if (!isStatusForCurrentWindow(payload, windowLabelRef.current)) {
         return;
       }
-      if (!shouldExposeStatus(payload)) {
-        return;
-      }
 
       setUpdateStatus(payload);
       if (
@@ -217,7 +215,11 @@ export function UpdaterRuntimeBridge() {
   React.useEffect(() => {
     const handleManualCheck = () => {
       void checkForUpdates({ source: "manual" }).catch((error) => {
-        const status = failedManualStatus(error, windowLabelRef.current);
+        const status = failedUpdateStatus(
+          error,
+          "manual",
+          windowLabelRef.current,
+        );
         setUpdateStatus(status);
         setUpdatePromptDismissedRequestId(null);
         setUpdatePromptOpen(true);
@@ -237,7 +239,11 @@ export function UpdaterRuntimeBridge() {
           return installReadyUpdate();
         })
         .catch((error) => {
-          const status = failedManualStatus(error, windowLabelRef.current);
+          const status = failedUpdateStatus(
+            error,
+            "manual",
+            windowLabelRef.current,
+          );
           setUpdateStatus(status);
           setUpdatePromptDismissedRequestId(null);
           setUpdatePromptOpen(true);
@@ -266,8 +272,10 @@ export function UpdaterRuntimeBridge() {
     }
 
     const runAutomaticCheck = () => {
-      void checkForUpdates({ source: "automatic" }).catch(() => {
-        // Automatic failures are intentionally silent until the next interval.
+      void checkForUpdates({ source: "automatic" }).catch((error) => {
+        setUpdateStatus(
+          failedUpdateStatus(error, "automatic", windowLabelRef.current),
+        );
       });
     };
     const initialTimer = window.setTimeout(
@@ -283,7 +291,7 @@ export function UpdaterRuntimeBridge() {
       window.clearTimeout(initialTimer);
       window.clearInterval(interval);
     };
-  }, [appSettings]);
+  }, [appSettings, setUpdateStatus]);
 
   React.useEffect(() => {
     if (updateStatus?.status.state !== "ready") {
@@ -314,16 +322,6 @@ function isStatusForCurrentWindow(
   );
 }
 
-function shouldExposeStatus(event: UpdateStatusEvent): boolean {
-  if (event.source === "manual") {
-    return true;
-  }
-
-  return (
-    event.status.state === "ready" || event.status.state === "releaseAvailable"
-  );
-}
-
 function shouldOpenUpdatePrompt(
   event: UpdateStatusEvent,
   dismissedRequestId: string | null,
@@ -348,18 +346,19 @@ function shouldOpenUpdatePrompt(
   );
 }
 
-function failedManualStatus(
+function failedUpdateStatus(
   error: unknown,
+  source: UpdateCheckSource,
   windowLabel: string | null,
 ): UpdateStatusEvent {
   return {
-    requestId: "manual-update-check-failed",
-    source: "manual",
+    requestId: `${source}-update-check-failed`,
+    source,
     targetWindowLabel: windowLabel,
     status: {
       message: errorMessage(error),
       state: "failed",
-      visible: true,
+      visible: source === "manual",
     },
   };
 }

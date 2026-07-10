@@ -439,7 +439,7 @@ describe("SettingsModal", () => {
     );
   });
 
-  it("shows about update status and dispatches a manual check request", async () => {
+  it("shows silent automatic failures in about and dispatches a manual check request", async () => {
     const dispatchEvent = vi.spyOn(window, "dispatchEvent");
 
     render(
@@ -447,13 +447,13 @@ describe("SettingsModal", () => {
         initialWindowState={{
           settingsSection: "about",
           updateStatus: {
-            requestId: "manual-1",
-            source: "manual",
+            requestId: "automatic-1",
+            source: "automatic",
             targetWindowLabel: "main",
             status: {
               message: "network unavailable",
               state: "failed",
-              visible: true,
+              visible: false,
             },
           },
         }}
@@ -471,6 +471,39 @@ describe("SettingsModal", () => {
     expect(dispatchEvent).toHaveBeenCalledWith(
       expect.objectContaining({ type: "artistic-git:check-updates" }),
     );
+  });
+
+  it("shows automatic download progress and release notes in about", async () => {
+    render(
+      <TestProviders
+        initialWindowState={{
+          settingsSection: "about",
+          updateStatus: {
+            requestId: "automatic-download-1",
+            source: "automatic",
+            targetWindowLabel: "main",
+            status: {
+              downloadedBytes: 50,
+              notes: "Automatic release notes",
+              progress: 0.5,
+              state: "downloading",
+              totalBytes: 100,
+              version: "0.2.0",
+            },
+          },
+        }}
+      >
+        <SettingsModal onOpenChange={vi.fn()} open />
+      </TestProviders>,
+    );
+
+    expect(
+      await screen.findByText("Downloading version 0.2.0 (50%)."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Automatic release notes")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Check for updates" }),
+    ).toBeDisabled();
   });
 
   it("shows ready update details in about and respects install gate state", async () => {

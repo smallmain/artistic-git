@@ -1815,11 +1815,11 @@ function UpdateStatusMessage({
         </p>
       );
     case "failed":
-      return status.visible ? (
+      return (
         <p className="text-sm text-destructive">
           {t("settings.about.updateFailed", { message: status.message })}
         </p>
-      ) : null;
+      );
   }
 }
 

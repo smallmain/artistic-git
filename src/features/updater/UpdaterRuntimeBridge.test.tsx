@@ -125,6 +125,7 @@ describe("UpdaterRuntimeBridge", () => {
     render(
       <TestProviders>
         <UpdaterRuntimeBridge />
+        <UpdateProbe />
       </TestProviders>,
     );
 
@@ -135,9 +136,11 @@ describe("UpdaterRuntimeBridge", () => {
     expect(bridgeMocks.checkForUpdates).toHaveBeenCalledWith({
       source: "automatic",
     });
+    expect(screen.getByText("failed")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
-  it("keeps automatic discovery and download progress silent until ready", async () => {
+  it("stores automatic update progress and failures without opening a prompt", async () => {
     render(
       <TestProviders>
         <UpdaterRuntimeBridge />
@@ -147,21 +150,14 @@ describe("UpdaterRuntimeBridge", () => {
 
     await waitFor(() => expect(updateStatusHandler).not.toBeNull());
 
-    await emitUpdateStatus({
-      requestId: "auto-1",
-      source: "automatic",
-      targetWindowLabel: "main",
-      status: {
+    const statuses: UpdateStatusEvent["status"][] = [
+      { state: "checking" },
+      {
         notes: "Release notes",
         state: "available",
         version: "0.2.0",
       },
-    });
-    await emitUpdateStatus({
-      requestId: "auto-1",
-      source: "automatic",
-      targetWindowLabel: "main",
-      status: {
+      {
         downloadedBytes: 50,
         notes: "Release notes",
         progress: 0.5,
@@ -169,10 +165,21 @@ describe("UpdaterRuntimeBridge", () => {
         totalBytes: 100,
         version: "0.2.0",
       },
-    });
+      { state: "notAvailable" },
+      { message: "offline", state: "failed", visible: false },
+    ];
 
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    expect(screen.getByText("none")).toBeInTheDocument();
+    for (const status of statuses) {
+      await emitUpdateStatus({
+        requestId: "auto-1",
+        source: "automatic",
+        targetWindowLabel: "main",
+        status,
+      });
+
+      expect(screen.getByText(status.state)).toBeInTheDocument();
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    }
   });
 
   it("opens the update prompt when an automatic download is ready", async () => {

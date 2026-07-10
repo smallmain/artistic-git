@@ -182,7 +182,7 @@ pub async fn check_for_updates(
                     visible: source == UpdateCheckSource::Manual,
                 },
             };
-            emit_manual_or_success_status(&app_handle, &event);
+            emit_busy_status(&app_handle, &event);
             return Ok(event);
         }
     };
@@ -523,7 +523,7 @@ fn emit_recorded_check_status(
     observed_events: Vec<UpdateStatusEvent>,
 ) {
     if should_emit_primary_check_status(event, !observed_events.is_empty()) {
-        emit_manual_or_success_status(app_handle, event);
+        emit_status(app_handle, event);
     }
     for observed_event in observed_events {
         emit_status(app_handle, &observed_event);
@@ -566,12 +566,14 @@ fn observed_manual_status(
     }
 }
 
-fn emit_manual_or_success_status(app_handle: &AppHandle, event: &UpdateStatusEvent) {
-    if event.source == UpdateCheckSource::Manual
-        || !matches!(event.status, UpdateStatus::Failed { .. })
-    {
+fn emit_busy_status(app_handle: &AppHandle, event: &UpdateStatusEvent) {
+    if should_emit_busy_status(event) {
         emit_status(app_handle, event);
     }
+}
+
+fn should_emit_busy_status(event: &UpdateStatusEvent) -> bool {
+    event.source == UpdateCheckSource::Manual
 }
 
 fn emit_status(app_handle: &AppHandle, event: &UpdateStatusEvent) {
@@ -1282,6 +1284,23 @@ mod tests {
     }
 
     #[test]
+    fn actual_automatic_failure_remains_a_primary_status() {
+        let event = failed_status_event("auto-1", UpdateCheckSource::Automatic);
+
+        assert!(should_emit_primary_check_status(&event, false));
+        assert!(should_emit_primary_check_status(&event, true));
+    }
+
+    #[test]
+    fn overlapping_automatic_check_failure_remains_silent() {
+        let automatic = failed_status_event("auto-2", UpdateCheckSource::Automatic);
+        let manual = failed_status_event("manual-2", UpdateCheckSource::Manual);
+
+        assert!(!should_emit_busy_status(&automatic));
+        assert!(should_emit_busy_status(&manual));
+    }
+
+    #[test]
     fn observed_automatic_ready_status_suppresses_the_original_prompt() {
         let event = ready_prompt_event(Some("repo-1"));
         assert_eq!(event.source, UpdateCheckSource::Automatic);
@@ -1529,6 +1548,18 @@ mod tests {
                 downloaded_bytes,
                 total_bytes: Some(total_bytes),
                 progress: Some(downloaded_bytes as f64 / total_bytes as f64),
+            },
+        }
+    }
+
+    fn failed_status_event(request_id: &str, source: UpdateCheckSource) -> UpdateStatusEvent {
+        UpdateStatusEvent {
+            request_id: request_id.to_owned(),
+            source,
+            target_window_label: Some("main".to_owned()),
+            status: UpdateStatus::Failed {
+                message: "update check failed".to_owned(),
+                visible: source == UpdateCheckSource::Manual,
             },
         }
     }
