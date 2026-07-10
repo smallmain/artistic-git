@@ -63,7 +63,10 @@
         "depends": [
           "libwebkit2gtk-4.1-0",
           "libayatana-appindicator3-1",
-          "librsvg2-2"
+          "librsvg2-2",
+          "librtmp1",
+          "libgnutls30 | libgnutls30t64",
+          "libsasl2-2"
         ],
         "section": "devel"
       }

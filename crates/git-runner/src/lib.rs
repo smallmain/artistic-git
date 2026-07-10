@@ -711,6 +711,11 @@ impl CommandEnvironmentPlan {
             }
         }
 
+        #[cfg(target_os = "linux")]
+        if let Some(path) = appimage_library_path(&distribution.root) {
+            variables.insert("LD_LIBRARY_PATH".to_owned(), path.into_os_string());
+        }
+
         #[cfg(windows)]
         {
             variables.insert(
@@ -761,6 +766,24 @@ impl CommandEnvironmentPlan {
             command.env(key, value);
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn appimage_library_path(distribution_root: &Path) -> Option<PathBuf> {
+    let appdir = std::env::var_os("APPDIR")?;
+    appimage_library_path_for(distribution_root, Path::new(&appdir))
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn appimage_library_path_for(distribution_root: &Path, appdir: &Path) -> Option<PathBuf> {
+    let appdir = fs::canonicalize(appdir).ok()?;
+    let distribution_root = fs::canonicalize(distribution_root).ok()?;
+    if !distribution_root.starts_with(&appdir) {
+        return None;
+    }
+
+    let library_path = appdir.join("usr/lib");
+    library_path.is_dir().then_some(library_path)
 }
 
 #[derive(Debug, Default)]
@@ -1375,6 +1398,29 @@ mod tests {
         );
         assert_eq!(command_plan.args, vec![OsString::from("status")]);
         assert!(!command_plan.environment.removes_variable("PATH"));
+    }
+
+    #[test]
+    fn appimage_library_path_is_limited_to_the_distribution_appdir() {
+        let temp = TestTempDir::new("ag-appimage-library-path").expect("temp dir");
+        let appdir = temp.path().join("appdir");
+        let library_path = appdir.join("usr/lib");
+        let distribution_root = appdir.join("usr/share/artistic-git/git-dist");
+        let outside_distribution = temp.path().join("outside/git-dist");
+        fs::create_dir_all(&library_path).expect("appimage library path");
+        fs::create_dir_all(&distribution_root).expect("appimage git-dist");
+        fs::create_dir_all(&outside_distribution).expect("outside git-dist");
+        let canonical_library_path =
+            fs::canonicalize(&library_path).expect("canonical appimage library path");
+
+        assert_eq!(
+            appimage_library_path_for(&distribution_root, &appdir),
+            Some(canonical_library_path)
+        );
+        assert_eq!(
+            appimage_library_path_for(&outside_distribution, &appdir),
+            None
+        );
     }
 
     #[test]

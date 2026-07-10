@@ -386,6 +386,26 @@ jobs:
           node scripts/check-tauri-bundle-resources.mjs --require-manifest --release
           node scripts/check-git-dist.mjs --target="${{ matrix.gitDistTarget }}"
 
+      - name: Prepare Linux Git dependency probe
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          PROBE_DIR: ${{ runner.temp }}/artistic-git-linuxdeploy-probe
+        run: |
+          set -euo pipefail
+          rm -rf "$PROBE_DIR"
+          mkdir -p "$PROBE_DIR"
+          probe_count=0
+          while IFS= read -r -d '' executable; do
+            description="$(file -b "$executable")"
+            if [[ "$description" == *ELF* && "$description" == *"dynamically linked"* ]]; then
+              probe_count=$((probe_count + 1))
+              destination="$(printf '%s/probe-%04d' "$PROBE_DIR" "$probe_count")"
+              cp --preserve=mode "$executable" "$destination"
+            fi
+          done < <(find src-tauri/resources/git-dist -type f -perm /111 -print0)
+          test "$probe_count" -gt 0
+
       - name: Build Tauri bundles
         if: runner.os != 'Linux'
         env:
@@ -397,6 +417,7 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         env:
+          ADDITIONAL_BIN_DIRS: ${{ runner.temp }}/artistic-git-linuxdeploy-probe
           APPIMAGE_EXTRACT_AND_RUN: "1"
           RUST_LOG: tauri_bundler=debug
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -442,6 +463,53 @@ jobs:
             echo "path=${RUNNER_TEMP}/artistic-git-bundle-check" >> "$GITHUB_OUTPUT"
           else
             echo "path=target/${{ matrix.target }}/release" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify packaged Linux Git runtime
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_dir="$(find "target/${{ matrix.target }}/release/bundle/appimage" -maxdepth 1 -type d -name '*.AppDir' -print -quit)"
+          test -n "$app_dir"
+          git_dist="$app_dir/usr/share/artistic-git/git-dist"
+          app_lib="$app_dir/usr/lib"
+          runtime_home="$RUNNER_TEMP/artistic-git-linux-home"
+          ldd_report="$RUNNER_TEMP/artistic-git-packaged-ldd.txt"
+          test -f "$git_dist/manifest.json"
+          test ! -e "$app_dir/usr/lib/Artistic Git/git-dist"
+          test -e "$app_lib/librtmp.so.1"
+          test -e "$app_lib/libgnutls.so.30"
+          test -e "$app_lib/libsasl2.so.2"
+          mkdir -p "$runtime_home"
+
+          git_path="$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).paths.gitExecutable' "$git_dist/manifest.json")"
+          git_lfs_path="$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).paths.gitLfsExecutable' "$git_dist/manifest.json")"
+          env -i \
+            HOME="$runtime_home" \
+            PATH="/usr/bin:/bin" \
+            LD_LIBRARY_PATH="$app_lib" \
+            "$git_dist/$git_path" --version
+          env -i \
+            HOME="$runtime_home" \
+            PATH="/usr/bin:/bin" \
+            LD_LIBRARY_PATH="$app_lib" \
+            "$git_dist/$git_lfs_path" version
+
+          : > "$ldd_report"
+          packaged_elf_count=0
+          while IFS= read -r -d '' executable; do
+            description="$(file -b "$executable")"
+            if [[ "$description" == *ELF* && "$description" == *"dynamically linked"* ]]; then
+              packaged_elf_count=$((packaged_elf_count + 1))
+              echo "### $executable" >> "$ldd_report"
+              LD_LIBRARY_PATH="$app_lib" ldd "$executable" >> "$ldd_report"
+            fi
+          done < <(find "$git_dist" -type f -perm /111 -print0)
+          test "$packaged_elf_count" -gt 0
+          if grep -q 'not found' "$ldd_report"; then
+            cat "$ldd_report" >&2
+            exit 1
           fi
 
       - name: Verify packaged embedded Git resources

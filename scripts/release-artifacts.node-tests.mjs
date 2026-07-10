@@ -605,6 +605,29 @@ test("release workflow configures Linux AppImage runtime prerequisites", () => {
     packageJob.includes("du -sh src-tauri/resources/git-dist"),
     "Linux GitDist size diagnostic",
   );
+  assert.ok(
+    packageJob.includes("Prepare Linux Git dependency probe"),
+    "Linux Git dependency probe",
+  );
+  assert.ok(
+    packageJob.includes("ADDITIONAL_BIN_DIRS:"),
+    "linuxdeploy additional binary probe",
+  );
+  assert.ok(
+    packageJob.includes("Verify packaged Linux Git runtime"),
+    "packaged Linux Git runtime smoke",
+  );
+  assert.ok(
+    packageJob.includes('LD_LIBRARY_PATH="$app_lib"'),
+    "packaged Linux library path",
+  );
+  for (const dependency of [
+    "librtmp1",
+    "libgnutls30 | libgnutls30t64",
+    "libsasl2-2",
+  ]) {
+    assert.ok(tauriConfig.bundle.linux.deb.depends.includes(dependency));
+  }
 });
 
 test("CI and git-dist workflows cover release and report contract checks", () => {

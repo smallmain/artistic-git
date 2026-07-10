@@ -2725,7 +2725,7 @@ fn git_dist_root(app: &tauri::App) -> Result<PathBuf, Box<dyn std::error::Error>
 
     #[cfg(target_os = "linux")]
     {
-        return Ok(linux_bundled_git_dist_root(&resource_dir)?);
+        Ok(linux_bundled_git_dist_root(&resource_dir)?)
     }
 
     #[cfg(not(target_os = "linux"))]
