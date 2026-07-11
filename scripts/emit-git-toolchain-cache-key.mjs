@@ -4,6 +4,7 @@
 import { appendFile } from "node:fs/promises";
 
 import {
+  computeToolchainCacheKeys,
   computeToolchainState,
   normalizeTarget,
 } from "./git-toolchain-state.mjs";
@@ -18,22 +19,18 @@ if (unknown.length > 0) {
 const state = await computeToolchainState(
   normalizeTarget(targetArg?.slice("--target=".length)),
 );
-const key = [
-  "git-toolchain-v2",
-  state.target,
-  state.baseFingerprint,
-  state.helperFingerprint,
-].join("-");
+const { baseKey, helperKey } = computeToolchainCacheKeys(state);
 
 if (process.env.GITHUB_OUTPUT) {
   await appendFile(
     process.env.GITHUB_OUTPUT,
     [
-      `key=${key}`,
+      `base-key=${baseKey}`,
+      `helper-key=${helperKey}`,
       `base-fingerprint=${state.baseFingerprint}`,
       `helper-fingerprint=${state.helperFingerprint}`,
       "",
     ].join("\n"),
   );
 }
-console.log(key);
+console.log(`${baseKey}\n${helperKey}`);

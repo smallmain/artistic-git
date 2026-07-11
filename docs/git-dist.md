@@ -105,10 +105,12 @@ The standard dev, build, test, Cargo test, E2E, and performance commands invoke
 ensure before their work. Missing resources are built; invalid resources are
 repaired or fail. Tests do not silently return early.
 
-CI test and release jobs restore only `.cache/artistic-git/git-toolchain` with
-an exact target plus lock/config/helper/contracts hash. They do not use prefix
-restore keys. Every job still runs ensure and verify, so cache contents are an
-optimization rather than trusted build input.
+CI test and release jobs restore two independent exact caches: downloads plus
+bases use the target and base fingerprint, while helpers use the target and
+helper fingerprint. They do not use prefix restore keys. A helper-only change
+therefore does not invalidate Git, Git LFS, or OpenSSH. Every job still runs
+ensure and verify, so cache contents are an optimization rather than trusted
+build input.
 
 The Git Toolchain Audit workflow performs a cold build for all three targets and
 uploads only `manifest.json`, `build-evidence.json`, and `size-report.json`.

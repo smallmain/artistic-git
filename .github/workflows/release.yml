@@ -200,14 +200,19 @@ jobs:
         id: toolchain-cache-key
         run: node scripts/emit-git-toolchain-cache-key.mjs --target=${{ matrix.gitDistTarget }}
 
-      - name: Restore embedded toolchain cache
+      - name: Restore embedded toolchain base cache
         uses: actions/cache@v4
         with:
           path: |
             .cache/artistic-git/git-toolchain/downloads
             .cache/artistic-git/git-toolchain/bases
-            .cache/artistic-git/git-toolchain/helpers
-          key: ${{ steps.toolchain-cache-key.outputs.key }}
+          key: ${{ steps.toolchain-cache-key.outputs.base-key }}
+
+      - name: Restore embedded toolchain helper cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/artistic-git/git-toolchain/helpers
+          key: ${{ steps.toolchain-cache-key.outputs.helper-key }}
 
       - name: Ensure embedded toolchain
         run: pnpm git-toolchain:ensure -- --target=${{ matrix.gitDistTarget }}
@@ -328,14 +333,19 @@ jobs:
         id: toolchain-cache-key
         run: node scripts/emit-git-toolchain-cache-key.mjs --target=${{ matrix.gitDistTarget }}
 
-      - name: Restore embedded toolchain cache
+      - name: Restore embedded toolchain base cache
         uses: actions/cache@v4
         with:
           path: |
             .cache/artistic-git/git-toolchain/downloads
             .cache/artistic-git/git-toolchain/bases
-            .cache/artistic-git/git-toolchain/helpers
-          key: ${{ steps.toolchain-cache-key.outputs.key }}
+          key: ${{ steps.toolchain-cache-key.outputs.base-key }}
+
+      - name: Restore embedded toolchain helper cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/artistic-git/git-toolchain/helpers
+          key: ${{ steps.toolchain-cache-key.outputs.helper-key }}
 
       - name: Ensure embedded toolchain
         run: pnpm git-toolchain:ensure -- --target=${{ matrix.gitDistTarget }}

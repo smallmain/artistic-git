@@ -667,7 +667,12 @@ test("release workflow ensures and checks staged and packaged git-dist resources
   );
   assert.ok(
     releaseWorkflow.includes(
-      "key: ${{ steps.toolchain-cache-key.outputs.key }}",
+      "key: ${{ steps.toolchain-cache-key.outputs.base-key }}",
+    ),
+  );
+  assert.ok(
+    releaseWorkflow.includes(
+      "key: ${{ steps.toolchain-cache-key.outputs.helper-key }}",
     ),
   );
   assert.ok(
@@ -823,10 +828,21 @@ test("CI and audit workflows enforce the pinned embedded toolchain", () => {
       );
     }
     assert.ok(workflow.includes("scripts/emit-git-toolchain-cache-key.mjs"));
-    assert.ok(
-      workflow.includes("key: ${{ steps.toolchain-cache-key.outputs.key }}"),
+    const baseKey = "key: ${{ steps.toolchain-cache-key.outputs.base-key }}";
+    const helperKey =
+      "key: ${{ steps.toolchain-cache-key.outputs.helper-key }}";
+    assert.equal(
+      workflow.split(baseKey).length - 1,
+      2,
+      "test and package jobs each restore one exact base cache",
+    );
+    assert.equal(
+      workflow.split(helperKey).length - 1,
+      2,
+      "test and package jobs each restore one exact helper cache",
     );
     assert.ok(!workflow.includes("git-toolchain-v1-"));
+    assert.ok(!workflow.includes("git-toolchain-v2-"));
     assert.ok(!workflow.includes("hashFiles('git-toolchain.lock.json'"));
     assert.ok(!workflow.includes("git-toolchain/work"));
     assert.ok(!workflow.includes("git-toolchain/locks"));
@@ -834,6 +850,11 @@ test("CI and audit workflows enforce the pinned embedded toolchain", () => {
     assert.ok(workflow.includes("pnpm git-toolchain:verify -- --target="));
     assert.ok(workflow.includes("dtolnay/rust-toolchain@1.96.1"));
     assert.ok(!workflow.includes("restore-keys:"));
+    assert.ok(
+      workflow.includes(
+        ".cache/artistic-git/git-toolchain/helpers\n          key: ${{ steps.toolchain-cache-key.outputs.helper-key }}",
+      ),
+    );
   }
   assert.ok(
     gitDistWorkflow.includes("Build embedded toolchain from a cold cache"),
@@ -860,6 +881,7 @@ test("CI and audit workflows enforce the pinned embedded toolchain", () => {
     releaseWorkflow.includes("release-size-audit-${{ matrix.gitDistTarget }}"),
   );
   assert.ok(!gitDistWorkflow.includes("actions/cache@"));
+  assert.ok(!gitDistWorkflow.includes("restore-keys:"));
   assert.ok(
     !gitDistWorkflow.includes("artistic-git-dist-${{ matrix.target }}"),
   );

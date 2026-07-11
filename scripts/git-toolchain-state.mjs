@@ -177,6 +177,21 @@ export async function computeToolchainState(targetName) {
   };
 }
 
+export function computeToolchainCacheKeys(state) {
+  return {
+    baseKey: [
+      "git-toolchain-base-v1",
+      state.target,
+      state.baseFingerprint,
+    ].join("-"),
+    helperKey: [
+      "git-toolchain-helper-v1",
+      state.target,
+      state.helperFingerprint,
+    ].join("-"),
+  };
+}
+
 export function cachePaths(state) {
   return {
     baseRoot: path.join(
