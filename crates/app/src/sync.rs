@@ -2844,7 +2844,15 @@ mod tests {
         )
         .expect_err("submodule update failure should roll back local phase");
 
-        assert!(error.summary.contains("submodule") || error.summary.contains("子模块"));
+        let git_error = error
+            .git
+            .as_ref()
+            .expect("submodule update failure should include Git command context");
+        assert!(
+            git_error.command.iter().any(|arg| arg == "submodule")
+                && git_error.command.iter().any(|arg| arg == "update"),
+            "unexpected submodule update failure: {error:?}"
+        );
         assert_eq!(
             fixture.local.git_output(["rev-parse", "HEAD"]),
             starting_head
