@@ -8,6 +8,77 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (relativePath) => readFile(path.join(root, relativePath), "utf8");
 
+test("manual CI platform scope prunes runner matrices without weakening push CI", async () => {
+  const ciWorkflow = await read(".github/workflows/ci.yml");
+
+  assert.match(
+    ciWorkflow,
+    /platform_scope:\n\s+description:[\s\S]+?default: all\n\s+type: choice\n\s+options:\n\s+- all\n\s+- windows\n\s+- linux\n\s+- macos/,
+  );
+  assert.equal(
+    ciWorkflow.match(/github\.event_name != 'workflow_dispatch'/g)?.length,
+    4,
+    "test, E2E matrix, E2E macOS guard, and evidence summary must default non-manual events to the full contract",
+  );
+  assert.equal(
+    ciWorkflow.match(/inputs\.platform_scope == 'all'/g)?.length,
+    3,
+    "both matrices and the evidence summary require all scope",
+  );
+  for (const scopedMatrix of [
+    "inputs.platform_scope == 'windows' &&",
+    "inputs.platform_scope == 'linux' &&",
+  ]) {
+    assert.equal(
+      ciWorkflow.split(scopedMatrix).length - 1,
+      2,
+      `${scopedMatrix} must select both test and E2E matrices`,
+    );
+  }
+  assert.deepEqual(
+    matrixPlatformOptions(workflowJob(ciWorkflow, "test", "e2e")),
+    [
+      ["ubuntu-22.04", "macos-latest", "windows-latest"],
+      ["windows-latest"],
+      ["ubuntu-22.04"],
+      ["macos-latest"],
+    ],
+  );
+  assert.deepEqual(
+    matrixPlatformOptions(
+      workflowJob(ciWorkflow, "e2e", "phase12-evidence-summary"),
+    ),
+    [["ubuntu-22.04", "windows-latest"], ["windows-latest"], ["ubuntu-22.04"]],
+  );
+  assert.match(
+    ciWorkflow,
+    /e2e:\n[\s\S]+?if: github\.event_name != 'workflow_dispatch' \|\| inputs\.platform_scope != 'macos'[\s\S]+?matrix:\n\s+include: >-\n\s+\$\{\{ fromJSON\(/,
+  );
+  assert.match(
+    ciWorkflow,
+    /phase12-evidence-summary:[\s\S]+?if: >-\n\s+\$\{\{ always\(\) &&\n\s+\(github\.event_name != 'workflow_dispatch' \|\| inputs\.platform_scope == 'all'\)/,
+  );
+  assert.doesNotMatch(
+    ciWorkflow,
+    /if: .*matrix\.os.*platform_scope|if: .*platform_scope.*matrix\.os/,
+    "platform filtering must happen before matrix jobs are expanded",
+  );
+});
+
+function workflowJob(workflow, jobName, nextJobName) {
+  const start = workflow.indexOf(`\n  ${jobName}:\n`);
+  const end = workflow.indexOf(`\n  ${nextJobName}:\n`, start + 1);
+  assert.notEqual(start, -1, `missing ${jobName} job`);
+  assert.notEqual(end, -1, `missing ${nextJobName} job`);
+  return workflow.slice(start, end);
+}
+
+function matrixPlatformOptions(jobSource) {
+  return [...jobSource.matchAll(/'(\[\{[^\n]+\}\])'/g)].map((match) =>
+    JSON.parse(match[1]).map((entry) => entry.os),
+  );
+}
+
 test("E2E instrumentation is explicit and excluded from release builds", async () => {
   const [
     cargoToml,

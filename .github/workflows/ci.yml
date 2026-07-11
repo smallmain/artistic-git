@@ -7,6 +7,16 @@ on:
       - main
   workflow_dispatch:
     inputs:
+      platform_scope:
+        description: "Runner platforms for this manual CI run. Push and pull request CI always run every platform."
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - windows
+          - linux
+          - macos
       phase12_perf_profile:
         description: "Phase 12 perf profile for this manual CI run."
         required: false
@@ -33,16 +43,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-22.04
-            gitDistTarget: linux-x86_64
-            rustTargets: x86_64-unknown-linux-gnu
-          - os: macos-latest
-            gitDistTarget: macos-universal
-            rustTargets: aarch64-apple-darwin,x86_64-apple-darwin
-          - os: windows-latest
-            gitDistTarget: windows-x86_64
-            rustTargets: x86_64-pc-windows-msvc
+        include: >-
+          ${{ fromJSON(
+            (github.event_name != 'workflow_dispatch' || inputs.platform_scope == 'all') &&
+            '[{"os":"ubuntu-22.04","gitDistTarget":"linux-x86_64","rustTargets":"x86_64-unknown-linux-gnu"},{"os":"macos-latest","gitDistTarget":"macos-universal","rustTargets":"aarch64-apple-darwin,x86_64-apple-darwin"},{"os":"windows-latest","gitDistTarget":"windows-x86_64","rustTargets":"x86_64-pc-windows-msvc"}]' ||
+            inputs.platform_scope == 'windows' &&
+            '[{"os":"windows-latest","gitDistTarget":"windows-x86_64","rustTargets":"x86_64-pc-windows-msvc"}]' ||
+            inputs.platform_scope == 'linux' &&
+            '[{"os":"ubuntu-22.04","gitDistTarget":"linux-x86_64","rustTargets":"x86_64-unknown-linux-gnu"}]' ||
+            '[{"os":"macos-latest","gitDistTarget":"macos-universal","rustTargets":"aarch64-apple-darwin,x86_64-apple-darwin"}]'
+          ) }}
 
     steps:
       - name: Checkout
@@ -204,17 +214,20 @@ jobs:
   e2e:
     name: E2E (${{ matrix.os }})
     needs: test
+    if: github.event_name != 'workflow_dispatch' || inputs.platform_scope != 'macos'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-22.04
-            gitDistTarget: linux-x86_64
-            rustTargets: x86_64-unknown-linux-gnu
-          - os: windows-latest
-            gitDistTarget: windows-x86_64
-            rustTargets: x86_64-pc-windows-msvc
+        include: >-
+          ${{ fromJSON(
+            (github.event_name != 'workflow_dispatch' || inputs.platform_scope == 'all') &&
+            '[{"os":"ubuntu-22.04","gitDistTarget":"linux-x86_64","rustTargets":"x86_64-unknown-linux-gnu"},{"os":"windows-latest","gitDistTarget":"windows-x86_64","rustTargets":"x86_64-pc-windows-msvc"}]' ||
+            inputs.platform_scope == 'windows' &&
+            '[{"os":"windows-latest","gitDistTarget":"windows-x86_64","rustTargets":"x86_64-pc-windows-msvc"}]' ||
+            inputs.platform_scope == 'linux' &&
+            '[{"os":"ubuntu-22.04","gitDistTarget":"linux-x86_64","rustTargets":"x86_64-unknown-linux-gnu"}]'
+          ) }}
 
     steps:
       - name: Checkout
@@ -494,7 +507,10 @@ jobs:
     needs:
       - test
       - e2e
-    if: always()
+    if: >-
+      ${{ always() &&
+        (github.event_name != 'workflow_dispatch' || inputs.platform_scope == 'all')
+      }}
     runs-on: ubuntu-22.04
 
     steps:
