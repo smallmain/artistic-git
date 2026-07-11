@@ -4073,7 +4073,7 @@ mod tests {
         repo.init_with_commit();
         let original_head = repo.git_output(["rev-parse", "HEAD"]).trim().to_owned();
         let marker = repo.path.join(".git").join("ag-commit-hook-started");
-        install_sleeping_pre_commit_hook(&repo.path, &marker);
+        install_blocking_pre_commit_hook(&repo.path, &marker);
         repo.write("tracked.txt", "two\n");
 
         let backend = RepositoryBackend::new(runner.clone(), None);
@@ -4128,7 +4128,7 @@ mod tests {
         let original_head = repo.git_output(["rev-parse", "HEAD"]).trim().to_owned();
         repo.write("draft.txt", "local draft\n");
         let marker = repo.path.join(".git").join("ag-revert-hook-started");
-        install_sleeping_pre_commit_hook(&repo.path, &marker);
+        install_blocking_pre_commit_hook(&repo.path, &marker);
 
         let backend = RepositoryBackend::new(runner.clone(), None);
         let thread_backend = backend.clone();
@@ -5264,13 +5264,13 @@ size 16\n"
         }
     }
 
-    fn install_sleeping_pre_commit_hook(repo: &Path, marker: &Path) {
+    fn install_blocking_pre_commit_hook(repo: &Path, marker: &Path) {
         let hook = repo.join(".git").join("hooks").join("pre-commit");
         let script = format!(
-            "#!/bin/sh\nprintf started > {marker}\nsleep 30\n",
+            "#!/bin/sh\nprintf started > {marker}\nwhile :; do :; done\n",
             marker = shell_quote(marker),
         );
-        fs::write(&hook, script).expect("write sleeping pre-commit hook");
+        fs::write(&hook, script).expect("write blocking pre-commit hook");
         make_executable(&hook);
     }
 
