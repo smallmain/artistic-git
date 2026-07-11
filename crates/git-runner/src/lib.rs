@@ -105,7 +105,7 @@ impl GitDistribution {
             });
         }
 
-        let root = root.into();
+        let root = git_compatible_distribution_root(root.into());
         let git_executable =
             resolve_manifest_executable(&root, "gitExecutable", &manifest.paths.git_executable)?;
         let git_lfs_executable = resolve_manifest_executable(
@@ -216,6 +216,62 @@ fn push_unique_path(entries: &mut Vec<PathBuf>, path: PathBuf) {
     if !entries.iter().any(|entry| entry == &path) {
         entries.push(path);
     }
+}
+
+fn git_compatible_distribution_root(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+        let encoded = path.as_os_str().encode_wide().collect::<Vec<_>>();
+        return strip_windows_verbatim_prefix(&encoded)
+            .map(|normalized| PathBuf::from(OsString::from_wide(&normalized)))
+            .unwrap_or(path);
+    }
+
+    #[cfg(not(windows))]
+    path
+}
+
+#[cfg(any(windows, test))]
+fn strip_windows_verbatim_prefix(path: &[u16]) -> Option<Vec<u16>> {
+    const BACKSLASH: u16 = b'\\' as u16;
+    const COLON: u16 = b':' as u16;
+    const PREFIX: [u16; 4] = [BACKSLASH, BACKSLASH, b'?' as u16, BACKSLASH];
+
+    let path = path.strip_prefix(&PREFIX)?;
+    if path.len() >= 3
+        && is_wide_ascii_drive_letter(path[0])
+        && path[1] == COLON
+        && path[2] == BACKSLASH
+    {
+        return Some(path.to_vec());
+    }
+
+    if path.len() > 4
+        && wide_ascii_eq_ignore_case(path[0], b'U')
+        && wide_ascii_eq_ignore_case(path[1], b'N')
+        && wide_ascii_eq_ignore_case(path[2], b'C')
+        && path[3] == BACKSLASH
+    {
+        let mut normalized = Vec::with_capacity(path.len() - 2);
+        normalized.extend([BACKSLASH, BACKSLASH]);
+        normalized.extend_from_slice(&path[4..]);
+        return Some(normalized);
+    }
+
+    None
+}
+
+#[cfg(any(windows, test))]
+fn is_wide_ascii_drive_letter(value: u16) -> bool {
+    matches!(value, 65..=90 | 97..=122)
+}
+
+#[cfg(any(windows, test))]
+fn wide_ascii_eq_ignore_case(value: u16, expected_uppercase: u8) -> bool {
+    value == u16::from(expected_uppercase)
+        || value == u16::from(expected_uppercase.to_ascii_lowercase())
 }
 
 fn push_platform_tool_path_entries(entries: &mut Vec<PathBuf>) {
@@ -1495,6 +1551,62 @@ mod tests {
         assert!(!selected.contains_key("USERPROFILE"));
         assert!(!selected.contains_key("PATH"));
         assert!(!selected.contains_key("UNKNOWN_SECRET"));
+    }
+
+    #[test]
+    fn windows_verbatim_prefix_is_removed_without_losing_path_data() {
+        let wide = |value: &str| value.encode_utf16().collect::<Vec<_>>();
+
+        assert_eq!(
+            strip_windows_verbatim_prefix(&wide(r"\\?\D:\app\git-dist")),
+            Some(wide(r"D:\app\git-dist"))
+        );
+        assert_eq!(
+            strip_windows_verbatim_prefix(&wide(r"\\?\UNC\server\share\git-dist")),
+            Some(wide(r"\\server\share\git-dist"))
+        );
+        assert_eq!(
+            strip_windows_verbatim_prefix(&wide(r"D:\app\git-dist")),
+            None
+        );
+        assert_eq!(
+            strip_windows_verbatim_prefix(&wide(r"\\?\Volume{fixture}\git-dist")),
+            None
+        );
+
+        let mut non_unicode = wide(r"\\?\D:\app\git-dist\");
+        non_unicode.push(0xd800);
+        let mut expected = wide(r"D:\app\git-dist\");
+        expected.push(0xd800);
+        assert_eq!(strip_windows_verbatim_prefix(&non_unicode), Some(expected));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn distribution_normalizes_tauri_verbatim_root_before_building_git_environment() {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+        let temp = fake_distribution().expect("create fake distribution");
+        let mut verbatim = r"\\?\".encode_utf16().collect::<Vec<_>>();
+        verbatim.extend(temp.path().as_os_str().encode_wide());
+        let verbatim_root = PathBuf::from(OsString::from_wide(&verbatim));
+
+        let distribution =
+            GitDistribution::from_root(verbatim_root).expect("load verbatim distribution root");
+        let runner =
+            GitRunner::from_distribution(distribution, temp.path().join("controlled-runner-home"));
+        let expected_template_dir = temp.path().join("git/share/git-core/templates");
+        let template_dir = runner
+            .environment_plan()
+            .variable("GIT_TEMPLATE_DIR")
+            .expect("template directory");
+
+        assert_eq!(runner.distribution().root, temp.path());
+        assert_eq!(template_dir, expected_template_dir.as_os_str());
+        assert!(!template_dir
+            .encode_wide()
+            .collect::<Vec<_>>()
+            .starts_with(&r"\\?\".encode_utf16().collect::<Vec<_>>()));
     }
 
     #[test]
