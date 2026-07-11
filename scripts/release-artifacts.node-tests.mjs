@@ -534,6 +534,8 @@ test("release workflow installs pnpm before setting up Node in the publish job",
   assert.notEqual(pnpmSetup, -1, "publish job pnpm setup");
   assert.notEqual(nodeSetup, -1, "publish job Node setup");
   assert.ok(pnpmSetup < nodeSetup, "pnpm must be available to setup-node");
+  assert.ok(publishJob.includes("package-manager-cache: false"));
+  assert.ok(!publishJob.includes("pnpm install"));
 });
 
 test("release plan does not cache a pnpm store it never creates", () => {
@@ -544,6 +546,7 @@ test("release plan does not cache a pnpm store it never creates", () => {
 
   const planJob = releaseWorkflow.slice(planStart, dryRunStart);
   assert.ok(!planJob.includes("cache: pnpm"));
+  assert.ok(planJob.includes("package-manager-cache: false"));
   assert.ok(!planJob.includes("pnpm install"));
 });
 

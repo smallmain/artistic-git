@@ -60,6 +60,7 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: 24
+          package-manager-cache: false
 
       - name: Calculate release version
         id: release
@@ -669,6 +670,7 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: 24
+          package-manager-cache: false
 
       - name: Download release plan
         uses: actions/download-artifact@v4
