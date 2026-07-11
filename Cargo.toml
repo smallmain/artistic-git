@@ -35,3 +35,8 @@ tauri-build = "2"
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+strip = "symbols"

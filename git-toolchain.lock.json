@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "toolchainRevision": "2026.07.11.1",
+  "toolchainRevision": "2026.07.11.3",
   "targets": {
     "windows-x86_64": {
-      "definitionFingerprint": "68b342e2af7486d227b8aaf9738fbc0a7122d48be8dffab23621e8f4d91e4cbc",
+      "definitionFingerprint": "903cd610fa63c01238671c5ba1a557f16e19d09ca6cb444731a71f9593f32548",
       "sourceChecksums": {
         "sources.windows.x86_64.git": "e3ea2944cea4b3fabcd69c7c1669ef69b1b66c05ac7806d81224d0abad2dec31",
         "sources.windows.x86_64.git_lfs": "8683cdc3d6c029b49393dcebbaa6265bd6efd9abdcf837be855b4cd42e5e80b6",
@@ -11,7 +11,7 @@
       }
     },
     "macos-universal": {
-      "definitionFingerprint": "4709dfff52efd16148604ae553ec9f363b6697915df6be22a8e7f1b13083f839",
+      "definitionFingerprint": "e5c7b97787ad034b44dd7cd2c84cd433ebe28481775f37f35dedad65d9c6be8b",
       "sourceChecksums": {
         "sources.macos.universal.git": "457fdb04dc8728e007d4688695e6912e6f680727920f2a40bf11eacc17505357",
         "sources.macos.arm64.git_lfs": "76260fb34f4ee622ff0a66b857e5954aa49c7e343a92e57a1ec4a760618c94b2",
@@ -19,7 +19,7 @@
       }
     },
     "linux-x86_64": {
-      "definitionFingerprint": "89c3d5f423e4ecb2c3a6463bfccde63a21d20f4e59351572a0c509543b57679a",
+      "definitionFingerprint": "b81c08abbe9b86bd01aea0c6a81c65e379df835f2c02c0e24a724442c3c45617",
       "sourceChecksums": {
         "sources.linux.x86_64.git": "457fdb04dc8728e007d4688695e6912e6f680727920f2a40bf11eacc17505357",
         "sources.linux.x86_64.git_lfs": "1c0b6ee5200ca708c5cebebb18fdeb0e1c98f1af5c1a9cba205a4c0ab5a5ec08"

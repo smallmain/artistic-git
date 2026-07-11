@@ -232,7 +232,7 @@ export async function computeBaseDefinition({ config, targetName }) {
   );
   const builderFiles = {};
   for (const filePath of baseBuilderFiles) {
-    builderFiles[path.relative(repoRoot, filePath)] =
+    builderFiles[fingerprintRelativePath(filePath)] =
       await sha256Path(filePath);
   }
   const recipes = {
@@ -297,17 +297,17 @@ async function computeHelperFingerprint({
         : [targetTriple(targetName)],
   };
   for (const filePath of helperBuilderFiles) {
-    inputs.builderFiles[path.relative(repoRoot, filePath)] =
+    inputs.builderFiles[fingerprintRelativePath(filePath)] =
       await sha256Path(filePath);
   }
   for (const root of helperSourceRoots) {
     for (const filePath of await regularFiles(root)) {
-      inputs.files[path.relative(repoRoot, filePath)] =
+      inputs.files[fingerprintRelativePath(filePath)] =
         await sha256Path(filePath);
     }
   }
   for (const filePath of helperInputFiles) {
-    inputs.files[path.relative(repoRoot, filePath)] =
+    inputs.files[fingerprintRelativePath(filePath)] =
       await sha256Path(filePath);
   }
   return sha256Canonical(inputs);
@@ -382,8 +382,20 @@ async function sha256Path(filePath) {
   if (!fileStat.isFile()) {
     throw new Error(`fingerprint input must be a regular file: ${filePath}`);
   }
+  return sha256FingerprintText(await readFile(filePath, "utf8"));
+}
+
+function fingerprintRelativePath(filePath) {
+  return normalizeFingerprintPath(path.relative(repoRoot, filePath));
+}
+
+export function normalizeFingerprintPath(relativePath) {
+  return relativePath.replaceAll("\\", "/");
+}
+
+export function sha256FingerprintText(content) {
   return createHash("sha256")
-    .update(await readFile(filePath))
+    .update(content.replaceAll("\r\n", "\n"))
     .digest("hex");
 }
 

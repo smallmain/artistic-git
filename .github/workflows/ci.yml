@@ -82,6 +82,9 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Test embedded toolchain state
+        run: pnpm git-toolchain:state:test
+
       - name: Compute embedded toolchain cache key
         id: toolchain-cache-key
         run: node scripts/emit-git-toolchain-cache-key.mjs --target=${{ matrix.gitDistTarget }}
@@ -120,7 +123,7 @@ jobs:
         run: pnpm accessibility:audit
 
       - name: Audit privacy network surface
-        run: pnpm privacy:audit
+        run: pnpm privacy:audit:test && pnpm privacy:audit
 
       - name: Check release scripts and bundle resources
         if: runner.os == 'Linux'

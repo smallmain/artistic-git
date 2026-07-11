@@ -3,15 +3,24 @@ name: Git Toolchain Audit
 on:
   pull_request:
     paths:
+      - ".gitattributes"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "size-baselines.json"
       - "git-dist.toml"
       - "git-toolchain.lock.json"
+      - "scripts/build-git-toolchain-helpers.mjs"
       - "scripts/git-toolchain-*.mjs"
       - "scripts/fetch-git-dist.mjs"
+      - "scripts/fetch-git-dist.node-tests.mjs"
       - "scripts/git-dist-lib.mjs"
       - "scripts/check-git-dist.mjs"
       - "scripts/check-tauri-bundle-resources.mjs"
+      - "scripts/size-audit.mjs"
+      - "scripts/size-audit.node-tests.mjs"
       - "crates/helpers/**"
       - "crates/contracts/**"
+      - "Cargo.toml"
       - "Cargo.lock"
       - "docs/git-dist.md"
       - ".github/workflows/git-dist.yml"
@@ -53,6 +62,9 @@ jobs:
 
       - name: Validate bundle resource mapping
         run: node scripts/check-tauri-bundle-resources.mjs
+
+      - name: Test size audit
+        run: node --test scripts/size-audit.node-tests.mjs
 
   audit:
     name: Clean build audit (${{ matrix.target }})
@@ -112,74 +124,27 @@ jobs:
           set -euo pipefail
           mkdir -p "$AUDIT_DIR"
           cp src-tauri/resources/git-dist/manifest.json "$AUDIT_DIR/manifest.json"
+          audit_args=(
+            "--target=$TOOLCHAIN_TARGET"
+            "--output=$AUDIT_DIR/size-report.json"
+          )
+          case "$TOOLCHAIN_TARGET" in
+            macos-universal)
+              audit_args+=("--legacy-duplicate-baseline=1700000000")
+              ;;
+            linux-x86_64)
+              audit_args+=("--legacy-duplicate-baseline=3900000000")
+              ;;
+          esac
+          node scripts/size-audit.mjs "${audit_args[@]}"
           node --input-type=module <<'NODE'
-          import { lstat, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+          import { readFile, writeFile } from "node:fs/promises";
           import path from "node:path";
 
-          const root = path.resolve("src-tauri/resources/git-dist");
           const outputDir = path.resolve(process.env.AUDIT_DIR);
-          const componentBytes = {};
-          let totalBytes = 0;
-          let fileCount = 0;
-
-          async function measure(directory) {
-            let bytes = 0;
-            for (const entry of await readdir(directory, { withFileTypes: true })) {
-              const entryPath = path.join(directory, entry.name);
-              if (entry.isDirectory()) {
-                bytes += await measure(entryPath);
-              } else if (entry.isFile()) {
-                const stat = await lstat(entryPath);
-                bytes += stat.size;
-                totalBytes += stat.size;
-                fileCount += 1;
-              }
-            }
-            return bytes;
-          }
-
-          for (const entry of await readdir(root, { withFileTypes: true })) {
-            if (entry.isDirectory()) {
-              componentBytes[entry.name] = await measure(path.join(root, entry.name));
-            } else if (entry.isFile()) {
-              const stat = await lstat(path.join(root, entry.name));
-              totalBytes += stat.size;
-              fileCount += 1;
-              componentBytes[entry.name] = stat.size;
-            }
-          }
-
-          const manifest = JSON.parse(await readFile(path.join(root, "manifest.json"), "utf8"));
-          const gitPath = manifest.paths.gitExecutable;
-          const gitHash = manifest.sha256[gitPath];
-          if (typeof gitHash !== "string") {
-            throw new Error(`manifest is missing the Git executable hash for ${gitPath}`);
-          }
-          const matchingGitPaths = Object.entries(manifest.sha256)
-            .filter(([, hash]) => hash === gitHash)
-            .map(([relativePath]) => relativePath);
-          let matchingGitBytes = 0;
-          for (const relativePath of matchingGitPaths) {
-            matchingGitBytes += (await lstat(path.join(root, relativePath))).size;
-          }
-          const canonicalGitBytes = (await lstat(path.join(root, gitPath))).size;
-          const repeatedGitBinaryBytes = matchingGitBytes - canonicalGitBytes;
-          // Conservative rounded-down baselines from the expanded v0.1.2 distributions.
-          const legacyDuplicateGitBytes = {
-            "macos-universal": 1_700_000_000,
-            "linux-x86_64": 3_900_000_000,
-          }[process.env.TOOLCHAIN_TARGET] ?? null;
-          const maximumDuplicateGitBytes = legacyDuplicateGitBytes === null
-            ? null
-            : Math.floor(legacyDuplicateGitBytes * 0.2);
-          if (
-            maximumDuplicateGitBytes !== null &&
-            repeatedGitBinaryBytes > maximumDuplicateGitBytes
-          ) {
-            throw new Error(
-              `duplicate Git binaries use ${repeatedGitBinaryBytes} bytes; expected at most ${maximumDuplicateGitBytes} bytes for an 80% reduction`,
-            );
-          }
+          const manifest = JSON.parse(
+            await readFile(path.join(outputDir, "manifest.json"), "utf8"),
+          );
           const evidence = {
             schemaVersion: 1,
             target: process.env.TOOLCHAIN_TARGET,
@@ -188,39 +153,9 @@ jobs:
             commitSha: process.env.GITHUB_SHA,
             workflowRunUrl: `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
             validation: "pnpm git-toolchain:verify",
+            sizeAudit: "node scripts/size-audit.mjs",
           };
-          const sizes = {
-            schemaVersion: 1,
-            target: process.env.TOOLCHAIN_TARGET,
-            totalBytes,
-            fileCount,
-            componentBytes,
-            recommendedBudgetBytes: Math.ceil(totalBytes * 1.1),
-            recommendedComponentBudgetBytes: Object.fromEntries(
-              Object.entries(componentBytes).map(([component, bytes]) => [
-                component,
-                Math.ceil(bytes * 1.1),
-              ]),
-            ),
-            duplicateGit: {
-              matchingFileCount: matchingGitPaths.length,
-              repeatedFileCount: Math.max(0, matchingGitPaths.length - 1),
-              repeatedBytes: repeatedGitBinaryBytes,
-              legacyBaselineBytes: legacyDuplicateGitBytes,
-              maximumBytesForEightyPercentReduction: maximumDuplicateGitBytes,
-              reductionPercent: legacyDuplicateGitBytes === null
-                ? null
-                : Number(
-                    (
-                      (1 - repeatedGitBinaryBytes / legacyDuplicateGitBytes) *
-                      100
-                    ).toFixed(2),
-                  ),
-            },
-          };
-          await mkdir(outputDir, { recursive: true });
           await writeFile(path.join(outputDir, "build-evidence.json"), `${JSON.stringify(evidence, null, 2)}\n`);
-          await writeFile(path.join(outputDir, "size-report.json"), `${JSON.stringify(sizes, null, 2)}\n`);
           NODE
 
       - name: Upload audit evidence

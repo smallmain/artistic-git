@@ -33,7 +33,10 @@ const ignoredPathParts = new Set([
   ".staging",
 ]);
 
-const ignoredRelativePrefixes = ["src-tauri/gen/"];
+const ignoredRelativePrefixes = [
+  "src-tauri/gen/",
+  "src-tauri/resources/git-dist/",
+];
 
 const textExtensions = new Set([
   ".cjs",
@@ -72,7 +75,7 @@ const allowedUrlPatterns = [
   /^https:\/\/schema\.tauri\.app\/config\/2$/,
   /^https:\/\/json-schema\.org\/draft\/2020-12\/schema$/,
   /^https:\/\/example\.test\/[^"'`\s)]+$/,
-  /^http:\/\/127\.0\.0\.1(?::(?:\d+|\{\}))?(?:\/[^"'`\s)]*)?$/,
+  /^https?:\/\/127\.0\.0\.1(?::(?:\d+|\{\}|\$\{[^}]+\}))?(?:\/[^"'`\s)]*)?$/,
 ];
 
 const runtimeNetworkApis = [
@@ -100,21 +103,26 @@ const failures = [];
 let scannedFiles = 0;
 let checkedUrls = 0;
 
-for (const root of scanRoots) {
-  await scanPath(path.join(repoRoot, root));
-}
-
-if (failures.length > 0) {
-  console.error("privacy network audit failed:");
-  for (const failure of failures) {
-    console.error(`  - ${failure}`);
+if (
+  process.argv[1] &&
+  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
+  for (const root of scanRoots) {
+    await scanPath(path.join(repoRoot, root));
   }
-  process.exit(1);
-}
 
-console.log(
-  `privacy network audit: scanned ${scannedFiles} files; checked ${checkedUrls} URLs and runtime network APIs.`,
-);
+  if (failures.length > 0) {
+    console.error("privacy network audit failed:");
+    for (const failure of failures) {
+      console.error(`  - ${failure}`);
+    }
+    process.exit(1);
+  }
+
+  console.log(
+    `privacy network audit: scanned ${scannedFiles} files; checked ${checkedUrls} URLs and runtime network APIs.`,
+  );
+}
 
 async function scanPath(filePath) {
   const relative = normalizeRelative(filePath);
@@ -147,7 +155,7 @@ function checkUrls(relative, content) {
   for (const match of content.matchAll(urlPattern)) {
     const url = trimTrailingPunctuation(match[0]);
     checkedUrls += 1;
-    if (!allowedUrlPatterns.some((pattern) => pattern.test(url))) {
+    if (!isAllowedUrl(url)) {
       failures.push(`${relative}: unapproved URL literal ${url}`);
     }
   }
@@ -181,12 +189,16 @@ function checkAnalyticsTerms(relative, content) {
   }
 }
 
-function shouldIgnore(relative) {
+export function shouldIgnore(relative) {
   const parts = relative.split("/");
   if (parts.some((part) => ignoredPathParts.has(part))) {
     return true;
   }
   return ignoredRelativePrefixes.some((prefix) => relative.startsWith(prefix));
+}
+
+export function isAllowedUrl(url) {
+  return allowedUrlPatterns.some((pattern) => pattern.test(url));
 }
 
 function isTextFile(filePath) {

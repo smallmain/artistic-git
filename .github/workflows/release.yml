@@ -10,6 +10,10 @@ on:
         description: "Publish from main when ENABLE_MAIN_RELEASE=true."
         type: boolean
         default: false
+      package_audit:
+        description: "Build and audit all release packages without publishing."
+        type: boolean
+        default: false
       bump:
         description: "Override the calculated SemVer bump for manual releases."
         type: choice
@@ -21,7 +25,7 @@ on:
           - major
 
 permissions:
-  contents: write
+  contents: read
   actions: read
 
 env:
@@ -38,6 +42,7 @@ jobs:
       notes_path: ${{ steps.release.outputs.notes_path }}
       latest_json_path: ${{ steps.release.outputs.latest_json_path }}
       publish_release: ${{ steps.mode.outputs.publish_release }}
+      build_packages: ${{ steps.mode.outputs.build_packages }}
       mode_reason: ${{ steps.mode.outputs.mode_reason }}
 
     steps:
@@ -83,23 +88,31 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
           ENABLE_MAIN_RELEASE: ${{ vars.ENABLE_MAIN_RELEASE }}
           DISPATCH_PUBLISH: ${{ github.event.inputs.publish || 'false' }}
+          DISPATCH_PACKAGE_AUDIT: ${{ github.event.inputs.package_audit || 'false' }}
           HAS_CHANGES: ${{ steps.release.outputs.has_changes }}
         run: |
           set -euo pipefail
           publish_release=false
+          build_packages=false
           reason="dry-run: ENABLE_MAIN_RELEASE is not true or publish was not requested"
 
-          if [ "$HAS_CHANGES" != "true" ]; then
-            reason="dry-run: no commits after the previous release tag"
-          elif [ "$EVENT_NAME" = "push" ] && [ "$REF_NAME" = "main" ] && [ "$ENABLE_MAIN_RELEASE" = "true" ]; then
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$DISPATCH_PACKAGE_AUDIT" = "true" ]; then
+            build_packages=true
+            reason="package audit: manual full package build without publishing"
+          elif [ "$HAS_CHANGES" = "true" ] && [ "$EVENT_NAME" = "push" ] && [ "$REF_NAME" = "main" ] && [ "$ENABLE_MAIN_RELEASE" = "true" ]; then
             publish_release=true
+            build_packages=true
             reason="release: main push with ENABLE_MAIN_RELEASE=true"
-          elif [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$REF_NAME" = "main" ] && [ "$DISPATCH_PUBLISH" = "true" ] && [ "$ENABLE_MAIN_RELEASE" = "true" ]; then
+          elif [ "$HAS_CHANGES" = "true" ] && [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$REF_NAME" = "main" ] && [ "$DISPATCH_PUBLISH" = "true" ] && [ "$ENABLE_MAIN_RELEASE" = "true" ]; then
             publish_release=true
+            build_packages=true
             reason="release: manual publish with ENABLE_MAIN_RELEASE=true"
+          elif [ "$HAS_CHANGES" != "true" ]; then
+            reason="dry-run: no commits after the previous release tag"
           fi
 
           echo "publish_release=$publish_release" >> "$GITHUB_OUTPUT"
+          echo "build_packages=$build_packages" >> "$GITHUB_OUTPUT"
           echo "mode_reason=$reason" >> "$GITHUB_OUTPUT"
           echo "$reason"
 
@@ -113,7 +126,7 @@ jobs:
   dry-run:
     name: Dry-run package (${{ matrix.os }})
     needs: plan
-    if: needs.plan.outputs.publish_release != 'true'
+    if: needs.plan.outputs.build_packages != 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -229,9 +242,9 @@ jobs:
         run: pnpm tauri build --ci --no-bundle
 
   package:
-    name: Package release (${{ matrix.os }})
+    name: Package release/audit (${{ matrix.os }})
     needs: plan
-    if: needs.plan.outputs.publish_release == 'true'
+    if: needs.plan.outputs.build_packages == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -561,6 +574,72 @@ jobs:
           done
           test -n "$(find release-assets -type f -print -quit)"
 
+      - name: Generate release size audit
+        shell: bash
+        env:
+          AUDIT_DIR: artifacts/release-size-audit-${{ matrix.gitDistTarget }}
+          TOOLCHAIN_TARGET: ${{ matrix.gitDistTarget }}
+          RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS" in
+            Windows)
+              installed_tree="$RUNNER_TEMP/artistic-git-bundle-check"
+              ;;
+            macOS)
+              installed_tree="$(find "target/${{ matrix.target }}/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+              ;;
+            Linux)
+              installed_tree="$(find "target/${{ matrix.target }}/release/bundle/appimage" -maxdepth 1 -type d -name '*.AppDir' -print -quit)"
+              ;;
+            *)
+              echo "Unsupported size audit runner: $RUNNER_OS" >&2
+              exit 1
+              ;;
+          esac
+          test -n "$installed_tree"
+          test -d "$installed_tree"
+          mkdir -p "$AUDIT_DIR"
+          cp src-tauri/resources/git-dist/manifest.json "$AUDIT_DIR/manifest.json"
+          node scripts/size-audit.mjs \
+            "--target=$TOOLCHAIN_TARGET" \
+            "--tree=installed=$installed_tree" \
+            "--bundle-dir=release-assets" \
+            "--compression-basis=installed" \
+            "--output=$AUDIT_DIR/size-report.json"
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from "node:fs/promises";
+          import path from "node:path";
+
+          const outputDir = path.resolve(process.env.AUDIT_DIR);
+          const report = JSON.parse(
+            await readFile(path.join(outputDir, "size-report.json"), "utf8"),
+          );
+          const evidence = {
+            schemaVersion: 1,
+            target: process.env.TOOLCHAIN_TARGET,
+            releaseVersion: process.env.RELEASE_VERSION,
+            toolchainRevision: report.gitDist.toolchainRevision,
+            distributionFingerprint: report.gitDist.distributionFingerprint,
+            commitSha: process.env.GITHUB_SHA,
+            workflowRunUrl: `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
+            packagedResourceValidation:
+              "node scripts/check-tauri-bundle-resources.mjs --require-bundled-resource",
+          };
+          await writeFile(
+            path.join(outputDir, "build-evidence.json"),
+            `${JSON.stringify(evidence, null, 2)}\n`,
+          );
+          NODE
+
+      - name: Upload release size audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-size-audit-${{ matrix.gitDistTarget }}
+          path: artifacts/release-size-audit-${{ matrix.gitDistTarget }}/
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Upload release assets
         uses: actions/upload-artifact@v4
         with:
@@ -573,6 +652,9 @@ jobs:
     needs: [plan, package]
     if: needs.plan.outputs.publish_release == 'true'
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      actions: read
 
     steps:
       - name: Checkout

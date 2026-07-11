@@ -538,10 +538,91 @@ test("release workflow installs pnpm before setting up Node in the publish job",
 
 test("release workflow publishes only from main without environment approval", () => {
   assert.ok(!releaseWorkflow.includes("environment: release"));
+  assert.ok(
+    releaseWorkflow
+      .slice(0, releaseWorkflow.indexOf("\njobs:\n"))
+      .includes("permissions:\n  contents: read\n  actions: read"),
+  );
+  const publishJob = releaseWorkflow.slice(
+    releaseWorkflow.indexOf("\n  publish:\n"),
+  );
+  assert.ok(
+    publishJob.includes(
+      "permissions:\n      contents: write\n      actions: read",
+    ),
+  );
   assert.equal(
     releaseWorkflow.match(/\[ "\$REF_NAME" = "main" \]/g)?.length,
     2,
     "push and manual publishing must both require main",
+  );
+});
+
+test("release workflow supports full package audits without publishing", () => {
+  for (const token of [
+    "package_audit:",
+    'description: "Build and audit all release packages without publishing."',
+    "build_packages: ${{ steps.mode.outputs.build_packages }}",
+    "DISPATCH_PACKAGE_AUDIT: ${{ github.event.inputs.package_audit || 'false' }}",
+    'if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$DISPATCH_PACKAGE_AUDIT" = "true" ]; then',
+    "package audit: manual full package build without publishing",
+    'echo "build_packages=$build_packages" >> "$GITHUB_OUTPUT"',
+  ]) {
+    assert.ok(releaseWorkflow.includes(token), token);
+  }
+
+  const dryRunStart = releaseWorkflow.indexOf("\n  dry-run:\n");
+  const packageStart = releaseWorkflow.indexOf("\n  package:\n");
+  const publishStart = releaseWorkflow.indexOf("\n  publish:\n");
+  assert.notEqual(dryRunStart, -1, "dry-run job block");
+  assert.notEqual(packageStart, -1, "package job block");
+  assert.notEqual(publishStart, -1, "publish job block");
+
+  const dryRunJob = releaseWorkflow.slice(dryRunStart, packageStart);
+  const packageJob = releaseWorkflow.slice(packageStart, publishStart);
+  const publishJob = releaseWorkflow.slice(publishStart);
+  const packageAuditMode = releaseWorkflow.indexOf(
+    'if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$DISPATCH_PACKAGE_AUDIT" = "true" ]; then',
+  );
+  const manualPublishMode = releaseWorkflow.indexOf(
+    'elif [ "$HAS_CHANGES" = "true" ] && [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$REF_NAME" = "main" ] && [ "$DISPATCH_PUBLISH" = "true" ] && [ "$ENABLE_MAIN_RELEASE" = "true" ]; then',
+  );
+  assert.notEqual(manualPublishMode, -1, "manual publish mode");
+  assert.ok(
+    packageAuditMode < manualPublishMode,
+    "package audit overrides publish",
+  );
+  const packageAuditBranch = releaseWorkflow.slice(
+    packageAuditMode,
+    releaseWorkflow.indexOf("\n          elif ", packageAuditMode),
+  );
+  assert.ok(packageAuditBranch.includes("build_packages=true"));
+  assert.ok(!packageAuditBranch.includes("publish_release=true"));
+  for (const reason of [
+    "release: main push with ENABLE_MAIN_RELEASE=true",
+    "release: manual publish with ENABLE_MAIN_RELEASE=true",
+  ]) {
+    assert.ok(
+      releaseWorkflow.includes(
+        `publish_release=true\n            build_packages=true\n            reason="${reason}"`,
+      ),
+      reason,
+    );
+  }
+  assert.ok(
+    dryRunJob.includes("if: needs.plan.outputs.build_packages != 'true'"),
+  );
+  assert.ok(dryRunJob.includes("pnpm tauri build --ci --no-bundle"));
+  assert.ok(
+    packageJob.includes("if: needs.plan.outputs.build_packages == 'true'"),
+  );
+  assert.ok(packageJob.includes("name: Package release/audit"));
+  assert.ok(packageJob.includes("Generate release size audit"));
+  assert.ok(
+    publishJob.includes("if: needs.plan.outputs.publish_release == 'true'"),
+  );
+  assert.ok(
+    !publishJob.includes("if: needs.plan.outputs.build_packages == 'true'"),
   );
 });
 
@@ -743,13 +824,25 @@ test("CI and audit workflows enforce the pinned embedded toolchain", () => {
   assert.ok(
     gitDistWorkflow.includes("Build embedded toolchain from a cold cache"),
   );
+  for (const fingerprintInput of [
+    '      - ".gitattributes"',
+    '      - "Cargo.toml"',
+    '      - "scripts/build-git-toolchain-helpers.mjs"',
+    '      - "scripts/fetch-git-dist.node-tests.mjs"',
+  ]) {
+    assert.ok(gitDistWorkflow.includes(fingerprintInput), fingerprintInput);
+  }
   assert.ok(gitDistWorkflow.includes("pnpm git-toolchain:config:check"));
   assert.ok(gitDistWorkflow.includes("pnpm git-toolchain:ensure -- --target="));
   assert.ok(gitDistWorkflow.includes("pnpm git-toolchain:verify -- --target="));
   assert.ok(gitDistWorkflow.includes("size-report.json"));
   assert.ok(gitDistWorkflow.includes("build-evidence.json"));
-  assert.ok(gitDistWorkflow.includes("maximumDuplicateGitBytes"));
-  assert.ok(gitDistWorkflow.includes("recommendedBudgetBytes"));
+  assert.ok(gitDistWorkflow.includes("node scripts/size-audit.mjs"));
+  assert.ok(gitDistWorkflow.includes("--legacy-duplicate-baseline="));
+  assert.ok(releaseWorkflow.includes("Generate release size audit"));
+  assert.ok(
+    releaseWorkflow.includes("release-size-audit-${{ matrix.gitDistTarget }}"),
+  );
   assert.ok(!gitDistWorkflow.includes("actions/cache@"));
   assert.ok(
     !gitDistWorkflow.includes("artistic-git-dist-${{ matrix.target }}"),

@@ -2,12 +2,14 @@
 /* global AbortSignal, URL, clearInterval, console, fetch, process, setInterval, setTimeout */
 
 import { spawnSync } from "node:child_process";
+import { Buffer } from "node:buffer";
 import { createWriteStream } from "node:fs";
 import {
   chmod,
   cp,
   lstat,
   mkdir,
+  open,
   readdir,
   readFile,
   rm,
@@ -279,13 +281,17 @@ async function buildSourceTarballs({ config, target, sources }) {
       await buildMacosGit({ config, sourceRoot, installRoot });
     } else if (target.platform === "linux") {
       await buildLinuxGit({ config, sourceRoot, installRoot });
+      await stripLinuxExecutables(installRoot);
     } else {
       fail(
         `${ref} has source-tarball kind but ${target.platform} has no source build recipe`,
       );
     }
     await ensureGitTransportBuiltinWrappers(installRoot);
-    await normalizeGitBuiltinCopies(installRoot);
+    await normalizeGitExecutableCopies(installRoot);
+    if (target.platform === "macos") {
+      await stripMacosExecutables(installRoot);
+    }
     await chmodTreeExecutables(installRoot);
   }
 }
@@ -437,15 +443,53 @@ async function ensureGitBuiltinWrapper({
 }
 
 async function writeGitBuiltinWrapper({ builtinName, gitBinary, wrapperPath }) {
-  const relativeGit = path
-    .relative(path.dirname(wrapperPath), gitBinary)
-    .split(path.sep)
-    .join("/");
+  const relativeGit = relativeExecutablePath(wrapperPath, gitBinary);
   await writeFile(
     wrapperPath,
     `#!/bin/sh\nexec "$(dirname "$0")/${relativeGit}" ${builtinName} "$@"\n`,
   );
   await chmod(wrapperPath, 0o755);
+}
+
+const identicalGitExecutableGroups = [
+  {
+    canonical: "git/bin/git",
+    aliases: ["git/libexec/git-core/git"],
+  },
+  {
+    canonical: "git/bin/scalar",
+    aliases: ["git/libexec/git-core/scalar"],
+  },
+  {
+    canonical: "git/bin/git-shell",
+    aliases: ["git/libexec/git-core/git-shell"],
+  },
+  {
+    // The Perl runtime-prefix fallback derives share/perl5 from the libexec
+    // location when GIT_EXEC_PATH is absent, so keep that copy canonical.
+    canonical: "git/libexec/git-core/git-cvsserver",
+    aliases: ["git/bin/git-cvsserver"],
+  },
+  {
+    canonical: "git/libexec/git-core/git-remote-http",
+    // remote-curl selects the transport from its URL argument, not argv[0].
+    // Keep HTTP as the canonical binary and pass every alias argument unchanged.
+    aliases: [
+      "git/libexec/git-core/git-remote-ftp",
+      "git/libexec/git-core/git-remote-ftps",
+      "git/libexec/git-core/git-remote-https",
+    ],
+  },
+];
+
+export async function normalizeGitExecutableCopies(installRoot) {
+  const resolvedRoot = path.resolve(installRoot);
+  const builtinReplacements = await normalizeGitBuiltinCopies(resolvedRoot);
+  const aliasReplacements = await normalizeIdenticalGitAliases(resolvedRoot);
+  info(
+    `normalized ${builtinReplacements} duplicate Git builtins and ${aliasReplacements} identical executable aliases`,
+  );
+  return { aliasReplacements, builtinReplacements };
 }
 
 async function normalizeGitBuiltinCopies(installRoot) {
@@ -475,19 +519,88 @@ async function normalizeGitBuiltinCopies(installRoot) {
     }
 
     const builtinName = basename.slice("git-".length);
-    const relativeGit = path
-      .relative(path.dirname(candidate), gitBinary)
-      .split(path.sep)
-      .join("/");
     await rm(candidate, { force: true });
-    await writeFile(
-      candidate,
-      `#!/bin/sh\nexec "$(dirname "$0")/${relativeGit}" ${builtinName} "$@"\n`,
-    );
-    await chmod(candidate, 0o755);
+    await writeGitBuiltinWrapper({
+      builtinName,
+      gitBinary,
+      wrapperPath: candidate,
+    });
     replacements += 1;
   }
-  info(`normalized ${replacements} duplicate Git builtin executables`);
+  return replacements;
+}
+
+async function normalizeIdenticalGitAliases(installRoot) {
+  let replacements = 0;
+  for (const group of identicalGitExecutableGroups) {
+    const canonical = path.join(installRoot, group.canonical);
+    const canonicalStat = await lstat(canonical).catch(() => null);
+    if (!canonicalStat?.isFile() || canonicalStat.isSymbolicLink()) {
+      continue;
+    }
+    const canonicalSha = await sha256File(canonical);
+    for (const aliasRelativePath of group.aliases) {
+      const alias = path.join(installRoot, aliasRelativePath);
+      const aliasStat = await lstat(alias).catch(() => null);
+      if (!aliasStat) {
+        continue;
+      }
+      if (aliasStat.isSymbolicLink()) {
+        fail(`source-built Git alias must not be a symbolic link: ${alias}`);
+      }
+      if (
+        !aliasStat.isFile() ||
+        (aliasStat.mode & 0o111) === 0 ||
+        (await sha256File(alias)) !== canonicalSha
+      ) {
+        continue;
+      }
+      await writeGitExecutableAliasWrapper({
+        aliasPath: alias,
+        canonicalPath: canonical,
+        installRoot,
+      });
+      replacements += 1;
+    }
+  }
+  return replacements;
+}
+
+export async function writeGitExecutableAliasWrapper({
+  aliasPath,
+  canonicalPath,
+  installRoot,
+}) {
+  assertPathInside(installRoot, aliasPath, "Git executable alias");
+  assertPathInside(installRoot, canonicalPath, "canonical Git executable");
+  const relativeExecutable = relativeExecutablePath(aliasPath, canonicalPath);
+  await rm(aliasPath, { force: true });
+  await writeFile(
+    aliasPath,
+    `#!/bin/sh\nexec "$(dirname "$0")/${relativeExecutable}" "$@"\n`,
+  );
+  await chmod(aliasPath, 0o755);
+}
+
+function relativeExecutablePath(wrapperPath, executablePath) {
+  return path
+    .relative(path.dirname(wrapperPath), executablePath)
+    .split(path.sep)
+    .join("/");
+}
+
+function assertPathInside(root, candidate, label) {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  if (
+    relative === "" ||
+    relative.startsWith(`..${path.sep}`) ||
+    relative === ".." ||
+    path.isAbsolute(relative)
+  ) {
+    fail(
+      `${label} must stay inside the source-built Git install: ${candidate}`,
+    );
+  }
 }
 
 async function firstExistingDirectory(root, relativePaths) {
@@ -537,6 +650,61 @@ async function lipoInstallTrees({ destinationRoot, baseRoot, otherRoots }) {
     );
     await chmod(destination, 0o755).catch(() => {});
   }
+}
+
+export async function stripMacosExecutables(
+  installRoot,
+  { commandRunner = runCommand } = {},
+) {
+  return stripInstallExecutables({
+    commandRunner,
+    installRoot,
+    isBinary: isMachO,
+    stripArgs: (filePath) => ["-S", "-x", filePath],
+  });
+}
+
+export async function stripMacosBinary(
+  filePath,
+  { commandRunner = runCommand } = {},
+) {
+  await commandRunner("strip", ["-S", "-x", filePath], {
+    label: `strip ${filePath}`,
+  });
+}
+
+export async function stripLinuxExecutables(
+  installRoot,
+  { commandRunner = runCommand } = {},
+) {
+  return stripInstallExecutables({
+    commandRunner,
+    installRoot,
+    isBinary: isElf,
+    stripArgs: (filePath) => ["--strip-unneeded", filePath],
+  });
+}
+
+async function stripInstallExecutables({
+  commandRunner,
+  installRoot,
+  isBinary,
+  stripArgs,
+}) {
+  let stripped = 0;
+  for (const relativePath of await regularFiles(installRoot)) {
+    const filePath = path.join(installRoot, relativePath);
+    const fileStat = await stat(filePath);
+    if ((fileStat.mode & 0o111) === 0 || !(await isBinary(filePath))) {
+      continue;
+    }
+    await commandRunner("strip", stripArgs(filePath), {
+      label: `strip ${filePath}`,
+    });
+    stripped += 1;
+  }
+  info(`stripped ${stripped} source-built Git executables`);
+  return stripped;
 }
 
 async function buildLinuxGit({ config, sourceRoot, installRoot }) {
@@ -730,6 +898,20 @@ async function regularFiles(root) {
 function isMachO(filePath) {
   const result = spawnSync("file", ["-b", filePath], { encoding: "utf8" });
   return result.status === 0 && /\bMach-O\b/.test(result.stdout);
+}
+
+async function isElf(filePath) {
+  const prefix = Buffer.alloc(4);
+  const handle = await open(filePath, "r");
+  try {
+    const { bytesRead } = await handle.read(prefix, 0, prefix.length, 0);
+    return (
+      bytesRead === prefix.length &&
+      prefix.equals(Buffer.from("7f454c46", "hex"))
+    );
+  } finally {
+    await handle.close();
+  }
 }
 
 async function chmodTreeExecutables(root) {

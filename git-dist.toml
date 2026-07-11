@@ -9,9 +9,9 @@
 schema_version = 1
 
 [meta]
-toolchain_revision = "2026.07.11.1"
-build_recipe_revision = "1"
-last_verified = "2026-07-09"
+toolchain_revision = "2026.07.11.3"
+build_recipe_revision = "2"
+last_verified = "2026-07-11"
 version_source_policy = "official release pages or official source mirrors only"
 notes = "Win32-OpenSSH follows a stable-first policy. GitHub API metadata scan reports 10.0.0.0p2-Preview as latest and zero stable OpenSSH-Win64.zip releases, so this pin is an explicit preview fallback until a stable official package appears."
 
@@ -223,7 +223,7 @@ universal_binary = true
 configure_flags = ["--prefix=/git"]
 make_flags = ["RUNTIME_PREFIX=YesPlease", "NO_GETTEXT=YesPlease", "NO_TCLTK=YesPlease", "NO_RUST=YesPlease"]
 install_root = "git/"
-post_install = ["lipo arm64/x86_64 git binaries into universal outputs", "strip debug symbols after checksum manifest is generated"]
+post_install = ["lipo arm64/x86_64 git binaries into universal outputs", "normalize identical executable aliases", "strip debug and local symbols before checksum manifest generation"]
 
 [build.linux.git]
 source_ref = "sources.linux.x86_64.git"
@@ -235,6 +235,7 @@ static_libraries = ["curl", "openssl", "zlib", "pcre2", "expat", "ldap", "lber"]
 configure_flags = ["--prefix=/git"]
 make_flags = ["NO_GETTEXT=YesPlease", "NO_TCLTK=YesPlease", "NO_RUST=YesPlease", "RUNTIME_PREFIX=YesPlease", "USE_CURL_FOR_IMAP_SEND="]
 install_root = "git/"
+post_install = ["strip unneeded ELF symbols", "normalize identical executable aliases", "generate checksum manifest"]
 
 [build.windows.git]
 source_ref = "sources.windows.x86_64.git"
