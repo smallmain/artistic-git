@@ -17,6 +17,7 @@ import test from "node:test";
 import {
   runVersionCheck,
   selectEmbeddedGitHostEnv,
+  selectRuntimeLibraryEnv,
   WINDOWS_EMBEDDED_RUNTIME_ENV_KEYS,
 } from "./check-git-dist.mjs";
 
@@ -94,6 +95,17 @@ test("embedded runtime host environment is empty outside Windows", () => {
     selectEmbeddedGitHostEnv({ ProgramData: "/system-data" }, "darwin"),
     {},
   );
+});
+
+test("packaged runtime library paths are explicit and platform-specific", () => {
+  assert.deepEqual(selectRuntimeLibraryEnv("/app/usr/lib", "linux"), {
+    LD_LIBRARY_PATH: "/app/usr/lib",
+  });
+  assert.deepEqual(selectRuntimeLibraryEnv("/app/Frameworks", "darwin"), {
+    DYLD_LIBRARY_PATH: "/app/Frameworks",
+  });
+  assert.deepEqual(selectRuntimeLibraryEnv("C:\\app\\lib", "win32"), {});
+  assert.deepEqual(selectRuntimeLibraryEnv(null, "linux"), {});
 });
 
 test("version check failures report exit status and signal", () => {

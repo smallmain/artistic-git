@@ -23,6 +23,7 @@ import {
   findBundledGitDistManifests,
   releaseLatestJsonEndpoint,
   requiredTargets,
+  smokeBundledGitDistRoots,
 } from "./check-tauri-bundle-resources.mjs";
 
 const repoRoot = path.resolve(
@@ -289,6 +290,90 @@ test("resource checker validates staged and packaged git-dist wiring", async () 
   }
 });
 
+test("resource checker smokes the one fully validated packaged git-dist", async () => {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-runtime-smoke-"));
+
+  try {
+    const { configPath } = await writeFixtureConfig(tmpDir);
+    const bundleOutput = path.join(tmpDir, "installed");
+    const packagedGitDist = path.join(bundleOutput, "git-dist");
+    const runtimeLibraryPath = path.join(bundleOutput, "usr", "lib");
+    await writeFixtureGitDist(packagedGitDist);
+    const calls = [];
+
+    const result = await checkTauriBundleResources({
+      bundleOutput,
+      configPath,
+      releaseMode: true,
+      requireBundledResource: true,
+      requireManifest: true,
+      runtimeHostTarget: "linux-x86_64",
+      runtimeLibraryPath,
+      runtimeSmoke: true,
+      runtimeVerifier: async (options) => calls.push(options),
+    });
+
+    assert.deepEqual(result.bundledRuntimeSmokeRoots, [packagedGitDist]);
+    assert.deepEqual(calls, [
+      {
+        distRoot: packagedGitDist,
+        runtimeLibraryPath,
+        targetName: "linux-x86_64",
+      },
+    ]);
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("packaged runtime smoke fails closed for missing, duplicate, or wrong-target roots", async () => {
+  await assert.rejects(
+    checkTauriBundleResources({ runtimeSmoke: true }),
+    /requires --bundle-output and --require-bundled-resource/,
+  );
+  await assert.rejects(
+    smokeBundledGitDistRoots([], {
+      hostTarget: "linux-x86_64",
+      runtimeVerifier: async () => assert.fail("verifier must not run"),
+    }),
+    /exactly one bundled git-dist, found 0/,
+  );
+  await assert.rejects(
+    smokeBundledGitDistRoots(
+      [
+        {
+          manifest: { target: "linux-x86_64" },
+          manifestPath: "/bundle/one/git-dist/manifest.json",
+        },
+        {
+          manifest: { target: "linux-x86_64" },
+          manifestPath: "/bundle/two/git-dist/manifest.json",
+        },
+      ],
+      {
+        hostTarget: "linux-x86_64",
+        runtimeVerifier: async () => assert.fail("verifier must not run"),
+      },
+    ),
+    /exactly one bundled git-dist, found 2/,
+  );
+  await assert.rejects(
+    smokeBundledGitDistRoots(
+      [
+        {
+          manifest: { target: "windows-x86_64" },
+          manifestPath: "/bundle/git-dist/manifest.json",
+        },
+      ],
+      {
+        hostTarget: "linux-x86_64",
+        runtimeVerifier: async () => assert.fail("verifier must not run"),
+      },
+    ),
+    /target must be linux-x86_64, got windows-x86_64/,
+  );
+});
+
 test("resource checker rejects packaged git-dist sha mismatches", async () => {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-resources-"));
 
@@ -306,6 +391,7 @@ test("resource checker rejects packaged git-dist sha mismatches", async () => {
       path.join(packagedGitDist, "git", "bin", "git"),
       "tampered\n",
     );
+    let runtimeCalled = false;
 
     await assert.rejects(
       () =>
@@ -315,9 +401,15 @@ test("resource checker rejects packaged git-dist sha mismatches", async () => {
           releaseMode: true,
           bundleOutput,
           requireBundledResource: true,
+          runtimeHostTarget: "linux-x86_64",
+          runtimeSmoke: true,
+          runtimeVerifier: async () => {
+            runtimeCalled = true;
+          },
         }),
       /sha256 mismatch/,
     );
+    assert.equal(runtimeCalled, false, "hash validation must precede runtime");
   } finally {
     await rm(tmpDir, { recursive: true, force: true });
   }
@@ -497,7 +589,10 @@ test("release workflow uploads all platform assets and generated latest.json", (
     "artistic-git-windows",
     "artistic-git-linux",
   ]) {
-    assert.ok(releaseWorkflow.includes(`artifactName: ${artifactName}`));
+    assert.ok(
+      releaseWorkflow.includes(`"artifactName":"${artifactName}"`),
+      artifactName,
+    );
   }
 
   for (const assetPattern of [
@@ -575,12 +670,16 @@ test("release workflow publishes only from main without environment approval", (
 test("release workflow supports full package audits without publishing", () => {
   for (const token of [
     "package_audit:",
-    'description: "Build and audit all release packages without publishing."',
+    'description: "Build and audit selected release packages without publishing."',
+    "package_scope:",
+    "package_scope: ${{ steps.mode.outputs.package_scope }}",
     "build_packages: ${{ steps.mode.outputs.build_packages }}",
     "DISPATCH_PACKAGE_AUDIT: ${{ github.event.inputs.package_audit || 'false' }}",
+    "DISPATCH_PACKAGE_SCOPE: ${{ github.event.inputs.package_scope || 'all' }}",
     'if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$DISPATCH_PACKAGE_AUDIT" = "true" ]; then',
-    "package audit: manual full package build without publishing",
+    "package audit: manual package build without publishing",
     'echo "build_packages=$build_packages" >> "$GITHUB_OUTPUT"',
+    'echo "package_scope=$package_scope" >> "$GITHUB_OUTPUT"',
   ]) {
     assert.ok(releaseWorkflow.includes(token), token);
   }
@@ -611,7 +710,22 @@ test("release workflow supports full package audits without publishing", () => {
     releaseWorkflow.indexOf("\n          elif ", packageAuditMode),
   );
   assert.ok(packageAuditBranch.includes("build_packages=true"));
+  assert.ok(
+    packageAuditBranch.includes('package_scope="$DISPATCH_PACKAGE_SCOPE"'),
+  );
   assert.ok(!packageAuditBranch.includes("publish_release=true"));
+  assert.ok(
+    packageJob.includes(
+      "needs.plan.outputs.publish_release == 'true' || needs.plan.outputs.package_scope == 'all'",
+    ),
+    "publishing always expands the complete package matrix",
+  );
+  for (const scope of ["windows", "linux"]) {
+    assert.ok(
+      packageJob.includes(`needs.plan.outputs.package_scope == '${scope}'`),
+      scope,
+    );
+  }
   for (const reason of [
     "release: main push with ENABLE_MAIN_RELEASE=true",
     "release: manual publish with ENABLE_MAIN_RELEASE=true",
@@ -632,6 +746,21 @@ test("release workflow supports full package audits without publishing", () => {
   );
   assert.ok(packageJob.includes("name: Package release/audit"));
   assert.ok(packageJob.includes("Generate release size audit"));
+  const packageMatrices = [
+    ...packageJob.matchAll(/'(\[\{"os":[^\n]+\}\])'/g),
+  ].map((match) => JSON.parse(match[1]));
+  assert.deepEqual(
+    packageMatrices.map((matrix) => matrix.length).sort(),
+    [1, 1, 1, 3],
+    "package audit supports one-platform matrices while publish keeps all three",
+  );
+  assert.deepEqual(
+    packageMatrices
+      .filter((matrix) => matrix.length === 1)
+      .map(([entry]) => entry.os)
+      .sort(),
+    ["macos-latest", "ubuntu-22.04", "windows-latest"],
+  );
   assert.ok(
     publishJob.includes("if: needs.plan.outputs.publish_release == 'true'"),
   );
@@ -697,13 +826,23 @@ test("release workflow ensures and checks staged and packaged git-dist resources
   assert.ok(!releaseWorkflow.includes("verify-git-dist-build-evidence"));
   assert.ok(!releaseWorkflow.includes("restore-keys:"));
   assert.ok(releaseWorkflow.includes("dtolnay/rust-toolchain@1.96.1"));
-  assert.ok(releaseWorkflow.includes("Verify packaged embedded Git resources"));
+  assert.ok(
+    releaseWorkflow.includes(
+      "Verify and smoke packaged embedded Git resources",
+    ),
+  );
   assert.ok(
     releaseWorkflow.includes(
       '--bundle-output "${{ steps.packaged-resource-output.outputs.path }}"',
     ),
   );
   assert.ok(releaseWorkflow.includes("--require-bundled-resource"));
+  assert.ok(releaseWorkflow.includes("--runtime-smoke"));
+  assert.ok(
+    releaseWorkflow.includes(
+      'runtime_args+=("--runtime-library-path=${{ steps.packaged-resource-output.outputs.path }}/usr/lib")',
+    ),
+  );
   assert.ok(
     releaseWorkflow.includes(
       "Install Windows bundle for resource verification",
@@ -714,9 +853,34 @@ test("release workflow ensures and checks staged and packaged git-dist resources
       'Test-Path (Join-Path $installDir "git-dist/manifest.json")',
     ),
   );
-  assert.ok(releaseWorkflow.includes('"target/release/bundle"'));
+  assert.ok(releaseWorkflow.includes("Expected exactly one NSIS installer"));
   assert.ok(
-    releaseWorkflow.includes('"target/${{ matrix.target }}/release/bundle"'),
+    releaseWorkflow.includes("Expected exactly one packaged macOS app"),
+  );
+  assert.ok(
+    releaseWorkflow.includes("Expected exactly one packaged Linux AppDir"),
+  );
+  const smokeStep = releaseWorkflow.slice(
+    releaseWorkflow.indexOf(
+      "- name: Verify and smoke packaged embedded Git resources",
+    ),
+    releaseWorkflow.indexOf("- name: Stage release assets"),
+  );
+  assert.ok(smokeStep.includes("--runtime-smoke"));
+  assert.ok(!smokeStep.includes("continue-on-error"));
+  assert.ok(!smokeStep.includes("|| true"));
+  assert.ok(
+    releaseWorkflow.indexOf(
+      "Install Windows bundle for resource verification",
+    ) <
+      releaseWorkflow.indexOf(
+        "Verify and smoke packaged embedded Git resources",
+      ),
+  );
+  assert.ok(
+    releaseWorkflow.indexOf(
+      "Verify and smoke packaged embedded Git resources",
+    ) < releaseWorkflow.indexOf("Stage release assets"),
   );
   assert.ok(!releaseWorkflow.includes("src-tauri/target/"));
 });

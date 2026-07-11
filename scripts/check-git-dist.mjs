@@ -99,7 +99,11 @@ function assertManifestVersionNotPlaceholder(manifest, key) {
   return value;
 }
 
-export async function checkDistRoot(state, distRoot = activeToolchainRoot) {
+export async function checkDistRoot(
+  state,
+  distRoot = activeToolchainRoot,
+  { runtimeLibraryPath = null } = {},
+) {
   const { config } = state;
   const targetName = state.target;
   const target = getTarget(config, targetName);
@@ -180,7 +184,7 @@ export async function checkDistRoot(state, distRoot = activeToolchainRoot) {
   );
   await checkExecutablePermissions(config, manifest, distRoot, targetName);
   await checkTargetArchitectures(targetName, manifest, distRoot);
-  await checkLinuxExecutableDependencies(target, distRoot);
+  await checkLinuxExecutableDependencies(target, distRoot, runtimeLibraryPath);
 
   if (targetName === getHostTarget()) {
     const gitExecutable = path.join(distRoot, manifest.paths.gitExecutable);
@@ -192,6 +196,7 @@ export async function checkDistRoot(state, distRoot = activeToolchainRoot) {
       manifest,
       home: path.join(runtimeRoot, "home"),
       resourceOverrides: true,
+      runtimeLibraryPath,
     });
     try {
       runVersionCheck(
@@ -489,7 +494,11 @@ async function checkTargetArchitectures(targetName, manifest, distRoot) {
   info("macOS Git, Git LFS, credential helper, and askpass are universal");
 }
 
-async function checkLinuxExecutableDependencies(target, distRoot) {
+async function checkLinuxExecutableDependencies(
+  target,
+  distRoot,
+  runtimeLibraryPath,
+) {
   if (target.platform !== "linux" || process.platform !== "linux") {
     return;
   }
@@ -511,6 +520,10 @@ async function checkLinuxExecutableDependencies(target, distRoot) {
 
   const result = spawnSync("ldd", executablePaths, {
     encoding: "utf8",
+    env: {
+      ...process.env,
+      ...selectRuntimeLibraryEnv(runtimeLibraryPath, process.platform),
+    },
     maxBuffer: 50 * 1024 * 1024,
   });
   if (result.error) {
@@ -587,6 +600,7 @@ async function embeddedGitRuntimeEnv({
   manifest,
   home,
   resourceOverrides,
+  runtimeLibraryPath,
 }) {
   await mkdir(home, { recursive: true });
 
@@ -624,6 +638,7 @@ async function embeddedGitRuntimeEnv({
     GIT_TERMINAL_PROMPT: "0",
     HOME: home,
     PATH: pathEntries.join(path.delimiter),
+    ...selectRuntimeLibraryEnv(runtimeLibraryPath, process.platform),
   };
 
   if (resourceOverrides) {
@@ -658,6 +673,19 @@ export function selectEmbeddedGitHostEnv(sourceEnv, platform) {
     }
   }
   return selected;
+}
+
+export function selectRuntimeLibraryEnv(runtimeLibraryPath, platform) {
+  if (typeof runtimeLibraryPath !== "string" || runtimeLibraryPath === "") {
+    return {};
+  }
+  if (platform === "linux") {
+    return { LD_LIBRARY_PATH: runtimeLibraryPath };
+  }
+  if (platform === "darwin") {
+    return { DYLD_LIBRARY_PATH: runtimeLibraryPath };
+  }
+  return {};
 }
 
 async function runGitRuntimeSmoke({ gitExecutable, distRoot, runtimeEnv }) {
@@ -935,9 +963,10 @@ function expectedGitVersion(config, target) {
 export async function verifyGitDistRoot({
   distRoot = activeToolchainRoot,
   targetName = getHostTarget(),
+  runtimeLibraryPath = null,
 } = {}) {
   const state = await computeToolchainState(normalizeTarget(targetName));
-  await checkDistRoot(state, distRoot);
+  await checkDistRoot(state, distRoot, { runtimeLibraryPath });
   return state;
 }
 

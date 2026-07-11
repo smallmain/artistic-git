@@ -11,9 +11,19 @@ on:
         type: boolean
         default: false
       package_audit:
-        description: "Build and audit all release packages without publishing."
+        description: "Build and audit selected release packages without publishing."
         type: boolean
         default: false
+      package_scope:
+        description: "Platforms for a non-publishing package audit. Publishing always builds every platform."
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - windows
+          - linux
+          - macos
       bump:
         description: "Override the calculated SemVer bump for manual releases."
         type: choice
@@ -43,6 +53,7 @@ jobs:
       latest_json_path: ${{ steps.release.outputs.latest_json_path }}
       publish_release: ${{ steps.mode.outputs.publish_release }}
       build_packages: ${{ steps.mode.outputs.build_packages }}
+      package_scope: ${{ steps.mode.outputs.package_scope }}
       mode_reason: ${{ steps.mode.outputs.mode_reason }}
 
     steps:
@@ -89,16 +100,22 @@ jobs:
           ENABLE_MAIN_RELEASE: ${{ vars.ENABLE_MAIN_RELEASE }}
           DISPATCH_PUBLISH: ${{ github.event.inputs.publish || 'false' }}
           DISPATCH_PACKAGE_AUDIT: ${{ github.event.inputs.package_audit || 'false' }}
+          DISPATCH_PACKAGE_SCOPE: ${{ github.event.inputs.package_scope || 'all' }}
           HAS_CHANGES: ${{ steps.release.outputs.has_changes }}
         run: |
           set -euo pipefail
           publish_release=false
           build_packages=false
+          package_scope=all
           reason="dry-run: ENABLE_MAIN_RELEASE is not true or publish was not requested"
 
           if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$DISPATCH_PACKAGE_AUDIT" = "true" ]; then
+            case "$DISPATCH_PACKAGE_SCOPE" in
+              all|windows|linux|macos) package_scope="$DISPATCH_PACKAGE_SCOPE" ;;
+              *) echo "Invalid package audit scope: $DISPATCH_PACKAGE_SCOPE" >&2; exit 1 ;;
+            esac
             build_packages=true
-            reason="package audit: manual full package build without publishing"
+            reason="package audit: manual package build without publishing"
           elif [ "$HAS_CHANGES" = "true" ] && [ "$EVENT_NAME" = "push" ] && [ "$REF_NAME" = "main" ] && [ "$ENABLE_MAIN_RELEASE" = "true" ]; then
             publish_release=true
             build_packages=true
@@ -113,6 +130,7 @@ jobs:
 
           echo "publish_release=$publish_release" >> "$GITHUB_OUTPUT"
           echo "build_packages=$build_packages" >> "$GITHUB_OUTPUT"
+          echo "package_scope=$package_scope" >> "$GITHUB_OUTPUT"
           echo "mode_reason=$reason" >> "$GITHUB_OUTPUT"
           echo "$reason"
 
@@ -254,22 +272,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: macos-latest
-            bundles: app,dmg
-            target: universal-apple-darwin
-            gitDistTarget: macos-universal
-            artifactName: artistic-git-macos
-          - os: windows-latest
-            bundles: nsis
-            target: x86_64-pc-windows-msvc
-            gitDistTarget: windows-x86_64
-            artifactName: artistic-git-windows
-          - os: ubuntu-22.04
-            bundles: appimage,deb
-            target: x86_64-unknown-linux-gnu
-            gitDistTarget: linux-x86_64
-            artifactName: artistic-git-linux
+        include: >-
+          ${{ fromJSON(
+            (needs.plan.outputs.publish_release == 'true' || needs.plan.outputs.package_scope == 'all') &&
+            '[{"os":"macos-latest","bundles":"app,dmg","target":"universal-apple-darwin","gitDistTarget":"macos-universal","artifactName":"artistic-git-macos"},{"os":"windows-latest","bundles":"nsis","target":"x86_64-pc-windows-msvc","gitDistTarget":"windows-x86_64","artifactName":"artistic-git-windows"},{"os":"ubuntu-22.04","bundles":"appimage,deb","target":"x86_64-unknown-linux-gnu","gitDistTarget":"linux-x86_64","artifactName":"artistic-git-linux"}]' ||
+            needs.plan.outputs.package_scope == 'windows' &&
+            '[{"os":"windows-latest","bundles":"nsis","target":"x86_64-pc-windows-msvc","gitDistTarget":"windows-x86_64","artifactName":"artistic-git-windows"}]' ||
+            needs.plan.outputs.package_scope == 'linux' &&
+            '[{"os":"ubuntu-22.04","bundles":"appimage,deb","target":"x86_64-unknown-linux-gnu","gitDistTarget":"linux-x86_64","artifactName":"artistic-git-linux"}]' ||
+            '[{"os":"macos-latest","bundles":"app,dmg","target":"universal-apple-darwin","gitDistTarget":"macos-universal","artifactName":"artistic-git-macos"}]'
+          ) }}
 
     steps:
       - name: Checkout
@@ -472,10 +484,11 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $installer = Get-ChildItem -Path "target/${{ matrix.target }}/release/bundle/nsis" -Filter "*.exe" | Select-Object -First 1
-          if (-not $installer) {
-            throw "NSIS installer was not produced."
+          $installers = @(Get-ChildItem -Path "target/${{ matrix.target }}/release/bundle/nsis" -Filter "*.exe")
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one NSIS installer, found $($installers.Count)."
           }
+          $installer = $installers[0]
 
           $installDir = Join-Path $env:RUNNER_TEMP "artistic-git-bundle-check"
           Remove-Item -Recurse -Force $installDir -ErrorAction SilentlyContinue
@@ -494,8 +507,26 @@ jobs:
           set -euo pipefail
           if [ "$RUNNER_OS" = "Windows" ]; then
             echo "path=${RUNNER_TEMP}/artistic-git-bundle-check" >> "$GITHUB_OUTPUT"
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            apps=()
+            while IFS= read -r -d '' app; do apps+=("$app"); done < <(
+              find "target/${{ matrix.target }}/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print0
+            )
+            if [ "${#apps[@]}" -ne 1 ]; then
+              echo "Expected exactly one packaged macOS app, found ${#apps[@]}." >&2
+              exit 1
+            fi
+            echo "path=${apps[0]}" >> "$GITHUB_OUTPUT"
           else
-            echo "path=target/${{ matrix.target }}/release" >> "$GITHUB_OUTPUT"
+            app_dirs=()
+            while IFS= read -r -d '' app_dir; do app_dirs+=("$app_dir"); done < <(
+              find "target/${{ matrix.target }}/release/bundle/appimage" -maxdepth 1 -type d -name '*.AppDir' -print0
+            )
+            if [ "${#app_dirs[@]}" -ne 1 ]; then
+              echo "Expected exactly one packaged Linux AppDir, found ${#app_dirs[@]}." >&2
+              exit 1
+            fi
+            echo "path=${app_dirs[0]}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Verify packaged Linux Git runtime
@@ -503,8 +534,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          app_dir="$(find "target/${{ matrix.target }}/release/bundle/appimage" -maxdepth 1 -type d -name '*.AppDir' -print -quit)"
-          test -n "$app_dir"
+          app_dir="${{ steps.packaged-resource-output.outputs.path }}"
           git_dist="$app_dir/usr/share/artistic-git/git-dist"
           app_lib="$app_dir/usr/lib"
           runtime_home="$RUNNER_TEMP/artistic-git-linux-home"
@@ -545,15 +575,21 @@ jobs:
             exit 1
           fi
 
-      - name: Verify packaged embedded Git resources
+      - name: Verify and smoke packaged embedded Git resources
         shell: bash
         run: |
           set -euo pipefail
+          runtime_args=()
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            runtime_args+=("--runtime-library-path=${{ steps.packaged-resource-output.outputs.path }}/usr/lib")
+          fi
           node scripts/check-tauri-bundle-resources.mjs \
             --require-manifest \
             --release \
             --bundle-output "${{ steps.packaged-resource-output.outputs.path }}" \
-            --require-bundled-resource
+            --require-bundled-resource \
+            --runtime-smoke \
+            "${runtime_args[@]}"
 
       - name: Stage release assets
         shell: bash
@@ -592,21 +628,7 @@ jobs:
           RELEASE_VERSION: ${{ needs.plan.outputs.version }}
         run: |
           set -euo pipefail
-          case "$RUNNER_OS" in
-            Windows)
-              installed_tree="$RUNNER_TEMP/artistic-git-bundle-check"
-              ;;
-            macOS)
-              installed_tree="$(find "target/${{ matrix.target }}/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
-              ;;
-            Linux)
-              installed_tree="$(find "target/${{ matrix.target }}/release/bundle/appimage" -maxdepth 1 -type d -name '*.AppDir' -print -quit)"
-              ;;
-            *)
-              echo "Unsupported size audit runner: $RUNNER_OS" >&2
-              exit 1
-              ;;
-          esac
+          installed_tree="${{ steps.packaged-resource-output.outputs.path }}"
           test -n "$installed_tree"
           test -d "$installed_tree"
           mkdir -p "$AUDIT_DIR"
@@ -635,7 +657,7 @@ jobs:
             commitSha: process.env.GITHUB_SHA,
             workflowRunUrl: `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
             packagedResourceValidation:
-              "node scripts/check-tauri-bundle-resources.mjs --require-bundled-resource",
+              "node scripts/check-tauri-bundle-resources.mjs --require-bundled-resource --runtime-smoke",
           };
           await writeFile(
             path.join(outputDir, "build-evidence.json"),

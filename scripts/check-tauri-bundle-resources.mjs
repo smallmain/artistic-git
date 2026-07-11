@@ -6,7 +6,8 @@ import { access, readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { regularFileResourcePaths } from "./git-dist-lib.mjs";
+import { verifyGitDistRoot } from "./check-git-dist.mjs";
+import { getHostTarget, regularFileResourcePaths } from "./git-dist-lib.mjs";
 
 export const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -152,7 +153,19 @@ export async function checkTauriBundleResources({
   releaseMode = false,
   bundleOutput = null,
   requireBundledResource = false,
+  runtimeSmoke = false,
+  runtimeLibraryPath = null,
+  runtimeHostTarget = getHostTarget(),
+  runtimeVerifier = verifyGitDistRoot,
 } = {}) {
+  if (runtimeSmoke && (!bundleOutput || !requireBundledResource)) {
+    fail(
+      "packaged runtime smoke requires --bundle-output and --require-bundled-resource.",
+    );
+  }
+  if (runtimeLibraryPath && !runtimeSmoke) {
+    fail("--runtime-library-path requires --runtime-smoke.");
+  }
   const resolvedConfigPath = path.resolve(configPath);
   const raw = await readFile(resolvedConfigPath, "utf8");
   const config = JSON.parse(raw);
@@ -289,6 +302,13 @@ export async function checkTauriBundleResources({
       }
     }
   }
+  const bundledRuntimeSmokeRoots = runtimeSmoke
+    ? await smokeBundledGitDistRoots(bundledManifestChecks, {
+        hostTarget: runtimeHostTarget,
+        runtimeLibraryPath,
+        runtimeVerifier,
+      })
+    : [];
 
   return {
     sourcePath,
@@ -297,7 +317,39 @@ export async function checkTauriBundleResources({
     linuxConfigPath,
     bundledManifestPaths,
     bundledManifestChecks,
+    bundledRuntimeSmokeRoots,
   };
+}
+
+export async function smokeBundledGitDistRoots(
+  bundledManifestChecks,
+  {
+    hostTarget = getHostTarget(),
+    runtimeLibraryPath = null,
+    runtimeVerifier = verifyGitDistRoot,
+  } = {},
+) {
+  if (bundledManifestChecks.length !== 1) {
+    fail(
+      `packaged runtime smoke requires exactly one bundled git-dist, found ${bundledManifestChecks.length}.`,
+    );
+  }
+  const roots = [];
+  for (const packaged of bundledManifestChecks) {
+    if (packaged.manifest.target !== hostTarget) {
+      fail(
+        `packaged runtime smoke target must be ${hostTarget}, got ${packaged.manifest.target}: ${packaged.manifestPath}`,
+      );
+    }
+    const distRoot = path.dirname(packaged.manifestPath);
+    await runtimeVerifier({
+      distRoot,
+      runtimeLibraryPath,
+      targetName: hostTarget,
+    });
+    roots.push(distRoot);
+  }
+  return roots;
 }
 
 async function validateLinuxAppImageIcon({ bundle, targets, tauriDir }) {
@@ -497,6 +549,8 @@ function parseArgs(argv) {
     releaseMode: false,
     bundleOutput: null,
     requireBundledResource: false,
+    runtimeSmoke: false,
+    runtimeLibraryPath: null,
     help: false,
   };
 
@@ -528,6 +582,13 @@ function parseArgs(argv) {
       options.bundleOutput = readValue("--bundle-output");
     } else if (arg === "--require-bundled-resource") {
       options.requireBundledResource = true;
+    } else if (arg === "--runtime-smoke") {
+      options.runtimeSmoke = true;
+    } else if (
+      arg === "--runtime-library-path" ||
+      arg.startsWith("--runtime-library-path=")
+    ) {
+      options.runtimeLibraryPath = readValue("--runtime-library-path");
     } else {
       fail(`unknown argument: ${arg}`);
     }
@@ -542,6 +603,7 @@ function usage() {
   node scripts/check-tauri-bundle-resources.mjs --require-manifest
   node scripts/check-tauri-bundle-resources.mjs --require-manifest --release
   node scripts/check-tauri-bundle-resources.mjs --require-manifest --release --bundle-output target/<triple>/release --require-bundled-resource
+  node scripts/check-tauri-bundle-resources.mjs --require-manifest --release --bundle-output target/<triple>/release --require-bundled-resource --runtime-smoke
 
 Checks that Tauri bundles the embedded git-dist resource tree at the packaged
 resource path expected by release builds. --require-manifest is for real release
@@ -570,6 +632,11 @@ async function main() {
   if (options.requireBundledResource) {
     status.push(
       `packaged git-dist manifests checked: ${result.bundledManifestChecks.length}`,
+    );
+  }
+  if (options.runtimeSmoke) {
+    status.push(
+      `packaged git-dist runtime smokes passed: ${result.bundledRuntimeSmokeRoots.length}`,
     );
   }
   info(`${status.join("; ")}.`);
