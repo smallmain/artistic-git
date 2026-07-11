@@ -1,3 +1,5 @@
+/* global process */
+
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
@@ -54,6 +56,16 @@ test("manual CI platform scope prunes runner matrices without weakening push CI"
     ciWorkflow,
     /e2e:\n[\s\S]+?if: github\.event_name != 'workflow_dispatch' \|\| inputs\.platform_scope != 'macos'[\s\S]+?matrix:\n\s+include: >-\n\s+\$\{\{ fromJSON\(/,
   );
+  assert.doesNotMatch(
+    workflowJob(ciWorkflow, "e2e", "phase12-evidence-summary"),
+    /\n\s+needs: test\n/,
+    "platform test and E2E jobs must run in parallel; the summary joins both gates",
+  );
+  assert.match(
+    workflowJob(ciWorkflow, "phase12-evidence-summary", null),
+    /needs:\n\s+- test\n\s+- e2e/,
+    "the evidence summary must join both parallel test and E2E gates",
+  );
   assert.match(
     ciWorkflow,
     /phase12-evidence-summary:[\s\S]+?if: >-\n\s+\$\{\{ always\(\) &&\n\s+\(github\.event_name != 'workflow_dispatch' \|\| inputs\.platform_scope == 'all'\)/,
@@ -63,11 +75,21 @@ test("manual CI platform scope prunes runner matrices without weakening push CI"
     /if: .*matrix\.os.*platform_scope|if: .*platform_scope.*matrix\.os/,
     "platform filtering must happen before matrix jobs are expanded",
   );
+
+  const phase12Audit = spawnSync(
+    process.execPath,
+    ["scripts/phase12-e2e-full-chain-audit.mjs", "--check"],
+    { cwd: root, encoding: "utf8" },
+  );
+  assert.equal(phase12Audit.status, 0, phase12Audit.stderr);
 });
 
 function workflowJob(workflow, jobName, nextJobName) {
   const start = workflow.indexOf(`\n  ${jobName}:\n`);
-  const end = workflow.indexOf(`\n  ${nextJobName}:\n`, start + 1);
+  const end =
+    nextJobName === null
+      ? workflow.length
+      : workflow.indexOf(`\n  ${nextJobName}:\n`, start + 1);
   assert.notEqual(start, -1, `missing ${jobName} job`);
   assert.notEqual(end, -1, `missing ${nextJobName} job`);
   return workflow.slice(start, end);

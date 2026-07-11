@@ -240,9 +240,8 @@ const gates = [
     requirement:
       "Linux and Windows CI ensure the embedded toolchain, run Tauri E2E, and upload evidence",
     source: "ci",
+    customCheck: evaluateCiWorkflowContract,
     tokens: [
-      "os: ubuntu-22.04",
-      "os: windows-latest",
       "git-toolchain:ensure",
       "pnpm e2e:real-git:report",
       "pnpm e2e:tauri:ci",
@@ -351,6 +350,10 @@ function evaluateGate(gate) {
     }
   }
 
+  if (gate.customCheck && typeof source === "string") {
+    failures.push(...gate.customCheck(source));
+  }
+
   for (const extra of gate.extraSources ?? []) {
     const extraSource = sources[extra.source];
     for (const token of extra.tokens) {
@@ -379,6 +382,128 @@ function evaluateGate(gate) {
     requirement: gate.requirement,
     status: failures.length === 0 ? "pass" : "fail",
   };
+}
+
+function evaluateCiWorkflowContract(source) {
+  const failures = [];
+  const testJob = workflowJob(source, "test", "e2e", failures);
+  const e2eJob = workflowJob(
+    source,
+    "e2e",
+    "phase12-evidence-summary",
+    failures,
+  );
+  const summaryJob = workflowJob(
+    source,
+    "phase12-evidence-summary",
+    null,
+    failures,
+  );
+
+  requireTokens(
+    source,
+    ["pull_request:", "push:", "workflow_dispatch:"],
+    failures,
+  );
+  requireTokens(
+    testJob,
+    [
+      "(github.event_name != 'workflow_dispatch' || inputs.platform_scope == 'all')",
+      "inputs.platform_scope == 'windows' &&",
+      "inputs.platform_scope == 'linux' &&",
+    ],
+    failures,
+    "test job",
+  );
+  requireTokens(
+    e2eJob,
+    [
+      "if: github.event_name != 'workflow_dispatch' || inputs.platform_scope != 'macos'",
+      "(github.event_name != 'workflow_dispatch' || inputs.platform_scope == 'all')",
+      "inputs.platform_scope == 'windows' &&",
+      "inputs.platform_scope == 'linux' &&",
+    ],
+    failures,
+    "e2e job",
+  );
+
+  compareMatrixPlatforms(
+    testJob,
+    [
+      ["ubuntu-22.04", "macos-latest", "windows-latest"],
+      ["windows-latest"],
+      ["ubuntu-22.04"],
+      ["macos-latest"],
+    ],
+    "test job",
+    failures,
+  );
+  compareMatrixPlatforms(
+    e2eJob,
+    [["ubuntu-22.04", "windows-latest"], ["windows-latest"], ["ubuntu-22.04"]],
+    "e2e job",
+    failures,
+  );
+
+  if (/\n\s+needs:\s+test(?:\s|$)/.test(e2eJob)) {
+    failures.push("e2e job must run in parallel and must not need test");
+  }
+  requireTokens(
+    summaryJob,
+    [
+      "needs:\n      - test\n      - e2e",
+      "(github.event_name != 'workflow_dispatch' || inputs.platform_scope == 'all')",
+    ],
+    failures,
+    "phase12 evidence summary job",
+  );
+
+  return failures;
+}
+
+function workflowJob(source, jobName, nextJobName, failures) {
+  const start = source.indexOf(`\n  ${jobName}:\n`);
+  if (start === -1) {
+    failures.push(`ci is missing ${jobName} job`);
+    return "";
+  }
+
+  if (nextJobName === null) {
+    return source.slice(start);
+  }
+
+  const end = source.indexOf(`\n  ${nextJobName}:\n`, start + 1);
+  if (end === -1) {
+    failures.push(`ci is missing ${nextJobName} job after ${jobName}`);
+    return source.slice(start);
+  }
+  return source.slice(start, end);
+}
+
+function requireTokens(source, tokens, failures, sourceLabel = "ci") {
+  for (const token of tokens) {
+    if (!source.includes(token)) {
+      failures.push(`${sourceLabel} is missing ${token}`);
+    }
+  }
+}
+
+function compareMatrixPlatforms(jobSource, expected, sourceLabel, failures) {
+  let actual;
+  try {
+    actual = [...jobSource.matchAll(/'(\[\{[^\n]+\}\])'/g)].map((match) =>
+      JSON.parse(match[1]).map((entry) => entry.os),
+    );
+  } catch (error) {
+    failures.push(`${sourceLabel} matrix JSON is invalid: ${error.message}`);
+    return;
+  }
+
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    failures.push(
+      `${sourceLabel} matrix platforms are ${JSON.stringify(actual)}; expected ${JSON.stringify(expected)}`,
+    );
+  }
 }
 
 function missingTokens(source, tokens) {

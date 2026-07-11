@@ -213,7 +213,6 @@ jobs:
 
   e2e:
     name: E2E (${{ matrix.os }})
-    needs: test
     if: github.event_name != 'workflow_dispatch' || inputs.platform_scope != 'macos'
     runs-on: ${{ matrix.os }}
     strategy:
