@@ -224,9 +224,9 @@ fn git_compatible_distribution_root(path: PathBuf) -> PathBuf {
         use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
         let encoded = path.as_os_str().encode_wide().collect::<Vec<_>>();
-        return strip_windows_verbatim_prefix(&encoded)
+        strip_windows_verbatim_prefix(&encoded)
             .map(|normalized| PathBuf::from(OsString::from_wide(&normalized)))
-            .unwrap_or(path);
+            .unwrap_or(path)
     }
 
     #[cfg(not(windows))]
