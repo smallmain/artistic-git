@@ -9,6 +9,10 @@ repository.workspace = true
 name = "artistic_git_shell"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+default = []
+wdio-e2e = ["dep:tauri-plugin-wdio"]
+
 [build-dependencies]
 tauri-build.workspace = true
 
@@ -23,6 +27,7 @@ tauri.workspace = true
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2.4.2"
 tauri-plugin-updater = "2"
+tauri-plugin-wdio = { version = "=1.2.0", optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -5,8 +5,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { createE2eProfile, ensureE2eProfile } from "./e2e/tauri/profile";
+import { installDebugGitDist } from "./e2e/tauri/debug-resources";
 
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
+const gitDistDir = path.join(rootDir, "src-tauri", "resources", "git-dist");
 const driverHost = process.env.TAURI_DRIVER_HOST ?? "127.0.0.1";
 const driverPort = Number.parseInt(process.env.TAURI_DRIVER_PORT ?? "4444", 10);
 const appBinaryPath = defaultTauriBinaryPath();
@@ -208,7 +210,16 @@ function defaultTauriDriverPath() {
 }
 
 function ensureTauriBinary() {
-  const result = runPnpm(["tauri", "build", "--debug", "--no-bundle"]);
+  const result = runPnpm([
+    "tauri",
+    "build",
+    "--debug",
+    "--no-bundle",
+    "--features",
+    "wdio-e2e",
+    "--config",
+    "src-tauri/tauri.e2e.conf.json",
+  ]);
   assertSuccessfulProcess(result, "pnpm tauri build --debug --no-bundle");
 
   if (!existsSync(appBinaryPath)) {
@@ -216,6 +227,8 @@ function ensureTauriBinary() {
       `The freshly built Tauri application binary was not found at ${appBinaryPath}.`,
     );
   }
+
+  installDebugGitDist(gitDistDir, appBinaryPath);
 }
 
 function runPnpm(args: string[]) {

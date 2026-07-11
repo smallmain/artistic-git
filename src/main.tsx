@@ -7,14 +7,22 @@ import "./styles.css";
 
 const root = document.getElementById("root");
 
-if (!root) {
-  throw new Error("Root element was not found.");
+async function bootstrap() {
+  if (!root) {
+    throw new Error("Root element was not found.");
+  }
+
+  if (import.meta.env.MODE === "e2e") {
+    await import("@wdio/tauri-plugin");
+  }
+
+  createRoot(root).render(
+    <StrictMode>
+      <AppProviders>
+        <App />
+      </AppProviders>
+    </StrictMode>,
+  );
 }
 
-createRoot(root).render(
-  <StrictMode>
-    <AppProviders>
-      <App />
-    </AppProviders>
-  </StrictMode>,
-);
+void bootstrap();

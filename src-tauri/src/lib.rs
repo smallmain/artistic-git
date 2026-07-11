@@ -9,6 +9,9 @@ use tauri::{
     Emitter, Manager, PhysicalPosition, PhysicalSize, RunEvent, State, WebviewUrl, WindowEvent,
 };
 
+#[cfg(all(feature = "wdio-e2e", not(debug_assertions)))]
+compile_error!("the wdio-e2e feature is restricted to debug E2E builds");
+
 mod updater_runtime;
 
 const MENU_EVENT_NAME: &str = "app-menu";
@@ -1751,6 +1754,9 @@ pub fn run() {
         .on_menu_event(handle_menu_event)
         .on_window_event(handle_window_event);
 
+    #[cfg(feature = "wdio-e2e")]
+    let builder = builder.plugin(tauri_plugin_wdio::init());
+
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     let builder = builder.on_web_content_process_terminate(handle_web_content_process_terminate);
 
@@ -1759,7 +1765,13 @@ pub fn run() {
             let _native_renderer_crash_hook_gate = native_renderer_crash_hook_gate();
             let log_dir = app.path().app_log_dir()?;
             let logging_config = artistic_git_core::logging::LoggingConfig::new(log_dir);
+            #[cfg(not(feature = "wdio-e2e"))]
             let logging_guard = artistic_git_core::logging::initialize_logging(&logging_config)?;
+            #[cfg(feature = "wdio-e2e")]
+            let logging_guard =
+                artistic_git_core::logging::initialize_logging_with_existing_log_logger(
+                    &logging_config,
+                )?;
             let app_handle = app.handle().clone();
             artistic_git_core::logging::install_panic_hook_with_reporter(move |report| {
                 let _ = app_handle.emit("crash-reported", crash_payload_from_panic_report(report));

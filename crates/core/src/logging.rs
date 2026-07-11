@@ -58,6 +58,19 @@ pub struct LoggingGuard {
 }
 
 pub fn initialize_logging(config: &LoggingConfig) -> Result<LoggingGuard, LoggingInitError> {
+    initialize_logging_inner(config, true)
+}
+
+pub fn initialize_logging_with_existing_log_logger(
+    config: &LoggingConfig,
+) -> Result<LoggingGuard, LoggingInitError> {
+    initialize_logging_inner(config, false)
+}
+
+fn initialize_logging_inner(
+    config: &LoggingConfig,
+    install_log_tracer: bool,
+) -> Result<LoggingGuard, LoggingInitError> {
     fs::create_dir_all(&config.directory).map_err(|source| LoggingInitError::CreateDir {
         path: config.directory.clone(),
         source,
@@ -72,12 +85,22 @@ pub fn initialize_logging(config: &LoggingConfig) -> Result<LoggingGuard, Loggin
     let file_appender = tracing_appender::rolling::daily(&config.directory, &config.file_prefix);
     let (writer, worker_guard) = tracing_appender::non_blocking(file_appender);
 
-    tracing_subscriber::fmt()
+    let subscriber = tracing_subscriber::fmt()
         .with_env_filter(env_filter)
         .with_writer(writer)
-        .with_ansi(false)
-        .try_init()
-        .map_err(|source| LoggingInitError::SetGlobalSubscriber { source })?;
+        .with_ansi(false);
+
+    if install_log_tracer {
+        subscriber
+            .try_init()
+            .map_err(|source| LoggingInitError::SetGlobalSubscriber { source })?;
+    } else {
+        tracing::subscriber::set_global_default(subscriber.finish()).map_err(|source| {
+            LoggingInitError::SetGlobalSubscriber {
+                source: Box::new(source),
+            }
+        })?;
+    }
 
     Ok(LoggingGuard {
         _worker_guard: worker_guard,

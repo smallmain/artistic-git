@@ -54,6 +54,7 @@ describe("Artistic Git Tauri real-git full chain", () => {
   });
 
   it("drives clone/commit/sync/conflict/revert through UI controls with a real remote", async () => {
+    await recordStep("verify WDIO bridge", verifyWdioBridge);
     await recordStep("wait for start screen", waitForStartScreen);
     await recordStep("clone local repository through UI", () =>
       cloneThroughUi(fixture.remotePath, fixture.parentPath, "local"),
@@ -713,6 +714,18 @@ async function waitForCommitDialogClosedOrCommitted() {
 
 async function waitForStartScreen() {
   await waitForStartScreenReady();
+}
+
+async function verifyWdioBridge() {
+  const ready = await browser.execute(() => {
+    const bridge = (
+      window as typeof window & {
+        wdioTauri?: { execute?: unknown };
+      }
+    ).wdioTauri;
+    return typeof bridge?.execute === "function";
+  });
+  assert.equal(ready, true, "the E2E-only WDIO bridge was not initialized");
 }
 
 async function waitForRepository(repositoryPath: string) {
