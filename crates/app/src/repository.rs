@@ -3996,7 +3996,7 @@ mod tests {
     use artistic_git_helpers::HelperIpcResponse;
     use artistic_git_test_support::{
         git_dist_manifest_fixture, require_git_dist, write_executable_file,
-        write_executable_script, write_git_dist_manifest, GitDistError, TestTempDir,
+        write_executable_script, write_git_dist_manifest, TestTempDir,
     };
     use std::{io::Write, sync::Mutex};
 
@@ -4068,9 +4068,7 @@ mod tests {
 
     #[test]
     fn cancel_commit_operation_kills_git_child_and_restores_index_state() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.init_with_commit();
         let original_head = repo.git_output(["rev-parse", "HEAD"]).trim().to_owned();
@@ -4117,9 +4115,7 @@ mod tests {
 
     #[test]
     fn cancel_revert_operation_kills_git_child_and_restores_auto_stash() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.init_with_commit();
         repo.write("target.txt", "target\n");
@@ -4380,21 +4376,8 @@ mod tests {
     }
 
     #[test]
-    fn missing_embedded_git_distribution_is_explicit() {
-        if std::env::var_os("ARTISTIC_GIT_DIST_DIR").is_some() {
-            return;
-        }
-
-        let error = require_git_dist().expect_err("missing dist should be explicit");
-
-        assert!(matches!(error, GitDistError::MissingEnvironment));
-    }
-
-    #[test]
     fn opens_repository_from_subdirectory_and_reports_no_remote() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.git(["init", "-b", "main"]);
         repo.write("nested/file.txt", "hello");
@@ -4419,9 +4402,7 @@ mod tests {
 
     #[test]
     fn clones_local_bare_repository_and_reuses_open_flow() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let source = TestRepo::new(&runner);
         source.init_with_commit();
         let branch = source
@@ -4503,9 +4484,7 @@ mod tests {
 
     #[test]
     fn clone_emits_progress_events_for_local_bare_repository() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let source = TestRepo::new(&runner);
         source.init_with_commit();
         let branch = source
@@ -4591,9 +4570,7 @@ mod tests {
 
     #[test]
     fn open_repository_initializes_submodules_and_emits_progress() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         allow_file_protocol_for_local_submodule_fixtures(&runner);
         let child = TestRepo::new(&runner);
         child.init_with_commit();
@@ -4638,9 +4615,7 @@ mod tests {
 
     #[test]
     fn local_changes_render_gitlink_pointer_as_submodule_card() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         allow_file_protocol_for_local_submodule_fixtures(&runner);
         let child = TestRepo::new(&runner);
         child.init_with_commit();
@@ -4697,9 +4672,7 @@ mod tests {
 
     #[test]
     fn list_local_changes_includes_submodule_workspace_changes() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         allow_file_protocol_for_local_submodule_fixtures(&runner);
         let child = TestRepo::new(&runner);
         child.init_with_commit();
@@ -4785,9 +4758,7 @@ mod tests {
 
     #[test]
     fn clone_rejects_existing_target_directory() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let parent = TestTempDir::new("ag-clone-parent").expect("clone parent");
         fs::create_dir(parent.path().join("existing")).expect("existing target");
 
@@ -4809,9 +4780,7 @@ mod tests {
 
     #[test]
     fn clone_with_pre_cancelled_token_does_not_create_target() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let parent = TestTempDir::new("ag-clone-parent").expect("clone parent");
         let token = CancelToken::new();
         token.cancel();
@@ -4836,9 +4805,7 @@ mod tests {
 
     #[test]
     fn rejects_bare_repository() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.git(["init", "--bare", "-b", "main"]);
 
@@ -4857,9 +4824,7 @@ mod tests {
 
     #[test]
     fn reports_unborn_and_index_lock_health() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.git(["init", "-b", "main"]);
         fs::File::create(repo.path.join(".git/index.lock")).expect("index.lock");
@@ -4883,9 +4848,7 @@ mod tests {
 
     #[test]
     fn lists_local_changes_and_filters_backup_branches() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.git(["init", "-b", "main"]);
         repo.git(["config", "user.name", "Tester"]);
@@ -4928,9 +4891,7 @@ mod tests {
 
     #[test]
     fn local_changes_render_available_lfs_content_instead_of_pointer() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.init_with_commit();
         repo.write("asset.bin", "base\n");
@@ -5040,9 +5001,7 @@ size 16\n"
 
     #[test]
     fn rejects_linked_worktree() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.init_with_commit();
         let linked = TestTempDir::new("ag-linked-worktree").expect("linked worktree path");
@@ -5065,9 +5024,7 @@ size 16\n"
 
     #[test]
     fn reports_detached_head_warning() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.init_with_commit();
         repo.git(["checkout", "--detach", "HEAD"]);
@@ -5094,9 +5051,7 @@ size 16\n"
 
     #[test]
     fn multiple_remotes_manage_only_origin() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.init_with_commit();
         repo.git(["remote", "add", "origin", "https://example.test/origin.git"]);
@@ -5133,9 +5088,7 @@ size 16\n"
 
     #[test]
     fn writes_tool_identity_only_to_local_config() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.git(["init", "-b", "main"]);
 
@@ -5166,9 +5119,7 @@ size 16\n"
 
     #[test]
     fn lists_stashes_and_searches_log() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.init_with_commit();
         repo.write("second.txt", "needle\n");
@@ -5215,24 +5166,15 @@ size 16\n"
         assert_eq!(search.commits[0].subject, "second searchable commit");
     }
 
-    fn real_runner_or_skip() -> Option<(GitRunner, TestTempDir)> {
-        let dist = match require_git_dist() {
-            Ok(dist) => dist,
-            Err(GitDistError::MissingEnvironment) => {
-                eprintln!(
-                    "skipping real Git/LFS repository test: ARTISTIC_GIT_DIST_DIR is not set"
-                );
-                return None;
-            }
-            Err(error) => panic!("invalid embedded git distribution: {error}"),
-        };
+    fn real_runner() -> (GitRunner, TestTempDir) {
+        let dist = require_git_dist().expect("load embedded git distribution");
         let distribution = GitDistribution::from_manifest(dist.root, dist.manifest)
             .expect("load embedded git distribution");
         let temp = TestTempDir::new("ag-app-runner-home").expect("temp home");
         let home = temp.path().join("home");
         fs::create_dir_all(&home).expect("create runner home");
         let runner = GitRunner::from_distribution(distribution, home);
-        Some((runner, temp))
+        (runner, temp)
     }
 
     fn allow_file_protocol_for_local_submodule_fixtures(runner: &GitRunner) {

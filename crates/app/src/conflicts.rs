@@ -1261,7 +1261,7 @@ mod tests {
     use super::*;
     use artistic_git_contracts::OperationId;
     use artistic_git_git_runner::{GitDistribution, GitRunner};
-    use artistic_git_test_support::{require_git_dist, GitDistError, TestTempDir};
+    use artistic_git_test_support::{require_git_dist, TestTempDir};
     use std::process::Output;
 
     #[test]
@@ -1401,9 +1401,7 @@ mod tests {
 
     #[test]
     fn complete_rejects_unresolved_merge_conflicts() {
-        let Some((runner, _home)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _home) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.init_with_commit();
         repo.start_text_merge_conflict();
@@ -1424,9 +1422,7 @@ mod tests {
 
     #[test]
     fn cancel_aborts_merge_conflicts() {
-        let Some((runner, _home)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _home) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.init_with_commit();
         repo.start_text_merge_conflict();
@@ -1447,9 +1443,7 @@ mod tests {
 
     #[test]
     fn binary_detail_includes_side_info_and_image_preview() {
-        let Some((runner, _home)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _home) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.init_with_binary_commit();
         repo.start_binary_merge_conflict();
@@ -1485,9 +1479,7 @@ mod tests {
 
     #[test]
     fn submodule_conflict_commands_accept_prefixed_paths() {
-        let Some((runner, _home)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _home) = real_runner();
         let child_seed = TestRepo::new(&runner);
         child_seed.init_with_commit();
         let repo = TestRepo::new(&runner);
@@ -1585,17 +1577,13 @@ mod tests {
             .is_none());
     }
 
-    fn real_runner_or_skip() -> Option<(GitRunner, TestTempDir)> {
-        let dist = match require_git_dist() {
-            Ok(dist) => dist,
-            Err(GitDistError::MissingEnvironment) => return None,
-            Err(error) => panic!("invalid embedded git distribution: {error}"),
-        };
+    fn real_runner() -> (GitRunner, TestTempDir) {
+        let dist = require_git_dist().expect("load embedded git distribution");
         let distribution = GitDistribution::from_manifest(dist.root, dist.manifest)
             .expect("load embedded git distribution");
         let temp = TestTempDir::new("ag-conflict-runner-home").expect("temp home");
         let runner = GitRunner::from_distribution(distribution, temp.path().join("home"));
-        Some((runner, temp))
+        (runner, temp)
     }
 
     fn configure_identity_at(runner: &GitRunner, root: &Path) {

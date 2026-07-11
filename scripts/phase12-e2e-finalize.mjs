@@ -35,15 +35,15 @@ const outcomes = {
 };
 const selectedOutcome = selectOutcome(outcomes, runnerLabel);
 const statusEvaluation = evaluateStatus(availability, selectedOutcome);
-const artifactEvidence = validateArtifactEvidence(availability);
+const executableEvidence = validateExecutableEvidence(availability);
 const reasons = [...statusEvaluation.reasons];
 let status = statusEvaluation.status;
-if (status === "pass" && !artifactEvidence.checkable) {
+if (status === "pass" && !executableEvidence.checkable) {
   status = "blocker";
-  reasons.push(...artifactEvidence.reasons);
+  reasons.push(...executableEvidence.reasons);
 }
 const platformEvidenceCheckable =
-  status === "pass" && artifactEvidence.checkable;
+  status === "pass" && executableEvidence.checkable;
 
 const report = {
   schemaVersion: 1,
@@ -70,24 +70,19 @@ const report = {
     command: "pnpm e2e:tauri:ci",
     outcomes,
     selectedOutcome,
-    realGitEnabled: availability?.status === "ready",
+    embeddedToolchainReady: availability?.status === "ready",
   },
   taskReadiness: {
     fullChainItemCheckable: false,
     platformEvidenceCheckable,
-    status: platformEvidenceCheckable
-      ? "platform-pass"
-      : status === "skipped"
-        ? "not-exercised"
-        : "blocked",
+    status: platformEvidenceCheckable ? "platform-pass" : "blocked",
     reasons: [
       ...reasons,
       "Use the phase12-evidence-summary artifact to confirm Linux and Windows before checking the TASKS.md E2E item.",
     ],
     requiredEvidence: [
       "e2e-real-git-report status=ready with sha256-verified embedded git and git-lfs",
-      "WDIO full-chain step outcome=success with ARTISTIC_GIT_E2E_REAL_GIT=1",
-      "Git Distribution source=artifact with runId and target",
+      "WDIO full-chain step outcome=success using the fixed embedded toolchain",
       "phase12-evidence-summary.json with tasks.e2eFullChain.checkable=true",
     ],
   },
@@ -98,6 +93,9 @@ writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
 writeFileSync(markdownPath, renderMarkdown(report));
 
 console.log(`Phase 12 E2E runtime evidence: ${status}; wrote ${reportPath}`);
+if (status !== "pass") {
+  process.exitCode = 1;
+}
 
 function readAvailabilityReport(filePath) {
   if (!existsSync(filePath)) {
@@ -120,12 +118,6 @@ function evaluateStatus(currentAvailability, selectedWdioOutcome) {
     return {
       status: "blocker",
       reasons: [`Missing E2E availability report: ${availabilityReportPath}`],
-    };
-  }
-  if (currentAvailability.status === "skipped") {
-    return {
-      status: "skipped",
-      reasons: [currentAvailability.reason ?? "Real-git E2E was skipped."],
     };
   }
   if (currentAvailability.status !== "ready") {
@@ -151,19 +143,8 @@ function evaluateStatus(currentAvailability, selectedWdioOutcome) {
   };
 }
 
-function validateArtifactEvidence(currentAvailability) {
+function validateExecutableEvidence(currentAvailability) {
   const reasons = [];
-  const source = currentAvailability?.gitDistSource;
-  if (source?.source !== "artifact") {
-    reasons.push(`gitDistSource.source is ${source?.source ?? "missing"}`);
-  }
-  if (!source?.runId) {
-    reasons.push("gitDistSource.runId is missing");
-  }
-  if (!source?.artifactName) {
-    reasons.push("gitDistSource.artifactName is missing");
-  }
-
   const executables = currentAvailability?.gitDist?.executableEvidence;
   if (!Array.isArray(executables) || executables.length < 2) {
     reasons.push("gitDist.executableEvidence is incomplete");
@@ -175,7 +156,9 @@ function validateArtifactEvidence(currentAvailability) {
         continue;
       }
       if (executable.resolvesInsideDistDir !== true) {
-        reasons.push(`${key} does not resolve inside ARTISTIC_GIT_DIST_DIR`);
+        reasons.push(
+          `${key} does not resolve inside the embedded Git resource directory`,
+        );
       }
       if (
         typeof executable.sha256 !== "string" ||
@@ -204,11 +187,7 @@ function selectOutcome(currentOutcomes, currentRunnerLabel) {
   if (normalizedRunner.includes("windows")) {
     return currentOutcomes.windows;
   }
-  return (
-    Object.values(currentOutcomes).find(
-      (outcome) => outcome && outcome !== "skipped",
-    ) ?? null
-  );
+  return Object.values(currentOutcomes).find((outcome) => outcome) ?? null;
 }
 
 function normalizeOutcome(value) {

@@ -1073,7 +1073,7 @@ mod tests {
     use super::*;
     use artistic_git_contracts::RepositoryPathRequest;
     use artistic_git_git_runner::{GitDistribution, GitRunner};
-    use artistic_git_test_support::{require_git_dist, GitDistError, TestTempDir};
+    use artistic_git_test_support::{require_git_dist, TestTempDir};
     use std::io::Write;
 
     #[test]
@@ -1137,9 +1137,7 @@ mod tests {
 
     #[test]
     fn creates_partial_stash_and_leaves_unselected_changes() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.init_with_commit();
         repo.write("keep.txt", "keep changed\n");
@@ -1165,9 +1163,7 @@ mod tests {
 
     #[test]
     fn creates_full_stash_including_untracked_and_manual_apply_keeps_stash() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.init_with_commit();
         repo.write("tracked.txt", "tracked changed\n");
@@ -1241,9 +1237,7 @@ mod tests {
 
     #[test]
     fn stash_details_marks_auto_origin_and_delete_drops_entry() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.init_with_commit();
         repo.write("tracked.txt", "auto stash change\n");
@@ -1297,9 +1291,7 @@ mod tests {
 
     #[test]
     fn auto_stash_restore_conflict_keeps_original_until_cancel_recovers() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.init_with_commit();
         repo.write("tracked.txt", "stash side\n");
@@ -1369,9 +1361,7 @@ mod tests {
 
     #[test]
     fn restores_stash_with_recovery_and_drops_auto_on_success() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.init_with_commit();
         repo.write("tracked.txt", "from stash\n");
@@ -1418,9 +1408,7 @@ mod tests {
 
     #[test]
     fn cancel_restore_recovers_pre_apply_changes_and_keeps_original_stash() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.init_with_commit();
         repo.write("tracked.txt", "stash side\n");
@@ -1465,17 +1453,13 @@ mod tests {
             .any(|stash| stash.message.contains("conflicting stash")));
     }
 
-    fn real_runner_or_skip() -> Option<(GitRunner, TestTempDir)> {
-        let dist = match require_git_dist() {
-            Ok(dist) => dist,
-            Err(GitDistError::MissingEnvironment) => return None,
-            Err(error) => panic!("invalid embedded git distribution: {error}"),
-        };
+    fn real_runner() -> (GitRunner, TestTempDir) {
+        let dist = require_git_dist().expect("load embedded git distribution");
         let distribution = GitDistribution::from_manifest(dist.root, dist.manifest)
             .expect("load embedded git distribution");
         let temp = TestTempDir::new("ag-stash-runner-home").expect("temp home");
         let runner = GitRunner::from_distribution(distribution, temp.path().join("home"));
-        Some((runner, temp))
+        (runner, temp)
     }
 
     struct TestRepo {

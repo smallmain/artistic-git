@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -12,16 +12,15 @@ const scriptPath = path.join(import.meta.dirname, "e2e-real-git-report.mjs");
 
 function cleanEnv(overrides = {}) {
   const env = { ...process.env };
-  delete env.ARTISTIC_GIT_DIST_DIR;
-  delete env.ARTISTIC_GIT_E2E_REAL_GIT;
   delete env.ARTISTIC_GIT_E2E_REPORT;
-  delete env.ARTISTIC_GIT_PHASE12_GIT_DIST_ARTIFACT_NAME;
-  delete env.ARTISTIC_GIT_PHASE12_GIT_DIST_DOWNLOAD_DIR;
-  delete env.ARTISTIC_GIT_PHASE12_GIT_DIST_RUN_ID;
-  delete env.ARTISTIC_GIT_PHASE12_GIT_DIST_RUN_URL;
-  delete env.ARTISTIC_GIT_PHASE12_GIT_DIST_SOURCE;
-  delete env.ARTISTIC_GIT_PHASE12_GIT_DIST_TARGET;
   return { ...env, ...overrides };
+}
+
+async function copyScriptToSandbox(root) {
+  const sandboxScript = path.join(root, "scripts", path.basename(scriptPath));
+  await mkdir(path.dirname(sandboxScript), { recursive: true });
+  await cp(scriptPath, sandboxScript);
+  return sandboxScript;
 }
 
 async function readJson(filePath) {
@@ -32,50 +31,46 @@ function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
 }
 
-test("writes skipped schema v2 report with artifact provenance when git-dist is missing", async () => {
+test("fails with schema v2 evidence when the embedded distribution is missing", async () => {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-e2e-real-git-"));
   const reportPath = path.join(tmpDir, "e2e-real-git-report.json");
 
   try {
-    const result = spawnSync(process.execPath, [scriptPath], {
+    const sandboxScript = await copyScriptToSandbox(tmpDir);
+    const result = spawnSync(process.execPath, [sandboxScript], {
       encoding: "utf8",
       env: cleanEnv({
         ARTISTIC_GIT_E2E_REPORT: reportPath,
-        ARTISTIC_GIT_PHASE12_GIT_DIST_ARTIFACT_NAME:
-          "artistic-git-dist-linux-x86_64",
-        ARTISTIC_GIT_PHASE12_GIT_DIST_RUN_ID: "12345",
-        ARTISTIC_GIT_PHASE12_GIT_DIST_SOURCE: "artifact-missing",
-        ARTISTIC_GIT_PHASE12_GIT_DIST_TARGET: "linux-x86_64",
       }),
     });
 
-    assert.equal(result.status, 0, result.stderr);
+    assert.notEqual(result.status, 0);
     const report = await readJson(reportPath);
     assert.equal(report.schemaVersion, 2);
-    assert.equal(report.status, "skipped");
-    assert.equal(report.gitDistSource.source, "artifact-missing");
-    assert.equal(
-      report.gitDistSource.artifactName,
-      "artistic-git-dist-linux-x86_64",
-    );
+    assert.equal(report.status, "failed");
+    assert.equal(report.gitDistSource.source, "workspace-resource");
+    assert.match(report.reason, /resource directory does not exist/);
     assert.match(
       await readFile(path.join(tmpDir, "e2e-real-git-report.md"), "utf8"),
-      /Status: skipped/,
+      /Status: failed/,
     );
   } finally {
     await rm(tmpDir, { force: true, recursive: true });
   }
 });
 
-test("explicit real-git request turns missing git-dist into failed evidence", async () => {
+test("fails when the fixed embedded distribution manifest is malformed", async () => {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-e2e-real-git-"));
   const reportPath = path.join(tmpDir, "e2e-real-git-report.json");
 
   try {
-    const result = spawnSync(process.execPath, [scriptPath], {
+    const sandboxScript = await copyScriptToSandbox(tmpDir);
+    const distDir = path.join(tmpDir, "src-tauri", "resources", "git-dist");
+    await mkdir(distDir, { recursive: true });
+    await writeFile(path.join(distDir, "manifest.json"), "not json\n");
+    const result = spawnSync(process.execPath, [sandboxScript], {
       encoding: "utf8",
       env: cleanEnv({
-        ARTISTIC_GIT_E2E_REAL_GIT: "1",
         ARTISTIC_GIT_E2E_REPORT: reportPath,
       }),
     });
@@ -83,7 +78,7 @@ test("explicit real-git request turns missing git-dist into failed evidence", as
     assert.notEqual(result.status, 0);
     const report = await readJson(reportPath);
     assert.equal(report.status, "failed");
-    assert.match(report.reason, /ARTISTIC_GIT_DIST_DIR is not set/);
+    assert.match(report.reason, /Could not parse git-dist manifest/);
   } finally {
     await rm(tmpDir, { force: true, recursive: true });
   }
@@ -91,12 +86,13 @@ test("explicit real-git request turns missing git-dist into failed evidence", as
 
 test("blocks unverifiable git-dist manifests without git-lfs sha256 evidence", async () => {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-e2e-real-git-"));
-  const distDir = path.join(tmpDir, "git-dist");
+  const distDir = path.join(tmpDir, "src-tauri", "resources", "git-dist");
   const reportPath = path.join(tmpDir, "e2e-real-git-report.json");
   const gitContent = "git fixture\n";
   const gitLfsContent = "git-lfs fixture\n";
 
   try {
+    const sandboxScript = await copyScriptToSandbox(tmpDir);
     await mkdir(path.join(distDir, "git", "bin"), { recursive: true });
     await mkdir(path.join(distDir, "git-lfs"), { recursive: true });
     await writeFile(path.join(distDir, "git", "bin", "git"), gitContent);
@@ -113,7 +109,12 @@ test("blocks unverifiable git-dist manifests without git-lfs sha256 evidence", a
             gitLfsExecutable: "git-lfs/git-lfs",
           },
           platform: "linux-x86_64",
-          schemaVersion: 1,
+          schemaVersion: 2,
+          target: "linux-x86_64",
+          toolchainRevision: "fixture-1",
+          baseFingerprint: "base-fixture",
+          helperFingerprint: "helper-fixture",
+          distributionFingerprint: "distribution-fixture",
           sha256: {
             "git/bin/git": sha256(gitContent),
           },
@@ -123,10 +124,9 @@ test("blocks unverifiable git-dist manifests without git-lfs sha256 evidence", a
       )}\n`,
     );
 
-    const result = spawnSync(process.execPath, [scriptPath], {
+    const result = spawnSync(process.execPath, [sandboxScript], {
       encoding: "utf8",
       env: cleanEnv({
-        ARTISTIC_GIT_DIST_DIR: distDir,
         ARTISTIC_GIT_E2E_REPORT: reportPath,
       }),
     });

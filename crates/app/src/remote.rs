@@ -132,14 +132,12 @@ fn is_missing_origin_error(stderr: &str) -> bool {
 mod tests {
     use super::*;
     use artistic_git_git_runner::{GitDistribution, GitRunner};
-    use artistic_git_test_support::{require_git_dist, GitDistError, TestTempDir};
+    use artistic_git_test_support::{require_git_dist, TestTempDir};
     use std::{ffi::OsString, fs, io::Write, path::PathBuf};
 
     #[test]
     fn loads_no_remote_mode_when_origin_is_missing() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.git(["init", "-b", "main"]);
 
@@ -152,9 +150,7 @@ mod tests {
 
     #[test]
     fn updates_origin_url_and_requires_confirmation_before_removal() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.git(["init", "-b", "main"]);
         repo.git(["remote", "add", "origin", "https://example.test/old.git"]);
@@ -206,17 +202,13 @@ mod tests {
         assert!(repo.git_output(["remote"]).trim().is_empty());
     }
 
-    fn real_runner_or_skip() -> Option<(GitRunner, TestTempDir)> {
-        let dist = match require_git_dist() {
-            Ok(dist) => dist,
-            Err(GitDistError::MissingEnvironment) => return None,
-            Err(error) => panic!("invalid embedded git distribution: {error}"),
-        };
+    fn real_runner() -> (GitRunner, TestTempDir) {
+        let dist = require_git_dist().expect("load embedded git distribution");
         let distribution = GitDistribution::from_manifest(dist.root, dist.manifest)
             .expect("load embedded git distribution");
         let temp = TestTempDir::new("ag-remote-runner-home").expect("temp home");
         let runner = GitRunner::from_distribution(distribution, temp.path().join("home"));
-        Some((runner, temp))
+        (runner, temp)
     }
 
     struct TestRepo {

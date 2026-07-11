@@ -5,7 +5,16 @@ import globals from "globals";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["dist", "node_modules", "target", "src-tauri/target"] },
+  {
+    ignores: [
+      ".cache",
+      "dist",
+      "node_modules",
+      "target",
+      "src-tauri/target",
+      "src-tauri/resources/git-dist",
+    ],
+  },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {

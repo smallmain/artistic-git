@@ -682,7 +682,7 @@ mod tests {
     use artistic_git_contracts::AppErrorCategory;
     use artistic_git_core::config::{ConfigChangeEvent, ConfigPaths};
     use artistic_git_git_runner::GitDistribution;
-    use artistic_git_test_support::{require_git_dist, GitDistError, TestTempDir};
+    use artistic_git_test_support::{require_git_dist, TestTempDir};
     use std::{
         ffi::OsString,
         sync::{Arc, Mutex},
@@ -762,9 +762,7 @@ mod tests {
 
     #[test]
     fn validate_identity_for_write_skips_non_identity_operations() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
 
         let response = validate_identity_for_write(
             &runner,
@@ -816,9 +814,7 @@ mod tests {
 
     #[test]
     fn validate_identity_for_write_reads_real_global_gitconfig_fallback() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let _env_lock = ENV_LOCK.lock().expect("lock env");
         let real_home = TestTempDir::new("ag-settings-real-home").expect("temp home");
         fs::write(
@@ -851,9 +847,7 @@ mod tests {
 
     #[test]
     fn lazy_identity_validator_blocks_missing_identity() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let _env_lock = ENV_LOCK.lock().expect("lock env");
         let real_home = TestTempDir::new("ag-settings-empty-home").expect("temp home");
         let _home = EnvGuard::set("HOME", real_home.path().as_os_str());
@@ -880,9 +874,7 @@ mod tests {
 
     #[test]
     fn save_app_settings_broadcasts_and_applies_identity_to_open_repositories() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let _env_lock = ENV_LOCK.lock().expect("lock env");
         let real_home = TestTempDir::new("ag-settings-save-home").expect("temp home");
         let _home = EnvGuard::set("HOME", real_home.path().as_os_str());
@@ -955,17 +947,13 @@ mod tests {
         ));
     }
 
-    fn real_runner_or_skip() -> Option<(GitRunner, TestTempDir)> {
-        let dist = match require_git_dist() {
-            Ok(dist) => dist,
-            Err(GitDistError::MissingEnvironment) => return None,
-            Err(error) => panic!("invalid embedded git distribution: {error}"),
-        };
+    fn real_runner() -> (GitRunner, TestTempDir) {
+        let dist = require_git_dist().expect("load embedded git distribution");
         let distribution = GitDistribution::from_manifest(dist.root, dist.manifest)
             .expect("load embedded git distribution");
         let temp = TestTempDir::new("ag-settings-runner-home").expect("temp home");
         let runner = GitRunner::from_distribution(distribution, temp.path().join("home"));
-        Some((runner, temp))
+        (runner, temp)
     }
 
     struct EnvGuard {

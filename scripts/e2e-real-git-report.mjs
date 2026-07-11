@@ -24,55 +24,38 @@ const reportPath = nonEmpty(process.env.ARTISTIC_GIT_E2E_REPORT)
 const markdownPath = reportPath.endsWith(".json")
   ? `${reportPath.slice(0, -".json".length)}.md`
   : `${reportPath}.md`;
-const gitDistDir = nonEmpty(process.env.ARTISTIC_GIT_DIST_DIR);
-const realGitRequested = process.env.ARTISTIC_GIT_E2E_REAL_GIT === "1";
+const repositoryRoot = path.resolve(import.meta.dirname, "..");
+const gitDistDir = path.join(
+  repositoryRoot,
+  "src-tauri",
+  "resources",
+  "git-dist",
+);
 
 const report = {
   checkedAt: new Date().toISOString(),
-  command:
-    "ARTISTIC_GIT_E2E_REAL_GIT=1 ARTISTIC_GIT_DIST_DIR=<git-dist> pnpm e2e:tauri:ci",
+  command: "pnpm e2e:tauri:ci",
   gitDistDir,
   gitDistSource: {
-    source:
-      nonEmpty(process.env.ARTISTIC_GIT_PHASE12_GIT_DIST_SOURCE) ??
-      (gitDistDir ? "direct-env" : "none"),
-    artifactName: nonEmpty(
-      process.env.ARTISTIC_GIT_PHASE12_GIT_DIST_ARTIFACT_NAME,
-    ),
-    runId: nonEmpty(process.env.ARTISTIC_GIT_PHASE12_GIT_DIST_RUN_ID),
-    runUrl: nonEmpty(process.env.ARTISTIC_GIT_PHASE12_GIT_DIST_RUN_URL),
-    target: nonEmpty(process.env.ARTISTIC_GIT_PHASE12_GIT_DIST_TARGET),
-    downloadDir: nonEmpty(
-      process.env.ARTISTIC_GIT_PHASE12_GIT_DIST_DOWNLOAD_DIR,
-    ),
+    source: "workspace-resource",
+    target: null,
   },
   platform: process.platform,
-  realGitRequested,
   runnerOs: process.env.RUNNER_OS ?? null,
   schemaVersion: 2,
   gitDist: {
     dir: gitDistDir,
-    manifestPath: gitDistDir ? path.join(gitDistDir, "manifest.json") : null,
+    manifestPath: path.join(gitDistDir, "manifest.json"),
     manifest: null,
     executableEvidence: [],
     versions: null,
   },
 };
 
-if (!gitDistDir) {
-  finish(
-    realGitRequested ? "failed" : "skipped",
-    realGitRequested
-      ? "ARTISTIC_GIT_E2E_REAL_GIT=1 but ARTISTIC_GIT_DIST_DIR is not set. Refusing to search PATH or use system Git."
-      : "ARTISTIC_GIT_DIST_DIR is not set. Real Git full-chain E2E is skipped; system Git fallback is forbidden.",
-    realGitRequested ? 1 : 0,
-  );
-}
-
 if (!existsSync(gitDistDir)) {
   finish(
     "failed",
-    `ARTISTIC_GIT_DIST_DIR does not exist: ${gitDistDir}. Refusing to search PATH or use system Git.`,
+    `Embedded Git resource directory does not exist: ${gitDistDir}.`,
     1,
   );
 }
@@ -81,7 +64,7 @@ const manifestPath = path.join(gitDistDir, "manifest.json");
 if (!existsSync(manifestPath)) {
   finish(
     "failed",
-    `ARTISTIC_GIT_DIST_DIR is missing manifest.json: ${manifestPath}.`,
+    `Embedded Git resource directory is missing manifest.json: ${manifestPath}.`,
     1,
   );
 }
@@ -98,6 +81,11 @@ try {
 }
 
 report.gitDist.manifest = summarizeManifest(manifest);
+report.gitDistSource.target = manifest.target ?? manifest.platform ?? null;
+const manifestContractError = validateManifestContract(manifest);
+if (manifestContractError) {
+  finish("failed", manifestContractError, 1);
+}
 
 if (!manifest?.paths || typeof manifest.paths !== "object") {
   finish("failed", "manifest.paths must be an object.", 1);
@@ -208,7 +196,7 @@ function executableEvidence({
   if (!isInside(distRootReal, realPath)) {
     finish(
       "failed",
-      `${key} resolves outside ARTISTIC_GIT_DIST_DIR (${realPath}). Refusing to search PATH or use system Git.`,
+      `${key} resolves outside the embedded Git resource directory (${realPath}).`,
       1,
     );
   }
@@ -271,6 +259,11 @@ function runTool(command, args, label, env) {
 function summarizeManifest(manifest) {
   return {
     schemaVersion: manifest.schemaVersion ?? null,
+    target: manifest.target ?? null,
+    toolchainRevision: manifest.toolchainRevision ?? null,
+    baseFingerprint: manifest.baseFingerprint ?? null,
+    helperFingerprint: manifest.helperFingerprint ?? null,
+    distributionFingerprint: manifest.distributionFingerprint ?? null,
     platform: manifest.platform ?? null,
     gitVersion: manifest.gitVersion ?? null,
     gitLfsVersion: manifest.gitLfsVersion ?? null,
@@ -282,6 +275,24 @@ function summarizeManifest(manifest) {
         ? Object.keys(manifest.sha256).length
         : 0,
   };
+}
+
+function validateManifestContract(manifest) {
+  if (manifest?.schemaVersion !== 2) {
+    return `manifest.schemaVersion must be 2, got ${manifest?.schemaVersion ?? "missing"}.`;
+  }
+  for (const field of [
+    "target",
+    "toolchainRevision",
+    "baseFingerprint",
+    "helperFingerprint",
+    "distributionFingerprint",
+  ]) {
+    if (typeof manifest[field] !== "string" || manifest[field].trim() === "") {
+      return `manifest.${field} must be a non-empty string.`;
+    }
+  }
+  return null;
 }
 
 function finish(status, reason, exitCode, extra = {}) {

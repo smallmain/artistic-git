@@ -1025,14 +1025,12 @@ enum BranchTarget {
 mod tests {
     use super::*;
     use artistic_git_git_runner::{GitDistribution, GitRunner};
-    use artistic_git_test_support::{require_git_dist, GitDistError, TestTempDir};
+    use artistic_git_test_support::{require_git_dist, TestTempDir};
     use std::{ffi::OsString, io::Write};
 
     #[test]
     fn validates_git_branch_name_and_rejects_duplicates() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.init_with_commit();
         repo.git(["branch", "feature/existing"]);
@@ -1061,9 +1059,7 @@ mod tests {
 
     #[test]
     fn checkout_remote_only_branch_creates_local_branch() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let fixture = RemoteFixture::new(&runner);
         fixture.local.git(["checkout", "main"]);
 
@@ -1093,9 +1089,7 @@ mod tests {
 
     #[test]
     fn checkout_with_auto_stash_restores_local_changes() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.init_with_commit();
         repo.git(["branch", "feature/work"]);
@@ -1125,9 +1119,7 @@ mod tests {
 
     #[test]
     fn checkout_with_auto_stash_conflict_enters_resolution_and_keeps_stash() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.init_with_commit();
         repo.git(["checkout", "-b", "feature/conflict"]);
@@ -1170,9 +1162,7 @@ mod tests {
 
     #[test]
     fn checkout_with_discard_backs_up_and_removes_local_changes() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         let trash = TestTempDir::new("ag-branch-trash").expect("trash");
         std::env::set_var("ARTISTIC_GIT_TRASH_DIR", trash.path());
@@ -1217,9 +1207,7 @@ mod tests {
 
     #[test]
     fn delete_branch_protects_current_and_unmerged_branches() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.init_with_commit();
         repo.git(["checkout", "-b", "feature/unmerged"]);
@@ -1257,9 +1245,7 @@ mod tests {
 
     #[test]
     fn delete_remote_only_branch_requires_force_confirmation() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let fixture = RemoteFixture::new(&runner);
 
         let error = delete_branch(
@@ -1297,9 +1283,7 @@ mod tests {
 
     #[test]
     fn safety_backups_list_parse_and_delete_local_backup_branches() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.init_with_commit();
         repo.git(["checkout", "-b", "feature/paint"]);
@@ -1373,9 +1357,7 @@ mod tests {
 
     #[test]
     fn create_branch_can_publish_remote_branch() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let fixture = RemoteFixture::new(&runner);
 
         create_branch(
@@ -1411,9 +1393,7 @@ mod tests {
 
     #[test]
     fn delete_branch_can_delete_remote_branch() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let fixture = RemoteFixture::new(&runner);
         fixture.local.git(["branch", "feature/delete-me"]);
         fixture
@@ -1444,9 +1424,7 @@ mod tests {
 
     #[test]
     fn branch_write_operations_reject_unborn_head() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.git(["init", "-b", "main"]);
 
@@ -1490,17 +1468,13 @@ mod tests {
         assert_eq!(delete.summary, "当前仓库还没有提交，分支操作暂不可用。");
     }
 
-    fn real_runner_or_skip() -> Option<(GitRunner, TestTempDir)> {
-        let dist = match require_git_dist() {
-            Ok(dist) => dist,
-            Err(GitDistError::MissingEnvironment) => return None,
-            Err(error) => panic!("invalid embedded git distribution: {error}"),
-        };
+    fn real_runner() -> (GitRunner, TestTempDir) {
+        let dist = require_git_dist().expect("load embedded git distribution");
         let distribution = GitDistribution::from_manifest(dist.root, dist.manifest)
             .expect("load embedded git distribution");
         let temp = TestTempDir::new("ag-branch-runner-home").expect("temp home");
         let runner = GitRunner::from_distribution(distribution, temp.path().join("home"));
-        Some((runner, temp))
+        (runner, temp)
     }
 
     struct RemoteFixture {

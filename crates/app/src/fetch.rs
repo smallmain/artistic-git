@@ -311,7 +311,7 @@ mod tests {
     use artistic_git_git_runner::{GitDistribution, GitRunner};
     use artistic_git_test_support::{
         git_dist_manifest_fixture, require_git_dist, write_executable_file,
-        write_git_dist_manifest, GitDistError, TestTempDir,
+        write_git_dist_manifest, TestTempDir,
     };
     use std::{
         ffi::OsString,
@@ -430,9 +430,7 @@ mod tests {
 
     #[test]
     fn fetch_without_origin_enters_no_remote_mode() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.git(["init", "-b", "main"]);
 
@@ -456,9 +454,7 @@ mod tests {
 
     #[test]
     fn fetch_prunes_deleted_remote_branches() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let remote = TestRepo::new(&runner);
         remote.git(["init", "--bare", "-b", "main"]);
         let seed = TestRepo::new(&runner);
@@ -544,17 +540,13 @@ mod tests {
         (runner, temp)
     }
 
-    fn real_runner_or_skip() -> Option<(GitRunner, TestTempDir)> {
-        let dist = match require_git_dist() {
-            Ok(dist) => dist,
-            Err(GitDistError::MissingEnvironment) => return None,
-            Err(error) => panic!("invalid embedded git distribution: {error}"),
-        };
+    fn real_runner() -> (GitRunner, TestTempDir) {
+        let dist = require_git_dist().expect("load embedded git distribution");
         let distribution = GitDistribution::from_manifest(dist.root, dist.manifest)
             .expect("load embedded git distribution");
         let temp = TestTempDir::new("ag-fetch-runner-home").expect("temp home");
         let runner = GitRunner::from_distribution(distribution, temp.path().join("home"));
-        Some((runner, temp))
+        (runner, temp)
     }
 
     fn git<I, S>(runner: &GitRunner, root: Option<&Path>, args: I) -> String

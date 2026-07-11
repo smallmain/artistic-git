@@ -197,14 +197,12 @@ mod tests {
     use super::*;
     use crate::git_ops::git_stdout;
     use artistic_git_git_runner::{GitDistribution, GitRunner};
-    use artistic_git_test_support::{require_git_dist, GitDistError, TestTempDir};
+    use artistic_git_test_support::{require_git_dist, TestTempDir};
     use std::{ffi::OsString, io::Write, path::PathBuf};
 
     #[test]
     fn restore_moves_worktree_version_to_trash_before_discarding() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         let trash = TestTempDir::new("ag-restore-trash").expect("trash");
         std::env::set_var("ARTISTIC_GIT_TRASH_DIR", trash.path());
@@ -235,9 +233,7 @@ mod tests {
 
     #[test]
     fn restore_untracked_file_removes_it_without_stash() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         let trash = TestTempDir::new("ag-restore-trash").expect("trash");
         std::env::set_var("ARTISTIC_GIT_TRASH_DIR", trash.path());
@@ -259,17 +255,13 @@ mod tests {
         std::env::remove_var("ARTISTIC_GIT_TRASH_DIR");
     }
 
-    fn real_runner_or_skip() -> Option<(GitRunner, TestTempDir)> {
-        let dist = match require_git_dist() {
-            Ok(dist) => dist,
-            Err(GitDistError::MissingEnvironment) => return None,
-            Err(error) => panic!("invalid embedded git distribution: {error}"),
-        };
+    fn real_runner() -> (GitRunner, TestTempDir) {
+        let dist = require_git_dist().expect("load embedded git distribution");
         let distribution = GitDistribution::from_manifest(dist.root, dist.manifest)
             .expect("load embedded git distribution");
         let temp = TestTempDir::new("ag-restore-runner-home").expect("temp home");
         let runner = GitRunner::from_distribution(distribution, temp.path().join("home"));
-        Some((runner, temp))
+        (runner, temp)
     }
 
     struct TestRepo {

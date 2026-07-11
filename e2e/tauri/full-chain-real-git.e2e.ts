@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { browser } from "@wdio/globals";
 
@@ -24,15 +25,24 @@ type GitDistManifest = {
   };
 };
 
-const runRealGitE2e = process.env.ARTISTIC_GIT_E2E_REAL_GIT === "1";
-const describeRealGit = runRealGitE2e ? describe : describe.skip;
+const repositoryRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "..",
+);
+const gitDistDir = path.join(
+  repositoryRoot,
+  "src-tauri",
+  "resources",
+  "git-dist",
+);
 const progressEvents: FullChainProgressEvent[] = [];
 const gitCommandTimeoutMs = readPositiveIntegerEnv(
   "ARTISTIC_GIT_E2E_GIT_TIMEOUT_MS",
   120_000,
 );
 
-describeRealGit("Artistic Git Tauri real-git full chain", () => {
+describe("Artistic Git Tauri real-git full chain", () => {
   let fixture: RealGitFixture;
 
   before(() => {
@@ -243,15 +253,10 @@ class RealGitFixture {
   ) {}
 
   static create() {
-    const gitDist = process.env.ARTISTIC_GIT_DIST_DIR;
-    if (!gitDist) {
-      throw new Error("ARTISTIC_GIT_DIST_DIR is required for real-git E2E.");
-    }
-
     const manifest = JSON.parse(
-      readFileSync(path.join(gitDist, "manifest.json"), "utf8"),
+      readFileSync(path.join(gitDistDir, "manifest.json"), "utf8"),
     ) as GitDistManifest;
-    const gitPath = path.join(gitDist, manifest.paths.gitExecutable);
+    const gitPath = path.join(gitDistDir, manifest.paths.gitExecutable);
     if (!existsSync(gitPath)) {
       throw new Error(`embedded git executable was not found at ${gitPath}`);
     }
@@ -259,7 +264,7 @@ class RealGitFixture {
     const parentPath = mkdtempSync(path.join(tmpdir(), "ag-wdio-full-chain-"));
     const remotePath = path.join(parentPath, "remote.git");
     const env = createEmbeddedGitEnv({
-      gitDist,
+      gitDist: gitDistDir,
       gitPath,
       home: path.join(parentPath, "home"),
       manifest,

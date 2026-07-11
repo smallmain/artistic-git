@@ -494,12 +494,18 @@ export type GitCommandError = {
 
 export type GitDistManifest = {
   schemaVersion: number;
+  target: string;
   platform: string;
+  toolchainRevision: string;
+  baseFingerprint: string;
+  helperFingerprint: string;
+  distributionFingerprint: string;
   gitVersion: string;
   gitLfsVersion: string;
   windowsOpenSshVersion: string | null;
   helperVersion: string;
   paths: GitDistPaths;
+  executablePaths: string[];
   sha256: { [key in string]: string };
 };
 

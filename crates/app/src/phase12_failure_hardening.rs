@@ -9,7 +9,7 @@ use artistic_git_contracts::{
 };
 use artistic_git_core::config::{AutoTrackingRule, ConfigActor, ConfigPaths};
 use artistic_git_git_runner::{GitDistribution, GitRunner};
-use artistic_git_test_support::{require_git_dist, GitDistError, TestTempDir};
+use artistic_git_test_support::{require_git_dist, TestTempDir};
 use std::{
     env,
     ffi::OsString,
@@ -20,9 +20,7 @@ use std::{
 
 #[test]
 fn phase12_sync_local_phase_failure_restores_pre_operation_snapshot() {
-    let Some((runner, _home)) = real_runner_or_skip() else {
-        return;
-    };
+    let (runner, _home) = real_runner();
     let fixture = RemoteFixture::new(&runner, "ag-phase12-sync-failure");
     let before = RepoSnapshot::capture(&fixture.local);
     let gitlink_oid = fixture.peer.git_output(["rev-parse", "HEAD"]);
@@ -58,9 +56,7 @@ fn phase12_sync_local_phase_failure_restores_pre_operation_snapshot() {
 
 #[test]
 fn phase12_sync_fetch_network_failure_keeps_pre_operation_snapshot() {
-    let Some((runner, _home)) = real_runner_or_skip() else {
-        return;
-    };
+    let (runner, _home) = real_runner();
     let fixture = RemoteFixture::new(&runner, "ag-phase12-sync-fetch-failure");
     fixture.local.git([
         "remote",
@@ -85,9 +81,7 @@ fn phase12_sync_fetch_network_failure_keeps_pre_operation_snapshot() {
 
 #[test]
 fn phase12_sync_rebase_conflict_cancel_restores_pre_operation_snapshot() {
-    let Some((runner, _home)) = real_runner_or_skip() else {
-        return;
-    };
+    let (runner, _home) = real_runner();
     let fixture = RemoteFixture::new(&runner, "ag-phase12-sync-rebase-conflict");
     fixture.local.write("tracked.txt", "local committed\n");
     fixture.local.git(["add", "tracked.txt"]);
@@ -130,9 +124,7 @@ fn phase12_sync_rebase_conflict_cancel_restores_pre_operation_snapshot() {
 
 #[test]
 fn phase12_sync_push_race_retry_exhausted_keeps_local_commit_forward_safe() {
-    let Some((runner, _home)) = real_runner_or_skip() else {
-        return;
-    };
+    let (runner, _home) = real_runner();
     let fixture = RemoteFixture::new(&runner, "ag-phase12-sync-push-race-exhausted");
     fixture
         .local
@@ -188,9 +180,7 @@ fn phase12_sync_push_race_retry_exhausted_keeps_local_commit_forward_safe() {
 
 #[test]
 fn phase12_commit_gpg_failure_restores_index_and_head() {
-    let Some((runner, _home)) = real_runner_or_skip() else {
-        return;
-    };
+    let (runner, _home) = real_runner();
     let repo = TestRepo::new(&runner, "ag-phase12-commit-failure");
     repo.init_with_commit();
     repo.git(["config", "commit.gpgsign", "true"]);
@@ -224,9 +214,7 @@ fn phase12_commit_gpg_failure_restores_index_and_head() {
 
 #[test]
 fn phase12_commit_pre_sync_failure_restores_selected_and_unselected_changes() {
-    let Some((runner, _home)) = real_runner_or_skip() else {
-        return;
-    };
+    let (runner, _home) = real_runner();
     let fixture = RemoteFixture::new(&runner, "ag-phase12-commit-pre-sync-failure");
     fixture.local.write("selected.txt", "selected draft\n");
     fixture.local.write("unselected.txt", "unselected draft\n");
@@ -261,9 +249,7 @@ fn phase12_commit_pre_sync_failure_restores_selected_and_unselected_changes() {
 
 #[test]
 fn phase12_commit_push_failure_keeps_local_commit_forward_safe() {
-    let Some((runner, _home)) = real_runner_or_skip() else {
-        return;
-    };
+    let (runner, _home) = real_runner();
     let fixture = RemoteFixture::new(&runner, "ag-phase12-commit-push-failure");
     fixture.local.write("selected.txt", "selected commit\n");
     fixture
@@ -311,9 +297,7 @@ fn phase12_commit_push_failure_keeps_local_commit_forward_safe() {
 
 #[test]
 fn phase12_revert_conflict_abort_restores_pre_operation_snapshot() {
-    let Some((runner, _home)) = real_runner_or_skip() else {
-        return;
-    };
+    let (runner, _home) = real_runner();
     let repo = TestRepo::new(&runner, "ag-phase12-revert-failure");
     repo.init_with_commit();
     repo.write("tracked.txt", "target\n");
@@ -353,9 +337,7 @@ fn phase12_revert_conflict_abort_restores_pre_operation_snapshot() {
 
 #[test]
 fn phase12_revert_push_failure_keeps_revert_commit_forward_safe() {
-    let Some((runner, _home)) = real_runner_or_skip() else {
-        return;
-    };
+    let (runner, _home) = real_runner();
     let fixture = RemoteFixture::new(&runner, "ag-phase12-revert-push-failure");
     fixture.local.write("target.txt", "target\n");
     fixture.local.git(["add", "target.txt"]);
@@ -404,9 +386,7 @@ fn phase12_revert_push_failure_keeps_revert_commit_forward_safe() {
 
 #[test]
 fn phase12_revert_pre_sync_failure_restores_pre_operation_snapshot() {
-    let Some((runner, _home)) = real_runner_or_skip() else {
-        return;
-    };
+    let (runner, _home) = real_runner();
     let fixture = RemoteFixture::new(&runner, "ag-phase12-revert-pre-sync-failure");
     fixture.local.write("target.txt", "target\n");
     fixture.local.git(["add", "target.txt"]);
@@ -444,9 +424,7 @@ fn phase12_revert_pre_sync_failure_restores_pre_operation_snapshot() {
 
 #[test]
 fn phase12_sync_non_current_publish_failure_keeps_repository_reusable() {
-    let Some((runner, _home)) = real_runner_or_skip() else {
-        return;
-    };
+    let (runner, _home) = real_runner();
     let fixture = RemoteFixture::new(&runner, "ag-phase12-sync-branch-publish-failure");
     fixture.local.git(["checkout", "-b", "local-only"]);
     fixture.local.write("branch.txt", "branch\n");
@@ -477,9 +455,7 @@ fn phase12_sync_non_current_publish_failure_keeps_repository_reusable() {
 
 #[test]
 fn phase12_sync_non_current_worktree_rebase_conflict_cancel_restores_snapshot() {
-    let Some((runner, _home)) = real_runner_or_skip() else {
-        return;
-    };
+    let (runner, _home) = real_runner();
     let fixture = RemoteFixture::new(&runner, "ag-phase12-sync-branch-conflict");
     fixture.create_tracking_branch("feature/cancel-conflict");
     fixture.local.git(["checkout", "feature/cancel-conflict"]);
@@ -535,9 +511,7 @@ fn phase12_sync_non_current_worktree_rebase_conflict_cancel_restores_snapshot() 
 
 #[test]
 fn phase12_sync_non_current_worktree_cleanup_failure_keeps_main_worktree_reusable() {
-    let Some((runner, home)) = real_runner_or_skip() else {
-        return;
-    };
+    let (runner, home) = real_runner();
     let fixture = RemoteFixture::new(&runner, "ag-phase12-sync-branch-cleanup-failure");
     fixture.create_tracking_branch("feature/cleanup-failure");
     fixture.local.git(["checkout", "feature/cleanup-failure"]);
@@ -599,9 +573,7 @@ fn phase12_sync_non_current_worktree_cleanup_failure_keeps_main_worktree_reusabl
 
 #[test]
 fn phase12_auto_tracking_divergence_restores_local_changes() {
-    let Some((runner, _home)) = real_runner_or_skip() else {
-        return;
-    };
+    let (runner, _home) = real_runner();
     let fixture = RemoteFixture::new(&runner, "ag-phase12-auto-tracking-failure");
     fixture.local.git(["checkout", "-b", "feature"]);
     fixture.local.write("feature.txt", "feature\n");
@@ -644,9 +616,7 @@ fn phase12_auto_tracking_divergence_restores_local_changes() {
 
 #[test]
 fn phase12_auto_tracking_source_fetch_failure_keeps_pre_operation_snapshot() {
-    let Some((runner, _home)) = real_runner_or_skip() else {
-        return;
-    };
+    let (runner, _home) = real_runner();
     let fixture = RemoteFixture::new(&runner, "ag-phase12-auto-source-fetch-failure");
     fixture.create_tracking_branch("stable");
     fixture.create_tracking_branch("release");
@@ -686,9 +656,7 @@ fn phase12_auto_tracking_source_fetch_failure_keeps_pre_operation_snapshot() {
 
 #[test]
 fn phase12_auto_tracking_target_fetch_failure_keeps_pre_operation_snapshot() {
-    let Some((runner, _home)) = real_runner_or_skip() else {
-        return;
-    };
+    let (runner, _home) = real_runner();
     let fixture = RemoteFixture::new(&runner, "ag-phase12-auto-target-fetch-failure");
     fixture.create_tracking_branch("stable");
     fixture.create_tracking_branch("release");
@@ -725,9 +693,7 @@ fn phase12_auto_tracking_target_fetch_failure_keeps_pre_operation_snapshot() {
 
 #[test]
 fn phase12_auto_tracking_post_merge_push_failure_keeps_forward_safe_source() {
-    let Some((runner, _home)) = real_runner_or_skip() else {
-        return;
-    };
+    let (runner, _home) = real_runner();
     let fixture = RemoteFixture::new(&runner, "ag-phase12-auto-post-merge-push-failure");
     fixture.local.git(["checkout", "-b", "stable"]);
     fixture.local.git(["push", "-u", "origin", "stable"]);
@@ -791,9 +757,7 @@ fn phase12_auto_tracking_post_merge_push_failure_keeps_forward_safe_source() {
 
 #[test]
 fn phase12_checkout_auto_stash_conflict_cancel_restores_snapshot() {
-    let Some((runner, _home)) = real_runner_or_skip() else {
-        return;
-    };
+    let (runner, _home) = real_runner();
     let repo = TestRepo::new(&runner, "ag-phase12-checkout-failure");
     repo.init_with_commit();
     repo.git(["checkout", "-b", "other"]);
@@ -837,9 +801,7 @@ fn phase12_checkout_auto_stash_conflict_cancel_restores_snapshot() {
 
 #[test]
 fn phase12_checkout_stash_create_failure_keeps_pre_operation_snapshot() {
-    let Some((runner, home)) = real_runner_or_skip() else {
-        return;
-    };
+    let (runner, home) = real_runner();
     let repo = TestRepo::new(&runner, "ag-phase12-checkout-stash-create-failure");
     repo.init_with_commit();
     repo.git(["branch", "feature/stash-failure"]);
@@ -887,9 +849,7 @@ fn phase12_checkout_stash_create_failure_keeps_pre_operation_snapshot() {
 
 #[test]
 fn phase12_checkout_discard_trash_backup_failure_keeps_pre_operation_snapshot() {
-    let Some((runner, _home)) = real_runner_or_skip() else {
-        return;
-    };
+    let (runner, _home) = real_runner();
     let repo = TestRepo::new(&runner, "ag-phase12-checkout-trash-backup-failure");
     let trash_parent = TestTempDir::new("ag-phase12-trash-file").expect("trash temp");
     let trash_file = trash_parent.path().join("trash-as-file");
@@ -936,9 +896,7 @@ fn phase12_checkout_discard_trash_backup_failure_keeps_pre_operation_snapshot() 
 
 #[test]
 fn phase12_review_exit_stash_conflict_cancel_keeps_review_recovery() {
-    let Some((runner, _home)) = real_runner_or_skip() else {
-        return;
-    };
+    let (runner, _home) = real_runner();
     let fixture = RemoteFixture::new(&runner, "ag-phase12-review-failure");
     let config = phase12_config(&fixture._parent);
     fixture.local.write("tracked.txt", "local review draft\n");
@@ -1001,9 +959,7 @@ fn phase12_review_exit_stash_conflict_cancel_keeps_review_recovery() {
 
 #[test]
 fn phase12_review_start_stash_create_failure_keeps_pre_operation_snapshot() {
-    let Some((runner, home)) = real_runner_or_skip() else {
-        return;
-    };
+    let (runner, home) = real_runner();
     let repo = TestRepo::new(&runner, "ag-phase12-review-start-stash-failure");
     repo.init_with_commit();
     repo.write("tracked.txt", "review draft before failed stash\n");
@@ -1053,9 +1009,7 @@ fn phase12_review_start_stash_create_failure_keeps_pre_operation_snapshot() {
 
 #[test]
 fn phase12_review_pull_offline_degrades_with_recovery_stash() {
-    let Some((runner, _home)) = real_runner_or_skip() else {
-        return;
-    };
+    let (runner, _home) = real_runner();
     let fixture = RemoteFixture::new(&runner, "ag-phase12-review-offline");
     let config = phase12_config(&fixture._parent);
     fixture
@@ -1104,9 +1058,7 @@ fn phase12_review_pull_offline_degrades_with_recovery_stash() {
 
 #[test]
 fn phase12_review_sync_ff_failure_keeps_review_recovery_and_clean_worktree() {
-    let Some((runner, _home)) = real_runner_or_skip() else {
-        return;
-    };
+    let (runner, _home) = real_runner();
     let fixture = RemoteFixture::new(&runner, "ag-phase12-review-sync-ff-failure");
     let config = phase12_config(&fixture._parent);
     fixture
@@ -1170,9 +1122,7 @@ fn phase12_review_sync_ff_failure_keeps_review_recovery_and_clean_worktree() {
 
 #[test]
 fn phase12_submodule_commit_publish_guard_failure_preserves_super_and_submodule() {
-    let Some((runner, _home)) = real_runner_or_skip() else {
-        return;
-    };
+    let (runner, _home) = real_runner();
     let fixture = RemoteFixture::new(&runner, "ag-phase12-submodule-commit-failure");
     let submodule = add_local_submodule(&runner, &fixture, "module");
     submodule.git(["remote", "remove", "origin"]);
@@ -1203,9 +1153,7 @@ fn phase12_submodule_commit_publish_guard_failure_preserves_super_and_submodule(
 
 #[test]
 fn phase12_submodule_superproject_pointer_commit_failure_restores_chain() {
-    let Some((runner, _home)) = real_runner_or_skip() else {
-        return;
-    };
+    let (runner, _home) = real_runner();
     let fixture = RemoteFixture::new(&runner, "ag-phase12-submodule-superproject-commit-failure");
     let submodule = add_local_submodule(&runner, &fixture, "module");
     fixture.local.git(["config", "commit.gpgsign", "true"]);
@@ -1242,9 +1190,7 @@ fn phase12_submodule_superproject_pointer_commit_failure_restores_chain() {
 
 #[test]
 fn phase12_submodule_partial_publish_boundary_keeps_forward_safe_pointer_commit() {
-    let Some((runner, _home)) = real_runner_or_skip() else {
-        return;
-    };
+    let (runner, _home) = real_runner();
     let fixture = RemoteFixture::new(&runner, "ag-phase12-submodule-partial-publish");
     let (submodule, submodule_remote) = add_bare_submodule(&runner, &fixture, "module");
     let before_remote_pointer =
@@ -1303,9 +1249,7 @@ fn phase12_submodule_partial_publish_boundary_keeps_forward_safe_pointer_commit(
 
 #[test]
 fn phase12_submodule_nested_commit_failure_restores_super_and_submodule() {
-    let Some((runner, _home)) = real_runner_or_skip() else {
-        return;
-    };
+    let (runner, _home) = real_runner();
     let fixture = RemoteFixture::new(&runner, "ag-phase12-submodule-nested-commit-failure");
     let submodule = add_local_submodule(&runner, &fixture, "module");
     submodule.git(["config", "commit.gpgsign", "true"]);
@@ -1648,9 +1592,7 @@ impl FakeGitFailure {
 
 #[test]
 fn phase12_commit_large_file_lfs_track_failure_keeps_pre_operation_snapshot() {
-    let Some((runner, home)) = real_runner_or_skip() else {
-        return;
-    };
+    let (runner, home) = real_runner();
     let runner = runner_with_failing_git_lfs(
         &runner,
         home.path(),
@@ -2034,22 +1976,15 @@ impl Drop for EnvGuard {
     }
 }
 
-fn real_runner_or_skip() -> Option<(GitRunner, TestTempDir)> {
-    let dist = match require_git_dist() {
-        Ok(dist) => dist,
-        Err(GitDistError::MissingEnvironment) => {
-            eprintln!("skipping phase 12 failure hardening: ARTISTIC_GIT_DIST_DIR is not set");
-            return None;
-        }
-        Err(error) => panic!("invalid embedded git distribution: {error}"),
-    };
+fn real_runner() -> (GitRunner, TestTempDir) {
+    let dist = require_git_dist().expect("load embedded git distribution");
     let distribution =
         GitDistribution::from_manifest(dist.root, dist.manifest).expect("git distribution");
     let temp = TestTempDir::new("ag-phase12-failure-home").expect("runner home");
     let home = temp.path().join("home");
     fs::create_dir_all(&home).expect("create runner home");
     let runner = GitRunner::from_distribution(distribution, home);
-    Some((runner, temp))
+    (runner, temp)
 }
 
 fn phase12_config(parent: &TestTempDir) -> ConfigActor {

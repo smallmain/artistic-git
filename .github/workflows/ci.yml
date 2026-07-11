@@ -16,26 +16,11 @@ on:
           - auto
           - light
           - heavy
-      phase12_perf_require_real_git_dist:
-        description: "Fail the perf gate instead of writing skipped evidence when ARTISTIC_GIT_DIST_DIR is missing."
-        required: false
-        default: false
-        type: boolean
-      phase12_git_dist_run_id:
-        description: "Completed Git Distribution build run id whose artistic-git-dist-* artifacts should be used for Phase 12 evidence."
-        required: false
-        default: ""
-        type: string
       release_rehearsal_run_id:
         description: "Completed Release workflow run id whose release-rehearsal-* artifacts should be included in readiness evidence."
         required: false
         default: ""
         type: string
-      phase12_e2e_require_real_git_dist:
-        description: "Fail the real-git E2E availability report when a real git-dist artifact cannot be staged."
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -51,64 +36,17 @@ jobs:
         include:
           - os: ubuntu-22.04
             gitDistTarget: linux-x86_64
+            rustTargets: x86_64-unknown-linux-gnu
           - os: macos-latest
             gitDistTarget: macos-universal
+            rustTargets: aarch64-apple-darwin,x86_64-apple-darwin
           - os: windows-latest
             gitDistTarget: windows-x86_64
+            rustTargets: x86_64-pc-windows-msvc
 
     steps:
       - name: Checkout
         uses: actions/checkout@v5
-
-      - name: Resolve phase 12 git-dist evidence source
-        id: phase12-git-dist
-        shell: bash
-        env:
-          DISPATCH_GIT_DIST_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.phase12_git_dist_run_id || '' }}
-          DEFAULT_GIT_DIST_RUN_ID: ${{ vars.ARTISTIC_GIT_PHASE12_GIT_DIST_RUN_ID }}
-          FALLBACK_DIST_DIR: ${{ vars.ARTISTIC_GIT_PHASE12_PERF_DIST_DIR }}
-          DIST_DIR: ${{ runner.temp }}/phase12-git-dist/${{ matrix.gitDistTarget }}
-          ARTIFACT_NAME: artistic-git-dist-${{ matrix.gitDistTarget }}
-          GIT_DIST_TARGET: ${{ matrix.gitDistTarget }}
-        run: |
-          set -euo pipefail
-          run_id="${DISPATCH_GIT_DIST_RUN_ID:-${DEFAULT_GIT_DIST_RUN_ID:-}}"
-          echo "run_id=${run_id}" >> "$GITHUB_OUTPUT"
-          echo "artifact_name=${ARTIFACT_NAME}" >> "$GITHUB_OUTPUT"
-          echo "dist_dir=${DIST_DIR}" >> "$GITHUB_OUTPUT"
-          echo "target=${GIT_DIST_TARGET}" >> "$GITHUB_OUTPUT"
-          if [ -n "$run_id" ]; then
-            echo "Phase 12 will try ${ARTIFACT_NAME} from Git Distribution run ${run_id}."
-          elif [ -n "${FALLBACK_DIST_DIR:-}" ]; then
-            echo "Phase 12 will use ARTISTIC_GIT_PHASE12_PERF_DIST_DIR fallback."
-          else
-            echo "No Phase 12 git-dist artifact run id or fallback dist dir configured."
-          fi
-
-      - name: Download phase 12 git-dist artifact
-        if: steps.phase12-git-dist.outputs.run_id != ''
-        id: phase12-git-dist-download
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: ${{ steps.phase12-git-dist.outputs.artifact_name }}
-          path: ${{ steps.phase12-git-dist.outputs.dist_dir }}
-          run-id: ${{ steps.phase12-git-dist.outputs.run_id }}
-          github-token: ${{ github.token }}
-
-      - name: Activate phase 12 git-dist evidence source
-        if: always()
-        shell: bash
-        env:
-          RUN_ID: ${{ steps.phase12-git-dist.outputs.run_id }}
-          ARTIFACT_NAME: ${{ steps.phase12-git-dist.outputs.artifact_name }}
-          DIST_DIR: ${{ steps.phase12-git-dist.outputs.dist_dir }}
-          GIT_DIST_TARGET: ${{ steps.phase12-git-dist.outputs.target }}
-          FALLBACK_DIST_DIR: ${{ vars.ARTISTIC_GIT_PHASE12_PERF_DIST_DIR }}
-          RUN_URL: ${{ steps.phase12-git-dist.outputs.run_id != '' && format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, steps.phase12-git-dist.outputs.run_id) || '' }}
-        run: |
-          set -euo pipefail
-          node scripts/activate-phase12-git-dist.mjs
 
       - name: Install Linux Tauri dependencies
         if: runner.os == 'Linux'
@@ -135,13 +73,33 @@ jobs:
           node-version: 24
           cache: pnpm
 
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Set up fixed Rust toolchain
+        uses: dtolnay/rust-toolchain@1.96.1
         with:
           components: clippy, rustfmt
+          targets: ${{ matrix.rustTargets }}
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Compute embedded toolchain cache key
+        id: toolchain-cache-key
+        run: node scripts/emit-git-toolchain-cache-key.mjs --target=${{ matrix.gitDistTarget }}
+
+      - name: Restore embedded toolchain cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cache/artistic-git/git-toolchain/downloads
+            .cache/artistic-git/git-toolchain/bases
+            .cache/artistic-git/git-toolchain/helpers
+          key: ${{ steps.toolchain-cache-key.outputs.key }}
+
+      - name: Ensure embedded toolchain
+        run: pnpm git-toolchain:ensure -- --target=${{ matrix.gitDistTarget }}
+
+      - name: Verify embedded toolchain
+        run: pnpm git-toolchain:verify -- --target=${{ matrix.gitDistTarget }}
 
       - name: Check generated bindings
         run: pnpm bindings:check
@@ -212,26 +170,17 @@ jobs:
         shell: bash
         env:
           PHASE12_PERF_PROFILE: ${{ github.event_name == 'workflow_dispatch' && inputs.phase12_perf_profile || 'auto' }}
-          PHASE12_PERF_REQUIRE_REAL_GIT_DIST: ${{ github.event_name == 'workflow_dispatch' && inputs.phase12_perf_require_real_git_dist && 'true' || 'false' }}
           ARTISTIC_GIT_PHASE12_PERF_REPORT: ${{ runner.temp }}/phase12-perf/phase12-perf-report.json
         run: |
           set -euo pipefail
           profile_arg=""
-          require_arg=""
           if [ "$PHASE12_PERF_PROFILE" = "heavy" ]; then
             profile_arg="--heavy"
           elif [ "$PHASE12_PERF_PROFILE" = "light" ]; then
             profile_arg="--light"
           fi
-          if [ "$PHASE12_PERF_REQUIRE_REAL_GIT_DIST" = "true" ]; then
-            require_arg="--require-real-git-dist"
-          fi
-          if [ -n "$profile_arg" ] && [ -n "$require_arg" ]; then
-            pnpm -s phase12:perf -- "$profile_arg" "$require_arg"
-          elif [ -n "$profile_arg" ]; then
+          if [ -n "$profile_arg" ]; then
             pnpm -s phase12:perf -- "$profile_arg"
-          elif [ -n "$require_arg" ]; then
-            pnpm -s phase12:perf -- "$require_arg"
           else
             pnpm -s phase12:perf
           fi
@@ -254,62 +203,14 @@ jobs:
         include:
           - os: ubuntu-22.04
             gitDistTarget: linux-x86_64
+            rustTargets: x86_64-unknown-linux-gnu
           - os: windows-latest
             gitDistTarget: windows-x86_64
+            rustTargets: x86_64-pc-windows-msvc
 
     steps:
       - name: Checkout
         uses: actions/checkout@v5
-
-      - name: Resolve phase 12 git-dist evidence source
-        id: phase12-git-dist
-        shell: bash
-        env:
-          DISPATCH_GIT_DIST_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.phase12_git_dist_run_id || '' }}
-          DEFAULT_GIT_DIST_RUN_ID: ${{ vars.ARTISTIC_GIT_PHASE12_GIT_DIST_RUN_ID }}
-          FALLBACK_DIST_DIR: ${{ vars.ARTISTIC_GIT_E2E_DIST_DIR }}
-          DIST_DIR: ${{ runner.temp }}/phase12-git-dist/${{ matrix.gitDistTarget }}
-          ARTIFACT_NAME: artistic-git-dist-${{ matrix.gitDistTarget }}
-          GIT_DIST_TARGET: ${{ matrix.gitDistTarget }}
-        run: |
-          set -euo pipefail
-          run_id="${DISPATCH_GIT_DIST_RUN_ID:-${DEFAULT_GIT_DIST_RUN_ID:-}}"
-          echo "run_id=${run_id}" >> "$GITHUB_OUTPUT"
-          echo "artifact_name=${ARTIFACT_NAME}" >> "$GITHUB_OUTPUT"
-          echo "dist_dir=${DIST_DIR}" >> "$GITHUB_OUTPUT"
-          echo "target=${GIT_DIST_TARGET}" >> "$GITHUB_OUTPUT"
-          if [ -n "$run_id" ]; then
-            echo "Phase 12 E2E will try ${ARTIFACT_NAME} from Git Distribution run ${run_id}."
-          elif [ -n "${FALLBACK_DIST_DIR:-}" ]; then
-            echo "Phase 12 E2E will use ARTISTIC_GIT_E2E_DIST_DIR fallback."
-          else
-            echo "No Phase 12 E2E git-dist artifact run id or fallback dist dir configured."
-          fi
-
-      - name: Download phase 12 git-dist artifact
-        if: steps.phase12-git-dist.outputs.run_id != ''
-        id: phase12-git-dist-download
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: ${{ steps.phase12-git-dist.outputs.artifact_name }}
-          path: ${{ steps.phase12-git-dist.outputs.dist_dir }}
-          run-id: ${{ steps.phase12-git-dist.outputs.run_id }}
-          github-token: ${{ github.token }}
-
-      - name: Activate phase 12 git-dist evidence source
-        if: always()
-        shell: bash
-        env:
-          RUN_ID: ${{ steps.phase12-git-dist.outputs.run_id }}
-          ARTIFACT_NAME: ${{ steps.phase12-git-dist.outputs.artifact_name }}
-          DIST_DIR: ${{ steps.phase12-git-dist.outputs.dist_dir }}
-          GIT_DIST_TARGET: ${{ steps.phase12-git-dist.outputs.target }}
-          FALLBACK_DIST_DIR: ${{ vars.ARTISTIC_GIT_E2E_DIST_DIR }}
-          RUN_URL: ${{ steps.phase12-git-dist.outputs.run_id != '' && format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, steps.phase12-git-dist.outputs.run_id) || '' }}
-        run: |
-          set -euo pipefail
-          node scripts/activate-phase12-git-dist.mjs
 
       - name: Install Linux Tauri and WebDriver dependencies
         if: runner.os == 'Linux'
@@ -341,16 +242,35 @@ jobs:
           node-version: 24
           cache: pnpm
 
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Set up fixed Rust toolchain
+        uses: dtolnay/rust-toolchain@1.96.1
+        with:
+          targets: ${{ matrix.rustTargets }}
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Compute embedded toolchain cache key
+        id: toolchain-cache-key
+        run: node scripts/emit-git-toolchain-cache-key.mjs --target=${{ matrix.gitDistTarget }}
+
+      - name: Restore embedded toolchain cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cache/artistic-git/git-toolchain/downloads
+            .cache/artistic-git/git-toolchain/bases
+            .cache/artistic-git/git-toolchain/helpers
+          key: ${{ steps.toolchain-cache-key.outputs.key }}
+
+      - name: Ensure embedded toolchain
+        run: pnpm git-toolchain:ensure -- --target=${{ matrix.gitDistTarget }}
+
+      - name: Verify embedded toolchain
+        run: pnpm git-toolchain:verify -- --target=${{ matrix.gitDistTarget }}
+
       - name: Report real Git E2E availability
         id: real-git-e2e
-        env:
-          ARTISTIC_GIT_E2E_REAL_GIT: ${{ github.event_name == 'workflow_dispatch' && inputs.phase12_e2e_require_real_git_dist && '1' || '0' }}
         run: pnpm e2e:real-git:report
 
       - name: Install tauri-driver
@@ -374,11 +294,10 @@ jobs:
 
       - name: Run Tauri E2E on Linux
         id: tauri_e2e_linux
-        if: runner.os == 'Linux' && steps.real-git-e2e.outputs.ready == 'true'
+        if: runner.os == 'Linux'
         timeout-minutes: 35
         shell: bash
         env:
-          ARTISTIC_GIT_E2E_REAL_GIT: "1"
           ARTISTIC_GIT_E2E_CONNECTION_RETRY_TIMEOUT_MS: "240000"
           ARTISTIC_GIT_E2E_GIT_TIMEOUT_MS: "120000"
           ARTISTIC_GIT_E2E_LOG_DIR: ${{ runner.temp }}/tauri-e2e-logs/main
@@ -444,9 +363,7 @@ jobs:
 
       - name: Run Tauri E2E on Windows
         id: tauri_e2e_windows
-        if: runner.os == 'Windows' && steps.real-git-e2e.outputs.ready == 'true'
-        env:
-          ARTISTIC_GIT_E2E_REAL_GIT: "1"
+        if: runner.os == 'Windows'
         run: |
           $env:ARTISTIC_GIT_E2E_SPEC_SET = "real"
           pnpm e2e:tauri:ci
@@ -454,11 +371,8 @@ jobs:
       - name: Run phase 9 crash isolation E2E evidence on Linux
         id: phase9_crash_e2e_linux
         if: always() && runner.os == 'Linux'
-        continue-on-error: true
         shell: bash
         env:
-          ARTISTIC_GIT_E2E_REAL_GIT: "0"
-          ARTISTIC_GIT_E2E_SKIP_BUILD: ${{ steps.tauri_e2e_linux.outcome == 'skipped' && '0' || '1' }}
           ARTISTIC_GIT_E2E_SPEC_SET: crash
           ARTISTIC_GIT_E2E_CONNECTION_RETRY_TIMEOUT_MS: "240000"
           ARTISTIC_GIT_E2E_LOG_DIR: ${{ runner.temp }}/tauri-e2e-logs/crash
@@ -511,10 +425,7 @@ jobs:
       - name: Run phase 9 crash isolation E2E evidence on Windows
         id: phase9_crash_e2e_windows
         if: always() && runner.os == 'Windows'
-        continue-on-error: true
         env:
-          ARTISTIC_GIT_E2E_REAL_GIT: "0"
-          ARTISTIC_GIT_E2E_SKIP_BUILD: ${{ steps.tauri_e2e_windows.outcome == 'skipped' && '0' || '1' }}
           ARTISTIC_GIT_E2E_SPEC_SET: crash
           ARTISTIC_GIT_PHASE9_CRASH_ISOLATION_E2E_REPORT: ${{ runner.temp }}/phase9-crash-isolation-e2e/phase9-crash-isolation-e2e-${{ runner.os }}.json
         run: pnpm e2e:tauri:ci
@@ -579,63 +490,15 @@ jobs:
 
       - name: Download phase 12 perf reports
         uses: actions/download-artifact@v4
-        continue-on-error: true
         with:
           pattern: phase12-perf-*
           path: ${{ runner.temp }}/phase12-evidence-input
 
       - name: Download phase 12 E2E reports
         uses: actions/download-artifact@v4
-        continue-on-error: true
         with:
           pattern: e2e-real-git-report-*
           path: ${{ runner.temp }}/phase12-evidence-input
-
-      - name: Resolve phase 12 git-dist evidence artifacts
-        id: phase12-git-dist-evidence
-        shell: bash
-        env:
-          DISPATCH_GIT_DIST_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.phase12_git_dist_run_id || '' }}
-          DEFAULT_GIT_DIST_RUN_ID: ${{ vars.ARTISTIC_GIT_PHASE12_GIT_DIST_RUN_ID }}
-        run: |
-          set -euo pipefail
-          run_id="${DISPATCH_GIT_DIST_RUN_ID:-${DEFAULT_GIT_DIST_RUN_ID:-}}"
-          echo "run_id=${run_id}" >> "$GITHUB_OUTPUT"
-          if [ -n "$run_id" ]; then
-            echo "Phase 12 summary will include Git Distribution evidence from run ${run_id}."
-          else
-            echo "No Git Distribution run id configured for Phase 12 summary evidence."
-          fi
-
-      - name: Download git-dist build evidence
-        if: steps.phase12-git-dist-evidence.outputs.run_id != ''
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          pattern: git-dist-build-evidence-*
-          path: ${{ runner.temp }}/phase12-evidence-input
-          run-id: ${{ steps.phase12-git-dist-evidence.outputs.run_id }}
-          github-token: ${{ github.token }}
-
-      - name: Download git-dist source evidence
-        if: steps.phase12-git-dist-evidence.outputs.run_id != ''
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          pattern: git-dist-source-evidence-*
-          path: ${{ runner.temp }}/phase12-evidence-input
-          run-id: ${{ steps.phase12-git-dist-evidence.outputs.run_id }}
-          github-token: ${{ github.token }}
-
-      - name: Download git-dist blocker evidence
-        if: steps.phase12-git-dist-evidence.outputs.run_id != ''
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          pattern: git-dist-blocker-*
-          path: ${{ runner.temp }}/phase12-evidence-input
-          run-id: ${{ steps.phase12-git-dist-evidence.outputs.run_id }}
-          github-token: ${{ github.token }}
 
       - name: Generate phase 12 evidence summary
         run: |
@@ -646,6 +509,7 @@ jobs:
 
       - name: Resolve release rehearsal evidence artifacts
         id: release-rehearsal-evidence
+        if: always()
         shell: bash
         env:
           DISPATCH_RELEASE_REHEARSAL_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.release_rehearsal_run_id || '' }}
@@ -661,9 +525,8 @@ jobs:
           fi
 
       - name: Download release rehearsal evidence
-        if: steps.release-rehearsal-evidence.outputs.run_id != ''
+        if: always() && steps.release-rehearsal-evidence.outputs.run_id != ''
         uses: actions/download-artifact@v4
-        continue-on-error: true
         with:
           pattern: release-rehearsal-*
           path: ${{ runner.temp }}/phase12-evidence-input
@@ -671,6 +534,7 @@ jobs:
           github-token: ${{ github.token }}
 
       - name: Generate readiness summary
+        if: always()
         run: |
           node scripts/readiness-summary.mjs \
             --artifacts-dir="${{ runner.temp }}/phase12-evidence-input" \

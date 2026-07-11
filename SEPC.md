@@ -46,7 +46,7 @@
   - 实现方式：把整套 git 与 git-lfs 发行目录作为 Tauri `resources`（打包资源）分发，运行时经 `resource_dir()` 解析路径，用 Rust `std::process::Command` 直接调用（**不使用 Tauri `externalBin`/sidecar 单文件机制**，因为 git 是一整套发行目录而非单个二进制）；由一个薄的 “git runner” 封装层统一承载飞行锁、进度解析、日志与 `Result<T, AppError>` 化。
   - 二进制来源（按平台）：Windows 使用官方 **MinGit** 预编译包；macOS/Linux 从**官方源码**在 CI 以 `RUNTIME_PREFIX` 可重定位方式自建——macOS 用 Xcode 工具链出 arm64 + x86_64 再 lipo 成 Universal；Linux 在 **Ubuntu 20.04 容器（glibc 2.31）**编译，依赖库（libcurl/openssl/zlib/pcre2/expat）全部静态链入，`NO_GETTEXT/NO_TCLTK` 裁剪并保留 Perl-backed porcelain（如 `git submodule`），glibc 本身动态链接（不采用 musl 全静态，规避其 DNS/NSS 行为差异）；git-lfs 全平台用官方预编译包（macOS 合成 Universal）。
   - 内嵌 Git LFS：同时打包 git-lfs 二进制，打开或克隆的仓库若包含 LFS 规则（.gitattributes），自动执行 `git lfs install --local`，对用户完全透明；该命令允许按需持久写入仓库级 `.git/config` 的 `filter.lfs.*`，属于工具主动写入白名单。
-  - 版本锁定：git 与 git-lfs 版本钉入**单一构建配置文件**（版本号 + 各平台产物/源码 SHA-256 + 完整编译配方集中于此），不随构建机环境浮动；实现启动时取当时最新稳定版钉入，升级 = 修改该文件走 PR + 全量测试并记录在更新日志，保证全平台全用户跑同一套经过测试的 git 行为。git 版本优先选 fsmonitor 支持面最全的版本，个别平台缺失则自动降级（见“实时 Fetch”的本地侧配套）。内嵌 Git/LFS/SSH 二进制产物不提交到普通 Git 仓库；CI 通过 cache/artifact 复用，本地开发通过脚本准备 dev resources。
+  - 版本锁定：git、git-lfs 与 Windows OpenSSH 版本钉入**单一构建配置文件**（版本号 + 各平台产物/源码 SHA-256 + 完整编译配方集中于此），再由人工 `toolchain_revision` 与 lock 固定，不随构建机环境或上游发布浮动；升级 = 维护者明确修改配置、生成新 revision、走 PR + 三平台全量测试并记录更新日志。内嵌二进制产物不提交到普通 Git 仓库；本地与 CI 都复用仓库本地精确指纹 cache，cache miss 时由标准 ensure 命令构建到固定 dev resources。
   - 构建期校验（按平台细化）：预编译产物（Windows MinGit、全平台 git-lfs）校验发布页**二进制 SHA-256**；macOS/Linux 自建的 git 则钉死**官方源码 tarball 的 SHA-256 + 完整编译配方（flags/容器镜像）**以可复现。防止供应链污染或下载损坏。
   - 运行期自检：启动时执行 `git --version` / `git lfs version`，确认可执行且版本符合预期；不符或无法执行则致命错误崩溃弹窗。
   - 隔离系统 git：所有调用显式使用内嵌路径，隔离 `GIT_EXEC_PATH`/`PATH`，绝不回退到用户系统 git；git-lfs 通过内嵌 git 的 filter 配置指向内嵌 lfs。
@@ -58,7 +58,7 @@
   - 有远程但某分支无上游（仅本地分支）：该分支的提交/撤回跳过前置同步；“立即推送”勾选含义 = `git push -u origin <分支>` 首次发布该分支；分支级同步按钮 = 发布分支（拉取侧为空集，与“同步始终双向”自洽）；项目级批量同步不自动发布仅本地分支（避免误发布私人实验分支）。
 - 认证：同时支持 SSH 和 HTTPS 两种远程认证方式，克隆输入框同时接受两种地址，不做转换。
   - SSH：host key 校验使用 `accept-new` 策略（首次连接自动信任，后续指纹变更则报错），避免交互式确认卡死流程。
-    - ssh 二进制来源（按平台）：Windows 捆绑**钉死版本的 Win32-OpenSSH 官方发行包**（MinGit 不含 ssh；随 resources 分发并校验 SHA-256，不依赖系统自带 OpenSSH 以免版本浮动）；Win32-OpenSSH 版本选择规则为**优先官方 stable `OpenSSH-Win64.zip`，若官方没有 stable Win64 包则允许钉死最新官方 preview 包作为显式 fallback，且一旦 stable 出现 CI gate 必须失败并要求切回 stable**；macOS 13+ / Linux 用**系统 ssh**（这两平台自带现代 OpenSSH，且密钥本就放 `~/.ssh` 与系统生态互通）。统一通过 `-c core.sshCommand="<ssh 路径> -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=~/.ssh/known_hosts"` 注入，不落盘。
+    - ssh 二进制来源（按平台）：Windows 捆绑**当前工具链 revision 明确钉死的 Win32-OpenSSH 官方发行包**（MinGit 不含 ssh；随 resources 分发并校验 SHA-256，不依赖系统自带 OpenSSH 以免版本浮动）；该 pin 不查询或跟随上游更新，只有维护者手动创建新 revision 时才重新选择版本。macOS 13+ / Linux 用**系统 ssh**（这两平台自带现代 OpenSSH，且密钥本就放 `~/.ssh` 与系统生态互通）。统一通过 `-c core.sshCommand="<ssh 路径> -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=~/.ssh/known_hosts"` 注入，不落盘。
     - 密码短语（passphrase）：注入极小的 `SSH_ASKPASS` 帮助程序 + `SSH_ASKPASS_REQUIRE=force`，ssh 需要密码短语时经本地 IPC 回调主进程弹出输入框，彻底不依赖 TTY、永不卡死；用户首次输入后主进程在内存缓存，后续操作（含定时 Fetch）静默返回、不再打扰；不自主管理 ssh-agent（若系统已把密钥加载进 agent，ssh 优先用 agent、askpass 不触发）。
     - 后台绝不弹框：定时 Fetch 等后台只读操作标记为 `non-interactive`，需要密码短语而内存无缓存时直接归入“可预期认证/网络失败”走离线图标，仅用户主动发起的操作才允许 askpass 弹框。
     - 跨会话记忆（可选）：提供“记住密码短语”开关，勾选后存入系统钥匙串（与 HTTPS 凭据同一套存储）；默认关闭。
@@ -314,14 +314,14 @@
 
 # 测试策略
 
-- 核心 Git 流程测试（Rust 集成测试，主体）：每个用例在临时目录创建真实 bare 仓库作为远程 + 一到两个真实 clone（第二个 clone 模拟“同事”制造分叉/冲突），用内嵌 git 执行全真实命令。测试 harness 只从 `ARTISTIC_GIT_DIST_DIR` 或打包 resources 指向的显式内嵌 Git 目录取可执行文件；缺失或版本不匹配即失败，绝不回退系统 git。
+- 核心 Git 流程测试（Rust 集成测试，主体）：每个用例在临时目录创建真实 bare 仓库作为远程 + 一到两个真实 clone（第二个 clone 模拟“同事”制造分叉/冲突），用内嵌 git 执行全真实命令。标准测试命令先确保 `src-tauri/resources/git-dist` 完整有效，测试 harness 只从该固定资源树取可执行文件；缺失或版本不匹配即失败，绝不回退系统 git。
   - 覆盖：同步、自动跟踪同步、分叉 rebase、储藏/恢复、冲突解决、撤回、审查模式、以及每个流程的失败恢复路径（在任意步骤注入失败，断言恢复到操作前状态）。
   - LFS 场景同样真实跑。
 - 认证栈测试：本地起 `git http-backend` + Basic Auth 模拟 HTTPS 401/凭据流程；SSH 流程用本地 sshd 容器（仅 Linux CI 跑）。
 - 前端单元测试：Vitest + Testing Library（组件逻辑、状态管理）。
 - E2E：`tauri-driver` + WebdriverIO，驱动真实应用操作真实临时仓库，跑通“克隆→修改→提交→同事推送→同步→冲突→解决→撤回”全链路。
   - 现实约束：tauri-driver 不支持 macOS（WKWebView 无 WebDriver），E2E 在 Linux + Windows CI 上跑，macOS 由 Rust 集成测试兜底（核心 git 逻辑与平台无关）。
-- CI：GitHub Actions——单元 + 集成测试跑全部三平台矩阵，E2E 跑 Linux/Windows；CI 通过 git-dist cache/artifact 向测试提供 `ARTISTIC_GIT_DIST_DIR`。
+- CI：GitHub Actions——单元 + 集成测试跑全部三平台矩阵，E2E 跑 Linux/Windows；每个 job 恢复仓库本地工具链 cache 后执行 ensure/verify，cache miss 时就地构建，不消费跨 workflow 的完整工具链 artifact。
 
 # 构建与发布
 

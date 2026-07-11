@@ -2427,9 +2427,7 @@ mod tests {
 
     #[test]
     fn sync_current_branch_fast_forwards_remote_changes() {
-        let Some((runner, _home)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _home) = real_runner();
         let fixture = DoubleClone::new(&runner);
         fixture.peer.write("remote.txt", "remote\n");
         fixture.peer.git(["add", "remote.txt"]);
@@ -2452,9 +2450,7 @@ mod tests {
 
     #[test]
     fn sync_current_branch_updates_submodule_after_fast_forward_pull() {
-        let Some((runner, _home)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _home) = real_runner();
         allow_file_protocol_for_local_submodule_fixtures(&runner);
         let fixture = SubmoduleSyncFixture::new(&runner);
 
@@ -2516,9 +2512,7 @@ mod tests {
 
     #[test]
     fn sync_current_branch_publishes_branch_without_upstream() {
-        let Some((runner, _home)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _home) = real_runner();
         let fixture = DoubleClone::new(&runner);
         fixture.local.git(["checkout", "-b", "feature/publish"]);
         fixture.local.write("feature.txt", "feature\n");
@@ -2554,9 +2548,7 @@ mod tests {
 
     #[test]
     fn sync_branch_publishes_non_current_branch_without_touching_worktree() {
-        let Some((runner, _home)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _home) = real_runner();
         let fixture = DoubleClone::new(&runner);
         fixture.local.git(["checkout", "-b", "feature/unpublished"]);
         fixture.local.write("feature.txt", "feature\n");
@@ -2614,9 +2606,7 @@ mod tests {
 
     #[test]
     fn sync_current_branch_rebases_diverged_local_commits() {
-        let Some((runner, _home)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _home) = real_runner();
         let fixture = DoubleClone::new(&runner);
         fixture.local.write("local.txt", "local\n");
         fixture.local.git(["add", "local.txt"]);
@@ -2643,9 +2633,7 @@ mod tests {
 
     #[test]
     fn sync_current_branch_restores_dirty_worktree_after_success() {
-        let Some((runner, _home)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _home) = real_runner();
         let fixture = DoubleClone::new(&runner);
         fixture.local.write("tracked.txt", "dirty local\n");
         fixture.local.write("scratch.txt", "scratch\n");
@@ -2676,9 +2664,7 @@ mod tests {
 
     #[test]
     fn sync_current_branch_reports_no_remote() {
-        let Some((runner, _home)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _home) = real_runner();
         let repo = TestRepo::new(&runner, "ag-sync-standalone");
         repo.git(["init", "-b", "main"]);
         repo.configure_identity();
@@ -2700,9 +2686,7 @@ mod tests {
 
     #[test]
     fn sync_current_branch_recovers_from_push_race_without_force() {
-        let Some((runner, _home)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _home) = real_runner();
         let fixture = DoubleClone::new(&runner);
         fixture.local.write("local.txt", "local\n");
         fixture.local.git(["add", "local.txt"]);
@@ -2728,9 +2712,7 @@ mod tests {
 
     #[test]
     fn sync_current_branch_caps_push_race_retries_forward_safe() {
-        let Some((runner, _home)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _home) = real_runner();
         let fixture = DoubleClone::new(&runner);
         fixture.local.write("local.txt", "local\n");
         fixture.local.git(["add", "local.txt"]);
@@ -2788,9 +2770,7 @@ mod tests {
 
     #[test]
     fn sync_current_branch_push_failure_keeps_local_commits_ahead() {
-        let Some((runner, _home)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _home) = real_runner();
         let fixture = DoubleClone::new(&runner);
         fixture.local.write("local.txt", "local\n");
         fixture.local.git(["add", "local.txt"]);
@@ -2836,9 +2816,7 @@ mod tests {
 
     #[test]
     fn sync_current_branch_rolls_back_local_phase_failure() {
-        let Some((runner, _home)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _home) = real_runner();
         let fixture = DoubleClone::new(&runner);
         let starting_head = fixture.local.git_output(["rev-parse", "HEAD"]);
         let starting_tree = fixture.local.git_output(["rev-parse", "HEAD^{tree}"]);
@@ -2880,9 +2858,7 @@ mod tests {
 
     #[test]
     fn sync_current_branch_rebase_conflict_returns_conflict_response() {
-        let Some((runner, _home)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _home) = real_runner();
         let fixture = DoubleClone::new(&runner);
         fixture.local.write("tracked.txt", "local committed\n");
         fixture.local.git(["add", "tracked.txt"]);
@@ -2938,9 +2914,7 @@ mod tests {
 
     #[test]
     fn sync_current_branch_stash_restore_conflict_returns_recovery() {
-        let Some((runner, _home)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _home) = real_runner();
         let fixture = DoubleClone::new(&runner);
         fixture.local.write("tracked.txt", "dirty local\n");
         fixture.peer.write("tracked.txt", "remote committed\n");
@@ -2978,9 +2952,7 @@ mod tests {
 
     #[test]
     fn sync_all_branches_syncs_current_and_non_current_tracking_branches() {
-        let Some((runner, _home)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _home) = real_runner();
         let fixture = DoubleClone::new(&runner);
         fixture.create_tracking_branch("feature/batch");
 
@@ -3042,9 +3014,7 @@ mod tests {
 
     #[test]
     fn sync_all_branches_records_failed_branch_and_continues() {
-        let Some((runner, _home)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _home) = real_runner();
         let fixture = DoubleClone::new(&runner);
         fixture.create_tracking_branch("feature/failure");
         fixture.create_tracking_branch("feature/success");
@@ -3121,9 +3091,7 @@ mod tests {
 
     #[test]
     fn auto_tracking_rule_fast_forwards_source_to_remote_target_and_pushes() {
-        let Some((runner, _home)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _home) = real_runner();
         let fixture = DoubleClone::new(&runner);
         fixture.create_tracking_branch("stable");
         fixture.create_tracking_branch_from("release", "stable");
@@ -3170,9 +3138,7 @@ mod tests {
 
     #[test]
     fn auto_tracking_current_source_fast_forwards_pushes_and_restores_dirty_worktree() {
-        let Some((runner, _home)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _home) = real_runner();
         let fixture = DoubleClone::new(&runner);
         fixture.create_tracking_branch("stable");
         fixture.create_tracking_branch_from("release", "stable");
@@ -3225,9 +3191,7 @@ mod tests {
 
     #[test]
     fn auto_tracking_diverged_source_and_target_fails_without_rebase() {
-        let Some((runner, _home)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _home) = real_runner();
         let fixture = DoubleClone::new(&runner);
         fixture.create_tracking_branch("stable");
         fixture.create_tracking_branch("release");
@@ -3289,9 +3253,7 @@ mod tests {
 
     #[test]
     fn auto_tracking_failed_rule_does_not_stop_following_rules() {
-        let Some((runner, _home)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _home) = real_runner();
         let fixture = DoubleClone::new(&runner);
         fixture.create_tracking_branch("stable");
         fixture.create_tracking_branch("release");
@@ -3352,9 +3314,7 @@ mod tests {
 
     #[test]
     fn auto_tracking_creates_remote_only_source_and_target_tracking_branches() {
-        let Some((runner, _home)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _home) = real_runner();
         let fixture = DoubleClone::new(&runner);
 
         fixture.peer.git(["checkout", "-b", "remote-source"]);
@@ -3425,9 +3385,7 @@ mod tests {
 
     #[test]
     fn sync_all_removes_deleted_auto_tracking_source_and_marks_deleted_target() {
-        let Some((runner, _home)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _home) = real_runner();
         let fixture = DoubleClone::new(&runner);
         fixture.create_tracking_branch("stable");
         fixture.create_tracking_branch("release");
@@ -3529,9 +3487,7 @@ mod tests {
 
     #[test]
     fn sync_branch_fast_path_fast_forwards_without_touching_current_worktree() {
-        let Some((runner, _home)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _home) = real_runner();
         let fixture = DoubleClone::new(&runner);
         fixture.create_tracking_branch("feature/fast");
         fixture.peer.write("remote.txt", "remote\n");
@@ -3570,9 +3526,7 @@ mod tests {
 
     #[test]
     fn sync_branch_slow_path_rebases_in_temporary_worktree_and_cleans_up() {
-        let Some((runner, _home)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _home) = real_runner();
         let fixture = DoubleClone::new(&runner);
         fixture.create_tracking_branch("feature/rebase");
         fixture.local.git(["checkout", "feature/rebase"]);
@@ -3618,9 +3572,7 @@ mod tests {
 
     #[test]
     fn sync_branch_fast_path_pushes_ahead_branch_without_temporary_worktree() {
-        let Some((runner, _home)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _home) = real_runner();
         let fixture = DoubleClone::new(&runner);
         fixture.create_tracking_branch("feature/ahead");
         fixture.local.git(["checkout", "feature/ahead"]);
@@ -3661,9 +3613,7 @@ mod tests {
 
     #[test]
     fn sync_branch_conflict_cancel_aborts_rebase_and_removes_temporary_worktree() {
-        let Some((runner, _home)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _home) = real_runner();
         let fixture = DoubleClone::new(&runner);
         fixture.create_tracking_branch("feature/cancel-conflict");
         fixture.local.git(["checkout", "feature/cancel-conflict"]);
@@ -3720,9 +3670,7 @@ mod tests {
 
     #[test]
     fn sync_branch_conflict_complete_pushes_and_removes_temporary_worktree() {
-        let Some((runner, _home)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _home) = real_runner();
         let fixture = DoubleClone::new(&runner);
         fixture.create_tracking_branch("feature/complete-conflict");
         fixture.local.git(["checkout", "feature/complete-conflict"]);
@@ -3775,9 +3723,7 @@ mod tests {
 
     #[test]
     fn sync_branch_slow_path_failure_removes_temporary_worktree() {
-        let Some((runner, _home)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _home) = real_runner();
         let fixture = DoubleClone::new(&runner);
         fixture.create_tracking_branch("feature/failure-cleanup");
         fixture.local.git([
@@ -3819,9 +3765,7 @@ mod tests {
 
     #[test]
     fn remote_history_rewrite_requires_confirmation_and_accept_creates_local_backup() {
-        let Some((runner, _home)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _home) = real_runner();
         let fixture = DoubleClone::new(&runner);
         fixture.local.write("published.txt", "published\n");
         fixture.local.git(["add", "published.txt"]);
@@ -4325,20 +4269,14 @@ exit 1
         format!("'{}'", display_path(path).replace('\'', "'\\''"))
     }
 
-    fn real_runner_or_skip() -> Option<(GitRunner, TestTempDir)> {
-        let dist = match require_git_dist() {
-            Ok(dist) => dist,
-            Err(error) => {
-                eprintln!("skipping real git test: {error}");
-                return None;
-            }
-        };
+    fn real_runner() -> (GitRunner, TestTempDir) {
+        let dist = require_git_dist().expect("load embedded git distribution");
         let temp = TestTempDir::new("ag-sync-runner-home").expect("temp home");
         let home = temp.path().join("home");
         fs::create_dir_all(&home).expect("runner home");
         let distribution =
             GitDistribution::from_manifest(dist.root, dist.manifest).expect("git distribution");
         let runner = GitRunner::from_distribution(distribution, home);
-        Some((runner, temp))
+        (runner, temp)
     }
 }

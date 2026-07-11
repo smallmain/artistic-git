@@ -491,14 +491,12 @@ mod tests {
     use super::*;
     use crate::git_ops::display_path;
     use artistic_git_git_runner::{GitDistribution, GitRunner};
-    use artistic_git_test_support::{require_git_dist, GitDistError, TestTempDir};
+    use artistic_git_test_support::{require_git_dist, TestTempDir};
     use std::{ffi::OsString, fs, io::Write};
 
     #[test]
     fn revert_creates_new_commit_for_current_branch_ancestor_with_phase_message() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.init_with_commit();
         repo.write("target.txt", "target\n");
@@ -547,9 +545,7 @@ mod tests {
 
     #[test]
     fn revert_disables_merge_commits() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.init_with_commit();
         repo.git(["checkout", "-b", "feature"]);
@@ -584,9 +580,7 @@ mod tests {
 
     #[test]
     fn revert_disables_commits_outside_current_branch() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.init_with_commit();
         repo.git(["checkout", "-b", "feature"]);
@@ -623,9 +617,7 @@ mod tests {
 
     #[test]
     fn conflicted_revert_returns_conflict_files_and_abort_restores_original_state() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.init_with_commit();
         repo.write("tracked.txt", "target\n");
@@ -692,9 +684,7 @@ mod tests {
 
     #[test]
     fn revert_pushes_published_history_commit_in_double_clone() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let fixture = DoubleClone::new(&runner);
         fixture.local.write("target.txt", "target\n");
         fixture.local.git(["add", "target.txt"]);
@@ -740,9 +730,7 @@ mod tests {
 
     #[test]
     fn revert_pushes_unpublished_commit_with_same_flow() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let fixture = DoubleClone::new(&runner);
         fixture.local.write("target.txt", "target\n");
         fixture.local.git(["add", "target.txt"]);
@@ -788,9 +776,7 @@ mod tests {
 
     #[test]
     fn revert_push_retries_by_syncing_after_non_fast_forward() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let fixture = DoubleClone::new(&runner);
         fixture.local.write("target.txt", "target\n");
         fixture.local.git(["add", "target.txt"]);
@@ -838,9 +824,7 @@ mod tests {
 
     #[test]
     fn revert_push_publishes_branch_without_upstream_via_sync() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let fixture = DoubleClone::new(&runner);
         fixture
             .local
@@ -896,9 +880,7 @@ mod tests {
 
     #[test]
     fn conflicted_revert_with_auto_stash_can_abort_and_restore_local_changes() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.init_with_commit();
         repo.write("tracked.txt", "target\n");
@@ -962,17 +944,13 @@ mod tests {
             .contains("?? draft.txt"));
     }
 
-    fn real_runner_or_skip() -> Option<(GitRunner, TestTempDir)> {
-        let dist = match require_git_dist() {
-            Ok(dist) => dist,
-            Err(GitDistError::MissingEnvironment) => return None,
-            Err(error) => panic!("invalid embedded git distribution: {error}"),
-        };
+    fn real_runner() -> (GitRunner, TestTempDir) {
+        let dist = require_git_dist().expect("load embedded git distribution");
         let distribution = GitDistribution::from_manifest(dist.root, dist.manifest)
             .expect("load embedded git distribution");
         let temp = TestTempDir::new("ag-revert-runner-home").expect("temp home");
         let runner = GitRunner::from_distribution(distribution, temp.path().join("home"));
-        Some((runner, temp))
+        (runner, temp)
     }
 
     fn assert_same_path(actual: impl AsRef<Path>, expected: impl AsRef<Path>) {

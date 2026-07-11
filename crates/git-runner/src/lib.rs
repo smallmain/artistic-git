@@ -1,5 +1,6 @@
 use artistic_git_contracts::{
     AppError, AppEvent, GitCommandError, GitDistManifest, OperationContext, ProgressState,
+    GIT_DIST_MANIFEST_SCHEMA_VERSION,
 };
 use serde::Serialize;
 use std::{
@@ -17,6 +18,8 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum GitDistributionError {
+    #[error("unsupported git distribution manifest schema {actual}; expected {expected}")]
+    UnsupportedSchemaVersion { actual: u32, expected: u32 },
     #[error("git distribution manifest is missing at {0}")]
     MissingManifest(PathBuf),
     #[error("failed to read git distribution manifest at {path}: {source}")]
@@ -95,6 +98,13 @@ impl GitDistribution {
         root: impl Into<PathBuf>,
         manifest: GitDistManifest,
     ) -> Result<Self, GitDistributionError> {
+        if manifest.schema_version != GIT_DIST_MANIFEST_SCHEMA_VERSION {
+            return Err(GitDistributionError::UnsupportedSchemaVersion {
+                actual: manifest.schema_version,
+                expected: GIT_DIST_MANIFEST_SCHEMA_VERSION,
+            });
+        }
+
         let root = root.into();
         let git_executable =
             resolve_manifest_executable(&root, "gitExecutable", &manifest.paths.git_executable)?;
@@ -1307,6 +1317,24 @@ mod tests {
             GitDistribution::from_root(temp.path()).expect_err("missing manifest should fail");
 
         assert!(matches!(error, GitDistributionError::MissingManifest(_)));
+    }
+
+    #[test]
+    fn rejects_unsupported_manifest_schema() {
+        let temp = TestTempDir::new("ag-unsupported-manifest").expect("temp dir");
+        let mut manifest = git_dist_manifest_fixture();
+        manifest.schema_version = GIT_DIST_MANIFEST_SCHEMA_VERSION - 1;
+
+        let error = GitDistribution::from_manifest(temp.path(), manifest)
+            .expect_err("unsupported schema should fail");
+
+        assert!(matches!(
+            error,
+            GitDistributionError::UnsupportedSchemaVersion {
+                actual: 1,
+                expected: GIT_DIST_MANIFEST_SCHEMA_VERSION,
+            }
+        ));
     }
 
     #[test]

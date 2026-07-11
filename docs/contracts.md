@@ -10,7 +10,8 @@ in parallel without drifting across Rust, TypeScript, resources, and tests.
 - `crates/app`: command handlers and bindings export entry points.
 - `crates/core`: Tauri-independent domain types and services.
 - `crates/git-runner`: embedded Git distribution resolution and command runner.
-- `crates/helpers`: future credential helper and SSH askpass binaries.
+- `crates/helpers`: application-owned credential helper and SSH askpass
+  binaries; both are mandatory toolchain components.
 - `crates/test-support`: shared integration-test bootstrap utilities.
 
 ## TypeScript Bindings
@@ -29,9 +30,9 @@ the committed file.
 
 ## Resource Layout
 
-Development and packaged resources must expose the same `git-dist` tree.
-`ARTISTIC_GIT_DIST_DIR` points at the development tree; packaged builds resolve
-the same layout under Tauri resources.
+Development and packaged resources expose the same fixed `git-dist` tree.
+Local commands materialize it at `src-tauri/resources/git-dist`; packaged builds
+resolve the same layout under Tauri resources. There is no path override.
 
 ```text
 git-dist/
@@ -41,16 +42,18 @@ git-dist/
     libexec/git-core/...
   git-lfs/
     git-lfs(.exe)
-  openssh/
+  openssh/                       # Windows only
     ssh.exe
   helpers/
     artistic-git-credential-helper(.exe)
     artistic-git-ssh-askpass(.exe)
 ```
 
-`manifest.json` is represented by `GitDistManifest` in `crates/contracts`.
-Git execution code must accept an explicit distribution root only. Searching
-`PATH` or falling back to system Git is not allowed.
+`manifest.json` is represented by schema 2 `GitDistManifest` in
+`crates/contracts`. It records the target, manual toolchain revision,
+base/helper/distribution fingerprints, component versions, executable paths,
+and complete file hashes. Git execution code accepts an explicit distribution
+root only. Searching `PATH` or using system Git is not allowed.
 
 ## Auth Helper IPC
 
@@ -69,8 +72,15 @@ the environment; they must not open network listeners. Unix sockets are
 owner-only (`0600`). Windows named-pipe ACL enforcement is represented as a
 platform security plan until the Windows implementation is added.
 
+Both helper executables are thin application-owned adapters for Git's standard
+credential-helper and SSH askpass protocols. They route prompts to the app's
+local IPC contract and are not independent credential stores. They are built,
+fingerprinted, packaged, and verified as mandatory parts of the embedded
+toolchain.
+
 ## Test Bootstrap
 
-Core Git integration tests must call `artistic_git_test_support::require_git_dist`.
-Missing `ARTISTIC_GIT_DIST_DIR` or missing `manifest.json` is a hard failure,
-not a fallback path.
+Core Git integration tests load the fixed resource tree through the shared test
+support. A missing or invalid `manifest.json` is a hard failure. Standard test
+commands run toolchain ensure first; direct Cargo invocations report the ensure
+command instead of skipping tests.

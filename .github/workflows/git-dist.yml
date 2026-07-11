@@ -1,38 +1,33 @@
-name: Git Distribution
+name: Git Toolchain Audit
 
 on:
   pull_request:
     paths:
       - "git-dist.toml"
+      - "git-toolchain.lock.json"
+      - "scripts/git-toolchain-*.mjs"
       - "scripts/fetch-git-dist.mjs"
-      - "scripts/git-dist.node-tests.mjs"
       - "scripts/git-dist-lib.mjs"
-      - "scripts/git-dist-report.mjs"
       - "scripts/check-git-dist.mjs"
-      - "scripts/check-git-dist-openssh-release.mjs"
       - "scripts/check-tauri-bundle-resources.mjs"
+      - "crates/helpers/**"
+      - "crates/contracts/**"
+      - "Cargo.lock"
       - "docs/git-dist.md"
-      - "src-tauri/resources/git-dist/**"
       - ".github/workflows/git-dist.yml"
-  schedule:
-    - cron: "17 3 * * *"
   workflow_dispatch:
-    inputs:
-      mode:
-        description: "contract validates config only; build prepares reusable target artifacts and rejects placeholder pins."
-        type: choice
-        options:
-          - contract
-          - build
-        default: contract
+
+permissions:
+  contents: read
 
 env:
+  CI: true
   NODE_VERSION: "24"
-  GIT_DIST_CACHE_VERSION: "v3"
+  RUST_TOOLCHAIN: "1.96.1"
 
 jobs:
   contract:
-    name: Validate contract
+    name: Validate toolchain contract
     runs-on: ubuntu-22.04
 
     steps:
@@ -41,75 +36,41 @@ jobs:
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
 
       - name: Set up Node.js
         uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
 
-      - name: Run git-dist node tests
-        run: node --test scripts/git-dist.node-tests.mjs
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
 
-      - name: Validate git-dist config
-        run: node scripts/check-git-dist.mjs --schema-only
-
-      - name: Validate fetch schema for all targets
-        shell: bash
-        run: |
-          set -euo pipefail
-          for target in windows-x86_64 macos-universal linux-x86_64; do
-            node scripts/fetch-git-dist.mjs --schema-only --target="${target}"
-          done
-
-      - name: Verify real build source policy
-        shell: bash
-        run: |
-          set -euo pipefail
-          node scripts/check-git-dist.mjs --schema-only --real-build
-
-      - name: Check Win32-OpenSSH release gate
-        run: node scripts/check-git-dist-openssh-release.mjs --verify-preferred-release-policy
-
-      - name: Write git-dist readiness report
-        run: |
-          node scripts/git-dist-report.mjs \
-            --include-openssh-release \
-            --output-dir=artifacts/git-dist-readiness
+      - name: Validate pinned configuration and lock
+        run: pnpm git-toolchain:config:check
 
       - name: Validate bundle resource mapping
         run: node scripts/check-tauri-bundle-resources.mjs
 
-      - name: Upload git-dist readiness report
-        uses: actions/upload-artifact@v4
-        with:
-          name: git-dist-readiness-contract
-          path: artifacts/git-dist-readiness/
-          if-no-files-found: error
-          retention-days: 14
-
-  prepare:
-    name: Prepare ${{ matrix.target }}
+  audit:
+    name: Clean build audit (${{ matrix.target }})
     needs: contract
-    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'build'
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: windows-x86_64
             os: windows-2022
-            placeholderBlocked: false
+            rustTargets: x86_64-pc-windows-msvc
           - target: macos-universal
             os: macos-14
-            placeholderBlocked: false
+            rustTargets: aarch64-apple-darwin,x86_64-apple-darwin
           - target: linux-x86_64
             os: ubuntu-22.04
-            placeholderBlocked: false
-    runs-on: ${{ matrix.os }}
-
-    env:
-      ARTISTIC_GIT_DIST_DIR: ${{ github.workspace }}/.artifacts/git-dist/${{ matrix.target }}
-      ARTISTIC_GIT_DIST_CACHE_DIR: ${{ github.workspace }}/.cache/git-dist
-      ARTISTIC_GIT_DIST_STAGING_DIR: ${{ github.workspace }}/.staging/git-dist/${{ matrix.target }}
+            rustTargets: x86_64-unknown-linux-gnu
 
     steps:
       - name: Checkout
@@ -117,201 +78,155 @@ jobs:
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
 
       - name: Set up Node.js
         uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
 
-      - name: Validate target real-build policy
-        if: matrix.placeholderBlocked != true
-        run: node scripts/check-git-dist.mjs --schema-only --real-build --target="${{ matrix.target }}"
-
-      - name: Report source-policy-blocked target
-        if: matrix.placeholderBlocked == true
-        shell: bash
-        run: |
-          set -euo pipefail
-          node scripts/check-git-dist.mjs --schema-only --real-build --target="${{ matrix.target }}" --expect-placeholder-rejection
-          echo "::notice title=git-dist target blocked::${{ matrix.target }} is intentionally skipped because git-dist.toml still contains a documented placeholder or unapproved source."
-
-      - name: Check available source archives for source-policy-blocked target
-        if: matrix.placeholderBlocked == true
-        shell: bash
-        run: |
-          set -euo pipefail
-          node scripts/fetch-git-dist.mjs \
-            --target="${{ matrix.target }}" \
-            --source-evidence-only \
-            --skip-blocked-sources \
-            --components=git,git_lfs \
-            --cache-dir="${ARTISTIC_GIT_DIST_CACHE_DIR}" \
-            --evidence-dir="artifacts/git-dist-readiness-${{ matrix.target }}"
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Restore downloaded source cache
-        if: matrix.placeholderBlocked != true
-        id: source-cache
-        uses: actions/cache@v4
+      - name: Set up fixed Rust toolchain
+        uses: dtolnay/rust-toolchain@1.96.1
         with:
-          path: ${{ env.ARTISTIC_GIT_DIST_CACHE_DIR }}
-          key: git-dist-source-${{ env.GIT_DIST_CACHE_VERSION }}-${{ matrix.target }}-${{ hashFiles('git-dist.toml', 'scripts/fetch-git-dist.mjs', 'scripts/git-dist-lib.mjs', 'scripts/check-git-dist.mjs', 'pnpm-lock.yaml', 'Cargo.lock') }}
-          restore-keys: |
-            git-dist-source-${{ env.GIT_DIST_CACHE_VERSION }}-${{ matrix.target }}-
+          targets: ${{ matrix.rustTargets }}
 
-      - name: Restore assembled git-dist cache
-        if: matrix.placeholderBlocked != true
-        id: dist-cache
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.ARTISTIC_GIT_DIST_DIR }}
-          key: git-dist-artifact-${{ env.GIT_DIST_CACHE_VERSION }}-${{ matrix.target }}-${{ hashFiles('git-dist.toml', 'scripts/fetch-git-dist.mjs', 'scripts/git-dist-lib.mjs', 'scripts/check-git-dist.mjs', 'crates/helpers/**', 'Cargo.lock') }}
-          restore-keys: |
-            git-dist-artifact-${{ env.GIT_DIST_CACHE_VERSION }}-${{ matrix.target }}-
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
 
-      - name: Validate restored assembled distribution
-        if: matrix.placeholderBlocked != true && steps.dist-cache.outputs.cache-hit == 'true'
-        id: dist-cache-validation
+      - name: Build embedded toolchain from a cold cache
         shell: bash
         run: |
           set -euo pipefail
-          if node scripts/check-git-dist.mjs --target="${{ matrix.target }}"; then
-            echo "valid=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "::warning title=git-dist cache invalid::Restored assembled cache for ${{ matrix.target }} failed validation; deleting it and rebuilding from sources."
-            node --input-type=module -e "import fs from 'node:fs'; fs.rmSync(process.env.ARTISTIC_GIT_DIST_DIR, { recursive: true, force: true });"
-            echo "valid=false" >> "${GITHUB_OUTPUT}"
-          fi
+          rm -rf .cache/artistic-git/git-toolchain src-tauri/resources/git-dist
+          pnpm git-toolchain:ensure -- --target="${{ matrix.target }}"
+          pnpm git-toolchain:verify -- --target="${{ matrix.target }}"
 
-      - name: Build helper binaries
-        if: matrix.placeholderBlocked != true && (steps.dist-cache.outputs.cache-hit != 'true' || steps.dist-cache-validation.outputs.valid != 'true')
+      - name: Write manifest, build evidence, and size report
         shell: bash
+        env:
+          AUDIT_DIR: artifacts/git-toolchain-audit-${{ matrix.target }}
+          TOOLCHAIN_TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
-          cargo build -p artistic-git-helpers --bins --release
+          mkdir -p "$AUDIT_DIR"
+          cp src-tauri/resources/git-dist/manifest.json "$AUDIT_DIR/manifest.json"
+          node --input-type=module <<'NODE'
+          import { lstat, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+          import path from "node:path";
 
-      - name: Fetch, verify, and assemble distribution
-        if: matrix.placeholderBlocked != true && (steps.dist-cache.outputs.cache-hit != 'true' || steps.dist-cache-validation.outputs.valid != 'true')
-        shell: bash
-        run: |
-          set -euo pipefail
-          node scripts/fetch-git-dist.mjs \
-            --target="${{ matrix.target }}" \
-            --output="${ARTISTIC_GIT_DIST_DIR}" \
-            --cache-dir="${ARTISTIC_GIT_DIST_CACHE_DIR}" \
-            --staging-dir="${ARTISTIC_GIT_DIST_STAGING_DIR}"
+          const root = path.resolve("src-tauri/resources/git-dist");
+          const outputDir = path.resolve(process.env.AUDIT_DIR);
+          const componentBytes = {};
+          let totalBytes = 0;
+          let fileCount = 0;
 
-      - name: Validate assembled distribution
-        if: matrix.placeholderBlocked != true && (steps.dist-cache.outputs.cache-hit != 'true' || steps.dist-cache-validation.outputs.valid != 'true')
-        shell: bash
-        run: |
-          set -euo pipefail
-          node scripts/check-git-dist.mjs --target="${{ matrix.target }}"
+          async function measure(directory) {
+            let bytes = 0;
+            for (const entry of await readdir(directory, { withFileTypes: true })) {
+              const entryPath = path.join(directory, entry.name);
+              if (entry.isDirectory()) {
+                bytes += await measure(entryPath);
+              } else if (entry.isFile()) {
+                const stat = await lstat(entryPath);
+                bytes += stat.size;
+                totalBytes += stat.size;
+                fileCount += 1;
+              }
+            }
+            return bytes;
+          }
 
-      - name: Write target readiness and build evidence report
-        shell: bash
-        run: |
-          set -euo pipefail
-          openssh_args=()
-          if [ "${{ matrix.target }}" = "windows-x86_64" ]; then
-            openssh_args+=(--include-openssh-release)
-          fi
-          source_evidence_args=()
-          if [ -f "artifacts/git-dist-readiness-${{ matrix.target }}/git-dist-source-evidence.json" ]; then
-            source_evidence_args+=(
-              --source-evidence="artifacts/git-dist-readiness-${{ matrix.target }}/git-dist-source-evidence.json"
-              --source-evidence-artifact-name="git-dist-source-evidence-${{ matrix.target }}"
-            )
-          fi
-          source_cache_key="git-dist-source-${{ env.GIT_DIST_CACHE_VERSION }}-${{ matrix.target }}-${{ hashFiles('git-dist.toml', 'scripts/fetch-git-dist.mjs', 'scripts/git-dist-lib.mjs', 'scripts/check-git-dist.mjs', 'pnpm-lock.yaml', 'Cargo.lock') }}"
-          source_cache_restore_key="git-dist-source-${{ env.GIT_DIST_CACHE_VERSION }}-${{ matrix.target }}-"
-          dist_cache_key="git-dist-artifact-${{ env.GIT_DIST_CACHE_VERSION }}-${{ matrix.target }}-${{ hashFiles('git-dist.toml', 'scripts/fetch-git-dist.mjs', 'scripts/git-dist-lib.mjs', 'scripts/check-git-dist.mjs', 'crates/helpers/**', 'Cargo.lock') }}"
-          dist_cache_restore_key="git-dist-artifact-${{ env.GIT_DIST_CACHE_VERSION }}-${{ matrix.target }}-"
-          dist_cache_hit="${{ steps.dist-cache.outputs.cache-hit }}"
-          if [ "${{ steps.dist-cache-validation.outputs.valid }}" = "false" ]; then
-            dist_cache_hit="false"
-          fi
-          node scripts/git-dist-report.mjs \
-            --target="${{ matrix.target }}" \
-            --workflow-build \
-            --mode="${{ inputs.mode }}" \
-            --run-id="${{ github.run_id }}" \
-            --run-attempt="${{ github.run_attempt }}" \
-            --run-url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            --repository="${{ github.repository }}" \
-            --workflow="${{ github.workflow }}" \
-            --event-name="${{ github.event_name }}" \
-            --ref="${{ github.ref }}" \
-            --ref-name="${{ github.ref_name }}" \
-            --commit-sha="${{ github.sha }}" \
-            --actor="${{ github.actor }}" \
-            --runner-os="${{ runner.os }}" \
-            --runner-arch="${{ runner.arch }}" \
-            --job-os="${{ matrix.os }}" \
-            --source-cache-hit="${{ steps.source-cache.outputs.cache-hit }}" \
-            --dist-cache-hit="${dist_cache_hit}" \
-            --source-cache-key="${source_cache_key}" \
-            --source-cache-restore-key="${source_cache_restore_key}" \
-            --dist-cache-key="${dist_cache_key}" \
-            --dist-cache-restore-key="${dist_cache_restore_key}" \
-            --source-cache-dir="${ARTISTIC_GIT_DIST_CACHE_DIR}" \
-            --dist-dir="${ARTISTIC_GIT_DIST_DIR}" \
-            --readiness-artifact-name="git-dist-readiness-${{ matrix.target }}" \
-            --build-evidence-artifact-name="git-dist-build-evidence-${{ matrix.target }}" \
-            --blocker-artifact-name="git-dist-blocker-${{ matrix.target }}" \
-            ${source_evidence_args[@]+"${source_evidence_args[@]}"} \
-            ${openssh_args[@]+"${openssh_args[@]}"} \
-            --output-dir="artifacts/git-dist-readiness-${{ matrix.target }}"
+          for (const entry of await readdir(root, { withFileTypes: true })) {
+            if (entry.isDirectory()) {
+              componentBytes[entry.name] = await measure(path.join(root, entry.name));
+            } else if (entry.isFile()) {
+              const stat = await lstat(path.join(root, entry.name));
+              totalBytes += stat.size;
+              fileCount += 1;
+              componentBytes[entry.name] = stat.size;
+            }
+          }
 
-      - name: Upload target readiness report
+          const manifest = JSON.parse(await readFile(path.join(root, "manifest.json"), "utf8"));
+          const gitPath = manifest.paths.gitExecutable;
+          const gitHash = manifest.sha256[gitPath];
+          if (typeof gitHash !== "string") {
+            throw new Error(`manifest is missing the Git executable hash for ${gitPath}`);
+          }
+          const matchingGitPaths = Object.entries(manifest.sha256)
+            .filter(([, hash]) => hash === gitHash)
+            .map(([relativePath]) => relativePath);
+          let matchingGitBytes = 0;
+          for (const relativePath of matchingGitPaths) {
+            matchingGitBytes += (await lstat(path.join(root, relativePath))).size;
+          }
+          const canonicalGitBytes = (await lstat(path.join(root, gitPath))).size;
+          const repeatedGitBinaryBytes = matchingGitBytes - canonicalGitBytes;
+          // Conservative rounded-down baselines from the expanded v0.1.2 distributions.
+          const legacyDuplicateGitBytes = {
+            "macos-universal": 1_700_000_000,
+            "linux-x86_64": 3_900_000_000,
+          }[process.env.TOOLCHAIN_TARGET] ?? null;
+          const maximumDuplicateGitBytes = legacyDuplicateGitBytes === null
+            ? null
+            : Math.floor(legacyDuplicateGitBytes * 0.2);
+          if (
+            maximumDuplicateGitBytes !== null &&
+            repeatedGitBinaryBytes > maximumDuplicateGitBytes
+          ) {
+            throw new Error(
+              `duplicate Git binaries use ${repeatedGitBinaryBytes} bytes; expected at most ${maximumDuplicateGitBytes} bytes for an 80% reduction`,
+            );
+          }
+          const evidence = {
+            schemaVersion: 1,
+            target: process.env.TOOLCHAIN_TARGET,
+            toolchainRevision: manifest.toolchainRevision,
+            distributionFingerprint: manifest.distributionFingerprint,
+            commitSha: process.env.GITHUB_SHA,
+            workflowRunUrl: `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
+            validation: "pnpm git-toolchain:verify",
+          };
+          const sizes = {
+            schemaVersion: 1,
+            target: process.env.TOOLCHAIN_TARGET,
+            totalBytes,
+            fileCount,
+            componentBytes,
+            recommendedBudgetBytes: Math.ceil(totalBytes * 1.1),
+            recommendedComponentBudgetBytes: Object.fromEntries(
+              Object.entries(componentBytes).map(([component, bytes]) => [
+                component,
+                Math.ceil(bytes * 1.1),
+              ]),
+            ),
+            duplicateGit: {
+              matchingFileCount: matchingGitPaths.length,
+              repeatedFileCount: Math.max(0, matchingGitPaths.length - 1),
+              repeatedBytes: repeatedGitBinaryBytes,
+              legacyBaselineBytes: legacyDuplicateGitBytes,
+              maximumBytesForEightyPercentReduction: maximumDuplicateGitBytes,
+              reductionPercent: legacyDuplicateGitBytes === null
+                ? null
+                : Number(
+                    (
+                      (1 - repeatedGitBinaryBytes / legacyDuplicateGitBytes) *
+                      100
+                    ).toFixed(2),
+                  ),
+            },
+          };
+          await mkdir(outputDir, { recursive: true });
+          await writeFile(path.join(outputDir, "build-evidence.json"), `${JSON.stringify(evidence, null, 2)}\n`);
+          await writeFile(path.join(outputDir, "size-report.json"), `${JSON.stringify(sizes, null, 2)}\n`);
+          NODE
+
+      - name: Upload audit evidence
         uses: actions/upload-artifact@v4
         with:
-          name: git-dist-readiness-${{ matrix.target }}
-          path: artifacts/git-dist-readiness-${{ matrix.target }}/
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Upload target build evidence
-        uses: actions/upload-artifact@v4
-        with:
-          name: git-dist-build-evidence-${{ matrix.target }}
-          path: |
-            artifacts/git-dist-readiness-${{ matrix.target }}/git-dist-readiness.json
-            artifacts/git-dist-readiness-${{ matrix.target }}/git-dist-readiness.md
-            artifacts/git-dist-readiness-${{ matrix.target }}/git-dist-build-evidence.json
-            artifacts/git-dist-readiness-${{ matrix.target }}/git-dist-build-evidence.md
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Upload target source evidence
-        if: matrix.placeholderBlocked == true
-        uses: actions/upload-artifact@v4
-        with:
-          name: git-dist-source-evidence-${{ matrix.target }}
-          path: |
-            artifacts/git-dist-readiness-${{ matrix.target }}/git-dist-source-evidence.json
-            artifacts/git-dist-readiness-${{ matrix.target }}/git-dist-source-evidence.md
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Upload target blocker evidence
-        if: matrix.placeholderBlocked == true
-        uses: actions/upload-artifact@v4
-        with:
-          name: git-dist-blocker-${{ matrix.target }}
-          path: |
-            artifacts/git-dist-readiness-${{ matrix.target }}/git-dist-blocker.json
-            artifacts/git-dist-readiness-${{ matrix.target }}/git-dist-blocker.md
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Upload reusable git-dist artifact
-        if: matrix.placeholderBlocked != true
-        uses: actions/upload-artifact@v4
-        with:
-          name: artistic-git-dist-${{ matrix.target }}
-          path: ${{ env.ARTISTIC_GIT_DIST_DIR }}/
+          name: git-toolchain-audit-${{ matrix.target }}
+          path: artifacts/git-toolchain-audit-${{ matrix.target }}/
           if-no-files-found: error
           retention-days: 14

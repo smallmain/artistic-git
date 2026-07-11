@@ -43,7 +43,6 @@ const requiredVersionKeys = [
   "git_for_windows",
   "git_lfs",
   "win32_openssh",
-  "helper",
 ];
 
 const requiredLayoutKeys = [
@@ -124,6 +123,30 @@ export function validateGitDistConfig(config, options = {}) {
 
   if (config.schema_version !== 1) {
     errors.push("schema_version must be 1");
+  }
+  if (
+    typeof config.meta?.toolchain_revision !== "string" ||
+    config.meta.toolchain_revision.length === 0
+  ) {
+    errors.push("meta.toolchain_revision must be a non-empty string");
+  }
+  if (
+    typeof config.meta?.build_recipe_revision !== "string" ||
+    config.meta.build_recipe_revision.length === 0
+  ) {
+    errors.push("meta.build_recipe_revision must be a non-empty string");
+  }
+  if (
+    typeof config.helpers?.rust_toolchain !== "string" ||
+    config.helpers.rust_toolchain.length === 0
+  ) {
+    errors.push("helpers.rust_toolchain must be a non-empty string");
+  }
+  if (config.helpers?.profile !== "release") {
+    errors.push('helpers.profile must be "release"');
+  }
+  if (config.manifest?.schema_version !== 2) {
+    errors.push("manifest.schema_version must be 2");
   }
 
   for (const key of requiredVersionKeys) {
@@ -283,7 +306,7 @@ export function assertRelativeResourcePath(value, label) {
   }
   if (path.isAbsolute(value) || value.split(/[\\/]+/).includes("..")) {
     throw new GitDistConfigError(
-      `manifest paths.${label} must stay inside ARTISTIC_GIT_DIST_DIR: ${value}`,
+      `manifest paths.${label} must stay inside the embedded toolchain root: ${value}`,
     );
   }
 }
@@ -307,36 +330,21 @@ export function sourceStagingDirectory(stagingDir, sourceRef) {
   return path.join(stagingDir, sourceRef.replaceAll(".", "__"));
 }
 
-export async function assembleGitDist({
+export async function assembleGitDistBase({
   config,
   targetName,
   stagingDir,
   outputDir,
-  helperDir,
-  credentialHelperPath,
-  sshAskpassPath,
-  cargoTargetDir = process.env.CARGO_TARGET_DIR
-    ? path.resolve(process.env.CARGO_TARGET_DIR)
-    : path.join(repoRoot, "target"),
-  helperProfile = "auto",
 }) {
-  const sources = getTargetSources(config, targetName);
   const resolvedOutputDir = path.resolve(outputDir);
   const tempOutputDir = path.join(
     path.dirname(resolvedOutputDir),
-    `.${path.basename(resolvedOutputDir)}.assembly-${process.pid}-${Date.now()}`,
+    `.${path.basename(resolvedOutputDir)}.base-${process.pid}-${Date.now()}`,
   );
-
   await rm(tempOutputDir, { recursive: true, force: true });
   await mkdir(tempOutputDir, { recursive: true });
-
   try {
-    for (const { ref, source } of sources) {
-      if (source.kind !== "archive" && source.kind !== "source-tarball") {
-        throw new GitDistConfigError("git-dist assembly failed", [
-          `${ref}.kind=${source.kind} is not supported by archive assembly`,
-        ]);
-      }
+    for (const { ref, source } of getTargetSources(config, targetName)) {
       await copyPreparedSource({
         config,
         targetName,
@@ -346,24 +354,55 @@ export async function assembleGitDist({
         source,
       });
     }
-
     await finalizePreparedDist({ config, targetName, tempOutputDir });
+    await publishGitDistOutput(config, tempOutputDir, resolvedOutputDir);
+  } catch (error) {
+    await rm(tempOutputDir, { recursive: true, force: true });
+    throw error;
+  }
+}
 
+export async function assembleGitDistFromBase({
+  baseDir,
+  baseFingerprint,
+  config,
+  distributionFingerprint,
+  helperDir,
+  helperFingerprint,
+  helperVersion,
+  outputDir,
+  targetName,
+  toolchainRevision,
+}) {
+  const resolvedOutputDir = path.resolve(outputDir);
+  const tempOutputDir = path.join(
+    path.dirname(resolvedOutputDir),
+    `.${path.basename(resolvedOutputDir)}.assembly-${process.pid}-${Date.now()}`,
+  );
+  await rm(tempOutputDir, { recursive: true, force: true });
+  await mkdir(tempOutputDir, { recursive: true });
+  try {
+    await cp(baseDir, tempOutputDir, {
+      recursive: true,
+      force: true,
+      preserveTimestamps: true,
+      verbatimSymlinks: true,
+    });
     await copyGitDistHelpers({
       config,
       targetName,
       tempOutputDir,
       helperDir,
-      credentialHelperPath,
-      sshAskpassPath,
-      cargoTargetDir,
-      helperProfile,
     });
-
     const manifest = await createGitDistManifest({
+      baseFingerprint,
       config,
-      targetName,
+      distributionFingerprint,
       distRoot: tempOutputDir,
+      helperFingerprint,
+      helperVersion,
+      targetName,
+      toolchainRevision,
     });
     await writeGitDistManifest(config, tempOutputDir, manifest);
     await publishGitDistOutput(config, tempOutputDir, resolvedOutputDir);
@@ -374,36 +413,17 @@ export async function assembleGitDist({
   }
 }
 
-export async function resolveGitDistHelperPaths({
-  config,
-  targetName,
-  helperDir,
-  credentialHelperPath,
-  sshAskpassPath,
-  cargoTargetDir = path.join(repoRoot, "target"),
-  helperProfile = "auto",
-}) {
+async function resolveGitDistHelperPaths({ config, targetName, helperDir }) {
   const paths = expectedManifestPaths(config, targetName);
   const helperBasenames = {
     credentialHelper: path.basename(paths.credentialHelper),
     sshAskpass: path.basename(paths.sshAskpass),
   };
-  const explicitPaths = {
-    credentialHelper: credentialHelperPath,
-    sshAskpass: sshAskpassPath,
-  };
-  const profiles = helperProfiles(helperProfile);
   const resolved = {};
   const missing = [];
 
   for (const [key, basename] of Object.entries(helperBasenames)) {
-    const candidates = helperCandidates({
-      explicitPath: explicitPaths[key],
-      helperDir,
-      cargoTargetDir,
-      profiles,
-      basename,
-    });
+    const candidates = [path.join(path.resolve(helperDir), basename)];
     const existing = await firstExistingFile(candidates);
     if (existing) {
       resolved[key] = existing;
@@ -415,7 +435,7 @@ export async function resolveGitDistHelperPaths({
   if (missing.length > 0) {
     throw new GitDistConfigError("git-dist helper binaries are required", [
       `missing: ${missing.join("; ")}`,
-      "build them with `cargo build -p artistic-git-helpers --bins --release`, pass --helper-dir, or pass both --credential-helper and --ssh-askpass",
+      "the internal helper cache must contain both required release binaries",
     ]);
   }
 
@@ -435,7 +455,7 @@ async function copyPreparedSource({
   if (!stagedStat?.isDirectory()) {
     throw new GitDistConfigError("git-dist assembly failed", [
       `${ref} was not extracted under ${stagedSourceDir}`,
-      "run without --no-extract or restore the staged archive contents before assembly",
+      "the internal base builder must extract every pinned source before assembly",
     ]);
   }
 
@@ -596,19 +616,11 @@ async function copyGitDistHelpers({
   targetName,
   tempOutputDir,
   helperDir,
-  credentialHelperPath,
-  sshAskpassPath,
-  cargoTargetDir,
-  helperProfile,
 }) {
   const helperPaths = await resolveGitDistHelperPaths({
     config,
     targetName,
     helperDir,
-    credentialHelperPath,
-    sshAskpassPath,
-    cargoTargetDir,
-    helperProfile,
   });
   const manifestPaths = expectedManifestPaths(config, targetName);
   for (const [key, sourcePath] of Object.entries(helperPaths)) {
@@ -625,23 +637,51 @@ async function copyFileIntoDist(sourcePath, destination) {
   await chmod(destination, 0o755).catch(() => {});
 }
 
-async function createGitDistManifest({ config, targetName, distRoot }) {
+export async function createGitDistManifest({
+  baseFingerprint,
+  config,
+  distributionFingerprint,
+  distRoot,
+  helperFingerprint,
+  helperVersion,
+  targetName,
+  toolchainRevision,
+}) {
   const target = getTarget(config, targetName);
   const paths = expectedManifestPaths(config, targetName);
   await assertRequiredDistFiles(config, targetName, distRoot, paths);
 
   const manifestPath = normalizeResourcePath(config.resources.layout.manifest);
   const sha256 = {};
-  for (const relativePath of await regularFileResourcePaths(distRoot)) {
+  const executablePaths = [];
+  const resourcePaths = await regularFileResourcePaths(distRoot);
+  for (const relativePath of resourcePaths) {
     if (relativePath === manifestPath) {
       continue;
     }
-    sha256[relativePath] = await sha256File(path.join(distRoot, relativePath));
+    const absolutePath = path.join(distRoot, relativePath);
+    sha256[relativePath] = await sha256File(absolutePath);
+    if (
+      target.platform !== "windows" &&
+      ((await stat(absolutePath)).mode & 0o111) !== 0
+    ) {
+      executablePaths.push(relativePath);
+    }
+  }
+  if (target.platform === "windows") {
+    for (const key of requiredExecutableKeysForTarget(config, targetName)) {
+      executablePaths.push(paths[key]);
+    }
   }
 
   return {
     schemaVersion: config.manifest.schema_version,
+    target: targetName,
     platform: target.manifest_platform,
+    toolchainRevision,
+    baseFingerprint,
+    helperFingerprint,
+    distributionFingerprint,
     gitVersion:
       target.platform === "windows"
         ? config.versions.git_for_windows
@@ -649,8 +689,9 @@ async function createGitDistManifest({ config, targetName, distRoot }) {
     gitLfsVersion: config.versions.git_lfs,
     windowsOpenSshVersion:
       target.platform === "windows" ? config.versions.win32_openssh : null,
-    helperVersion: config.versions.helper,
+    helperVersion,
     paths,
+    executablePaths: [...new Set(executablePaths)].sort(),
     sha256,
   };
 }
@@ -711,40 +752,29 @@ export async function regularFileResourcePaths(root) {
   return files;
 }
 
-async function writeGitDistManifest(config, distRoot, manifest) {
+export async function writeGitDistManifest(config, distRoot, manifest) {
   const manifestPath = path.join(distRoot, config.resources.layout.manifest);
   await mkdir(path.dirname(manifestPath), { recursive: true });
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
-async function publishGitDistOutput(config, tempOutputDir, outputDir) {
-  await mkdir(outputDir, { recursive: true });
-  const manifestPath = normalizeResourcePath(config.resources.layout.manifest);
-  const entries = [
-    config.resources.layout.git,
-    config.resources.layout.git_lfs,
-    config.resources.layout.windows_openssh,
-    config.resources.layout.helpers,
-  ]
-    .map(normalizeResourcePath)
-    .filter(Boolean);
-
-  for (const relativePath of entries) {
-    const source = path.join(tempOutputDir, relativePath);
-    const destination = path.join(outputDir, relativePath);
-    await rm(destination, { recursive: true, force: true });
-    if (await pathExists(source)) {
-      await mkdir(path.dirname(destination), { recursive: true });
-      await rename(source, destination);
-    }
+export async function publishGitDistOutput(_config, tempOutputDir, outputDir) {
+  await mkdir(path.dirname(outputDir), { recursive: true });
+  const backup = `${outputDir}.backup-${process.pid}-${Date.now()}`;
+  const hadOutput = await pathExists(outputDir);
+  if (hadOutput) {
+    await rename(outputDir, backup);
   }
-
-  await rm(path.join(outputDir, manifestPath), { force: true });
-  await rename(
-    path.join(tempOutputDir, manifestPath),
-    path.join(outputDir, manifestPath),
-  );
-  await rm(tempOutputDir, { recursive: true, force: true });
+  try {
+    await rename(tempOutputDir, outputDir);
+    await rm(backup, { recursive: true, force: true });
+  } catch (error) {
+    await rm(outputDir, { recursive: true, force: true });
+    if (hadOutput && (await pathExists(backup))) {
+      await rename(backup, outputDir);
+    }
+    throw error;
+  }
 }
 
 function expectedComponentPathInSource(config, targetName, source) {
@@ -765,36 +795,6 @@ function expectedComponentPathInSource(config, targetName, source) {
     return null;
   }
   return expectedPath.slice(resourcePath.length);
-}
-
-function helperProfiles(profile) {
-  if (profile === "auto") {
-    return ["release", "debug"];
-  }
-  if (profile === "release" || profile === "debug") {
-    return [profile];
-  }
-  throw new GitDistConfigError("git-dist helper profile is invalid", [
-    `--helper-profile must be auto, release, or debug; got ${profile}`,
-  ]);
-}
-
-function helperCandidates({
-  explicitPath,
-  helperDir,
-  cargoTargetDir,
-  profiles,
-  basename,
-}) {
-  if (explicitPath) {
-    return [path.resolve(explicitPath)];
-  }
-  if (helperDir) {
-    return [path.join(path.resolve(helperDir), basename)];
-  }
-  return profiles.map((profile) =>
-    path.join(path.resolve(cargoTargetDir), profile, basename),
-  );
 }
 
 async function firstExistingFile(candidates) {

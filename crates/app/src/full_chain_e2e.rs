@@ -6,14 +6,12 @@ use artistic_git_contracts::{
     SyncCurrentBranchStatus, ToolGitIdentity,
 };
 use artistic_git_git_runner::{GitDistribution, GitRunner};
-use artistic_git_test_support::{require_git_dist, GitDistError, TestTempDir};
+use artistic_git_test_support::{require_git_dist, TestTempDir};
 use std::{ffi::OsString, fs, io::Write, path::PathBuf};
 
 #[test]
 fn backend_full_chain_uses_real_temporary_remote_from_clone_to_revert() {
-    let Some((runner, _home)) = real_runner_or_skip() else {
-        return;
-    };
+    let (runner, _home) = real_runner();
     let fixture = FullChainFixture::new(&runner);
 
     let local = fixture.clone_with_app("local");
@@ -351,20 +349,13 @@ fn tool_identity() -> ToolGitIdentity {
     }
 }
 
-fn real_runner_or_skip() -> Option<(GitRunner, TestTempDir)> {
-    let dist = match require_git_dist() {
-        Ok(dist) => dist,
-        Err(GitDistError::MissingEnvironment) => {
-            eprintln!("skipping phase 12 full-chain E2E: ARTISTIC_GIT_DIST_DIR is not set");
-            return None;
-        }
-        Err(error) => panic!("invalid embedded git distribution: {error}"),
-    };
+fn real_runner() -> (GitRunner, TestTempDir) {
+    let dist = require_git_dist().expect("load embedded git distribution");
     let distribution =
         GitDistribution::from_manifest(dist.root, dist.manifest).expect("git distribution");
     let temp = TestTempDir::new("ag-phase-12-runner-home").expect("runner home");
     let home = temp.path().join("home");
     fs::create_dir_all(&home).expect("create runner home");
     let runner = GitRunner::from_distribution(distribution, home);
-    Some((runner, temp))
+    (runner, temp)
 }

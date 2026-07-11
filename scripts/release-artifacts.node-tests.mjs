@@ -1,10 +1,14 @@
-/* global process */
-
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -53,11 +57,6 @@ const tauriLinuxConfig = JSON.parse(
     "utf8",
   ),
 );
-const verifyGitDistBuildEvidenceScript = path.join(
-  repoRoot,
-  "scripts",
-  "verify-git-dist-build-evidence.mjs",
-);
 const fixturePng = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
   "base64",
@@ -71,7 +70,7 @@ async function writeFixtureConfig(
   const gitDistDir = path.join(tauriDir, "resources", "git-dist");
   await mkdir(gitDistDir, { recursive: true });
   if (writeManifest) {
-    await writeFile(path.join(gitDistDir, "manifest.json"), "{}\n");
+    await writeFixtureGitDist(gitDistDir);
   }
   if (writeIcon) {
     await mkdir(path.join(tauriDir, "icons"), { recursive: true });
@@ -121,6 +120,7 @@ async function writeFixtureGitDist(gitDistDir) {
     const filePath = path.join(gitDistDir, relativePath);
     await mkdir(path.dirname(filePath), { recursive: true });
     await writeFile(filePath, contents);
+    await chmod(filePath, 0o755);
     sha256[relativePath] = createHash("sha256").update(contents).digest("hex");
   }
   await mkdir(gitDistDir, { recursive: true });
@@ -128,12 +128,24 @@ async function writeFixtureGitDist(gitDistDir) {
     path.join(gitDistDir, "manifest.json"),
     `${JSON.stringify(
       {
+        schemaVersion: 2,
+        target: "linux-x86_64",
+        platform: "linux-x86_64",
+        toolchainRevision: "fixture-r1",
+        baseFingerprint: "a".repeat(64),
+        helperFingerprint: "b".repeat(64),
+        distributionFingerprint: "c".repeat(64),
+        gitVersion: "2.55.0",
+        gitLfsVersion: "3.7.1",
+        windowsOpenSshVersion: null,
+        helperVersion: "0.1.0",
         paths: {
           gitExecutable: "git/bin/git",
           gitLfsExecutable: "git-lfs/git-lfs",
           credentialHelper: "helpers/artistic-git-credential-helper",
           sshAskpass: "helpers/artistic-git-ssh-askpass",
         },
+        executablePaths: [...files.keys()],
         sha256,
       },
       null,
@@ -346,10 +358,9 @@ test("resource checker rejects packaged git-dist files missing from manifest sha
           requireBundledResource: true,
         }),
       (error) => {
-        assert.match(
-          error.message,
-          /not covered by manifest\.sha256: git\/bin\/stray\.txt/,
-        );
+        assert.match(error.message, /not covered by manifest\.sha256:/);
+        assert.match(error.message, /README\.md/);
+        assert.match(error.message, /git\/bin\/stray\.txt/);
         assert.doesNotMatch(error.message, /git\/libexec\/git-core\/git-add/);
         return true;
       },
@@ -548,15 +559,31 @@ test("release workflow applies the release version to displayed app versions", (
   );
 });
 
-test("release workflow checks staged and packaged git-dist resources", () => {
+test("release workflow ensures and checks staged and packaged git-dist resources", () => {
+  for (const directory of ["downloads", "bases", "helpers"]) {
+    assert.ok(
+      releaseWorkflow.includes(
+        `.cache/artistic-git/git-toolchain/${directory}`,
+      ),
+    );
+  }
+  assert.ok(
+    releaseWorkflow.includes("scripts/emit-git-toolchain-cache-key.mjs"),
+  );
   assert.ok(
     releaseWorkflow.includes(
-      "name: artistic-git-dist-${{ matrix.gitDistTarget }}",
+      "key: ${{ steps.toolchain-cache-key.outputs.key }}",
     ),
   );
-  assert.ok(releaseWorkflow.includes("Activate staged embedded Git resources"));
   assert.ok(
-    releaseWorkflow.includes("node scripts/activate-phase12-git-dist.mjs"),
+    releaseWorkflow.includes(
+      "pnpm git-toolchain:ensure -- --target=${{ matrix.gitDistTarget }}",
+    ),
+  );
+  assert.ok(
+    releaseWorkflow.includes(
+      'pnpm git-toolchain:verify -- --target="${{ matrix.gitDistTarget }}"',
+    ),
   );
   assert.ok(
     releaseWorkflow.includes(
@@ -564,23 +591,12 @@ test("release workflow checks staged and packaged git-dist resources", () => {
     ),
   );
   assert.ok(
-    releaseWorkflow.includes(
-      'node scripts/check-git-dist.mjs --target="${{ matrix.gitDistTarget }}"',
-    ),
+    !releaseWorkflow.includes("Download staged embedded Git resources"),
   );
-  assert.ok(
-    !releaseWorkflow.includes(
-      'node scripts/check-git-dist.mjs --no-exec --target="${{ matrix.gitDistTarget }}"',
-    ),
-  );
-  assert.ok(
-    releaseWorkflow.includes(
-      "name: git-dist-build-evidence-${{ matrix.gitDistTarget }}",
-    ),
-  );
-  assert.ok(
-    releaseWorkflow.includes("node scripts/verify-git-dist-build-evidence.mjs"),
-  );
+  assert.ok(!releaseWorkflow.includes("activate-phase12-git-dist"));
+  assert.ok(!releaseWorkflow.includes("verify-git-dist-build-evidence"));
+  assert.ok(!releaseWorkflow.includes("restore-keys:"));
+  assert.ok(releaseWorkflow.includes("dtolnay/rust-toolchain@1.96.1"));
   assert.ok(releaseWorkflow.includes("Verify packaged embedded Git resources"));
   assert.ok(
     releaseWorkflow.includes(
@@ -669,7 +685,7 @@ test("release workflow configures Linux AppImage runtime prerequisites", () => {
   }
 });
 
-test("CI and git-dist workflows cover release and report contract checks", () => {
+test("CI and audit workflows enforce the pinned embedded toolchain", () => {
   assert.ok(ciWorkflow.includes("run: pnpm release:check"));
   assert.ok(ciWorkflow.includes("if: runner.os == 'Linux'"));
   assert.match(
@@ -681,7 +697,7 @@ test("CI and git-dist workflows cover release and report contract checks", () =>
     "Resolve release rehearsal evidence artifacts",
     "DEFAULT_RELEASE_REHEARSAL_RUN_ID: ${{ vars.ARTISTIC_GIT_RELEASE_REHEARSAL_RUN_ID }}",
     "Download release rehearsal evidence",
-    "if: steps.release-rehearsal-evidence.outputs.run_id != ''",
+    "if: always() && steps.release-rehearsal-evidence.outputs.run_id != ''",
     "pattern: release-rehearsal-*",
     "path: ${{ runner.temp }}/phase12-evidence-input",
     "run-id: ${{ steps.release-rehearsal-evidence.outputs.run_id }}",
@@ -700,98 +716,42 @@ test("CI and git-dist workflows cover release and report contract checks", () =>
   );
   assert.ok(ciWorkflow.includes("node scripts/readiness-summary.mjs"));
   assert.ok(ciWorkflow.includes("name: readiness-summary"));
-  assert.ok(gitDistWorkflow.includes('"scripts/git-dist-report.mjs"'));
-});
-
-test("git-dist build evidence verifier accepts only reusable artifacts from the expected run", async () => {
-  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-git-dist-evidence-"));
-  const evidencePath = path.join(tmpDir, "git-dist-build-evidence.json");
-  const blockedPath = path.join(tmpDir, "git-dist-blocked-evidence.json");
-
-  try {
-    await writeFile(
-      evidencePath,
-      `${JSON.stringify(gitDistBuildEvidence(), null, 2)}\n`,
+  assert.match(
+    ciWorkflow,
+    /Resolve release rehearsal evidence artifacts[\s\S]+if: always\(\)/,
+  );
+  assert.match(ciWorkflow, /Generate readiness summary[\s\S]+if: always\(\)/);
+  for (const workflow of [ciWorkflow, releaseWorkflow]) {
+    for (const directory of ["downloads", "bases", "helpers"]) {
+      assert.ok(
+        workflow.includes(`.cache/artistic-git/git-toolchain/${directory}`),
+      );
+    }
+    assert.ok(workflow.includes("scripts/emit-git-toolchain-cache-key.mjs"));
+    assert.ok(
+      workflow.includes("key: ${{ steps.toolchain-cache-key.outputs.key }}"),
     );
-    const ok = spawnSync(
-      process.execPath,
-      [
-        verifyGitDistBuildEvidenceScript,
-        `--evidence=${evidencePath}`,
-        "--target=linux-x86_64",
-        "--run-id=12345",
-      ],
-      { encoding: "utf8" },
-    );
-    assert.equal(ok.status, 0, ok.stderr || ok.stdout);
-
-    await writeFile(
-      blockedPath,
-      `${JSON.stringify(
-        gitDistBuildEvidence({
-          blocked: true,
-          reusableArtifactProduced: false,
-          status: "placeholder-blocked",
-          targetStatus: "blocked",
-        }),
-        null,
-        2,
-      )}\n`,
-    );
-    const blocked = spawnSync(
-      process.execPath,
-      [
-        verifyGitDistBuildEvidenceScript,
-        `--evidence=${blockedPath}`,
-        "--target=linux-x86_64",
-        "--run-id=12345",
-      ],
-      { encoding: "utf8" },
-    );
-    assert.notEqual(blocked.status, 0);
-    assert.match(blocked.stderr, /not reusable|reusableArtifactProduced/);
-  } finally {
-    await rm(tmpDir, { recursive: true, force: true });
+    assert.ok(!workflow.includes("git-toolchain-v1-"));
+    assert.ok(!workflow.includes("hashFiles('git-toolchain.lock.json'"));
+    assert.ok(!workflow.includes("git-toolchain/work"));
+    assert.ok(!workflow.includes("git-toolchain/locks"));
+    assert.ok(workflow.includes("pnpm git-toolchain:ensure -- --target="));
+    assert.ok(workflow.includes("pnpm git-toolchain:verify -- --target="));
+    assert.ok(workflow.includes("dtolnay/rust-toolchain@1.96.1"));
+    assert.ok(!workflow.includes("restore-keys:"));
   }
+  assert.ok(
+    gitDistWorkflow.includes("Build embedded toolchain from a cold cache"),
+  );
+  assert.ok(gitDistWorkflow.includes("pnpm git-toolchain:config:check"));
+  assert.ok(gitDistWorkflow.includes("pnpm git-toolchain:ensure -- --target="));
+  assert.ok(gitDistWorkflow.includes("pnpm git-toolchain:verify -- --target="));
+  assert.ok(gitDistWorkflow.includes("size-report.json"));
+  assert.ok(gitDistWorkflow.includes("build-evidence.json"));
+  assert.ok(gitDistWorkflow.includes("maximumDuplicateGitBytes"));
+  assert.ok(gitDistWorkflow.includes("recommendedBudgetBytes"));
+  assert.ok(!gitDistWorkflow.includes("actions/cache@"));
+  assert.ok(
+    !gitDistWorkflow.includes("artistic-git-dist-${{ matrix.target }}"),
+  );
 });
-
-function gitDistBuildEvidence({
-  blocked = false,
-  reusableArtifactProduced = true,
-  status = "validated-fresh-build",
-  targetStatus = "ready",
-} = {}) {
-  return {
-    schemaVersion: 1,
-    workflowBuild: {
-      schemaVersion: 1,
-      mode: "build",
-      run: {
-        runId: "12345",
-      },
-      target: {
-        name: "linux-x86_64",
-        artifactName: "artistic-git-dist-linux-x86_64",
-        status: targetStatus,
-        blocked,
-      },
-      artifactIndex: [
-        {
-          kind: "reusable-git-dist",
-          name: "artistic-git-dist-linux-x86_64",
-          produced: reusableArtifactProduced,
-        },
-      ],
-      validationSummary: {
-        status,
-        reusableArtifactProduced,
-        commands: [
-          'node scripts/check-git-dist.mjs --schema-only --real-build --target="linux-x86_64"',
-          "cargo build -p artistic-git-helpers --bins --release",
-          'node scripts/fetch-git-dist.mjs --target="linux-x86_64" --output="$ARTISTIC_GIT_DIST_DIR" --cache-dir="$ARTISTIC_GIT_DIST_CACHE_DIR" --staging-dir="$ARTISTIC_GIT_DIST_STAGING_DIR"',
-          'node scripts/check-git-dist.mjs --target="linux-x86_64"',
-        ],
-      },
-    },
-  };
-}

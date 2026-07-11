@@ -26,7 +26,7 @@ Tailwind CSS, and Rust.
 Prerequisites:
 
 - Node.js and pnpm
-- Rust and Cargo
+- Rustup and Cargo (the helper build installs the pinned Rust toolchain)
 - Platform prerequisites required by Tauri 2
 
 Common commands:
@@ -38,9 +38,10 @@ pnpm cargo:test
 pnpm tauri:dev
 ```
 
-The project intentionally uses an embedded Git distribution for production Git
-operations. Core Git-flow tests must use `ARTISTIC_GIT_DIST_DIR` or packaged
-resources and must never fall back to the system Git executable.
+The project always uses the embedded Git toolchain in
+`src-tauri/resources/git-dist`. Development, builds, tests, and release packaging
+ensure that fixed resource tree exists before running and never search for a
+system Git executable.
 
 ## Privacy Baseline
 
@@ -51,25 +52,25 @@ URLs are generated only after the user enables Gravatar in settings. The CI
 `pnpm privacy:audit` check scans runtime code, release scripts, and docs for
 unapproved URL literals or browser network APIs.
 
-To prepare local development resources once the pinned distribution is
-buildable, run:
+The normal development commands prepare the pinned toolchain automatically. To
+prepare or validate it explicitly, run:
 
 ```sh
-pnpm fetch:git-dist -- --dev-resources --target=macos-universal
-export ARTISTIC_GIT_DIST_DIR="$PWD/src-tauri/resources/git-dist"
-pnpm git-dist:check:runtime -- --target=macos-universal
+pnpm git-toolchain:ensure -- --target=macos-universal
+pnpm git-toolchain:verify -- --target=macos-universal
 ```
 
-Downloaded Git, Git LFS, OpenSSH, and generated manifests are local build
-outputs; do not commit them. See [docs/git-dist.md](docs/git-dist.md) for the
-current pins, CI artifact/cache policy, and build limitations.
-Real Git Tauri E2E setup and skipped/failed report semantics are documented in
+Downloaded Git, Git LFS, OpenSSH, helper binaries, and generated manifests are
+ignored local build outputs. The repository-local cache is
+`.cache/artistic-git/git-toolchain`; a valid fingerprint is reused without
+downloading or rebuilding. See [docs/git-dist.md](docs/git-dist.md) for the
+manual revision update process and CI cache policy. Real Git Tauri E2E setup is documented in
 [docs/e2e-real-git.md](docs/e2e-real-git.md).
 
-Win32-OpenSSH is selected by a stable-first rule: use an official stable
-`OpenSSH-Win64.zip` when available; otherwise use the pinned latest official
-preview package as an explicit fallback. `pnpm git-dist:check:real` validates
-that every git-dist source is stable or an approved fallback.
+Windows packages the exact Win32-OpenSSH version pinned by the current
+toolchain revision. macOS and Linux use the operating system OpenSSH. No
+component is updated automatically; maintainers explicitly change the pins and
+run `pnpm git-toolchain:update -- --revision=<new-revision>`.
 
 ## Release Baseline
 
@@ -91,13 +92,13 @@ The release workflow runs on `main` pushes and `workflow_dispatch`, but it
 publishes only from `main` when `ENABLE_MAIN_RELEASE=true`. No GitHub
 Environment or manual approval step is used. When the gate is not enabled, the
 workflow runs tests and a Tauri `--no-bundle` dry-run build without publishing.
-Manual runs can keep the automatic version calculation or override the SemVer bump level.
-Publishing also requires a completed Git Distribution workflow run id, supplied
-as the `git_dist_run_id` dispatch input or the `GIT_DIST_RUN_ID` repository
-variable, so each platform package stages and verifies the matching
-`artistic-git-dist-*` artifact before bundling, then scans the target-specific
-build output for `git-dist/manifest.json` after bundling. The repository and
-GitHub Releases must stay public so updater asset URLs remain reachable.
+Manual runs can keep the automatic version calculation or override the SemVer
+bump level. Every release job restores the exact repository-local toolchain
+cache, runs ensure and verification on its own platform, bundles that fixed
+resource tree, and verifies the packaged manifest and file hashes. Release
+packaging does not consume a binary artifact from another workflow. The
+repository and GitHub Releases must stay public so updater asset URLs remain
+reachable.
 
 Publishing requires a Tauri updater key pair generated outside the repository.
 Store the public key in GitHub Variables as `TAURI_UPDATER_PUBLIC_KEY` (or the

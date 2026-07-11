@@ -1,4 +1,4 @@
-use artistic_git_contracts::GitDistManifest;
+use artistic_git_contracts::{GitDistManifest, GIT_DIST_MANIFEST_SCHEMA_VERSION};
 use std::collections::BTreeMap;
 use std::{
     env, fs, io,
@@ -12,9 +12,9 @@ static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Error)]
 pub enum GitDistError {
-    #[error("ARTISTIC_GIT_DIST_DIR is not set; tests must use the embedded Git distribution")]
-    MissingEnvironment,
-    #[error("git distribution manifest is missing at {0}")]
+    #[error(
+        "git distribution manifest is missing at {0}; run `pnpm git-toolchain:ensure` before running Rust tests directly"
+    )]
     MissingManifest(PathBuf),
     #[error("failed to read git distribution manifest at {path}: {source}")]
     ReadManifest {
@@ -81,11 +81,15 @@ impl Drop for TestTempDir {
 }
 
 pub fn require_git_dist() -> Result<GitDist, GitDistError> {
-    let root = env::var_os("ARTISTIC_GIT_DIST_DIR")
-        .map(PathBuf::from)
-        .ok_or(GitDistError::MissingEnvironment)?;
+    load_git_dist(repository_git_dist_root())
+}
 
-    load_git_dist(root)
+pub fn repository_git_dist_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("test-support crate must be located under the repository crates directory")
+        .join("src-tauri/resources/git-dist")
 }
 
 pub fn load_git_dist(root: PathBuf) -> Result<GitDist, GitDistError> {
@@ -115,8 +119,13 @@ pub fn command_path(root: &Path, relative_path: &str) -> PathBuf {
 
 pub fn git_dist_manifest_fixture() -> GitDistManifest {
     GitDistManifest {
-        schema_version: 1,
+        schema_version: GIT_DIST_MANIFEST_SCHEMA_VERSION,
+        target: format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
         platform: std::env::consts::OS.to_owned(),
+        toolchain_revision: "test-r1".to_owned(),
+        base_fingerprint: "test-base-fingerprint".to_owned(),
+        helper_fingerprint: "test-helper-fingerprint".to_owned(),
+        distribution_fingerprint: "test-distribution-fingerprint".to_owned(),
         git_version: "git version 2.50.0".to_owned(),
         git_lfs_version: "git-lfs/3.6.0".to_owned(),
         windows_open_ssh_version: None,
@@ -128,6 +137,12 @@ pub fn git_dist_manifest_fixture() -> GitDistManifest {
             credential_helper: executable_path("helpers/artistic-git-credential-helper"),
             ssh_askpass: executable_path("helpers/artistic-git-ssh-askpass"),
         },
+        executable_paths: vec![
+            executable_path("git/bin/git"),
+            executable_path("git-lfs/git-lfs"),
+            executable_path("helpers/artistic-git-credential-helper"),
+            executable_path("helpers/artistic-git-ssh-askpass"),
+        ],
         sha256: BTreeMap::new(),
     }
 }

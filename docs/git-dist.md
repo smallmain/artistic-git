@@ -1,400 +1,121 @@
-# Embedded Git Distribution
+# Embedded Git Toolchain
 
-Artistic Git uses an embedded Git distribution for all production Git and Git
-LFS operations. Runtime code and integration tests must resolve executables from
-`ARTISTIC_GIT_DIST_DIR` during development or from packaged Tauri resources in
-release builds. Falling back to `PATH` or a system `git` executable is a hard
-failure.
+Artistic Git treats Git and its companion executables as part of the product.
+Every development, test, CI, and release path uses the generated resource tree
+at `src-tauri/resources/git-dist`. The runtime has no configurable distribution
+path and never searches for system Git.
 
-## Pinned Versions
+## Version Contract
 
-The current pins were verified from official sources on 2026-07-09:
+`git-dist.toml` pins Git, Git LFS, Windows OpenSSH, source URLs, SHA-256 values,
+build recipes, `toolchain_revision`, and Rust `1.96.1` for the application-owned
+credential and askpass helpers. `git-toolchain.lock.json` records the canonical
+third-party definition digest for every target.
 
-| Component              | Version              | Official URL                                                                  | Status           |
-| ---------------------- | -------------------- | ----------------------------------------------------------------------------- | ---------------- |
-| Git source             | `2.55.0`             | `https://www.kernel.org/pub/software/scm/git/git-2.55.0.tar.xz`               | stable           |
-| Git for Windows MinGit | `2.55.0.windows.2`   | `https://github.com/git-for-windows/git/releases/tag/v2.55.0.windows.2`       | stable           |
-| Git LFS                | `3.7.1`              | `https://github.com/git-lfs/git-lfs/releases/tag/v3.7.1`                      | stable           |
-| Win32-OpenSSH          | `10.0.0.0p2-Preview` | `https://github.com/PowerShell/Win32-OpenSSH/releases/tag/10.0.0.0p2-Preview` | preview fallback |
+Versions never advance automatically. Changing a component, checksum, or base
+build recipe without creating a new manual revision is rejected. The update
+flow is:
 
-Win32-OpenSSH is stable-first. If an official stable `OpenSSH-Win64.zip`
-release exists, `git-dist.toml` must pin that stable release. If no stable
-official Win64 asset exists, the latest official preview package may be used as
-an explicit fallback with `stable = false`, `channel = "preview"`,
-`placeholder = false`, `fallback_when_no_stable = true`, and a pinned SHA-256.
-`scripts/check-git-dist-openssh-release.mjs` checks GitHub release metadata and
-treats `Preview`, `Beta`, `RC`, or `Alpha` in the tag/name as non-stable even
-when GitHub reports `prerelease=false`; only `Preview` is accepted as the
-fallback channel.
+1. Edit the intended versions, URLs, checksums, or recipes in `git-dist.toml`.
+2. Choose a new revision and run:
 
-## Configuration
+   ```sh
+   pnpm git-toolchain:update -- --revision=<new-revision>
+   ```
 
-`git-dist.toml` is the single source of truth for the distribution contract:
+3. Review the config and lock diff.
+4. Run a clean three-platform Git Toolchain Audit workflow.
 
-- pinned versions for Git, Git for Windows, Git LFS, Win32-OpenSSH, and helper
-  binaries
-- supported targets: `windows-x86_64`, `macos-universal`, `linux-x86_64`
-- per-target source/archive entries with official release/source URLs
-- structured SHA-256 fields: `checksum.algorithm`, `checksum.value`,
-  `checksum.source`, and `checksum.url`
-- Tauri resource layout shared by development and packaged builds
-- build recipes for macOS and Linux Git artifacts
-- validation policy that permits placeholders only in schema-only mode and
-  permits Win32-OpenSSH preview fallback only when no stable Win64 asset exists
+The update command does not query or select the newest upstream release.
 
-Schema-only validation:
+## Local Commands
 
 ```sh
-node scripts/check-git-dist.mjs --schema-only
-node scripts/fetch-git-dist.mjs --schema-only --target=linux-x86_64
+pnpm git-toolchain:ensure
+pnpm git-toolchain:ensure -- --target=macos-universal
+pnpm git-toolchain:verify -- --target=macos-universal
+pnpm git-toolchain:config:check
 ```
 
-Real build policy validation fails while any selected source is a placeholder
-or an unapproved non-stable source:
+Supported targets are `macos-universal`, `windows-x86_64`, and
+`linux-x86_64`. When no target is supplied, the command derives the current
+platform target.
 
-```sh
-node scripts/check-git-dist.mjs --schema-only --real-build
-```
+Ensure validates the complete active tree first. A valid tree returns without
+network access, Cargo, file replacement, or mtime changes. Otherwise it reuses
+valid base and helper cache entries, builds only missing fingerprints, assembles
+a temporary complete tree, validates it, and atomically activates it. Failures
+leave the previous tree intact but do not accept an outdated tree as success.
 
-The package script is wired for the release-ready policy check:
+Verify is read-only and fails when any target, revision, fingerprint, manifest
+path, file hash, executable mode, component version, or runtime smoke check is
+invalid. Config check validates only the committed configuration and lock; it is
+not proof that a product resource tree exists.
 
-```sh
-pnpm git-dist:check:real
-```
+## Cache Layout
 
-It succeeds only when every selected source is either stable or an approved
-preview fallback.
-
-The Win32-OpenSSH release metadata gate is separate so the stable-first
-decision is regularly rechecked against GitHub API data:
-
-```sh
-node scripts/check-git-dist-openssh-release.mjs --verify-preferred-release-policy
-```
-
-It passes when no stable `OpenSSH-Win64.zip` release exists and the latest
-non-draft release is an official preview package containing that asset. If a
-stable Win64 release appears, it fails with the required next steps: update
-`git-dist.toml` to the stable release, remove preview fallback metadata, and
-run real artifact validation before checking Windows or three-platform 1A
-items.
-
-For CI and release handoff, the readiness report writes both Markdown and JSON
-summaries of the same state:
-
-```sh
-node scripts/git-dist-report.mjs --include-openssh-release --output-dir=artifacts/git-dist-readiness
-```
-
-The JSON report marks each target as `ready` or `blocked`, includes every
-placeholder or unapproved source blocker, and records the latest Win32-OpenSSH
-release metadata when requested. A `blocked` report is evidence for why a target
-was skipped; it is not a substitute for a real embedded Git artifact.
-
-## Fetch Pipeline
-
-`scripts/fetch-git-dist.mjs` is the local and CI entry point for preparing a
-distribution tree. It never invokes `git`, never searches `PATH` for Git, and
-never falls back to a system Git.
-
-Useful commands:
-
-```sh
-node scripts/fetch-git-dist.mjs --print-env --target=macos-universal
-node scripts/fetch-git-dist.mjs --dev-resources --target=macos-universal --helper-profile=release
-node scripts/fetch-git-dist.mjs --target=linux-x86_64 --download-only
-node scripts/fetch-git-dist.mjs --target=windows-x86_64 --helper-dir=/path/to/helpers
-```
-
-Current phase 1A behavior:
-
-- `--schema-only` parses `git-dist.toml` and validates target/source/checksum
-  structure without network or filesystem artifact work.
-- `--print-env` prints the `ARTISTIC_GIT_DIST_DIR` export line for the chosen
-  output directory.
-- `--dev-resources` uses `src-tauri/resources/git-dist` as the output directory
-  so `pnpm tauri:dev` and local Rust tests can point at the same resource tree.
-  It always assembles a runnable tree and rejects `--output`, `--download-only`,
-  and `--no-extract` to avoid leaving the ignored mount in a partial state.
-- real fetch mode rejects placeholders and unapproved non-stable sources before
-  any download.
-- release-ready sources are downloaded, SHA-256 checked, and extracted into a
-  staging directory.
-- archive targets can be assembled from staged archive contents into the
-  configured `git-dist/` layout. Assembly strips common single-directory archive
-  roots, copies helper binaries, writes `manifest.json`, and records SHA-256
-  values only after every required executable is present.
-- macOS Git source tarballs are built on macOS/Xcode runners once per
-  architecture (`arm64`, `x86_64`) with `RUNTIME_PREFIX=YesPlease`; installed
-  trees are merged into a Universal distribution with `lipo`.
-- Linux Git source tarballs are built inside `ubuntu:20.04` with the configured
-  trimmed Git flags. On non-20.04 Linux hosts the script runs the build in
-  Docker; on Ubuntu 20.04 it builds directly. The build fails if the final Git
-  executable still links dynamic `libcurl`, `libssl`, `libcrypto`, `zlib`,
-  `pcre2`, or `expat`.
-- macOS Git LFS downloads both official Darwin archives and combines the
-  architecture binaries into `git-lfs/git-lfs` during assembly.
-- helper binaries may be supplied with `--helper-dir`, with explicit
-  `--credential-helper` and `--ssh-askpass` paths, or from
-  `target/release` / `target/debug` via `--helper-profile=release|debug|auto`.
-  `--dev-resources` and `--build-helpers` run the release helper build before
-  assembly. If helper binaries cannot be resolved, assembly fails with the
-  missing candidates and no incomplete `manifest.json` is written.
-
-Windows real fetch is enabled when the Win32-OpenSSH release gate confirms that
-no stable `OpenSSH-Win64.zip` exists and the pinned latest preview fallback is
-still current. MinGit, Git LFS, Win32-OpenSSH, and archive assembly paths are
-covered by SHA-256 pins and fixture tests.
-
-## Development Resources
-
-Prepare a local development tree outside the normal Git repository, then point
-`ARTISTIC_GIT_DIST_DIR` at it:
-
-```sh
-export ARTISTIC_GIT_DIST_DIR=/absolute/path/to/git-dist
-node scripts/check-git-dist.mjs
-```
-
-The intended repository-local development resources flow is:
-
-```sh
-cargo build -p artistic-git-helpers --bins --release
-pnpm fetch:git-dist -- --dev-resources --target=macos-universal --helper-profile=release
-export ARTISTIC_GIT_DIST_DIR="$PWD/src-tauri/resources/git-dist"
-node scripts/check-git-dist.mjs --target=macos-universal
-```
-
-`--dev-resources` also builds the release helper binaries automatically, so the
-short form is:
-
-```sh
-pnpm fetch:git-dist -- --dev-resources --target=macos-universal
-export ARTISTIC_GIT_DIST_DIR="$PWD/src-tauri/resources/git-dist"
-node scripts/check-git-dist.mjs --target=macos-universal
-```
-
-Do not combine `--dev-resources` with `--output`, `--download-only`, or
-`--no-extract`; the repository-local mount is only valid after a complete
-assembly that writes `manifest.json`.
-
-`src-tauri/resources/git-dist/README.md` is tracked as the mount point
-placeholder, but downloaded archives, extracted tools, and generated
-`manifest.json` are local build outputs and must not be committed to the normal
-Git repository.
-
-The checker requires `manifest.json` and every executable referenced by that
-manifest. It invokes only those explicit paths for version checks. If
-`ARTISTIC_GIT_DIST_DIR` is missing, invalid, or incomplete, the check fails and
-does not search for a system Git.
-
-## Expected Layout
+The ignored repository-local cache is fixed at
+`.cache/artistic-git/git-toolchain`:
 
 ```text
-git-dist/
+downloads/<sha256>/
+bases/<target>/<base-fingerprint>/
+helpers/<target>/<helper-fingerprint>/
+work/
+locks/
+```
+
+Downloads are addressed by verified upstream SHA-256. Base fingerprints cover
+third-party definitions and build recipes. Helper fingerprints cover helper
+sources, `Cargo.lock`, the helper crate version, release profile, target, and
+fixed Rust version. Per-fingerprint and activation locks make concurrent ensure
+calls build each entry once.
+
+The only active product tree is:
+
+```text
+src-tauri/resources/git-dist/
   manifest.json
   git/
-    bin/git
-    mingw64/bin/git.exe
-    libexec/git-core/...
-    mingw64/libexec/git-core/...
-    usr/bin/sh.exe
   git-lfs/
-    git-lfs(.exe)
-  openssh/
-    ssh.exe
+  openssh/                 # Windows only
   helpers/
-    artistic-git-credential-helper(.exe)
-    artistic-git-ssh-askpass(.exe)
 ```
 
-The `manifest.json` paths are relative to the `git-dist` root and match
-`GitDistManifest` in `crates/contracts`.
+This directory is generated and ignored in its entirety; it contains no tracked
+mount-point file. `GitDistManifest` records the explicit target,
+`toolchainRevision`, base/helper/distribution fingerprints, component versions,
+relative executable paths, and every regular file SHA-256.
 
-`manifest.sha256` is keyed by manifest-relative executable path, not by logical
-name. For example:
+## Platform Policy
 
-```json
-{
-  "paths": {
-    "gitExecutable": "git/bin/git",
-    "gitLfsExecutable": "git-lfs/git-lfs",
-    "credentialHelper": "helpers/artistic-git-credential-helper",
-    "sshAskpass": "helpers/artistic-git-ssh-askpass"
-  },
-  "sha256": {
-    "git/bin/git": "<sha256>",
-    "git-lfs/git-lfs": "<sha256>",
-    "helpers/artistic-git-credential-helper": "<sha256>",
-    "helpers/artistic-git-ssh-askpass": "<sha256>"
-  }
-}
-```
+- Windows packages pinned MinGit, Git LFS, Win32-OpenSSH, and both helpers.
+- macOS packages universal Git, Git LFS, and helper binaries containing arm64
+  and x86_64 slices. It uses the operating system OpenSSH.
+- Linux packages Git, Git LFS, and both helpers. It uses the operating system
+  OpenSSH.
 
-`scripts/check-git-dist.mjs` verifies that every required executable path is
-present, accessible, covered by `manifest.sha256`, and byte-for-byte matches its
-declared SHA-256. It also verifies that manifest paths exactly match
-`git-dist.toml`.
+Installed Git builtin aliases are represented by deterministic relative
+wrappers rather than copied full Git binaries. Runtime smoke covers builtin
+dispatch, transport, clone, fetch, push, and Git LFS.
 
-## Tauri Bundle Resources
+## Build, Test, CI, and Release
 
-Release packaging maps `src-tauri/resources/git-dist/` to the packaged Tauri
-resource path `git-dist/` through `src-tauri/tauri.conf.json`. This keeps the
-development resource layout and packaged resource layout aligned with
-`GitDistManifest` paths.
+The standard dev, build, test, Cargo test, E2E, and performance commands invoke
+ensure before their work. Missing resources are built; invalid resources are
+repaired or fail. Tests do not silently return early.
 
-Config-only self-check:
+CI test and release jobs restore only `.cache/artistic-git/git-toolchain` with
+an exact target plus lock/config/helper/contracts hash. They do not use prefix
+restore keys. Every job still runs ensure and verify, so cache contents are an
+optimization rather than trusted build input.
 
-```sh
-node scripts/check-tauri-bundle-resources.mjs
-```
-
-Real release packaging must stage a complete embedded Git distribution before
-bundling:
-
-```sh
-ARTISTIC_GIT_DIST_DIR=src-tauri/resources/git-dist \
-  node scripts/check-git-dist.mjs --target=linux-x86_64
-node scripts/check-tauri-bundle-resources.mjs --require-manifest
-```
-
-The release workflow runs the config-only check during dry-run builds. The
-gated publish path additionally requires `manifest.json` and the target-specific
-embedded Git executables to be present under `src-tauri/resources/git-dist/`.
-After Tauri bundling, `--require-bundled-resource` scans the built output for
-packaged `git-dist/manifest.json` files and verifies every manifest-declared
-executable exists with the recorded SHA-256.
-
-## CI Artifact And Cache Strategy
-
-`.github/workflows/git-dist.yml` always runs contract checks on pull requests
-that touch the git-dist pipeline. Manual `workflow_dispatch` runs expose two
-modes:
-
-- `contract` validates config, source layout, SHA-256 fields, real-build source
-  policy, Win32-OpenSSH release metadata, and Tauri bundle resource mapping
-  without downloading binaries. The Win32-OpenSSH gate pages through release
-  metadata, prefers a stable `OpenSSH-Win64.zip` release when present, and only
-  accepts latest `Preview` as fallback when no stable Win64 asset exists.
-- `build` runs a target matrix and prepares reusable git-dist artifacts.
-
-Build mode uses this policy:
-
-- matrix targets: `windows-x86_64`, `macos-universal`, `linux-x86_64`, each on
-  its native GitHub runner image.
-- matrix jobs first run target-scoped real-build policy validation, so
-  placeholder pins and unapproved non-stable sources fail before cache restore,
-  helper builds, download, or package work.
-- source-policy-blocked matrix jobs run the expected-placeholder rejection check
-  and stop without uploading an artifact. This branch is inactive for the
-  current Windows pin because the approved Win32-OpenSSH preview fallback is
-  release-ready.
-- contract and build jobs upload `git-dist-readiness-*` artifacts containing
-  `git-dist-readiness.json` and `git-dist-readiness.md`, so downstream release
-  checks can distinguish real target readiness from documented external blocks
-  without scraping logs.
-- build jobs also upload `git-dist-build-evidence-<target>` with
-  `git-dist-build-evidence.json` and `.md`. That report records the workflow run
-  manifest, target status, produced artifact index, source/archive provenance,
-  source-cache hit state, assembled-cache hit state, and the validation command
-  path used for either a cache hit or a fresh build.
-- source-policy-blocked jobs upload `git-dist-blocker-<target>` with
-  `git-dist-blocker.json` and `.md`. That artifact is only for targets blocked
-  by placeholders or unapproved non-stable sources; current Windows builds
-  should instead upload `artistic-git-dist-windows-x86_64` after validation.
-- source archive cache key includes target, `git-dist.toml`, fetch/check
-  scripts, lockfiles, and a manual `GIT_DIST_CACHE_VERSION`.
-- assembled distribution cache key includes target, `git-dist.toml`, fetch/check
-  scripts, helper crate sources, lockfiles, and `GIT_DIST_CACHE_VERSION`.
-- cache hit still runs `scripts/check-git-dist.mjs --target=<target>` against
-  the restored `ARTISTIC_GIT_DIST_DIR`, including runtime smoke checks, and the
-  build evidence records that command as the cache-hit validation gate.
-- cache miss builds the helper binaries, then runs
-  `scripts/fetch-git-dist.mjs --target=<target>` with explicit output,
-  source-cache, and staging directories.
-- placeholder versions, placeholder URLs, unapproved non-stable sources, or
-  zero SHA-256 values fail before download/build/package
-- successful jobs upload `artistic-git-dist-<target>` artifacts for later test
-  and packaging jobs to consume via `ARTISTIC_GIT_DIST_DIR`.
-
-Auditing a `workflow_dispatch` build run should start with the build evidence
-artifact for each target:
-
-```text
-git-dist-build-evidence-<target>/
-  git-dist-readiness.json
-  git-dist-readiness.md
-  git-dist-build-evidence.json
-  git-dist-build-evidence.md
-```
-
-For every target, `workflowBuild.validationSummary.reusableArtifactProduced`
-must be `true` before a downstream job consumes
-`artistic-git-dist-<target>`. Windows is expected to produce
-`artistic-git-dist-windows-x86_64` under the approved preview fallback policy;
-if a stable Win32-OpenSSH package appears, the release gate fails until the
-config is updated to that stable pin.
-
-Downstream jobs should consume an artifact like this:
-
-```yaml
-- uses: actions/download-artifact@v4
-  with:
-    name: artistic-git-dist-linux-x86_64
-    path: src-tauri/resources/git-dist
-- run: node scripts/check-git-dist.mjs --target=linux-x86_64
-  env:
-    ARTISTIC_GIT_DIST_DIR: src-tauri/resources/git-dist
-```
-
-## Upgrade Flow
-
-1. Update versions, source URLs, SHA-256 values, and build recipe pins in
-   `git-dist.toml`.
-2. Run schema-only and real-build validation for every target.
-3. Run the distribution workflow on all supported platforms.
-4. Verify `git --version`, `git lfs version`, manifest checksums, and downstream
-   Rust integration tests using `ARTISTIC_GIT_DIST_DIR`.
-5. Review binary provenance in the pull request.
-6. Record user-visible toolchain changes in the release notes or changelog.
-
-## App Release Gate
-
-`.github/workflows/release.yml` calculates the next SemVer version and release
-notes from Conventional Commits since the previous semver tag. `fix` commits
-produce a patch bump, `feat` and `refactor` commits produce a minor bump,
-`!`/`BREAKING CHANGE` commits produce a major bump, and unparsed commit messages
-fall back to a patch bump. With no previous tag, the initial version is
-`0.1.0`.
-
-`main` pushes and manual dispatches publish only from `main` when
-`ENABLE_MAIN_RELEASE=true`; no GitHub Environment or manual approval is used.
-Otherwise the workflow runs tests and a Tauri `--no-bundle` dry-run package
-build without creating a GitHub Release.
-Manual dispatches may keep the automatic bump or override it with `patch`,
-`minor`, or `major`.
-
-Formal publishing also requires a completed Git Distribution workflow run id.
-Pass it as the `git_dist_run_id` manual-dispatch input or set the
-`GIT_DIST_RUN_ID` repository variable for main-push releases. The package matrix
-downloads both `artistic-git-dist-<target>` and
-`git-dist-build-evidence-<target>` from that workflow run. Before packaging, it
-requires the evidence to prove that the same run produced a reusable artifact for
-the same target, and then validates the staged resource tree with runtime smoke:
-
-```sh
-node scripts/verify-git-dist-build-evidence.mjs \
-  --evidence=/path/to/git-dist-build-evidence.json \
-  --target=<target> \
-  --run-id=<git-dist-run-id>
-node scripts/check-tauri-bundle-resources.mjs --require-manifest --release
-ARTISTIC_GIT_DIST_DIR=src-tauri/resources/git-dist \
-  node scripts/check-git-dist.mjs --target=<target>
-```
-
-`--release` additionally rejects the placeholder Tauri updater public key and
-requires the GitHub Releases `latest.json` endpoint. The publish job generates
-`latest.json` from signed updater artifacts, preferring Tauri updater packages
-such as Windows `.exe.zip` and Linux `.AppImage.tar.gz` when those are present,
-then uploads installers, updater artifacts, signatures, and `latest.json` to
-GitHub Releases.
+The Git Toolchain Audit workflow performs a cold build for all three targets and
+uploads only `manifest.json`, `build-evidence.json`, and `size-report.json`.
+The size report measures component composition and same-hash copies of the main
+Git binary. macOS/Linux must reduce those duplicate bytes by at least 80% from
+the audited v0.1.2 expanded distributions. It also emits total and per-component
+`+10%` recommended budgets for fixing the first post-change CI baseline.
+Release jobs build or reuse their own exact cache and never download a complete
+toolchain from another workflow. Before and after bundling, release jobs validate
+the manifest, file hashes, and runtime executables.

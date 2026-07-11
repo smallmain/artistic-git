@@ -24,7 +24,6 @@ const markdownPath = reportPath.replace(/\.json$/i, ".md");
 
 const sourceFiles = {
   ci: ".github/workflows/ci.yml",
-  gitDistActivator: "scripts/activate-phase12-git-dist.mjs",
   packageJson: "package.json",
   rust: "crates/app/src/full_chain_e2e.rs",
   wdio: "e2e/tauri/full-chain-real-git.e2e.ts",
@@ -177,20 +176,22 @@ const coverageSteps = [
 
 const gates = [
   {
-    id: "wdio-real-git-only",
+    id: "wdio-embedded-git-required",
     requirement:
-      "WDIO full-chain runs only when explicitly enabled with a real git-dist manifest",
+      "WDIO full-chain always uses the fixed embedded Git resource manifest",
     source: "wdio",
     tokens: [
-      "ARTISTIC_GIT_E2E_REAL_GIT",
-      "describe.skip",
-      "ARTISTIC_GIT_DIST_DIR",
+      'describe("Artistic Git Tauri real-git full chain"',
+      '"src-tauri"',
+      '"resources"',
+      '"git-dist"',
       "manifest.paths.gitExecutable",
       "spawnSync(this.gitPath",
       "createEmbeddedGitEnv",
       "GIT_EXEC_PATH",
       "git/libexec/git-core",
     ],
+    forbidden: ["describe\\.skip"],
   },
   {
     id: "temporary-bare-remote",
@@ -237,33 +238,16 @@ const gates = [
   {
     id: "ci-linux-windows",
     requirement:
-      "Linux and Windows CI can stage Git Distribution artifacts, run the Tauri E2E command, and upload real-git evidence",
+      "Linux and Windows CI ensure the embedded toolchain, run Tauri E2E, and upload evidence",
     source: "ci",
     tokens: [
       "os: ubuntu-22.04",
       "os: windows-latest",
-      "phase12_git_dist_run_id",
-      "phase12_e2e_require_real_git_dist",
-      "actions/download-artifact@v4",
-      "artistic-git-dist-${{ matrix.gitDistTarget }}",
-      "node scripts/activate-phase12-git-dist.mjs",
+      "git-toolchain:ensure",
       "pnpm e2e:real-git:report",
-      "ARTISTIC_GIT_E2E_REAL_GIT",
       "pnpm e2e:tauri:ci",
       "e2e-real-git-report-${{ matrix.os }}",
       "artifacts/e2e-real-git-report-*",
-    ],
-    extraSources: [
-      {
-        source: "gitDistActivator",
-        tokens: [
-          "ARTISTIC_GIT_PHASE12_GIT_DIST_SOURCE",
-          "ARTISTIC_GIT_DIST_DIR",
-          "chmodSync",
-          "git/libexec/git-core",
-          "manifest.paths",
-        ],
-      },
     ],
   },
   {
@@ -272,11 +256,12 @@ const gates = [
       "real-git report verifies manifest sha256 evidence and refuses system Git fallback",
     source: "realGitReport",
     tokens: [
-      "Refusing to search PATH or use system Git",
+      "const gitDistDir = path.join(",
       "manifest.paths.gitExecutable",
       "manifest.paths.gitLfsExecutable",
       "manifest.sha256",
-      "resolves outside ARTISTIC_GIT_DIST_DIR",
+      "resolves outside the embedded Git resource directory",
+      "runTool(\n  gitEvidence.absolutePath",
       "gitLfsViaGit",
     ],
   },
@@ -316,8 +301,7 @@ const report = {
   gates: gateResults,
   result: failures.length === 0 ? "static-pass" : "failed",
   runtimeEvidence: {
-    command:
-      "ARTISTIC_GIT_E2E_REAL_GIT=1 ARTISTIC_GIT_DIST_DIR=<real git-dist> pnpm e2e:tauri:ci",
+    command: "pnpm e2e:tauri:ci",
     status: "not-run-by-audit",
     reason:
       "This audit proves the full-chain harness and CI gates are still wired. Linux/Windows WDIO runtime evidence is still required before checking the TASKS.md item.",
@@ -326,7 +310,7 @@ const report = {
   sources: sourceFiles,
   taskCheckable: false,
   taskCheckableReason:
-    "Static audit passed, but no successful Linux/Windows real-git WDIO run artifact is attached by this command.",
+    "Static audit passed, but successful Linux/Windows real-git WDIO runtime evidence is still required.",
 };
 
 if (!checkOnly) {

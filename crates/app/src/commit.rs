@@ -1107,7 +1107,7 @@ mod tests {
     use super::*;
     use crate::git_ops::display_path;
     use artistic_git_git_runner::{GitDistribution, GitRunner};
-    use artistic_git_test_support::{require_git_dist, GitDistError, TestTempDir};
+    use artistic_git_test_support::{require_git_dist, TestTempDir};
     use std::{
         ffi::OsString,
         io::Write,
@@ -1116,9 +1116,7 @@ mod tests {
 
     #[test]
     fn commits_only_selected_paths() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.init_with_commit();
         repo.write("selected.txt", "selected\n");
@@ -1153,9 +1151,7 @@ mod tests {
 
     #[test]
     fn large_file_prompt_blocks_before_commit() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.init_with_commit();
         repo.write_bytes("large.bin", &vec![7; 1024 * 1024 + 1]);
@@ -1190,9 +1186,7 @@ mod tests {
 
     #[test]
     fn large_file_track_with_lfs_installs_filters_and_commits_pointer() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.init_with_commit();
         repo.write_bytes("large.bin", &vec![7; 1024 * 1024 + 1]);
@@ -1230,9 +1224,7 @@ mod tests {
 
     #[test]
     fn large_file_commit_normally_skips_lfs_tracking() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.init_with_commit();
         repo.write_bytes("large.bin", &vec![9; 1024 * 1024 + 1]);
@@ -1262,9 +1254,7 @@ mod tests {
 
     #[test]
     fn disable_repository_gpgsign_writes_local_config_before_commit() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.init_with_commit();
         repo.git(["config", "--local", "commit.gpgsign", "true"]);
@@ -1295,9 +1285,7 @@ mod tests {
 
     #[test]
     fn commit_syncs_before_commit_and_pushes_selected_paths() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let fixture = DoubleClone::new(&runner);
         fixture.peer.write("remote.txt", "remote\n");
         fixture.peer.git(["add", "remote.txt"]);
@@ -1337,9 +1325,7 @@ mod tests {
 
     #[test]
     fn commit_push_immediately_publishes_branch_without_upstream() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let parent = TestTempDir::new("ag-commit-publish").expect("publish parent");
         let remote = TestRepo::at(&runner, parent.path().join("remote.git"));
         remote.git(["init", "--bare", "-b", "main"]);
@@ -1387,9 +1373,7 @@ mod tests {
 
     #[test]
     fn commit_push_immediately_recovers_from_push_race() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         let fixture = DoubleClone::new(&runner);
         fixture.local.write("selected.txt", "selected\n");
         fixture.install_one_shot_push_race_hook();
@@ -1417,9 +1401,7 @@ mod tests {
 
     #[test]
     fn commit_submodule_workspace_change_commits_child_then_superproject_pointer() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         allow_file_protocol_for_local_submodule_fixtures(&runner);
         let fixture = SubmoduleCommitFixture::new(&runner);
         let submodule = fixture.local.path.join("deps/lib");
@@ -1469,9 +1451,7 @@ mod tests {
 
     #[test]
     fn commit_submodule_push_boundary_keeps_superproject_ahead_after_root_push_failure() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         allow_file_protocol_for_local_submodule_fixtures(&runner);
         let fixture = SubmoduleCommitFixture::new(&runner);
         let submodule = fixture.local.path.join("deps/lib");
@@ -1528,9 +1508,7 @@ mod tests {
 
     #[test]
     fn commit_submodule_detached_without_safe_branch_is_rejected() {
-        let Some((runner, _dist_temp)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _dist_temp) = real_runner();
         allow_file_protocol_for_local_submodule_fixtures(&runner);
         let fixture = SubmoduleCommitFixture::new(&runner);
         let submodule = fixture.local.path.join("deps/lib");
@@ -1631,17 +1609,13 @@ mod tests {
         );
     }
 
-    fn real_runner_or_skip() -> Option<(GitRunner, TestTempDir)> {
-        let dist = match require_git_dist() {
-            Ok(dist) => dist,
-            Err(GitDistError::MissingEnvironment) => return None,
-            Err(error) => panic!("invalid embedded git distribution: {error}"),
-        };
+    fn real_runner() -> (GitRunner, TestTempDir) {
+        let dist = require_git_dist().expect("load embedded git distribution");
         let distribution = GitDistribution::from_manifest(dist.root, dist.manifest)
             .expect("load embedded git distribution");
         let temp = TestTempDir::new("ag-commit-runner-home").expect("temp home");
         let runner = GitRunner::from_distribution(distribution, temp.path().join("home"));
-        Some((runner, temp))
+        (runner, temp)
     }
 
     struct TestRepo {

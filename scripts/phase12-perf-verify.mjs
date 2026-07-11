@@ -36,14 +36,17 @@ const heavy =
   cli.profile === "heavy" ||
   (cli.profile !== "light" && process.env.ARTISTIC_GIT_PERF_HEAVY === "1");
 const profileName = heavy ? "heavy" : "light";
-const requireRealGitDist =
-  cli.requireRealGitDist ||
-  process.env.ARTISTIC_GIT_PHASE12_PERF_REQUIRE_REAL_GIT_DIST === "1";
 const reportPath =
   cli.reportPath ??
   process.env.ARTISTIC_GIT_PHASE12_PERF_REPORT ??
   (process.env.CI ? path.join("artifacts", "phase12-perf-report.json") : null);
-const gitDistDir = nonEmptyEnv("ARTISTIC_GIT_DIST_DIR");
+const repositoryRoot = path.resolve(import.meta.dirname, "..");
+const gitDistDir = path.join(
+  repositoryRoot,
+  "src-tauri",
+  "resources",
+  "git-dist",
+);
 const keep = process.env.ARTISTIC_GIT_PERF_KEEP_TEMP === "1";
 const report = {
   schemaVersion: 2,
@@ -53,7 +56,6 @@ const report = {
   heavy,
   command: {
     argv: process.argv.slice(2),
-    requireRealGitDist,
     reportPath,
   },
   environment: collectEnvironment(),
@@ -63,7 +65,7 @@ const report = {
   status: "running",
   result: "running",
   gitDistDir,
-  gitDistSource: collectGitDistSource(gitDistDir),
+  gitDistSource: collectGitDistSource(),
   gitDist: {
     dir: gitDistDir,
     manifestPath: gitDistDir ? path.join(gitDistDir, "manifest.json") : null,
@@ -71,7 +73,6 @@ const report = {
     executableEvidence: [],
     versions: null,
   },
-  skips: [],
   blockers: [],
   checks: [],
   nextActions: buildNextActions(),
@@ -83,29 +84,6 @@ try {
   report.thresholds = buildThresholds(report.profile);
 } catch (error) {
   finishBlocker(error);
-}
-
-if (!gitDistDir) {
-  const message =
-    "ARTISTIC_GIT_DIST_DIR is not set; real embedded Git performance was not exercised.";
-  if (requireRealGitDist) {
-    finishBlocker(
-      "ARTISTIC_GIT_DIST_DIR is required by this perf gate but is not set.",
-      "missing-git-dist-required",
-    );
-  }
-  console.log(
-    "SKIP phase12 perf verification: ARTISTIC_GIT_DIST_DIR is not set.",
-  );
-  report.skips.push({
-    id: "missing-git-dist",
-    message,
-  });
-  finishReport("skipped", {
-    skipReason: "ARTISTIC_GIT_DIST_DIR is not set",
-  });
-  writeReport();
-  process.exit(0);
 }
 
 let root = null;
@@ -122,6 +100,8 @@ try {
 
   const manifest = readManifest(manifestPath);
   report.gitDist.manifest = summarizeManifest(manifest);
+  report.gitDistSource.target = manifest.target ?? manifest.platform ?? null;
+  validateManifestContract(manifest);
   if (!manifest.paths?.gitExecutable || !manifest.paths?.gitLfsExecutable) {
     throw new Error(
       `git distribution manifest has invalid executable paths at ${manifestPath}`,
@@ -609,7 +589,7 @@ function executableEvidence({
   const realPath = realpathSync(absolutePath);
   if (!isPathInside(realPath, distRootReal)) {
     throw new Error(
-      `${key} resolves outside ARTISTIC_GIT_DIST_DIR (${realPath}); refusing system Git fallback.`,
+      `${key} resolves outside the embedded Git resource directory (${realPath}).`,
     );
   }
 
@@ -653,6 +633,11 @@ function readManifest(filePath) {
 function summarizeManifest(manifest) {
   return {
     schemaVersion: manifest.schemaVersion ?? null,
+    target: manifest.target ?? null,
+    toolchainRevision: manifest.toolchainRevision ?? null,
+    baseFingerprint: manifest.baseFingerprint ?? null,
+    helperFingerprint: manifest.helperFingerprint ?? null,
+    distributionFingerprint: manifest.distributionFingerprint ?? null,
     platform: manifest.platform ?? null,
     gitVersion: manifest.gitVersion ?? null,
     gitLfsVersion: manifest.gitLfsVersion ?? null,
@@ -664,6 +649,27 @@ function summarizeManifest(manifest) {
         ? Object.keys(manifest.sha256).length
         : 0,
   };
+}
+
+function validateManifestContract(manifest) {
+  if (manifest?.schemaVersion !== 2) {
+    throw new Error(
+      `git distribution manifest schemaVersion must be 2, got ${manifest?.schemaVersion ?? "missing"}`,
+    );
+  }
+  for (const field of [
+    "target",
+    "toolchainRevision",
+    "baseFingerprint",
+    "helperFingerprint",
+    "distributionFingerprint",
+  ]) {
+    if (typeof manifest[field] !== "string" || manifest[field].trim() === "") {
+      throw new Error(
+        `git distribution manifest ${field} must be a non-empty string`,
+      );
+    }
+  }
 }
 
 function sha256File(filePath) {
@@ -699,11 +705,6 @@ function numberFromEnv(name, fallback) {
     throw new Error(`${name} must be a positive integer.`);
   }
   return parsed;
-}
-
-function nonEmptyEnv(name) {
-  const value = process.env[name];
-  return value && value.trim() ? value : null;
 }
 
 function assert(value, message) {
@@ -772,7 +773,6 @@ function finishReport(status, extra = {}) {
     status,
     profileName,
     checkCount: report.checks.length,
-    skipCount: report.skips.length,
     blockerCount: report.blockers.length,
     gitDistSource: report.gitDistSource.source,
     gitDistTarget: report.gitDistSource.target,
@@ -822,13 +822,6 @@ function renderMarkdown(currentReport) {
   }
   if (currentReport.checks.length === 0) {
     lines.push("| none | n/a | no real git-dist run was executed |");
-  }
-
-  if (currentReport.skips.length > 0) {
-    lines.push("", "## Skips", "");
-    for (const skip of currentReport.skips) {
-      lines.push(`- ${skip.id}: ${skip.message}`);
-    }
   }
 
   if (currentReport.blockers.length > 0) {
@@ -895,16 +888,10 @@ function collectCiEnvironment() {
   };
 }
 
-function collectGitDistSource(currentGitDistDir) {
+function collectGitDistSource() {
   return {
-    source:
-      nonEmptyEnv("ARTISTIC_GIT_PHASE12_GIT_DIST_SOURCE") ??
-      (currentGitDistDir ? "direct-env" : "none"),
-    artifactName: nonEmptyEnv("ARTISTIC_GIT_PHASE12_GIT_DIST_ARTIFACT_NAME"),
-    runId: nonEmptyEnv("ARTISTIC_GIT_PHASE12_GIT_DIST_RUN_ID"),
-    runUrl: nonEmptyEnv("ARTISTIC_GIT_PHASE12_GIT_DIST_RUN_URL"),
-    target: nonEmptyEnv("ARTISTIC_GIT_PHASE12_GIT_DIST_TARGET"),
-    downloadDir: nonEmptyEnv("ARTISTIC_GIT_PHASE12_GIT_DIST_DOWNLOAD_DIR"),
+    source: "workspace-resource",
+    target: null,
   };
 }
 
@@ -936,10 +923,6 @@ function buildTaskReadiness(status) {
   const missingChecks = requiredCheckNames.filter(
     (name) => !passedCheckNames.has(name),
   );
-  const artifactBacked =
-    report.gitDistSource.source === "artifact" &&
-    Boolean(report.gitDistSource.artifactName) &&
-    Boolean(report.gitDistSource.runId);
   const executableEvidenceComplete =
     report.gitDist.executableEvidence.length >= 2 &&
     report.gitDist.executableEvidence.every(
@@ -967,13 +950,9 @@ function buildTaskReadiness(status) {
     status === "pass" &&
     heavy &&
     profileScaleMeetsHeavyTask &&
-    artifactBacked &&
     executableEvidenceComplete &&
     missingChecks.length === 0;
 
-  if (status === "skipped") {
-    reasons.push("A real ARTISTIC_GIT_DIST_DIR was not provided.");
-  }
   if (status === "blocker") {
     reasons.push("The perf gate found a blocker that must be resolved first.");
   }
@@ -983,11 +962,6 @@ function buildTaskReadiness(status) {
   if (heavy && !profileScaleMeetsHeavyTask) {
     reasons.push(
       "The heavy profile scale was overridden below the TASKS.md requirement.",
-    );
-  }
-  if (status === "pass" && !artifactBacked) {
-    reasons.push(
-      "The perf pass was not backed by a Git Distribution artifact run id.",
     );
   }
   if (missingChecks.length > 0) {
@@ -1006,14 +980,11 @@ function buildTaskReadiness(status) {
       ? "platform-pass"
       : status === "pass"
         ? "partial-evidence"
-        : status === "skipped"
-          ? "not-exercised"
-          : "blocked",
+        : "blocked",
     reasons,
     requiredEvidence: [
-      "real ARTISTIC_GIT_DIST_DIR manifest with sha256-verified git and git-lfs executables",
+      "fixed embedded Git manifest with sha256-verified git and git-lfs executables",
       "heavy profile run at or above 10000 commits, 50000 files, and 128MB LFS binary",
-      "target platform artifact from CI or recorded manual run",
       "phase12-evidence-summary.json with tasks.performance.checkable=true",
     ],
   };
@@ -1023,17 +994,15 @@ function buildNextActions() {
   return [
     {
       id: "light-real-git-dist",
-      command: "ARTISTIC_GIT_DIST_DIR=<real git-dist> pnpm -s phase12:perf",
+      command: "pnpm -s phase12:perf",
     },
     {
       id: "heavy-required-gate",
-      command:
-        "ARTISTIC_GIT_DIST_DIR=<real git-dist> pnpm -s phase12:perf -- --heavy --require-real-git-dist",
+      command: "pnpm -s phase12:perf -- --heavy",
     },
     {
       id: "manual-ci-gate",
-      command:
-        "workflow_dispatch: phase12_perf_profile=heavy, phase12_perf_require_real_git_dist=true",
+      command: "workflow_dispatch: phase12_perf_profile=heavy",
     },
   ];
 }
@@ -1043,7 +1012,6 @@ function parseArgs(args) {
     help: false,
     profile: null,
     reportPath: null,
-    requireRealGitDist: false,
   };
 
   for (const arg of args) {
@@ -1056,8 +1024,6 @@ function parseArgs(args) {
       parsed.profile = "heavy";
     } else if (arg === "--light") {
       parsed.profile = "light";
-    } else if (arg === "--require-real-git-dist") {
-      parsed.requireRealGitDist = true;
     } else if (arg.startsWith("--profile=")) {
       const profile = arg.slice("--profile=".length);
       if (profile !== "light" && profile !== "heavy") {
@@ -1075,9 +1041,8 @@ function parseArgs(args) {
 }
 
 function usage() {
-  return `Usage: node scripts/phase12-perf-verify.mjs [--light|--heavy] [--require-real-git-dist] [--report=path]
+  return `Usage: node scripts/phase12-perf-verify.mjs [--light|--heavy] [--report=path]
 
-Default behavior writes skipped evidence and exits 0 when ARTISTIC_GIT_DIST_DIR
-is missing. Use --require-real-git-dist for a manual/CI gate that must fail
-without real git-dist artifacts.`;
+The command always validates and exercises src-tauri/resources/git-dist.
+Missing or invalid embedded tools are blockers.`;
 }

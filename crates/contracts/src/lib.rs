@@ -1432,14 +1432,22 @@ pub struct CommitSummary {
 #[serde(rename_all = "camelCase")]
 pub struct GitDistManifest {
     pub schema_version: u32,
+    pub target: String,
     pub platform: String,
+    pub toolchain_revision: String,
+    pub base_fingerprint: String,
+    pub helper_fingerprint: String,
+    pub distribution_fingerprint: String,
     pub git_version: String,
     pub git_lfs_version: String,
     pub windows_open_ssh_version: Option<String>,
     pub helper_version: String,
     pub paths: GitDistPaths,
+    pub executable_paths: Vec<String>,
     pub sha256: BTreeMap<String, String>,
 }
+
+pub const GIT_DIST_MANIFEST_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]

@@ -2717,10 +2717,6 @@ fn repository_backend(
 }
 
 fn git_dist_root(app: &tauri::App) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    if let Some(path) = env::var_os("ARTISTIC_GIT_DIST_DIR") {
-        return Ok(PathBuf::from(path));
-    }
-
     let resource_dir = app.path().resource_dir()?;
 
     #[cfg(target_os = "linux")]

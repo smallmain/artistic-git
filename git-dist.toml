@@ -1,15 +1,16 @@
 # Artistic Git embedded Git distribution configuration.
 #
 # This file is the single source of truth for the embedded Git, Git LFS, and
-# Windows OpenSSH distribution. Schema-only checks may keep documented
-# placeholders, but real build/fetch/package mode must reject every placeholder
-# pin and every unapproved non-stable source. Win32-OpenSSH is stable-first:
+# Windows OpenSSH distribution. Every configured target must remain directly
+# buildable from pinned sources. Win32-OpenSSH is stable-first:
 # select a stable official package when available; if none exists, an explicitly
 # approved latest preview fallback may be used with pinned SHA-256 evidence.
 
 schema_version = 1
 
 [meta]
+toolchain_revision = "2026.07.11.1"
+build_recipe_revision = "1"
 last_verified = "2026-07-09"
 version_source_policy = "official release pages or official source mirrors only"
 notes = "Win32-OpenSSH follows a stable-first policy. GitHub API metadata scan reports 10.0.0.0p2-Preview as latest and zero stable OpenSSH-Win64.zip releases, so this pin is an explicit preview fallback until a stable official package appears."
@@ -20,13 +21,12 @@ git_for_windows = "2.55.0.windows.2"
 git_for_windows_package = "2.55.0.2"
 git_lfs = "3.7.1"
 win32_openssh = "10.0.0.0p2-Preview"
-helper = "0.1.0"
+
+[helpers]
+rust_toolchain = "1.96.1"
+profile = "release"
 
 [validation]
-schema_only_allows_placeholders = true
-real_build_rejects_placeholders = true
-real_build_rejects_unapproved_non_stable_sources = true
-preview_fallback_requires_no_stable_release = true
 checksum_algorithm = "sha256"
 zero_sha256_is_placeholder = true
 allow_system_git_fallback = false
@@ -35,7 +35,6 @@ allow_system_git_fallback = false
 name = "git-dist"
 archive_prefix = "artistic-git-dist"
 manifest = "manifest.json"
-retention_days = 14
 
 [resources.layout]
 root = "git-dist"
@@ -55,7 +54,7 @@ ssh_askpass = "helpers/artistic-git-ssh-askpass"
 ssh_askpass_windows = "helpers/artistic-git-ssh-askpass.exe"
 
 [manifest]
-schema_version = 1
+schema_version = 2
 format = "GitDistManifest from crates/contracts"
 path_style = "relative-to-git-dist-root"
 required_executable_keys = ["gitExecutable", "gitLfsExecutable", "credentialHelper", "sshAskpass"]
@@ -252,4 +251,4 @@ source_ref = "sources.windows.x86_64.win32_openssh"
 strategy = "download-official-release"
 windows_only = true
 install_root = "openssh/"
-fallback_policy = "prefer official stable OpenSSH-Win64.zip; when none exists, use the pinned latest official preview package and fail the release gate as soon as a stable package appears"
+fallback_policy = "manual pin only; evaluate stable Win32-OpenSSH packages during an explicit toolchain revision update"

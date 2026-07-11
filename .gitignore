@@ -4,8 +4,8 @@
 /target/
 /src-tauri/target/
 /src-tauri/gen/
-/src-tauri/resources/git-dist/*
-!/src-tauri/resources/git-dist/README.md
+/.cache/artistic-git/
+/src-tauri/resources/git-dist/
 /.vscode/*
 !/.vscode/settings.json
 !/.vscode/extensions.json

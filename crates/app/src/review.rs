@@ -546,14 +546,12 @@ mod tests {
     use super::*;
     use artistic_git_core::config::{ConfigActor, ConfigPaths};
     use artistic_git_git_runner::{GitDistribution, GitRunner};
-    use artistic_git_test_support::{require_git_dist, GitDistError, TestTempDir};
+    use artistic_git_test_support::{require_git_dist, TestTempDir};
     use std::{fs, path::PathBuf};
 
     #[test]
     fn review_mode_stashes_pulls_and_restores_local_changes() {
-        let Some((runner, _home)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _home) = real_runner();
         let config = test_config();
         let fixture = DoubleClone::new(&runner);
         fixture.local.write("local.txt", "local draft\n");
@@ -606,9 +604,7 @@ mod tests {
 
     #[test]
     fn review_mode_skips_pull_without_remote() {
-        let Some((runner, _home)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _home) = real_runner();
         let repo = TestRepo::new(&runner, "ag-review-no-remote");
         repo.git(["init", "-b", "main"]);
         repo.git(["config", "user.name", "Test User"]);
@@ -633,9 +629,7 @@ mod tests {
 
     #[test]
     fn review_mode_recovery_detects_marker_with_stash() {
-        let Some((runner, _home)) = real_runner_or_skip() else {
-            return;
-        };
+        let (runner, _home) = real_runner();
         let config = test_config();
         let repo = TestRepo::new(&runner, "ag-review-recovery");
         repo.git(["init", "-b", "main"]);
@@ -688,22 +682,15 @@ mod tests {
         config
     }
 
-    fn real_runner_or_skip() -> Option<(GitRunner, TestTempDir)> {
-        let dist = match require_git_dist() {
-            Ok(dist) => dist,
-            Err(GitDistError::MissingEnvironment) => {
-                eprintln!("skipping review mode test: ARTISTIC_GIT_DIST_DIR is not set");
-                return None;
-            }
-            Err(error) => panic!("failed to load git dist: {error}"),
-        };
+    fn real_runner() -> (GitRunner, TestTempDir) {
+        let dist = require_git_dist().expect("load embedded git distribution");
         let home = TestTempDir::new("ag-review-runner-home").expect("temp home");
         let distribution =
             GitDistribution::from_manifest(dist.root, dist.manifest).expect("git distribution");
-        Some((
+        (
             GitRunner::from_distribution(distribution, home.path()),
             home,
-        ))
+        )
     }
 
     struct TestRepo<'a> {

@@ -209,6 +209,17 @@ export async function checkTauriBundleResources({
   const sourcePath = path.resolve(tauriDir, source);
   const sourceStat = await stat(sourcePath).catch(() => null);
   if (!sourceStat?.isDirectory()) {
+    if (!requireManifest) {
+      info(
+        `configured git-dist source will be created by git-toolchain:ensure: ${sourcePath}`,
+      );
+      return {
+        config,
+        configPath: resolvedConfigPath,
+        linuxConfigPath,
+        sourcePath,
+      };
+    }
     fail(`git-dist resource source must be a directory: ${sourcePath}`);
   }
 
@@ -216,6 +227,9 @@ export async function checkTauriBundleResources({
   if (requireManifest && !(await pathExists(manifestPath))) {
     fail(`real release packaging requires staged ${manifestPath}`);
   }
+  const stagedManifestCheck = requireManifest
+    ? await validateBundledGitDistManifest(manifestPath)
+    : null;
 
   if (releaseMode) {
     const pubkey = config.plugins?.updater?.pubkey;
@@ -258,10 +272,28 @@ export async function checkTauriBundleResources({
           ),
         )
       : [];
+  if (stagedManifestCheck) {
+    for (const packaged of bundledManifestChecks) {
+      for (const key of [
+        "target",
+        "toolchainRevision",
+        "baseFingerprint",
+        "helperFingerprint",
+        "distributionFingerprint",
+      ]) {
+        if (packaged.manifest[key] !== stagedManifestCheck.manifest[key]) {
+          fail(
+            `packaged git-dist manifest.${key} does not match staged toolchain: ${packaged.manifestPath}`,
+          );
+        }
+      }
+    }
+  }
 
   return {
     sourcePath,
     manifestPath,
+    stagedManifestCheck,
     linuxConfigPath,
     bundledManifestPaths,
     bundledManifestChecks,
@@ -345,6 +377,14 @@ async function validateBundledGitDistManifest(manifestPath) {
     manifest.sha256,
     `packaged git-dist manifest must contain sha256: ${manifestPath}`,
   );
+  if (
+    !Array.isArray(manifest.executablePaths) ||
+    manifest.executablePaths.length === 0
+  ) {
+    fail(
+      `packaged git-dist manifest must contain executablePaths: ${manifestPath}`,
+    );
+  }
   const checked = [];
   const checkedPaths = new Set();
   for (const [key, relativePath] of Object.entries(paths)) {
@@ -390,7 +430,23 @@ async function validateBundledGitDistManifest(manifestPath) {
     }
     checkedPaths.add(normalized);
   }
-  const allowedUnmanifestedPaths = new Set(["manifest.json", "README.md"]);
+  for (const relativePath of manifest.executablePaths) {
+    const normalized = assertRelativeManifestPath(
+      relativePath,
+      "executablePaths entry",
+      manifestPath,
+    );
+    if (!sha256[normalized]) {
+      fail(`packaged git-dist executable is not hashed: ${normalized}`);
+    }
+    if (process.platform !== "win32") {
+      const mode = (await stat(path.join(root, normalized))).mode;
+      if ((mode & 0o111) === 0) {
+        fail(`packaged git-dist executable is not executable: ${normalized}`);
+      }
+    }
+  }
+  const allowedUnmanifestedPaths = new Set(["manifest.json"]);
   const unmanifested = [];
   for (const relativePath of await regularFileResourcePaths(root)) {
     if (
@@ -406,7 +462,7 @@ async function validateBundledGitDistManifest(manifestPath) {
       `packaged git-dist contains regular files not covered by manifest.sha256: ${unmanifested.join(", ")}`,
     );
   }
-  return { manifestPath, checked };
+  return { manifest, manifestPath, checked };
 }
 
 function assertRelativeManifestPath(value, key, manifestPath) {

@@ -14,63 +14,32 @@ import {
 } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import {
-  GitDistConfigError,
   assertRelativeResourcePath,
   assertSha256,
-  configPath,
   expectedManifestPaths,
   getHostTarget,
   getTarget,
   isPlaceholderChecksum,
-  loadGitDistConfig,
   regularFileResourcePaths,
   requiredExecutableKeysForTarget,
   sha256File,
   supportedTargets,
-  validateGitDistConfig,
 } from "./git-dist-lib.mjs";
-
-const args = process.argv.slice(2);
-const schemaOnly = args.includes("--schema-only");
-const explain = args.includes("--explain");
-const noExec = args.includes("--no-exec");
-const realBuild = args.includes("--real-build");
-const expectPlaceholderRejection = args.includes(
-  "--expect-placeholder-rejection",
-);
-const help = args.includes("--help") || args.includes("-h");
-const targetArg = args.find((arg) => arg.startsWith("--target="));
-const targetName = normalizeTargetArg(
-  targetArg?.slice("--target=".length) || getHostTarget(),
-);
+import {
+  activeToolchainRoot,
+  computeToolchainState,
+  normalizeTarget,
+} from "./git-toolchain-state.mjs";
 
 const usage = `Usage:
-  node scripts/check-git-dist.mjs --schema-only
-  node scripts/check-git-dist.mjs --schema-only --real-build [--expect-placeholder-rejection] [--target=${supportedTargets.join("|")}]
-  ARTISTIC_GIT_DIST_DIR=/path/to/git-dist node scripts/check-git-dist.mjs [--no-exec] [--target=${supportedTargets.join("|")}]
+  node scripts/check-git-dist.mjs [--target=${supportedTargets.join("|")}]
 
-This checker never searches PATH and never falls back to a system Git.`;
-
-if (help) {
-  console.log(usage);
-  process.exit(0);
-}
+The verifier always checks the repository's fixed embedded toolchain tree.`;
 
 function fail(message) {
-  console.error(`git-dist check failed: ${message}`);
-  process.exit(1);
-}
-
-function failConfig(error) {
-  if (error instanceof GitDistConfigError) {
-    console.error(`git-dist check failed: ${error.message}`);
-    for (const detail of error.details ?? []) {
-      console.error(`  - ${detail}`);
-    }
-    process.exit(1);
-  }
-  throw error;
+  throw new Error(message);
 }
 
 function info(message) {
@@ -91,55 +60,6 @@ async function assertRegularFile(filePath, label) {
   if (!fileStat.isFile()) {
     fail(`${label} must be a file: ${filePath}`);
   }
-}
-
-async function checkConfigContract(config, options = {}) {
-  if (expectPlaceholderRejection) {
-    if (!schemaOnly || !realBuild) {
-      fail(
-        "--expect-placeholder-rejection must be used with --schema-only --real-build.",
-      );
-    }
-
-    try {
-      validateGitDistConfig(config, options);
-    } catch (error) {
-      if (
-        error instanceof GitDistConfigError &&
-        error.details?.some((detail) =>
-          detail.startsWith("real build mode rejects placeholder pins:"),
-        )
-      ) {
-        for (const detail of error.details) {
-          info(detail);
-        }
-        info(
-          "git-dist.toml real-build contract is blocked by documented placeholders as expected.",
-        );
-        return;
-      }
-      throw error;
-    }
-
-    fail(
-      "expected real-build mode to reject placeholder pins, but the config is now release-ready. Remove --expect-placeholder-rejection from the caller.",
-    );
-  }
-
-  const { warnings, placeholders } = validateGitDistConfig(config, options);
-  for (const warning of warnings) {
-    info(`warning: ${warning}`);
-  }
-  if (placeholders.length > 0) {
-    info(
-      `git-dist.toml contains placeholder source pins: ${placeholders.join("; ")}`,
-    );
-  }
-  info(
-    realBuild
-      ? "git-dist.toml real-build contract passed."
-      : "git-dist.toml schema contract passed.",
-  );
 }
 
 function parseManifest(raw) {
@@ -166,26 +86,18 @@ function assertManifestVersionNotPlaceholder(manifest, key) {
   return value;
 }
 
-async function checkDistRoot(config) {
+export async function checkDistRoot(state, distRoot = activeToolchainRoot) {
+  const { config } = state;
+  const targetName = state.target;
   const target = getTarget(config, targetName);
-  const distDir = process.env.ARTISTIC_GIT_DIST_DIR;
-  if (!distDir || distDir.trim().length === 0) {
-    fail(
-      "ARTISTIC_GIT_DIST_DIR is not set. Refusing to search PATH or use a system Git.",
-    );
-  }
-
-  const distRoot = path.resolve(distDir);
   let rootStat;
   try {
     rootStat = await stat(distRoot);
   } catch {
-    fail(`ARTISTIC_GIT_DIST_DIR does not exist: ${distRoot}`);
+    fail(`embedded toolchain directory does not exist: ${distRoot}`);
   }
   if (!rootStat.isDirectory()) {
-    fail(
-      `ARTISTIC_GIT_DIST_DIR must point to a git-dist directory: ${distRoot}`,
-    );
+    fail(`embedded toolchain path must be a directory: ${distRoot}`);
   }
 
   const manifestPath = path.join(distRoot, config.resources.layout.manifest);
@@ -197,12 +109,43 @@ async function checkDistRoot(config) {
   }
 
   requireManifestString(manifest, "platform");
-  assertManifestVersionNotPlaceholder(manifest, "gitVersion");
-  assertManifestVersionNotPlaceholder(manifest, "gitLfsVersion");
-  assertManifestVersionNotPlaceholder(manifest, "helperVersion");
+  if (manifest.target !== targetName) {
+    fail(`manifest.target must be ${targetName}, got ${manifest.target}`);
+  }
+  for (const [key, expected] of [
+    ["toolchainRevision", state.revision],
+    ["baseFingerprint", state.baseFingerprint],
+    ["helperFingerprint", state.helperFingerprint],
+    ["distributionFingerprint", state.distributionFingerprint],
+  ]) {
+    if (requireManifestString(manifest, key) !== expected) {
+      fail(`manifest.${key} does not match the locked toolchain state`);
+    }
+  }
+  const expectedVersions = {
+    gitVersion: expectedGitVersion(config, target),
+    gitLfsVersion: config.versions.git_lfs,
+    helperVersion: state.helperVersion,
+  };
+  for (const [key, expected] of Object.entries(expectedVersions)) {
+    const actual = assertManifestVersionNotPlaceholder(manifest, key);
+    if (actual !== expected) {
+      fail(`manifest.${key} must be ${expected}, got ${actual}`);
+    }
+  }
 
   if (target.platform === "windows") {
-    assertManifestVersionNotPlaceholder(manifest, "windowsOpenSshVersion");
+    const actual = assertManifestVersionNotPlaceholder(
+      manifest,
+      "windowsOpenSshVersion",
+    );
+    if (actual !== config.versions.win32_openssh) {
+      fail(
+        `manifest.windowsOpenSshVersion must be ${config.versions.win32_openssh}, got ${actual}`,
+      );
+    }
+  } else if (manifest.windowsOpenSshVersion !== null) {
+    fail("manifest.windowsOpenSshVersion must be null outside Windows");
   }
 
   if (manifest.platform !== target.manifest_platform) {
@@ -215,11 +158,18 @@ async function checkDistRoot(config) {
     fail("manifest.paths is required");
   }
 
-  checkManifestPaths(config, manifest);
-  await checkManifestExecutablesAndChecksums(config, manifest, distRoot);
+  checkManifestPaths(config, manifest, targetName);
+  await checkManifestExecutablesAndChecksums(
+    config,
+    manifest,
+    distRoot,
+    targetName,
+  );
+  await checkExecutablePermissions(config, manifest, distRoot, targetName);
+  await checkTargetArchitectures(targetName, manifest, distRoot);
   await checkLinuxExecutableDependencies(target, distRoot);
 
-  if (!noExec && targetName === getHostTarget()) {
+  if (targetName === getHostTarget()) {
     const gitExecutable = path.join(distRoot, manifest.paths.gitExecutable);
     const runtimeRoot = await mkdtemp(
       path.join(os.tmpdir(), "ag-git-dist-runtime-"),
@@ -245,16 +195,39 @@ async function checkDistRoot(config) {
         `git-lfs/${config.versions.git_lfs}`,
         runtimeEnv,
       );
+      runExpectedFailure(
+        path.join(distRoot, manifest.paths.credentialHelper),
+        [],
+        "embedded credential helper",
+        "missing credential operation argument",
+        runtimeEnv,
+      );
+      runExpectedFailure(
+        path.join(distRoot, manifest.paths.sshAskpass),
+        [],
+        "embedded ssh askpass",
+        "missing askpass prompt argument",
+        runtimeEnv,
+      );
+      if (target.platform === "windows") {
+        runVersionCheck(
+          path.join(distRoot, manifest.paths.windowsSshExecutable),
+          ["-V"],
+          "embedded Windows OpenSSH",
+          "OpenSSH",
+          runtimeEnv,
+        );
+      }
       await runGitRuntimeSmoke({ gitExecutable, distRoot, runtimeEnv });
     } finally {
       await rm(runtimeRoot, { recursive: true, force: true });
     }
   }
 
-  info(`ARTISTIC_GIT_DIST_DIR is valid for ${manifest.platform}: ${distRoot}`);
+  info(`embedded toolchain is valid for ${manifest.platform}: ${distRoot}`);
 }
 
-function checkManifestPaths(config, manifest) {
+function checkManifestPaths(config, manifest, targetName) {
   const expectedPaths = expectedManifestPaths(config, targetName);
   const requiredKeys = requiredExecutableKeysForTarget(config, targetName);
 
@@ -287,6 +260,7 @@ async function checkManifestExecutablesAndChecksums(
   config,
   manifest,
   distRoot,
+  targetName,
 ) {
   if (
     !manifest.sha256 ||
@@ -361,10 +335,7 @@ async function checkManifestExecutablesAndChecksums(
 }
 
 async function checkNoUnmanifestedFiles(config, manifest, distRoot) {
-  const allowedUnmanifestedPaths = new Set([
-    config.resources.layout.manifest,
-    "README.md",
-  ]);
+  const allowedUnmanifestedPaths = new Set([config.resources.layout.manifest]);
   const manifestShaPaths = new Set(Object.keys(manifest.sha256 ?? {}));
   const unmanifested = [];
   for (const relativePath of await regularFileResourcePaths(distRoot)) {
@@ -383,8 +354,130 @@ async function checkNoUnmanifestedFiles(config, manifest, distRoot) {
   }
 }
 
+async function checkExecutablePermissions(
+  config,
+  manifest,
+  distRoot,
+  targetName,
+) {
+  if (
+    !Array.isArray(manifest.executablePaths) ||
+    manifest.executablePaths.length === 0
+  ) {
+    fail("manifest.executablePaths must contain executable file paths");
+  }
+  const expected = new Set();
+  for (const relativePath of manifest.executablePaths) {
+    try {
+      assertRelativeResourcePath(relativePath, "executablePaths entry");
+    } catch (error) {
+      fail(error.message);
+    }
+    if (!manifest.sha256[relativePath]) {
+      fail(`manifest.executablePaths entry is not hashed: ${relativePath}`);
+    }
+    const absolutePath = path.join(distRoot, relativePath);
+    await assertRegularFile(absolutePath, `executable ${relativePath}`);
+    await assertPath(
+      absolutePath,
+      `executable ${relativePath}`,
+      targetName === "windows-x86_64" ? constants.R_OK : constants.X_OK,
+    );
+    expected.add(relativePath);
+  }
+  for (const key of requiredExecutableKeysForTarget(config, targetName)) {
+    if (!expected.has(manifest.paths[key])) {
+      fail(`manifest.executablePaths must include paths.${key}`);
+    }
+  }
+  if (targetName !== "windows-x86_64") {
+    const actual = [];
+    for (const relativePath of await regularFileResourcePaths(distRoot)) {
+      if (relativePath === config.resources.layout.manifest) continue;
+      const mode = (await stat(path.join(distRoot, relativePath))).mode;
+      if ((mode & 0o111) !== 0) actual.push(relativePath);
+    }
+    const expectedPaths = [...expected].sort();
+    actual.sort();
+    if (JSON.stringify(actual) !== JSON.stringify(expectedPaths)) {
+      fail("manifest.executablePaths does not match executable file modes");
+    }
+  }
+}
+
+async function checkTargetArchitectures(targetName, manifest, distRoot) {
+  const executableKeys = [
+    "gitExecutable",
+    "gitLfsExecutable",
+    "credentialHelper",
+    "sshAskpass",
+  ];
+  if (targetName === "windows-x86_64") {
+    executableKeys.push("windowsSshExecutable");
+    for (const key of executableKeys) {
+      const executable = path.join(distRoot, manifest.paths[key]);
+      const buffer = await readFile(executable);
+      if (buffer.length < 64 || buffer.subarray(0, 2).toString() !== "MZ") {
+        fail(`manifest paths.${key} must be a Windows PE executable`);
+      }
+      const peOffset = buffer.readUInt32LE(0x3c);
+      if (
+        peOffset + 6 > buffer.length ||
+        buffer.subarray(peOffset, peOffset + 4).toString("hex") !==
+          "50450000" ||
+        buffer.readUInt16LE(peOffset + 4) !== 0x8664
+      ) {
+        fail(`manifest paths.${key} must be a Windows x86_64 PE executable`);
+      }
+    }
+    info("Windows Git, Git LFS, OpenSSH, and helpers are x86_64 PE files");
+    return;
+  }
+  if (targetName === "linux-x86_64") {
+    for (const key of executableKeys) {
+      const executable = path.join(distRoot, manifest.paths[key]);
+      const buffer = await readFile(executable);
+      if (
+        buffer.length < 20 ||
+        buffer.subarray(0, 4).toString("hex") !== "7f454c46" ||
+        buffer[4] !== 2 ||
+        buffer[5] !== 1 ||
+        buffer.readUInt16LE(18) !== 62
+      ) {
+        fail(`manifest paths.${key} must be a Linux x86_64 ELF executable`);
+      }
+    }
+    info("Linux Git, Git LFS, and helpers are x86_64 ELF files");
+    return;
+  }
+  if (targetName !== "macos-universal") return;
+  if (process.platform !== "darwin") {
+    fail("macOS universal toolchains must be verified on macOS");
+  }
+  for (const key of executableKeys) {
+    const executable = path.join(distRoot, manifest.paths[key]);
+    const result = spawnSync("lipo", ["-archs", executable], {
+      encoding: "utf8",
+    });
+    if (result.error || result.status !== 0) {
+      fail(
+        `manifest paths.${key} architecture check failed: ${result.error?.message || result.stderr || result.stdout}`,
+      );
+    }
+    const architectures = new Set(result.stdout.trim().split(/\s+/));
+    for (const required of ["arm64", "x86_64"]) {
+      if (!architectures.has(required)) {
+        fail(
+          `manifest paths.${key} must contain arm64 and x86_64, got ${result.stdout.trim()}`,
+        );
+      }
+    }
+  }
+  info("macOS Git, Git LFS, credential helper, and askpass are universal");
+}
+
 async function checkLinuxExecutableDependencies(target, distRoot) {
-  if (target.platform !== "linux" || process.platform !== "linux" || noExec) {
+  if (target.platform !== "linux" || process.platform !== "linux") {
     return;
   }
 
@@ -408,15 +501,15 @@ async function checkLinuxExecutableDependencies(target, distRoot) {
     maxBuffer: 50 * 1024 * 1024,
   });
   if (result.error) {
-    fail(`linux git-dist dependency audit could not run ldd: ${result.error.message}`);
+    fail(
+      `linux git-dist dependency audit could not run ldd: ${result.error.message}`,
+    );
   }
 
   const blockedLines = `${result.stdout}\n${result.stderr}`
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter((line) =>
-      /\bnot found\b|lib(ldap|lber)\S*\s*=>/.test(line),
-    );
+    .filter((line) => /\bnot found\b|lib(ldap|lber)\S*\s*=>/.test(line));
   if (blockedLines.length > 0) {
     fail(
       `linux git-dist executable dependencies include dynamic LDAP libraries or missing libraries:\n${blockedLines.join("\n")}`,
@@ -445,11 +538,25 @@ function runVersionCheck(executable, versionArgs, label, expectedVersion, env) {
     );
   }
 
-  const output = result.stdout.trim();
+  const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.trim();
   if (!output.includes(expectedVersion)) {
     fail(`${label} expected version '${expectedVersion}', got '${output}'`);
   }
   info(`${label}: ${output}`);
+}
+
+function runExpectedFailure(executable, args, label, expectedMessage, env) {
+  const result = spawnSync(executable, args, { encoding: "utf8", env });
+  if (result.error) {
+    fail(`${label} could not be executed: ${result.error.message}`);
+  }
+  const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+  if (result.status === 0 || !output.includes(expectedMessage)) {
+    fail(
+      `${label} protocol smoke expected '${expectedMessage}', got exit ${result.status}: ${output}`,
+    );
+  }
+  info(`${label} protocol startup smoke passed`);
 }
 
 async function embeddedGitRuntimeEnv({
@@ -571,6 +678,18 @@ async function runGitRuntimeSmoke({ gitExecutable, distRoot, runtimeEnv }) {
       repo,
       runtimeEnv,
     );
+    runGitSmokeCommand(
+      gitExecutable,
+      ["lfs", "install", "--local"],
+      repo,
+      runtimeEnv,
+    );
+    runGitSmokeCommand(
+      gitExecutable,
+      ["lfs", "track", "*.bin"],
+      repo,
+      runtimeEnv,
+    );
 
     const remote = path.join(root, "remote.git");
     runGitSmokeCommand(
@@ -592,9 +711,11 @@ async function runGitRuntimeSmoke({ gitExecutable, distRoot, runtimeEnv }) {
       runtimeEnv,
     );
     await writeFile(path.join(repo, "transport.txt"), "transport\n");
+    const lfsPayload = "embedded lfs payload\n".repeat(256);
+    await writeFile(path.join(repo, "payload.bin"), lfsPayload);
     runGitSmokeCommand(
       gitExecutable,
-      ["add", "transport.txt"],
+      ["add", ".gitattributes", "transport.txt", "payload.bin"],
       repo,
       runtimeEnv,
     );
@@ -604,6 +725,17 @@ async function runGitRuntimeSmoke({ gitExecutable, distRoot, runtimeEnv }) {
       repo,
       runtimeEnv,
     );
+    const lfsPointer = runGitSmokeCommand(
+      gitExecutable,
+      ["show", "HEAD:payload.bin"],
+      repo,
+      runtimeEnv,
+    ).stdout;
+    if (!lfsPointer.startsWith("version https://git-lfs.github.com/spec/v1")) {
+      fail("embedded git-lfs clean filter did not create an LFS pointer");
+    }
+    runGitSmokeCommand(gitExecutable, ["lfs", "ls-files"], repo, runtimeEnv);
+    runGitSmokeCommand(gitExecutable, ["lfs", "fsck"], repo, runtimeEnv);
     runGitSmokeCommand(
       gitExecutable,
       ["remote", "add", "origin", remote],
@@ -616,21 +748,64 @@ async function runGitRuntimeSmoke({ gitExecutable, distRoot, runtimeEnv }) {
       repo,
       runtimeEnv,
     );
+    runGitSmokeCommand(gitExecutable, ["clone", remote, "clone"], root, {
+      ...runtimeEnv,
+      GIT_LFS_SKIP_SMUDGE: "1",
+    });
+    if (!existsSync(path.join(root, "clone", "transport.txt"))) {
+      fail("embedded git clone smoke did not materialize pushed file");
+    }
+    if (
+      !(
+        await readFile(path.join(root, "clone", "payload.bin"), "utf8")
+      ).startsWith("version https://git-lfs.github.com/spec/v1")
+    ) {
+      fail("embedded git-lfs clone smoke did not preserve the LFS pointer");
+    }
     runGitSmokeCommand(
       gitExecutable,
-      ["clone", remote, "clone"],
+      ["lfs", "ls-files"],
+      path.join(root, "clone"),
+      runtimeEnv,
+    );
+    runGitSmokeCommand(
+      gitExecutable,
+      ["archive", "--remote", remote, "HEAD", "transport.txt"],
       root,
       runtimeEnv,
     );
-    if (!existsSync(path.join(root, "clone", "transport.txt"))) {
-      fail("embedded git clone smoke did not materialize pushed file");
+
+    await writeFile(path.join(repo, "fetched.txt"), "fetch smoke\n");
+    runGitSmokeCommand(gitExecutable, ["add", "fetched.txt"], repo, runtimeEnv);
+    runGitSmokeCommand(
+      gitExecutable,
+      ["commit", "-m", "fetch smoke"],
+      repo,
+      runtimeEnv,
+    );
+    runGitSmokeCommand(
+      gitExecutable,
+      ["push", "origin", "main"],
+      repo,
+      runtimeEnv,
+    );
+    const clone = path.join(root, "clone");
+    runGitSmokeCommand(gitExecutable, ["fetch", "origin"], clone, runtimeEnv);
+    const fetched = runGitSmokeCommand(
+      gitExecutable,
+      ["show", "origin/main:fetched.txt"],
+      clone,
+      runtimeEnv,
+    ).stdout;
+    if (fetched !== "fetch smoke\n") {
+      fail("embedded git fetch smoke did not update origin/main");
     }
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 
   info(
-    "embedded git runtime smoke: exec-path, init templates, default branch, submodule status, local push, and clone passed",
+    "embedded git runtime smoke: exec-path, templates, builtins, LFS, push, clone, archive, and fetch passed",
   );
 }
 
@@ -714,41 +889,42 @@ function expectedGitVersion(config, target) {
     : config.versions.git;
 }
 
-function normalizeTargetArg(value) {
-  const aliases = {
-    win32: "windows-x86_64",
-    windows: "windows-x86_64",
-    darwin: "macos-universal",
-    macos: "macos-universal",
-    linux: "linux-x86_64",
-  };
-  return aliases[value] ?? value;
+export async function verifyGitDistRoot({
+  distRoot = activeToolchainRoot,
+  targetName = getHostTarget(),
+} = {}) {
+  const state = await computeToolchainState(normalizeTarget(targetName));
+  await checkDistRoot(state, distRoot);
+  return state;
 }
 
-if (explain) {
-  console.log(usage);
-  console.log("");
-  console.log("Expected development layout:");
-  console.log("  $ARTISTIC_GIT_DIST_DIR/manifest.json");
-  console.log("  $ARTISTIC_GIT_DIST_DIR/git/bin/git(.exe)");
-  console.log("  $ARTISTIC_GIT_DIST_DIR/git-lfs/git-lfs(.exe)");
-  console.log(
-    "  $ARTISTIC_GIT_DIST_DIR/openssh/ssh.exe       # Windows artifact only",
+async function main() {
+  const args = process.argv.slice(2).filter((arg) => arg !== "--");
+  const help = args.includes("--help") || args.includes("-h");
+  const targetArg = args.find((arg) => arg.startsWith("--target="));
+  const unknownArgs = args.filter(
+    (arg) => arg !== "--help" && arg !== "-h" && !arg.startsWith("--target="),
   );
-  console.log("  $ARTISTIC_GIT_DIST_DIR/helpers/*");
-  console.log("");
+  if (unknownArgs.length > 0) {
+    throw new Error(`unknown git-toolchain verify argument: ${unknownArgs[0]}`);
+  }
+  if (help) {
+    console.log(usage);
+    return;
+  }
+  await verifyGitDistRoot({
+    targetName: targetArg?.slice("--target=".length) || getHostTarget(),
+  });
 }
 
-try {
-  const { data: config } = await loadGitDistConfig(configPath);
-  await checkConfigContract(config, {
-    realBuild,
-    targetName: targetArg ? targetName : undefined,
-  });
-
-  if (!schemaOnly) {
-    await checkDistRoot(config);
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  try {
+    await main();
+  } catch (error) {
+    console.error(`git-dist check failed: ${error.message}`);
+    process.exitCode = 1;
   }
-} catch (error) {
-  failConfig(error);
 }
