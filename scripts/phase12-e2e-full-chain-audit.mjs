@@ -180,12 +180,12 @@ const gates = [
     requirement:
       "WDIO full-chain uses the embedded Git tree installed beside the debug application",
     source: "wdio",
+    requiredPatterns: [
+      'const\\s+installedGitDistDir\\s*=\\s*path\\.join\\(\\s*repositoryRoot\\s*,\\s*"target"\\s*,\\s*"debug"\\s*,\\s*"git-dist"\\s*,?\\s*\\);',
+    ],
     tokens: [
       'describe("Artistic Git Tauri real-git full chain"',
       "installedGitDistDir",
-      '"target"',
-      '"debug"',
-      '"git-dist"',
       "manifest.paths.gitExecutable",
       "spawnSync(this.gitPath",
       "createEmbeddedGitEnv",
@@ -194,7 +194,7 @@ const gates = [
     ],
     forbidden: [
       "describe\\.skip",
-      'repositoryRoot,[\\s\\S]{0,120}"src-tauri",[\\s\\S]{0,120}"resources",[\\s\\S]{0,120}"git-dist"',
+      'path\\.join\\(\\s*repositoryRoot\\s*,\\s*"src-tauri"\\s*,\\s*"resources"\\s*,\\s*"git-dist"\\s*,?\\s*\\)',
     ],
   },
   {
@@ -345,6 +345,11 @@ function evaluateGate(gate) {
     for (const token of gate.tokens ?? []) {
       if (!source.includes(token)) {
         failures.push(`${gate.source} is missing ${token}`);
+      }
+    }
+    for (const pattern of gate.requiredPatterns ?? []) {
+      if (!new RegExp(pattern).test(source)) {
+        failures.push(`${gate.source} is missing required pattern ${pattern}`);
       }
     }
     for (const pattern of gate.forbidden ?? []) {
