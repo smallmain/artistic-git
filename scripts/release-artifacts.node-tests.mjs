@@ -781,6 +781,23 @@ test("release workflow applies the release version to displayed app versions", (
   assert.ok(
     releaseWorkflow.includes("cargo metadata --format-version 1 --no-deps"),
   );
+  const saveLock = releaseWorkflow.indexOf(
+    'cp Cargo.lock "$RUNNER_TEMP/artistic-git-canonical-Cargo.lock"',
+  );
+  const buildBundles = releaseWorkflow.indexOf("- name: Build Tauri bundles");
+  const restoreLock = releaseWorkflow.indexOf(
+    "- name: Restore canonical embedded helper fingerprint inputs",
+  );
+  const packagedSmoke = releaseWorkflow.indexOf(
+    "- name: Verify and smoke packaged embedded Git resources",
+  );
+  assert.ok(saveLock > 0 && saveLock < buildBundles);
+  assert.ok(buildBundles < restoreLock && restoreLock < packagedSmoke);
+  assert.ok(
+    releaseWorkflow.includes(
+      'cp "$RUNNER_TEMP/artistic-git-canonical-Cargo.lock" Cargo.lock',
+    ),
+  );
 });
 
 test("release workflow ensures and checks staged and packaged git-dist resources", () => {

@@ -374,6 +374,7 @@ jobs:
           RELEASE_VERSION: ${{ needs.plan.outputs.version }}
         run: |
           set -euo pipefail
+          cp Cargo.lock "$RUNNER_TEMP/artistic-git-canonical-Cargo.lock"
           node --input-type=module <<'NODE'
           import { readFile, writeFile } from "node:fs/promises";
 
@@ -479,6 +480,13 @@ jobs:
               -print || true
             exit "$status"
           }
+
+      - name: Restore canonical embedded helper fingerprint inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$RUNNER_TEMP/artistic-git-canonical-Cargo.lock"
+          cp "$RUNNER_TEMP/artistic-git-canonical-Cargo.lock" Cargo.lock
 
       - name: Install Windows bundle for resource verification
         if: runner.os == 'Windows'
