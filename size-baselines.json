@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "budgetMultiplier": 1.1,
+  "provenance": {
+    "workflowRunId": "29138268574",
+    "workflowRunUrl": "https://github.com/smallmain/artistic-git/actions/runs/29138268574",
+    "commitSha": "64dac79ad239592f0c25f82b4422ff336decf456",
+    "toolchainRevision": "2026.07.11.5",
+    "runnerPolicy": "First successful three-platform GitHub-hosted release package audit after the size optimization"
+  },
+  "targets": {
+    "linux-x86_64": {
+      "gitDist": {
+        "logicalBytes": 60007471,
+        "duplicateReclaimableBytes": 137,
+        "components": {
+          "git": 43042353,
+          "git-lfs": 14517295,
+          "helpers": 2401800,
+          "manifest.json": 46023
+        }
+      },
+      "installedTrees": {
+        "installed": 326601235
+      },
+      "bundles": {
+        "appimage": 109279736,
+        "deb": 34606880
+      }
+    },
+    "macos-universal": {
+      "gitDist": {
+        "logicalBytes": 92892279,
+        "duplicateReclaimableBytes": 137,
+        "components": {
+          "git": 62340633,
+          "git-lfs": 25945888,
+          "helpers": 4568112,
+          "manifest.json": 37646
+        }
+      },
+      "installedTrees": {
+        "installed": 119388121
+      },
+      "bundles": {
+        "dmg": 47453013,
+        "updater-archive": 48605486
+      }
+    },
+    "windows-x86_64": {
+      "gitDist": {
+        "logicalBytes": 123661149,
+        "duplicateReclaimableBytes": 640140,
+        "components": {
+          "git": 94007915,
+          "git-lfs": 14290476,
+          "helpers": 2652160,
+          "manifest.json": 53585,
+          "openssh": 12657013
+        }
+      },
+      "installedTrees": {
+        "installed": 142686405
+      },
+      "bundles": {
+        "windows-installer": 37022070
+      }
+    }
+  }
+}

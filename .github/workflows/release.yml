@@ -603,6 +603,7 @@ jobs:
           cp src-tauri/resources/git-dist/manifest.json "$AUDIT_DIR/manifest.json"
           node scripts/size-audit.mjs \
             "--target=$TOOLCHAIN_TARGET" \
+            "--baseline=size-baselines.json" \
             "--tree=installed=$installed_tree" \
             "--bundle-dir=release-assets" \
             "--compression-basis=installed" \

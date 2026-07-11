@@ -838,8 +838,10 @@ test("CI and audit workflows enforce the pinned embedded toolchain", () => {
   assert.ok(gitDistWorkflow.includes("size-report.json"));
   assert.ok(gitDistWorkflow.includes("build-evidence.json"));
   assert.ok(gitDistWorkflow.includes("node scripts/size-audit.mjs"));
+  assert.ok(gitDistWorkflow.includes('"--baseline=size-baselines.json"'));
   assert.ok(gitDistWorkflow.includes("--legacy-duplicate-baseline="));
   assert.ok(releaseWorkflow.includes("Generate release size audit"));
+  assert.ok(releaseWorkflow.includes('"--baseline=size-baselines.json"'));
   assert.ok(
     releaseWorkflow.includes("release-size-audit-${{ matrix.gitDistTarget }}"),
   );

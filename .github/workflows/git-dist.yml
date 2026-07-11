@@ -126,6 +126,7 @@ jobs:
           cp src-tauri/resources/git-dist/manifest.json "$AUDIT_DIR/manifest.json"
           audit_args=(
             "--target=$TOOLCHAIN_TARGET"
+            "--baseline=size-baselines.json"
             "--output=$AUDIT_DIR/size-report.json"
           )
           case "$TOOLCHAIN_TARGET" in
