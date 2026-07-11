@@ -6,6 +6,7 @@ const APP_IDENTIFIER = "com.smallmain.artistic-git";
 
 export type E2eProfile = {
   appConfigDir: string;
+  appDataDir: string;
   env: NodeJS.ProcessEnv;
   runtimeDir: string | null;
 };
@@ -47,10 +48,15 @@ export function createE2eProfile({
       readNonEmptyEnv(env, "TMP") ??
       path.join(root, "Temp");
 
+    const appConfigDir = path.join(appData, APP_IDENTIFIER);
+    const appDataDir = path.join(appData, APP_IDENTIFIER);
     return {
-      appConfigDir: path.join(appData, APP_IDENTIFIER),
+      appConfigDir,
+      appDataDir,
       env: {
         APPDATA: appData,
+        ARTISTIC_GIT_E2E_APP_CONFIG_DIR: appConfigDir,
+        ARTISTIC_GIT_E2E_APP_DATA_DIR: appDataDir,
         LOCALAPPDATA: localAppData,
         TEMP: tempDir,
         TMP: tempDir,
@@ -61,14 +67,19 @@ export function createE2eProfile({
 
   if (platform === "darwin") {
     const home = path.join(root, "home");
+    const appConfigDir = path.join(
+      home,
+      "Library",
+      "Application Support",
+      APP_IDENTIFIER,
+    );
+    const appDataDir = appConfigDir;
     return {
-      appConfigDir: path.join(
-        home,
-        "Library",
-        "Application Support",
-        APP_IDENTIFIER,
-      ),
+      appConfigDir,
+      appDataDir,
       env: {
+        ARTISTIC_GIT_E2E_APP_CONFIG_DIR: appConfigDir,
+        ARTISTIC_GIT_E2E_APP_DATA_DIR: appDataDir,
         HOME: home,
         TMPDIR: path.join(root, "tmp"),
       },
@@ -80,10 +91,15 @@ export function createE2eProfile({
   const dataHome = profileEnvPath(root, env, "XDG_DATA_HOME", "data");
   const cacheHome = profileEnvPath(root, env, "XDG_CACHE_HOME", "cache");
   const runtimeDir = profileEnvPath(root, env, "XDG_RUNTIME_DIR", "runtime");
+  const appConfigDir = path.join(configHome, APP_IDENTIFIER);
+  const appDataDir = path.join(dataHome, APP_IDENTIFIER);
 
   return {
-    appConfigDir: path.join(configHome, APP_IDENTIFIER),
+    appConfigDir,
+    appDataDir,
     env: {
+      ARTISTIC_GIT_E2E_APP_CONFIG_DIR: appConfigDir,
+      ARTISTIC_GIT_E2E_APP_DATA_DIR: appDataDir,
       XDG_CACHE_HOME: cacheHome,
       XDG_CONFIG_HOME: configHome,
       XDG_DATA_HOME: dataHome,
@@ -104,6 +120,7 @@ export function ensureE2eProfile(profile: E2eProfile) {
   }
 
   mkdirSync(profile.appConfigDir, { recursive: true });
+  mkdirSync(profile.appDataDir, { recursive: true });
   writeFileSync(
     path.join(profile.appConfigDir, "settings.json"),
     `${JSON.stringify(

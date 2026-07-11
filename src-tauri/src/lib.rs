@@ -2691,8 +2691,9 @@ fn repository_backend(
     ssh_passphrase_prompts: Arc<SshPassphrasePromptRegistry>,
 ) -> Result<artistic_git_app::RepositoryBackend, Box<dyn std::error::Error>> {
     let dist_root = git_dist_root(app)?;
-    let app_data_dir = app.path().app_data_dir()?;
-    let app_config_dir = app.path().app_config_dir()?;
+    let storage_dirs = application_storage_dirs(app)?;
+    let app_data_dir = storage_dirs.data;
+    let app_config_dir = storage_dirs.config;
     fs::create_dir_all(&app_data_dir)?;
     fs::create_dir_all(&app_config_dir)?;
 
@@ -2726,6 +2727,65 @@ fn repository_backend(
             registry: ssh_passphrase_prompts,
         }),
     ))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ApplicationStorageDirs {
+    config: PathBuf,
+    data: PathBuf,
+}
+
+fn application_storage_dirs(
+    app: &tauri::App,
+) -> Result<ApplicationStorageDirs, Box<dyn std::error::Error>> {
+    #[cfg(all(feature = "wdio-e2e", debug_assertions))]
+    if let Some(storage_dirs) = e2e_storage_directory_override(
+        env::var_os(E2E_APP_CONFIG_DIR_ENV),
+        env::var_os(E2E_APP_DATA_DIR_ENV),
+    )? {
+        return Ok(storage_dirs);
+    }
+
+    Ok(ApplicationStorageDirs {
+        config: app.path().app_config_dir()?,
+        data: app.path().app_data_dir()?,
+    })
+}
+
+#[cfg(any(all(feature = "wdio-e2e", debug_assertions), test))]
+const E2E_APP_CONFIG_DIR_ENV: &str = "ARTISTIC_GIT_E2E_APP_CONFIG_DIR";
+#[cfg(any(all(feature = "wdio-e2e", debug_assertions), test))]
+const E2E_APP_DATA_DIR_ENV: &str = "ARTISTIC_GIT_E2E_APP_DATA_DIR";
+
+#[cfg(any(all(feature = "wdio-e2e", debug_assertions), test))]
+fn e2e_storage_directory_override(
+    config: Option<std::ffi::OsString>,
+    data: Option<std::ffi::OsString>,
+) -> Result<Option<ApplicationStorageDirs>, std::io::Error> {
+    let config = non_empty_e2e_directory(config);
+    let data = non_empty_e2e_directory(data);
+
+    match (config, data) {
+        (Some(config), Some(data)) => Ok(Some(ApplicationStorageDirs { config, data })),
+        (None, None) => Ok(None),
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "{E2E_APP_CONFIG_DIR_ENV} and {E2E_APP_DATA_DIR_ENV} must either both be set or both be unset"
+            ),
+        )),
+    }
+}
+
+#[cfg(any(all(feature = "wdio-e2e", debug_assertions), test))]
+fn non_empty_e2e_directory(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    value.and_then(|value| {
+        if value.to_string_lossy().trim().is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(value))
+        }
+    })
 }
 
 fn git_dist_root(app: &tauri::App) -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -2916,6 +2976,52 @@ fn emit_fetch_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn e2e_storage_override_accepts_exact_paired_directories() {
+        let storage_dirs = e2e_storage_directory_override(
+            Some(std::ffi::OsString::from("e2e/config")),
+            Some(std::ffi::OsString::from("e2e/data")),
+        )
+        .expect("valid override")
+        .expect("present override");
+
+        assert_eq!(storage_dirs.config, PathBuf::from("e2e/config"));
+        assert_eq!(storage_dirs.data, PathBuf::from("e2e/data"));
+    }
+
+    #[test]
+    fn e2e_storage_override_falls_back_when_both_values_are_absent_or_blank() {
+        assert_eq!(
+            e2e_storage_directory_override(None, None).expect("absent override"),
+            None
+        );
+        assert_eq!(
+            e2e_storage_directory_override(
+                Some(std::ffi::OsString::from("  ")),
+                Some(std::ffi::OsString::from("")),
+            )
+            .expect("blank override"),
+            None
+        );
+    }
+
+    #[test]
+    fn e2e_storage_override_rejects_partial_values() {
+        let config_only =
+            e2e_storage_directory_override(Some(std::ffi::OsString::from("e2e/config")), None)
+                .expect_err("partial override must fail");
+        assert_eq!(config_only.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(config_only.to_string().contains(E2E_APP_CONFIG_DIR_ENV));
+        assert!(config_only.to_string().contains(E2E_APP_DATA_DIR_ENV));
+
+        let data_only = e2e_storage_directory_override(
+            Some(std::ffi::OsString::from(" ")),
+            Some(std::ffi::OsString::from("e2e/data")),
+        )
+        .expect_err("blank config with data must fail");
+        assert_eq!(data_only.kind(), std::io::ErrorKind::InvalidInput);
+    }
 
     #[test]
     fn linux_git_dist_root_uses_packaged_usr_share_directory() {

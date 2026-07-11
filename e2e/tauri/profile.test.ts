@@ -43,6 +43,43 @@ describe("Tauri E2E profile", () => {
     expect(profile.env.XDG_CONFIG_HOME).toBe(
       path.join(tmpRoot, "artistic-git-e2e-profile-42", "config"),
     );
+    expect(profile.appDataDir).toBe(
+      path.join(
+        tmpRoot,
+        "artistic-git-e2e-profile-42",
+        "data",
+        "com.smallmain.artistic-git",
+      ),
+    );
+    expect(profile.env.ARTISTIC_GIT_E2E_APP_CONFIG_DIR).toBe(
+      profile.appConfigDir,
+    );
+    expect(profile.env.ARTISTIC_GIT_E2E_APP_DATA_DIR).toBe(profile.appDataDir);
+  });
+
+  it("passes exact Windows app storage directories to the child process", () => {
+    const root = path.join(tmpdir(), "ag-e2e-windows-profile");
+    const profile = createE2eProfile({
+      env: {
+        APPDATA: "C:\\Users\\runner\\AppData\\Roaming",
+        ARTISTIC_GIT_E2E_PROFILE_DIR: root,
+        LOCALAPPDATA: "C:\\Users\\runner\\AppData\\Local",
+      },
+      platform: "win32",
+    });
+    const expectedAppDir = path.join(
+      root,
+      "AppData",
+      "Roaming",
+      "com.smallmain.artistic-git",
+    );
+
+    expect(profile.appConfigDir).toBe(expectedAppDir);
+    expect(profile.appDataDir).toBe(expectedAppDir);
+    expect(profile.env.ARTISTIC_GIT_E2E_APP_CONFIG_DIR).toBe(expectedAppDir);
+    expect(profile.env.ARTISTIC_GIT_E2E_APP_DATA_DIR).toBe(expectedAppDir);
+    expect(profile.env.APPDATA).toBe(path.join(root, "AppData", "Roaming"));
+    expect(profile.env.LOCALAPPDATA).toBe(path.join(root, "AppData", "Local"));
   });
 
   it("preserves CI-provided Linux XDG dirs so artifacts include profile state", () => {
