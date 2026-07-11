@@ -80,6 +80,7 @@ export async function buildGitToolchainBase({
   }
 
   await buildSourceTarballs({ config, target: targetConfig, sources });
+  await prepareArchiveGitTransportWrappers({ target: targetConfig, sources });
   await assembleGitDistBase({
     config,
     targetName,
@@ -87,6 +88,21 @@ export async function buildGitToolchainBase({
     outputDir,
   });
   await rm(path.dirname(stagingDir), { recursive: true, force: true });
+}
+
+async function prepareArchiveGitTransportWrappers({ target, sources }) {
+  if (target.platform !== "windows") {
+    return;
+  }
+
+  for (const { ref, source } of sources) {
+    if (source.component !== "git" || source.kind !== "archive") {
+      continue;
+    }
+    await ensureGitTransportBuiltinWrappers(stagedSourceDir(ref), {
+      platform: target.platform,
+    });
+  }
 }
 
 async function downloadSource(ref, source) {
@@ -287,7 +303,9 @@ async function buildSourceTarballs({ config, target, sources }) {
         `${ref} has source-tarball kind but ${target.platform} has no source build recipe`,
       );
     }
-    await ensureGitTransportBuiltinWrappers(installRoot);
+    await ensureGitTransportBuiltinWrappers(installRoot, {
+      platform: target.platform,
+    });
     await normalizeGitExecutableCopies(installRoot);
     if (target.platform === "macos") {
       await stripMacosExecutables(installRoot);
@@ -382,7 +400,15 @@ const gitTransportBuiltinWrappers = [
   ["git-upload-pack", "upload-pack"],
 ];
 
-async function ensureGitTransportBuiltinWrappers(installRoot) {
+export async function ensureGitTransportBuiltinWrappers(
+  installRoot,
+  { platform = process.platform } = {},
+) {
+  if (platform === "windows" || platform === "win32") {
+    await ensureWindowsGitUploadArchiveWrapper(installRoot);
+    return;
+  }
+
   const gitExecPath = await firstExistingDirectory(installRoot, [
     "git/libexec/git-core",
     "git/mingw64/libexec/git-core",
@@ -421,6 +447,59 @@ async function ensureGitTransportBuiltinWrappers(installRoot) {
   }
 }
 
+async function ensureWindowsGitUploadArchiveWrapper(installRoot) {
+  const gitExecPath = await firstExistingDirectory(installRoot, [
+    "git/mingw64/libexec/git-core",
+    "mingw64/libexec/git-core",
+  ]);
+  if (!gitExecPath) {
+    fail(
+      `official MinGit install is missing mingw64/libexec/git-core under ${installRoot}`,
+    );
+  }
+  const gitBinary = await firstExistingFile(installRoot, [
+    "git/mingw64/bin/git.exe",
+    "mingw64/bin/git.exe",
+  ]);
+  if (!gitBinary) {
+    fail(
+      `official MinGit install is missing mingw64/bin/git.exe under ${installRoot}`,
+    );
+  }
+
+  await ensureDeterministicGitBuiltinWrapper({
+    builtinName: "upload-archive",
+    gitBinary,
+    wrapperPath: path.join(gitExecPath, "git-upload-archive"),
+  });
+}
+
+async function ensureDeterministicGitBuiltinWrapper({
+  builtinName,
+  gitBinary,
+  wrapperPath,
+}) {
+  const expectedContent = gitBuiltinWrapperContent({
+    builtinName,
+    gitBinary,
+    wrapperPath,
+  });
+  const wrapperStat = await lstat(wrapperPath).catch(() => null);
+  if (!wrapperStat) {
+    await writeGitBuiltinWrapper({ builtinName, gitBinary, wrapperPath });
+    return;
+  }
+  if (!wrapperStat.isFile() || wrapperStat.isSymbolicLink()) {
+    fail(`refusing to replace non-regular Git builtin wrapper: ${wrapperPath}`);
+  }
+  const existingContent = await readFile(wrapperPath, "utf8");
+  if (existingContent !== expectedContent) {
+    fail(
+      `refusing to overwrite an existing Git builtin command with different content: ${wrapperPath}`,
+    );
+  }
+}
+
 async function ensureGitBuiltinWrapper({
   builtinName,
   gitBinary,
@@ -443,12 +522,16 @@ async function ensureGitBuiltinWrapper({
 }
 
 async function writeGitBuiltinWrapper({ builtinName, gitBinary, wrapperPath }) {
-  const relativeGit = relativeExecutablePath(wrapperPath, gitBinary);
   await writeFile(
     wrapperPath,
-    `#!/bin/sh\nexec "$(dirname "$0")/${relativeGit}" ${builtinName} "$@"\n`,
+    gitBuiltinWrapperContent({ builtinName, gitBinary, wrapperPath }),
   );
   await chmod(wrapperPath, 0o755);
+}
+
+function gitBuiltinWrapperContent({ builtinName, gitBinary, wrapperPath }) {
+  const relativeGit = relativeExecutablePath(wrapperPath, gitBinary);
+  return `#!/bin/sh\nexec "$(dirname "$0")/${relativeGit}" ${builtinName} "$@"\n`;
 }
 
 const identicalGitExecutableGroups = [

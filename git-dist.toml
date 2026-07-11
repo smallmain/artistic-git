@@ -9,8 +9,8 @@
 schema_version = 1
 
 [meta]
-toolchain_revision = "2026.07.11.4"
-build_recipe_revision = "3"
+toolchain_revision = "2026.07.11.5"
+build_recipe_revision = "4"
 last_verified = "2026-07-11"
 version_source_policy = "official release pages or official source mirrors only"
 notes = "Win32-OpenSSH follows a stable-first policy. GitHub API metadata scan reports 10.0.0.0p2-Preview as latest and zero stable OpenSSH-Win64.zip releases, so this pin is an explicit preview fallback until a stable official package appears."
@@ -241,6 +241,7 @@ post_install = ["strip unneeded ELF symbols", "normalize identical executable al
 source_ref = "sources.windows.x86_64.git"
 strategy = "download-official-mingit"
 install_root = "git/"
+post_install = ["generate deterministic extensionless git-upload-archive dispatcher in GIT_EXEC_PATH"]
 
 [build.git_lfs]
 strategy = "download-official-archives"

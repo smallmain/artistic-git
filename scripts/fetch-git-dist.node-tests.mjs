@@ -21,6 +21,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  ensureGitTransportBuiltinWrappers,
   extractionCommand,
   normalizeGitExecutableCopies,
   stripLinuxExecutables,
@@ -98,6 +99,87 @@ test("extractor selection keeps tar archives platform independent", () => {
       },
     );
   }
+});
+
+test("Windows MinGit gets a visible, deterministic upload-archive dispatcher", async (t) => {
+  const temporary = await mkdtemp(
+    path.join(os.tmpdir(), "ag MinGit wrapper test "),
+  );
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = path.join(temporary, "MinGit With Spaces");
+  const gitBinary = path.join(root, "mingw64", "bin", "git.exe");
+  const gitExecPath = path.join(root, "mingw64", "libexec", "git-core");
+  const wrapperPath = path.join(gitExecPath, "git-upload-archive");
+  await writeExecutable(gitBinary, '#!/bin/sh\nprintf "<%s>\\n" "$@"\n');
+  await mkdir(gitExecPath, { recursive: true });
+
+  await ensureGitTransportBuiltinWrappers(root, { platform: "windows" });
+
+  const expectedContent =
+    '#!/bin/sh\nexec "$(dirname "$0")/../../bin/git.exe" upload-archive "$@"\n';
+  assert.equal(await readFile(wrapperPath, "utf8"), expectedContent);
+  assert.equal(
+    await lstat(path.join(gitExecPath, "git-receive-pack")).catch(() => null),
+    null,
+  );
+  assert.equal(
+    await lstat(path.join(gitExecPath, "git-upload-pack")).catch(() => null),
+    null,
+  );
+
+  const before = await stat(wrapperPath);
+  await ensureGitTransportBuiltinWrappers(root, { platform: "win32" });
+  const after = await stat(wrapperPath);
+  assert.equal(after.mtimeMs, before.mtimeMs);
+  assert.equal(await readFile(wrapperPath, "utf8"), expectedContent);
+
+  if (process.platform !== "win32") {
+    const run = spawnSync(
+      "git-upload-archive",
+      ["remote repo with spaces.git", "HEAD", "path with spaces.txt"],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          GIT_EXEC_PATH: gitExecPath,
+          PATH: [gitExecPath, process.env.PATH]
+            .filter(Boolean)
+            .join(path.delimiter),
+        },
+      },
+    );
+    assert.equal(run.status, 0, run.stderr);
+    assert.deepEqual(run.stdout.trim().split("\n"), [
+      "<upload-archive>",
+      "<remote repo with spaces.git>",
+      "<HEAD>",
+      "<path with spaces.txt>",
+    ]);
+  }
+});
+
+test("Windows MinGit wrapper preparation refuses conflicting content", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "ag-mingit-wrapper-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const gitBinary = path.join(root, "mingw64", "bin", "git.exe");
+  const wrapperPath = path.join(
+    root,
+    "mingw64",
+    "libexec",
+    "git-core",
+    "git-upload-archive",
+  );
+  await writeExecutable(gitBinary, "#!/bin/sh\nexit 0\n");
+  await writeExecutable(wrapperPath, "#!/bin/sh\necho existing command\n");
+
+  await assert.rejects(
+    ensureGitTransportBuiltinWrappers(root, { platform: "windows" }),
+    /refusing to overwrite an existing Git builtin command with different content/,
+  );
+  assert.equal(
+    await readFile(wrapperPath, "utf8"),
+    "#!/bin/sh\necho existing command\n",
+  );
 });
 
 function runCommand(command, args, { cwd, env, timeout = 15_000 } = {}) {
