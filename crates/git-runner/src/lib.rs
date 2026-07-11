@@ -1595,7 +1595,12 @@ mod tests {
             GitDistribution::from_root(verbatim_root).expect("load verbatim distribution root");
         let runner =
             GitRunner::from_distribution(distribution, temp.path().join("controlled-runner-home"));
-        let expected_template_dir = temp.path().join("git/share/git-core/templates");
+        let expected_template_dir = temp
+            .path()
+            .join("git")
+            .join("share")
+            .join("git-core")
+            .join("templates");
         let template_dir = runner
             .environment_plan()
             .variable("GIT_TEMPLATE_DIR")
