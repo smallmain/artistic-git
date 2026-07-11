@@ -820,7 +820,33 @@ test("CI and audit workflows enforce the pinned embedded toolchain", () => {
     ciWorkflow,
     /Resolve release rehearsal evidence artifacts[\s\S]+if: always\(\)/,
   );
-  assert.match(ciWorkflow, /Generate readiness summary[\s\S]+if: always\(\)/);
+  const readinessEvidenceCondition =
+    "if: always() && steps.release-rehearsal-evidence.outputs.run_id != ''";
+  assert.equal(
+    ciWorkflow.split(readinessEvidenceCondition).length - 1,
+    3,
+    "readiness download, generation, and upload all require explicit rehearsal evidence",
+  );
+  assert.match(
+    ciWorkflow,
+    /- name: Generate readiness summary\n\s+if: always\(\) && steps\.release-rehearsal-evidence\.outputs\.run_id != ''/,
+  );
+  assert.match(
+    ciWorkflow,
+    /- name: Upload readiness summary\n\s+if: always\(\) && steps\.release-rehearsal-evidence\.outputs\.run_id != ''/,
+  );
+  assert.match(
+    ciWorkflow,
+    /- name: Upload phase 12 evidence summary\n\s+if: always\(\)/,
+  );
+  const phase12SummaryJob = ciWorkflow.slice(
+    ciWorkflow.indexOf("\n  phase12-evidence-summary:\n"),
+  );
+  assert.doesNotMatch(
+    phase12SummaryJob,
+    /continue-on-error/,
+    "evidence and readiness blockers must fail the summary job",
+  );
   for (const workflow of [ciWorkflow, releaseWorkflow]) {
     for (const directory of ["downloads", "bases", "helpers"]) {
       assert.ok(

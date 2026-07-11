@@ -12,21 +12,21 @@ const read = (relativePath) => readFile(path.join(root, relativePath), "utf8");
 
 test("manual CI platform scope prunes runner matrices without weakening push CI", async () => {
   const ciWorkflow = await read(".github/workflows/ci.yml");
+  const testJob = workflowJob(ciWorkflow, "test", "e2e");
+  const e2eJob = workflowJob(ciWorkflow, "e2e", "phase12-evidence-summary");
+  const summaryJob = workflowJob(ciWorkflow, "phase12-evidence-summary", null);
 
   assert.match(
     ciWorkflow,
     /platform_scope:\n\s+description:[\s\S]+?default: all\n\s+type: choice\n\s+options:\n\s+- all\n\s+- windows\n\s+- linux\n\s+- macos/,
   );
-  assert.equal(
-    ciWorkflow.match(/github\.event_name != 'workflow_dispatch'/g)?.length,
-    4,
-    "test, E2E matrix, E2E macOS guard, and evidence summary must default non-manual events to the full contract",
-  );
-  assert.equal(
-    ciWorkflow.match(/inputs\.platform_scope == 'all'/g)?.length,
-    3,
-    "both matrices and the evidence summary require all scope",
-  );
+  for (const job of [testJob, e2eJob, summaryJob]) {
+    assert.match(
+      job,
+      /github\.event_name != 'workflow_dispatch' \|\| inputs\.platform_scope == 'all'/,
+      "push and pull request jobs must use the complete platform contract",
+    );
+  }
   for (const scopedMatrix of [
     "inputs.platform_scope == 'windows' &&",
     "inputs.platform_scope == 'linux' &&",
@@ -37,32 +37,28 @@ test("manual CI platform scope prunes runner matrices without weakening push CI"
       `${scopedMatrix} must select both test and E2E matrices`,
     );
   }
-  assert.deepEqual(
-    matrixPlatformOptions(workflowJob(ciWorkflow, "test", "e2e")),
-    [
-      ["ubuntu-22.04", "macos-latest", "windows-latest"],
-      ["windows-latest"],
-      ["ubuntu-22.04"],
-      ["macos-latest"],
-    ],
-  );
-  assert.deepEqual(
-    matrixPlatformOptions(
-      workflowJob(ciWorkflow, "e2e", "phase12-evidence-summary"),
-    ),
-    [["ubuntu-22.04", "windows-latest"], ["windows-latest"], ["ubuntu-22.04"]],
-  );
+  assert.deepEqual(matrixPlatformOptions(testJob), [
+    ["ubuntu-22.04", "macos-latest", "windows-latest"],
+    ["windows-latest"],
+    ["ubuntu-22.04"],
+    ["macos-latest"],
+  ]);
+  assert.deepEqual(matrixPlatformOptions(e2eJob), [
+    ["ubuntu-22.04", "windows-latest"],
+    ["windows-latest"],
+    ["ubuntu-22.04"],
+  ]);
   assert.match(
     ciWorkflow,
     /e2e:\n[\s\S]+?if: github\.event_name != 'workflow_dispatch' \|\| inputs\.platform_scope != 'macos'[\s\S]+?matrix:\n\s+include: >-\n\s+\$\{\{ fromJSON\(/,
   );
   assert.doesNotMatch(
-    workflowJob(ciWorkflow, "e2e", "phase12-evidence-summary"),
+    e2eJob,
     /\n\s+needs: test\n/,
     "platform test and E2E jobs must run in parallel; the summary joins both gates",
   );
   assert.match(
-    workflowJob(ciWorkflow, "phase12-evidence-summary", null),
+    summaryJob,
     /needs:\n\s+- test\n\s+- e2e/,
     "the evidence summary must join both parallel test and E2E gates",
   );
@@ -74,6 +70,28 @@ test("manual CI platform scope prunes runner matrices without weakening push CI"
     ciWorkflow,
     /if: .*matrix\.os.*platform_scope|if: .*platform_scope.*matrix\.os/,
     "platform filtering must happen before matrix jobs are expanded",
+  );
+
+  assert.match(
+    ciWorkflow,
+    /phase12_perf_profile:\n\s+description:[\s\S]+?default: auto\n\s+type: choice\n\s+options:\n\s+- auto\n\s+- light\n\s+- heavy/,
+  );
+  assert.match(
+    testJob,
+    /PHASE12_PERF_PROFILE: >-\n\s+\$\{\{ inputs\.phase12_perf_profile == 'heavy' && 'heavy' \|\|\n\s+inputs\.phase12_perf_profile == 'light' && 'light' \|\|\n\s+\(github\.event_name != 'workflow_dispatch' \|\| inputs\.platform_scope == 'all'\) && 'heavy' \|\|\n\s+'light' \}\}/,
+    "explicit profiles take precedence, while full CI auto-resolves to heavy and partial CI to light",
+  );
+  assert.match(
+    testJob,
+    /Verify phase 12 perf envelope\n\s+if: always\(\)\n\s+timeout-minutes: 30/,
+  );
+  assert.match(testJob, /case "\$PHASE12_PERF_PROFILE" in/);
+  assert.match(testJob, /heavy\) pnpm -s phase12:perf -- --heavy ;;/);
+  assert.match(testJob, /light\) pnpm -s phase12:perf -- --light ;;/);
+  assert.match(
+    testJob,
+    /\*\) echo "::error::invalid resolved phase 12 perf profile:[^"]+"; exit 1 ;;/,
+    "an invalid resolved profile must fail closed",
   );
 
   const phase12Audit = spawnSync(

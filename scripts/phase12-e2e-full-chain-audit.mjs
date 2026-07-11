@@ -420,6 +420,14 @@ function evaluateCiWorkflowContract(source) {
       "(github.event_name != 'workflow_dispatch' || inputs.platform_scope == 'all')",
       "inputs.platform_scope == 'windows' &&",
       "inputs.platform_scope == 'linux' &&",
+      "inputs.phase12_perf_profile == 'heavy' && 'heavy' ||",
+      "inputs.phase12_perf_profile == 'light' && 'light' ||",
+      "(github.event_name != 'workflow_dispatch' || inputs.platform_scope == 'all') && 'heavy' ||",
+      'case "$PHASE12_PERF_PROFILE" in',
+      "heavy) pnpm -s phase12:perf -- --heavy ;;",
+      "light) pnpm -s phase12:perf -- --light ;;",
+      "invalid resolved phase 12 perf profile",
+      "timeout-minutes: 30",
     ],
     failures,
     "test job",
@@ -462,10 +470,31 @@ function evaluateCiWorkflowContract(source) {
     [
       "needs:\n      - test\n      - e2e",
       "(github.event_name != 'workflow_dispatch' || inputs.platform_scope == 'all')",
+      "Generate readiness summary",
+      "Upload readiness summary",
     ],
     failures,
     "phase12 evidence summary job",
   );
+  const readinessCondition =
+    "if: always() && steps.release-rehearsal-evidence.outputs.run_id != ''";
+  if (summaryJob.split(readinessCondition).length - 1 !== 3) {
+    failures.push(
+      "readiness download, generation, and upload must all require an explicit release rehearsal run id",
+    );
+  }
+  if (summaryJob.includes("continue-on-error")) {
+    failures.push(
+      "phase12 evidence and readiness blockers must fail the summary job",
+    );
+  }
+  if (
+    !/- name: Upload phase 12 evidence summary\n\s+if: always\(\)/.test(
+      summaryJob,
+    )
+  ) {
+    failures.push("phase12 evidence summary must always be uploaded");
+  }
 
   return failures;
 }

@@ -66,6 +66,85 @@ test("readiness reports ready only for current passing evidence", async () => {
   }
 });
 
+test("readiness evaluates passing Phase 12 tasks independently", async () => {
+  const fixture = await createFixture("independent-phase12-tasks");
+  try {
+    await writeJson(
+      path.join(fixture.artifactsDir, "phase12.json"),
+      phase12Summary({ e2e: true, perf: false }),
+    );
+    await writeJson(
+      path.join(fixture.artifactsDir, "release.json"),
+      releaseReport({ status: "pass" }),
+    );
+
+    const result = runReadiness(fixture);
+    assert.notEqual(result.status, 0);
+    const summary = await fixture.readSummary();
+    const e2eItem = summary.items.find(
+      (item) => item.id === "phase12-e2e-full-chain",
+    );
+    const performanceItem = summary.items.find(
+      (item) => item.id === "phase12-performance",
+    );
+
+    assert.equal(summary.overallStatus, "blocked");
+    assert.equal(e2eItem.status, "ready");
+    assert.equal(e2eItem.checkable, true);
+    assert.deepEqual(e2eItem.blockers, []);
+    assert.equal(performanceItem.status, "blocked");
+    assert.equal(performanceItem.checkable, false);
+    assert.ok(
+      summary.remainingBlockers.every(
+        (entry) => entry.itemId !== "phase12-e2e-full-chain",
+      ),
+    );
+    assert.ok(
+      summary.remainingBlockers.some(
+        (entry) => entry.itemId === "phase12-performance",
+      ),
+    );
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("readiness blocks contradictory Phase 12 task status", async () => {
+  const fixture = await createFixture("contradictory-phase12-task");
+  try {
+    const phase12 = phase12Summary({ e2e: true, perf: true });
+    phase12.tasks.e2eFullChain.status = "blocker";
+    await writeJson(path.join(fixture.artifactsDir, "phase12.json"), phase12);
+    await writeJson(
+      path.join(fixture.artifactsDir, "release.json"),
+      releaseReport({ status: "pass" }),
+    );
+
+    const result = runReadiness(fixture);
+    assert.notEqual(result.status, 0);
+    const summary = await fixture.readSummary();
+    const e2eItem = summary.items.find(
+      (item) => item.id === "phase12-e2e-full-chain",
+    );
+    const performanceItem = summary.items.find(
+      (item) => item.id === "phase12-performance",
+    );
+
+    assert.equal(summary.overallStatus, "blocked");
+    assert.equal(e2eItem.status, "blocked");
+    assert.equal(e2eItem.checkable, false);
+    assert.equal(performanceItem.status, "ready");
+    assert.equal(performanceItem.checkable, true);
+    assert.ok(
+      summary.remainingBlockers.some(
+        (entry) => entry.itemId === "phase12-e2e-full-chain",
+      ),
+    );
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test("readiness blocks stale Phase 12 evidence", async () => {
   const fixture = await createFixture("stale-phase12");
   try {

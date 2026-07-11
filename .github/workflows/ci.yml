@@ -185,23 +185,22 @@ jobs:
 
       - name: Verify phase 12 perf envelope
         if: always()
+        timeout-minutes: 30
         shell: bash
         env:
-          PHASE12_PERF_PROFILE: ${{ github.event_name == 'workflow_dispatch' && inputs.phase12_perf_profile || 'auto' }}
+          PHASE12_PERF_PROFILE: >-
+            ${{ inputs.phase12_perf_profile == 'heavy' && 'heavy' ||
+                inputs.phase12_perf_profile == 'light' && 'light' ||
+                (github.event_name != 'workflow_dispatch' || inputs.platform_scope == 'all') && 'heavy' ||
+                'light' }}
           ARTISTIC_GIT_PHASE12_PERF_REPORT: ${{ runner.temp }}/phase12-perf/phase12-perf-report.json
         run: |
           set -euo pipefail
-          profile_arg=""
-          if [ "$PHASE12_PERF_PROFILE" = "heavy" ]; then
-            profile_arg="--heavy"
-          elif [ "$PHASE12_PERF_PROFILE" = "light" ]; then
-            profile_arg="--light"
-          fi
-          if [ -n "$profile_arg" ]; then
-            pnpm -s phase12:perf -- "$profile_arg"
-          else
-            pnpm -s phase12:perf
-          fi
+          case "$PHASE12_PERF_PROFILE" in
+            heavy) pnpm -s phase12:perf -- --heavy ;;
+            light) pnpm -s phase12:perf -- --light ;;
+            *) echo "::error::invalid resolved phase 12 perf profile: $PHASE12_PERF_PROFILE"; exit 1 ;;
+          esac
 
       - name: Upload phase 12 perf report
         if: always()
@@ -568,7 +567,7 @@ jobs:
           github-token: ${{ github.token }}
 
       - name: Generate readiness summary
-        if: always()
+        if: always() && steps.release-rehearsal-evidence.outputs.run_id != ''
         run: |
           node scripts/readiness-summary.mjs \
             --artifacts-dir="${{ runner.temp }}/phase12-evidence-input" \
@@ -586,7 +585,7 @@ jobs:
           retention-days: 14
 
       - name: Upload readiness summary
-        if: always()
+        if: always() && steps.release-rehearsal-evidence.outputs.run_id != ''
         uses: actions/upload-artifact@v4
         with:
           name: readiness-summary

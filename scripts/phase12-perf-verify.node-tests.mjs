@@ -202,21 +202,61 @@ test("reports spawn error details when git-dist executable cannot start", async 
   }
 });
 
-test("history perf fixture uses linear commit-tree history", async () => {
+test("history perf fixture builds a linear commit chain before one final ref update", async () => {
   const source = await readFile(scriptPath, "utf8");
+  const functionStart = source.indexOf("function verifyHistoryPagination() {");
+  const functionEnd = source.indexOf(
+    "function verifyLargeStatus() {",
+    functionStart,
+  );
+  assert.notEqual(functionStart, -1, "history fixture function is present");
+  assert.notEqual(
+    functionEnd,
+    -1,
+    "history fixture function has a stable boundary",
+  );
+  const historySource = source.slice(functionStart, functionEnd);
+  const loopMatch = historySource.match(
+    /for \(let index = 0; index < report\.profile\.commitCount; index \+= 1\) \{([\s\S]*?)\n {2}\}\n {2}runGit\(\["update-ref", "refs\/heads\/main", parent\], repo\);/,
+  );
 
   assert.match(
-    source,
+    historySource,
     /fixtureStrategy: "commit-tree-linear-single-tree"/,
     "history evidence records the commit-tree fixture strategy",
   );
   assert.match(
-    source,
+    historySource,
     /"commit-tree", tree, "-m"/,
     "history fixture creates commits without rewriting a new file per commit",
   );
+  assert.ok(
+    loopMatch,
+    "history fixture updates the branch only after the commit-tree loop",
+  );
+  const loopSource = loopMatch[1];
+  assert.match(
+    loopSource,
+    /if \(parent\) \{\s+args\.push\("-p", parent\);\s+\}/,
+    "each commit after the first links to the previously created commit",
+  );
+  assert.match(
+    loopSource,
+    /parent = runGit\(args, repo\)\.trim\(\);/,
+    "the newly created commit becomes the next iteration's parent",
+  );
   assert.doesNotMatch(
-    source,
+    loopSource,
+    /update-ref/,
+    "the commit loop must not repeatedly publish intermediate refs",
+  );
+  assert.equal(
+    historySource.match(/"update-ref"/g)?.length,
+    1,
+    "history fixture publishes exactly one final branch ref",
+  );
+  assert.doesNotMatch(
+    historySource,
     /runGit\(\["commit", "-m", `history/,
     "history fixture must not use porcelain commit for every perf commit",
   );

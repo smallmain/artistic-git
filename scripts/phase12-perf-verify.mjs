@@ -215,8 +215,8 @@ function verifyHistoryPagination() {
       args.push("-p", parent);
     }
     parent = runGit(args, repo).trim();
-    runGit(["update-ref", "refs/heads/main", parent], repo);
   }
+  runGit(["update-ref", "refs/heads/main", parent], repo);
 
   const fixtureCreateMs = performance.now() - fixtureStarted;
   const paginationStarted = performance.now();

@@ -106,7 +106,7 @@ function evaluatePhase12Task(taskKey, id, title) {
     );
   }
   const task = phase12.content.tasks?.[taskKey];
-  if (phase12.content.status === "pass" && task?.checkable === true) {
+  if (task?.status === "pass" && task.checkable === true) {
     return readyItem(id, title, phase12.filePath, task);
   }
   const messages =
