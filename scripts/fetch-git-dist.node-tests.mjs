@@ -21,6 +21,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  extractionCommand,
   normalizeGitExecutableCopies,
   stripLinuxExecutables,
   stripMacosBinary,
@@ -37,6 +38,67 @@ const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
 );
+
+test("extractor selection supports extensionless cached ZIP assets on every platform", () => {
+  const archivePath = path.join("cache", "downloads", "sha256", "asset");
+  const destination = path.join("work", "extracted output");
+  const archiveName = "MinGit-2.55.0.2-64-bit.zip";
+
+  const windows = extractionCommand(
+    archivePath,
+    destination,
+    archiveName,
+    "win32",
+  );
+  assert.equal(windows.executable, "powershell.exe");
+  assert.deepEqual(windows.args.slice(0, 4), [
+    "-NoLogo",
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+  ]);
+  assert.equal(windows.args.length, 5);
+  assert.match(
+    windows.args[4],
+    /System\.IO\.Compression\.ZipFile\]::ExtractToDirectory/,
+  );
+  assert.doesNotMatch(windows.args[4], /Expand-Archive/);
+  assert.equal(windows.args[4].includes(archivePath), false);
+  assert.equal(windows.args[4].includes(destination), false);
+  assert.ok(
+    windows.args[4].includes(Buffer.from(archivePath).toString("base64")),
+  );
+  assert.ok(
+    windows.args[4].includes(Buffer.from(destination).toString("base64")),
+  );
+
+  for (const platform of ["darwin", "linux"]) {
+    assert.deepEqual(
+      extractionCommand(archivePath, destination, archiveName, platform),
+      {
+        executable: "unzip",
+        args: ["-q", "-o", archivePath, "-d", destination],
+      },
+    );
+  }
+});
+
+test("extractor selection keeps tar archives platform independent", () => {
+  for (const platform of ["win32", "darwin", "linux"]) {
+    assert.deepEqual(
+      extractionCommand(
+        "cache/asset",
+        "work/source",
+        "git-2.55.0.tar.xz",
+        platform,
+      ),
+      {
+        executable: "tar",
+        args: ["-xf", "cache/asset", "-C", "work/source"],
+      },
+    );
+  }
+});
 
 function runCommand(command, args, { cwd, env, timeout = 15_000 } = {}) {
   return new Promise((resolve, reject) => {

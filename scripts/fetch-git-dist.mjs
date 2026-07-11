@@ -960,26 +960,28 @@ function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-function extractionCommand(
+export function extractionCommand(
   archivePath,
   destination,
   archiveName = archivePath,
+  platform = process.platform,
 ) {
   if (/\.zip$/i.test(archiveName)) {
-    if (process.platform === "win32") {
+    if (platform === "win32") {
+      const archiveBase64 = Buffer.from(archivePath, "utf8").toString("base64");
+      const destinationBase64 = Buffer.from(destination, "utf8").toString(
+        "base64",
+      );
+      const script = [
+        "$ErrorActionPreference = 'Stop'",
+        "Add-Type -AssemblyName System.IO.Compression.FileSystem",
+        `$archivePath = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${archiveBase64}'))`,
+        `$destinationPath = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${destinationBase64}'))`,
+        "[System.IO.Compression.ZipFile]::ExtractToDirectory($archivePath, $destinationPath)",
+      ].join("; ");
       return {
         executable: "powershell.exe",
-        args: [
-          "-NoLogo",
-          "-NoProfile",
-          "-Command",
-          "Expand-Archive",
-          "-LiteralPath",
-          archivePath,
-          "-DestinationPath",
-          destination,
-          "-Force",
-        ],
+        args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
       };
     }
     return {
