@@ -728,16 +728,11 @@ impl CommandEnvironmentPlan {
 
         #[cfg(windows)]
         {
+            inherit_windows_runtime_environment(&mut variables, |key| std::env::var_os(key));
             variables.insert(
                 "USERPROFILE".to_owned(),
                 controlled_home.clone().into_os_string(),
             );
-            if let Some(system_root) = std::env::var_os("SystemRoot") {
-                variables.insert("SystemRoot".to_owned(), system_root);
-            }
-            if let Some(windir) = std::env::var_os("WINDIR") {
-                variables.insert("WINDIR".to_owned(), windir);
-            }
         }
 
         Self {
@@ -774,6 +769,31 @@ impl CommandEnvironmentPlan {
 
         for (key, value) in &self.variables {
             command.env(key, value);
+        }
+    }
+}
+
+#[cfg(any(windows, test))]
+const WINDOWS_RUNTIME_ENV_KEYS: [&str; 9] = [
+    "ProgramData",
+    "SystemRoot",
+    "WINDIR",
+    "ComSpec",
+    "PATHEXT",
+    "TEMP",
+    "TMP",
+    "APPDATA",
+    "LOCALAPPDATA",
+];
+
+#[cfg(any(windows, test))]
+fn inherit_windows_runtime_environment(
+    variables: &mut BTreeMap<String, OsString>,
+    mut read: impl FnMut(&str) -> Option<OsString>,
+) {
+    for key in WINDOWS_RUNTIME_ENV_KEYS {
+        if let Some(value) = read(key).filter(|value| !value.is_empty()) {
+            variables.insert(key.to_owned(), value);
         }
     }
 }
@@ -1426,6 +1446,55 @@ mod tests {
         );
         assert_eq!(command_plan.args, vec![OsString::from("status")]);
         assert!(!command_plan.environment.removes_variable("PATH"));
+    }
+
+    #[test]
+    fn windows_runtime_environment_preserves_only_process_requirements() {
+        let source = BTreeMap::from([
+            ("ProgramData", OsString::from(r"C:\ProgramData")),
+            ("SystemRoot", OsString::from(r"C:\Windows")),
+            ("WINDIR", OsString::from(r"C:\Windows")),
+            ("ComSpec", OsString::from(r"C:\Windows\System32\cmd.exe")),
+            ("PATHEXT", OsString::from(".COM;.EXE;.BAT;.CMD")),
+            ("TEMP", OsString::from(r"C:\Temp")),
+            ("TMP", OsString::from(r"C:\Tmp")),
+            (
+                "APPDATA",
+                OsString::from(r"C:\Users\fixture\AppData\Roaming"),
+            ),
+            (
+                "LOCALAPPDATA",
+                OsString::from(r"C:\Users\fixture\AppData\Local"),
+            ),
+            ("USERPROFILE", OsString::from(r"C:\Users\fixture")),
+            ("PATH", OsString::from(r"C:\system-git")),
+            ("UNKNOWN_SECRET", OsString::from("must-not-leak")),
+        ]);
+        let mut selected = BTreeMap::new();
+
+        inherit_windows_runtime_environment(&mut selected, |key| source.get(key).cloned());
+
+        assert_eq!(
+            selected.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec![
+                "APPDATA",
+                "ComSpec",
+                "LOCALAPPDATA",
+                "PATHEXT",
+                "ProgramData",
+                "SystemRoot",
+                "TEMP",
+                "TMP",
+                "WINDIR",
+            ]
+        );
+        assert_eq!(
+            selected.get("ComSpec"),
+            Some(&OsString::from(r"C:\Windows\System32\cmd.exe"))
+        );
+        assert!(!selected.contains_key("USERPROFILE"));
+        assert!(!selected.contains_key("PATH"));
+        assert!(!selected.contains_key("UNKNOWN_SECRET"));
     }
 
     #[test]

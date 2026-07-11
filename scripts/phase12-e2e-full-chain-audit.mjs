@@ -178,12 +178,13 @@ const gates = [
   {
     id: "wdio-embedded-git-required",
     requirement:
-      "WDIO full-chain always uses the fixed embedded Git resource manifest",
+      "WDIO full-chain uses the embedded Git tree installed beside the debug application",
     source: "wdio",
     tokens: [
       'describe("Artistic Git Tauri real-git full chain"',
-      '"src-tauri"',
-      '"resources"',
+      "installedGitDistDir",
+      '"target"',
+      '"debug"',
       '"git-dist"',
       "manifest.paths.gitExecutable",
       "spawnSync(this.gitPath",
@@ -191,7 +192,10 @@ const gates = [
       "GIT_EXEC_PATH",
       "git/libexec/git-core",
     ],
-    forbidden: ["describe\\.skip"],
+    forbidden: [
+      "describe\\.skip",
+      'repositoryRoot,[\\s\\S]{0,120}"src-tauri",[\\s\\S]{0,120}"resources",[\\s\\S]{0,120}"git-dist"',
+    ],
   },
   {
     id: "temporary-bare-remote",

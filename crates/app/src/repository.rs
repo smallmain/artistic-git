@@ -3831,15 +3831,9 @@ fn command_failure(
 ) -> AppError {
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let summary = if stderr.trim().is_empty() {
-        format!("git command failed during {operation_name}")
-    } else {
-        stderr
-            .lines()
-            .next()
-            .unwrap_or("git command failed")
-            .to_owned()
-    };
+    let summary = git_stderr_summary(&stderr)
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("git command failed during {operation_name}"));
 
     logged(
         AppError::expected(summary, operation_name).with_git(GitCommandError {
@@ -3849,6 +3843,21 @@ fn command_failure(
             stderr,
         }),
     )
+}
+
+fn git_stderr_summary(stderr: &str) -> Option<&str> {
+    let first = stderr
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())?;
+    stderr
+        .lines()
+        .map(str::trim)
+        .find(|line| {
+            let lower = line.to_ascii_lowercase();
+            lower.starts_with("fatal:") || lower.starts_with("error:")
+        })
+        .or(Some(first))
 }
 
 fn spawn_error(plan: &GitCommandPlan, source: io::Error, operation_name: &str) -> AppError {
@@ -4012,6 +4021,21 @@ mod tests {
         assert!(!token.is_cancelled());
         assert!(registry.cancel(&operation_id).expect("cancel operation"));
         assert!(token.is_cancelled());
+    }
+
+    #[test]
+    fn git_failure_summary_skips_clone_progress_for_fatal_error() {
+        assert_eq!(
+            git_stderr_summary(
+                "Cloning into 'local'...\r\nfatal: unable to create temporary file\r\n"
+            ),
+            Some("fatal: unable to create temporary file")
+        );
+        assert_eq!(
+            git_stderr_summary("Cloning into 'local'...\n"),
+            Some("Cloning into 'local'...")
+        );
+        assert_eq!(git_stderr_summary(" \r\n"), None);
     }
 
     #[test]

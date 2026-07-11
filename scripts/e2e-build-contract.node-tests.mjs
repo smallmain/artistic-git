@@ -158,6 +158,14 @@ test("E2E instrumentation is explicit and excluded from release builds", async (
   }
   assert.doesNotMatch(releaseWorkflow, /wdio-e2e|tauri\.e2e\.conf\.json/);
   assert.match(fullChainSource, /e2eTemporaryRoot\(process\.env, tmpdir\(\)\)/);
+  assert.match(
+    fullChainSource,
+    /const installedGitDistDir = path\.join\([\s\S]*?"target",[\s\S]*?"debug",[\s\S]*?"git-dist"/,
+  );
+  assert.doesNotMatch(
+    fullChainSource,
+    /repositoryRoot,[\s\S]{0,120}"src-tauri",[\s\S]{0,120}"resources",[\s\S]{0,120}"git-dist"/,
+  );
   assert.match(fullChainSource, /clone UI reported:/);
   assert.match(fullChainSource, /e2e-real-git-clone-diagnostic-/);
   for (const required of [

@@ -32,10 +32,10 @@ const repositoryRoot = path.resolve(
   "..",
   "..",
 );
-const gitDistDir = path.join(
+const installedGitDistDir = path.join(
   repositoryRoot,
-  "src-tauri",
-  "resources",
+  "target",
+  "debug",
   "git-dist",
 );
 const progressEvents: FullChainProgressEvent[] = [];
@@ -257,9 +257,12 @@ class RealGitFixture {
 
   static create() {
     const manifest = JSON.parse(
-      readFileSync(path.join(gitDistDir, "manifest.json"), "utf8"),
+      readFileSync(path.join(installedGitDistDir, "manifest.json"), "utf8"),
     ) as GitDistManifest;
-    const gitPath = path.join(gitDistDir, manifest.paths.gitExecutable);
+    const gitPath = path.join(
+      installedGitDistDir,
+      manifest.paths.gitExecutable,
+    );
     if (!existsSync(gitPath)) {
       throw new Error(`embedded git executable was not found at ${gitPath}`);
     }
@@ -274,7 +277,7 @@ class RealGitFixture {
     );
     const remotePath = path.join(parentPath, "remote.git");
     const env = createEmbeddedGitEnv({
-      gitDist: gitDistDir,
+      gitDist: installedGitDistDir,
       gitPath,
       home: path.join(parentPath, "home"),
       manifest,
