@@ -587,7 +587,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          runtime_args=()
+          runtime_args=(--runtime-smoke)
           if [ "$RUNNER_OS" = "Linux" ]; then
             runtime_args+=("--runtime-library-path=${{ steps.packaged-resource-output.outputs.path }}/usr/lib")
           fi
@@ -596,7 +596,6 @@ jobs:
             --release \
             --bundle-output "${{ steps.packaged-resource-output.outputs.path }}" \
             --require-bundled-resource \
-            --runtime-smoke \
             "${runtime_args[@]}"
 
       - name: Stage release assets

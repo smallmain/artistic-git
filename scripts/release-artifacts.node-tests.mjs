@@ -884,6 +884,8 @@ test("release workflow ensures and checks staged and packaged git-dist resources
     releaseWorkflow.indexOf("- name: Stage release assets"),
   );
   assert.ok(smokeStep.includes("--runtime-smoke"));
+  assert.ok(smokeStep.includes("runtime_args=(--runtime-smoke)"));
+  assert.ok(!smokeStep.includes("runtime_args=()"));
   assert.ok(!smokeStep.includes("continue-on-error"));
   assert.ok(!smokeStep.includes("|| true"));
   assert.ok(
