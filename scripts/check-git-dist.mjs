@@ -38,6 +38,19 @@ const usage = `Usage:
 
 The verifier always checks the repository's fixed embedded toolchain tree.`;
 
+export const WINDOWS_EMBEDDED_RUNTIME_ENV_KEYS = Object.freeze([
+  "ProgramData",
+  "SystemRoot",
+  "WINDIR",
+  "ComSpec",
+  "PATHEXT",
+  "TEMP",
+  "TMP",
+  "USERPROFILE",
+  "APPDATA",
+  "LOCALAPPDATA",
+]);
+
 function fail(message) {
   throw new Error(message);
 }
@@ -521,7 +534,13 @@ async function checkLinuxExecutableDependencies(target, distRoot) {
   );
 }
 
-function runVersionCheck(executable, versionArgs, label, expectedVersion, env) {
+export function runVersionCheck(
+  executable,
+  versionArgs,
+  label,
+  expectedVersion,
+  env,
+) {
   const result = spawnSync(executable, versionArgs, {
     encoding: "utf8",
     env,
@@ -529,12 +548,12 @@ function runVersionCheck(executable, versionArgs, label, expectedVersion, env) {
 
   if (result.error) {
     fail(
-      `${label} could not be executed at explicit path ${executable}: ${result.error.message}`,
+      `${label} could not be executed at explicit path ${executable} (${spawnExitDescription(result)}): ${result.error.message}`,
     );
   }
   if (result.status !== 0) {
     fail(
-      `${label} version check failed at explicit path ${executable}: ${result.stderr || result.stdout}`,
+      `${label} version check failed at explicit path ${executable} (${spawnExitDescription(result)}): ${result.stderr || result.stdout}`,
     );
   }
 
@@ -543,6 +562,10 @@ function runVersionCheck(executable, versionArgs, label, expectedVersion, env) {
     fail(`${label} expected version '${expectedVersion}', got '${output}'`);
   }
   info(`${label}: ${output}`);
+}
+
+function spawnExitDescription(result) {
+  return `exit status ${result.status ?? "unavailable"}, signal ${result.signal ?? "none"}`;
 }
 
 function runExpectedFailure(executable, args, label, expectedMessage, env) {
@@ -593,6 +616,7 @@ async function embeddedGitRuntimeEnv({
   ]);
 
   const env = {
+    ...selectEmbeddedGitHostEnv(process.env, process.platform),
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_CONFIG_COUNT: "1",
     GIT_CONFIG_KEY_0: "init.defaultBranch",
@@ -615,6 +639,25 @@ async function embeddedGitRuntimeEnv({
   }
 
   return env;
+}
+
+export function selectEmbeddedGitHostEnv(sourceEnv, platform) {
+  if (platform !== "win32") {
+    return {};
+  }
+
+  const caseInsensitiveValues = new Map(
+    Object.entries(sourceEnv).map(([key, value]) => [key.toLowerCase(), value]),
+  );
+  const selected = {};
+  for (const key of WINDOWS_EMBEDDED_RUNTIME_ENV_KEYS) {
+    const value =
+      sourceEnv[key] ?? caseInsensitiveValues.get(key.toLowerCase());
+    if (typeof value === "string" && value.length > 0) {
+      selected[key] = value;
+    }
+  }
+  return selected;
 }
 
 async function runGitRuntimeSmoke({ gitExecutable, distRoot, runtimeEnv }) {

@@ -15,6 +15,12 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  runVersionCheck,
+  selectEmbeddedGitHostEnv,
+  WINDOWS_EMBEDDED_RUNTIME_ENV_KEYS,
+} from "./check-git-dist.mjs";
+
+import {
   assembleGitDistFromBase,
   configPath,
   expectedManifestPaths,
@@ -37,6 +43,72 @@ async function writeExecutable(filePath, content) {
   await writeFile(filePath, content);
   await chmod(filePath, 0o755);
 }
+
+test("embedded runtime host environment only preserves the Windows allowlist", () => {
+  const sourceEnv = {
+    ProgramData: "C:\\ProgramData",
+    SystemRoot: "C:\\Windows",
+    windir: "C:\\Windows-from-case-insensitive-source",
+    ComSpec: "C:\\Windows\\System32\\cmd.exe",
+    PATHEXT: ".COM;.EXE;.BAT;.CMD",
+    TEMP: "C:\\Temp",
+    TMP: "C:\\Tmp",
+    USERPROFILE: "C:\\Users\\fixture",
+    APPDATA: "C:\\Users\\fixture\\AppData\\Roaming",
+    LOCALAPPDATA: "C:\\Users\\fixture\\AppData\\Local",
+    HOME: "C:\\system-git-home",
+    PATH: "C:\\system-git-bin",
+    GIT_EXEC_PATH: "C:\\system-git-libexec",
+    GIT_SSH: "C:\\system-ssh.exe",
+    SSH_ASKPASS: "C:\\system-askpass.exe",
+    UNKNOWN_SECRET: "must-not-leak",
+  };
+
+  const selected = selectEmbeddedGitHostEnv(sourceEnv, "win32");
+
+  assert.deepEqual(Object.keys(selected), [
+    ...WINDOWS_EMBEDDED_RUNTIME_ENV_KEYS,
+  ]);
+  assert.equal(selected.WINDIR, "C:\\Windows-from-case-insensitive-source");
+  assert.equal(selected.PATH, undefined);
+  assert.equal(selected.HOME, undefined);
+  assert.equal(selected.GIT_EXEC_PATH, undefined);
+  assert.equal(selected.GIT_SSH, undefined);
+  assert.equal(selected.SSH_ASKPASS, undefined);
+  assert.equal(selected.UNKNOWN_SECRET, undefined);
+});
+
+test("embedded runtime host environment is empty outside Windows", () => {
+  assert.deepEqual(
+    selectEmbeddedGitHostEnv(
+      {
+        ProgramData: "/system-data",
+        SystemRoot: "/system-root",
+        TEMP: "/tmp",
+      },
+      "linux",
+    ),
+    {},
+  );
+  assert.deepEqual(
+    selectEmbeddedGitHostEnv({ ProgramData: "/system-data" }, "darwin"),
+    {},
+  );
+});
+
+test("version check failures report exit status and signal", () => {
+  assert.throws(
+    () =>
+      runVersionCheck(
+        process.execPath,
+        ["-e", "process.exit(17)"],
+        "fixture executable",
+        "unused",
+        {},
+      ),
+    /exit status 17, signal none/,
+  );
+});
 
 test("pinned configuration and committed lock cover every target", async () => {
   const definition = await loadToolchainDefinition();
