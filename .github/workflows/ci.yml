@@ -377,9 +377,11 @@ jobs:
       - name: Run Tauri E2E on Windows
         id: tauri_e2e_windows
         if: runner.os == 'Windows'
-        run: |
-          $env:ARTISTIC_GIT_E2E_SPEC_SET = "real"
-          pnpm e2e:tauri:ci
+        env:
+          ARTISTIC_GIT_E2E_LOG_DIR: ${{ runner.temp }}/tauri-e2e-logs/main
+          ARTISTIC_GIT_E2E_PROFILE_DIR: ${{ runner.temp }}/tauri-e2e-profile/main
+          ARTISTIC_GIT_E2E_SPEC_SET: real
+        run: pnpm e2e:tauri:ci
 
       - name: Run phase 9 crash isolation E2E evidence on Linux
         id: phase9_crash_e2e_linux
@@ -439,6 +441,8 @@ jobs:
         id: phase9_crash_e2e_windows
         if: always() && runner.os == 'Windows'
         env:
+          ARTISTIC_GIT_E2E_LOG_DIR: ${{ runner.temp }}/tauri-e2e-logs/crash
+          ARTISTIC_GIT_E2E_PROFILE_DIR: ${{ runner.temp }}/tauri-e2e-profile/crash
           ARTISTIC_GIT_E2E_SPEC_SET: crash
           ARTISTIC_GIT_PHASE9_CRASH_ISOLATION_E2E_REPORT: ${{ runner.temp }}/phase9-crash-isolation-e2e/phase9-crash-isolation-e2e-${{ runner.os }}.json
         run: pnpm e2e:tauri:ci
@@ -466,6 +470,7 @@ jobs:
           name: e2e-real-git-report-${{ matrix.os }}
           path: |
             artifacts/e2e-real-git-report-*
+            artifacts/e2e-real-git-clone-diagnostic-*
             artifacts/phase12-e2e-full-chain-evidence-*
           if-no-files-found: warn
           retention-days: 14
@@ -480,6 +485,7 @@ jobs:
             ${{ runner.temp }}/tauri-e2e-cache/
             ${{ runner.temp }}/tauri-e2e-config/
             ${{ runner.temp }}/tauri-e2e-data/
+            ${{ runner.temp }}/tauri-e2e-profile/
           if-no-files-found: ignore
           retention-days: 14
 

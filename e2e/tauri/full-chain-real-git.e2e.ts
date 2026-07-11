@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   realpathSync,
   readFileSync,
   rmSync,
@@ -16,6 +17,7 @@ import { fileURLToPath } from "node:url";
 
 import { browser } from "@wdio/globals";
 
+import { e2eTemporaryRoot } from "./profile";
 import { waitForStartScreenReady } from "./start-screen";
 
 type GitDistManifest = {
@@ -262,7 +264,14 @@ class RealGitFixture {
       throw new Error(`embedded git executable was not found at ${gitPath}`);
     }
 
-    const parentPath = mkdtempSync(path.join(tmpdir(), "ag-wdio-full-chain-"));
+    const parentPath = realpathSync.native(
+      mkdtempSync(
+        path.join(
+          e2eTemporaryRoot(process.env, tmpdir()),
+          "ag-wdio-full-chain-",
+        ),
+      ),
+    );
     const remotePath = path.join(parentPath, "remote.git");
     const env = createEmbeddedGitEnv({
       gitDist: gitDistDir,
@@ -414,24 +423,42 @@ async function cloneThroughUi(
     window.localStorage.setItem("artistic-git:last-clone-parent-dir", value);
   }, parentPath);
   await $('[data-testid="start-clone-project"]').click();
-  await $('[data-testid="clone-url-input"]').setValue(remotePath);
-  await browser.waitUntil(
-    async () =>
-      (await $('[data-testid="clone-parent-directory-input"]').getValue()) ===
-      parentPath,
-    {
+  const urlInput = await $('[data-testid="clone-url-input"]');
+  const repositoryPath = path.join(parentPath, directoryName);
+
+  try {
+    await urlInput.setValue(remotePath);
+    await browser.waitUntil(
+      async () =>
+        (await urlInput.getValue()) === remotePath &&
+        (await $('[data-testid="clone-parent-directory-input"]').getValue()) ===
+          parentPath,
+      {
+        timeout: 10_000,
+        timeoutMsg: `clone URL or parent directory did not match the fixture paths`,
+      },
+    );
+    const directoryInput = await $(
+      '[data-testid="clone-directory-name-input"]',
+    );
+    await directoryInput.setValue(directoryName);
+    const submit = await $('[data-testid="clone-submit"]');
+    await browser.waitUntil(async () => submit.isEnabled(), {
       timeout: 10_000,
-      timeoutMsg: `clone parent directory was not prefilled with ${parentPath}`,
-    },
-  );
-  const directoryInput = await $('[data-testid="clone-directory-name-input"]');
-  await directoryInput.setValue(directoryName);
-  const submit = await $('[data-testid="clone-submit"]');
-  await browser.waitUntil(async () => submit.isEnabled(), {
-    timeout: 10_000,
-    timeoutMsg: "clone submit button was not enabled",
-  });
-  await submit.click();
+      timeoutMsg: "clone submit button was not enabled",
+    });
+    await submit.click();
+  } catch (error) {
+    const diagnosticPath = await writeCloneDiagnostic(
+      repositoryPath,
+      await repositoryUiState(),
+      error,
+    );
+    throw new Error(
+      `clone form could not be submitted; diagnostic: ${diagnosticPath}`,
+      { cause: error },
+    );
+  }
 }
 
 async function commitThroughUi(
@@ -729,27 +756,172 @@ async function verifyWdioBridge() {
 }
 
 async function waitForRepository(repositoryPath: string) {
-  await browser.waitUntil(
-    async () =>
-      existsSync(path.join(repositoryPath, ".git")) &&
-      (await repositoryShellForPath(repositoryPath)) !== null &&
-      (await $('[data-testid="history-scroll-viewport"]').isExisting()),
-    {
-      timeout: 90_000,
-      timeoutMsg: `cloned repository did not open in the UI at ${repositoryPath}`,
-    },
-  );
+  let uiState = await repositoryUiState();
+  let gitDirectoryExists = false;
+
+  try {
+    await browser.waitUntil(
+      async () => {
+        gitDirectoryExists = existsSync(path.join(repositoryPath, ".git"));
+        uiState = await repositoryUiState();
+        return Boolean(
+          uiState.cloneAlert ||
+          (gitDirectoryExists &&
+            uiState.repositoryPaths.some((candidate) =>
+              sameFilesystemPath(candidate, repositoryPath),
+            ) &&
+            uiState.historyExists),
+        );
+      },
+      {
+        timeout: 90_000,
+        timeoutMsg: `clone did not reach a success or error state at ${repositoryPath}`,
+      },
+    );
+  } catch (error) {
+    const diagnosticPath = await writeCloneDiagnostic(
+      repositoryPath,
+      uiState,
+      error,
+    );
+    throw new Error(
+      `cloned repository did not open in the UI at ${repositoryPath}; diagnostic: ${diagnosticPath}`,
+      { cause: error },
+    );
+  }
+
+  if (uiState.cloneAlert) {
+    const diagnosticPath = await writeCloneDiagnostic(
+      repositoryPath,
+      uiState,
+      uiState.cloneAlert,
+    );
+    throw new Error(
+      `clone UI reported: ${uiState.cloneAlert}; diagnostic: ${diagnosticPath}`,
+    );
+  }
 }
 
-async function repositoryShellForPath(repositoryPath: string) {
-  const elements = await $$('[data-testid="repository-shell"]');
-  for (const element of elements) {
-    const candidate = await element.getAttribute("data-repository-path");
-    if (candidate && sameFilesystemPath(candidate, repositoryPath)) {
-      return element;
-    }
+type RepositoryUiState = {
+  bodyText: string;
+  cloneAlert: string | null;
+  cloneDirectoryName: string | null;
+  cloneDialogText: string | null;
+  cloneParentDirectory: string | null;
+  cloneStatus: string | null;
+  cloneUrl: string | null;
+  historyExists: boolean;
+  repositoryPaths: string[];
+};
+
+async function repositoryUiState(): Promise<RepositoryUiState> {
+  return browser.execute(() => {
+    const cloneInput = document.querySelector(
+      '[data-testid="clone-url-input"]',
+    );
+    const cloneDialog =
+      cloneInput?.closest('[role="dialog"]') ??
+      document.querySelector('[role="dialog"]');
+    const cloneAlert = cloneDialog?.querySelector('[role="alert"]') ?? null;
+    const cloneStatus = cloneDialog?.querySelector('[role="status"]') ?? null;
+    const cloneParentDirectory = document.querySelector(
+      '[data-testid="clone-parent-directory-input"]',
+    );
+    const cloneDirectoryName = document.querySelector(
+      '[data-testid="clone-directory-name-input"]',
+    );
+    const repositoryPaths = Array.from(
+      document.querySelectorAll('[data-testid="repository-shell"]'),
+    )
+      .map((element) => element.getAttribute("data-repository-path"))
+      .filter((value): value is string => Boolean(value));
+
+    return {
+      bodyText: document.body?.innerText.slice(0, 4_000) ?? "",
+      cloneAlert: cloneAlert?.textContent?.trim() || null,
+      cloneDirectoryName:
+        cloneDirectoryName instanceof HTMLInputElement
+          ? cloneDirectoryName.value
+          : null,
+      cloneDialogText: cloneDialog?.textContent?.trim().slice(0, 4_000) || null,
+      cloneParentDirectory:
+        cloneParentDirectory instanceof HTMLInputElement
+          ? cloneParentDirectory.value
+          : null,
+      cloneStatus: cloneStatus?.textContent?.trim().slice(0, 4_000) || null,
+      cloneUrl:
+        cloneInput instanceof HTMLInputElement ? cloneInput.value : null,
+      historyExists: Boolean(
+        document.querySelector('[data-testid="history-scroll-viewport"]'),
+      ),
+      repositoryPaths,
+    };
+  });
+}
+
+async function writeCloneDiagnostic(
+  repositoryPath: string,
+  uiState: RepositoryUiState,
+  reason: unknown,
+) {
+  const outputDir = path.resolve("artifacts");
+  mkdirSync(outputDir, { recursive: true });
+  const suffix = process.env.RUNNER_OS ?? process.platform;
+  const diagnosticPath = path.join(
+    outputDir,
+    `e2e-real-git-clone-diagnostic-${suffix}.json`,
+  );
+  const screenshotPath = path.join(
+    outputDir,
+    `e2e-real-git-clone-diagnostic-${suffix}.png`,
+  );
+  let screenshotError: string | null = null;
+  try {
+    await browser.saveScreenshot(screenshotPath);
+  } catch (error) {
+    screenshotError = error instanceof Error ? error.message : String(error);
   }
-  return null;
+
+  writeFileSync(
+    diagnosticPath,
+    `${JSON.stringify(
+      {
+        checkedAt: new Date().toISOString(),
+        kind: "e2e-real-git-clone-diagnostic",
+        parent: filesystemDiagnostic(path.dirname(repositoryPath)),
+        reason: reason instanceof Error ? reason.message : String(reason),
+        repository: filesystemDiagnostic(repositoryPath),
+        repositoryPath,
+        schemaVersion: 1,
+        screenshotError,
+        screenshotPath,
+        ui: uiState,
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  return diagnosticPath;
+}
+
+function filesystemDiagnostic(value: string) {
+  try {
+    const stats = statSync(value);
+    return {
+      entries: stats.isDirectory() ? readdirSync(value).slice(0, 100) : [],
+      exists: true,
+      isDirectory: stats.isDirectory(),
+      isFile: stats.isFile(),
+      path: value,
+      realPath: realpathSync.native(value),
+    };
+  } catch (error) {
+    return {
+      error: error instanceof Error ? error.message : String(error),
+      exists: false,
+      path: value,
+    };
+  }
 }
 
 function sameFilesystemPath(left: string, right: string) {

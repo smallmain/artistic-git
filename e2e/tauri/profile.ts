@@ -17,6 +17,13 @@ export type CreateE2eProfileOptions = {
   tmpDir?: string;
 };
 
+export function e2eTemporaryRoot(
+  env: NodeJS.ProcessEnv = process.env,
+  fallback: string = tmpdir(),
+) {
+  return readNonEmptyEnv(env, "RUNNER_TEMP") ?? fallback;
+}
+
 export function createE2eProfile({
   env = process.env,
   platform = process.platform,

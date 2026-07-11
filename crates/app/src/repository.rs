@@ -4401,7 +4401,7 @@ mod tests {
     }
 
     #[test]
-    fn clones_local_bare_repository_and_reuses_open_flow() {
+    fn backend_clones_local_bare_repository_and_reuses_open_flow() {
         let (runner, _dist_temp) = real_runner();
         let source = TestRepo::new(&runner);
         source.init_with_commit();
@@ -4438,10 +4438,9 @@ mod tests {
         .expect("point bare HEAD at pushed branch");
 
         let parent = TestTempDir::new("ag-clone-parent").expect("clone parent");
-        let response = clone_repository(
-            &runner,
-            None,
-            CloneRepositoryRequest {
+        let backend = RepositoryBackend::new(runner.clone(), None);
+        let response = backend
+            .clone_repository(CloneRepositoryRequest {
                 url: bare_path.clone(),
                 target_parent_directory: display_path(parent.path()),
                 directory_name: "cloned-art".to_owned(),
@@ -4450,9 +4449,8 @@ mod tests {
                     email: Some("tool@example.test".to_owned()),
                 }),
                 operation_id: None,
-            },
-        )
-        .expect("clone repository");
+            })
+            .expect("clone repository through backend");
         let target = parent.path().join("cloned-art");
 
         assert_eq!(

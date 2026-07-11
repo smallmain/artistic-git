@@ -17,6 +17,8 @@ test("E2E instrumentation is explicit and excluded from release builds", async (
     loggingSource,
     wdioConfig,
     releaseWorkflow,
+    ciWorkflow,
+    fullChainSource,
   ] = await Promise.all([
     read("src-tauri/Cargo.toml"),
     read("src-tauri/tauri.e2e.conf.json"),
@@ -25,6 +27,8 @@ test("E2E instrumentation is explicit and excluded from release builds", async (
     read("crates/core/src/logging.rs"),
     read("wdio.tauri.conf.ts"),
     read(".github/workflows/release.yml"),
+    read(".github/workflows/ci.yml"),
+    read("e2e/tauri/full-chain-real-git.e2e.ts"),
   ]);
   const e2eConfig = JSON.parse(e2eConfigText);
   const packageJson = JSON.parse(await read("package.json"));
@@ -60,6 +64,17 @@ test("E2E instrumentation is explicit and excluded from release builds", async (
     assert.ok(wdioConfig.includes(required), required);
   }
   assert.doesNotMatch(releaseWorkflow, /wdio-e2e|tauri\.e2e\.conf\.json/);
+  assert.match(fullChainSource, /e2eTemporaryRoot\(process\.env, tmpdir\(\)\)/);
+  assert.match(fullChainSource, /clone UI reported:/);
+  assert.match(fullChainSource, /e2e-real-git-clone-diagnostic-/);
+  for (const required of [
+    "ARTISTIC_GIT_E2E_LOG_DIR:",
+    "ARTISTIC_GIT_E2E_PROFILE_DIR:",
+    "artifacts/e2e-real-git-clone-diagnostic-*",
+    "${{ runner.temp }}/tauri-e2e-profile/",
+  ]) {
+    assert.ok(ciWorkflow.includes(required), required);
+  }
 
   const defaultTree = spawnSync(
     "cargo",

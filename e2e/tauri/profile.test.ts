@@ -4,9 +4,22 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { createE2eProfile, ensureE2eProfile } from "./profile";
+import {
+  createE2eProfile,
+  e2eTemporaryRoot,
+  ensureE2eProfile,
+} from "./profile";
 
 describe("Tauri E2E profile", () => {
+  it("uses the canonical CI runner temp root for cross-process fixtures", () => {
+    expect(
+      e2eTemporaryRoot({ RUNNER_TEMP: " D:\\a\\_temp " }, "/fallback"),
+    ).toBe("D:\\a\\_temp");
+    expect(e2eTemporaryRoot({ RUNNER_TEMP: " " }, "/fallback")).toBe(
+      "/fallback",
+    );
+  });
+
   it("isolates local Linux runs from host XDG config by default", () => {
     const tmpRoot = path.join(tmpdir(), "ag-e2e-profile-test");
     const profile = createE2eProfile({
@@ -52,9 +65,7 @@ describe("Tauri E2E profile", () => {
         "com.smallmain.artistic-git",
       ),
     );
-    expect(profile.env.XDG_DATA_HOME).toBe(
-      "/runner/temp/tauri-e2e-data/main",
-    );
+    expect(profile.env.XDG_DATA_HOME).toBe("/runner/temp/tauri-e2e-data/main");
     expect(profile.runtimeDir).toBe("/runner/temp/xdg-runtime");
   });
 
