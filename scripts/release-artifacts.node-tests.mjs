@@ -536,6 +536,17 @@ test("release workflow installs pnpm before setting up Node in the publish job",
   assert.ok(pnpmSetup < nodeSetup, "pnpm must be available to setup-node");
 });
 
+test("release plan does not cache a pnpm store it never creates", () => {
+  const planStart = releaseWorkflow.indexOf("\n  plan:\n");
+  const dryRunStart = releaseWorkflow.indexOf("\n  dry-run:\n");
+  assert.notEqual(planStart, -1, "plan job block");
+  assert.notEqual(dryRunStart, -1, "dry-run job block");
+
+  const planJob = releaseWorkflow.slice(planStart, dryRunStart);
+  assert.ok(!planJob.includes("cache: pnpm"));
+  assert.ok(!planJob.includes("pnpm install"));
+});
+
 test("release workflow publishes only from main without environment approval", () => {
   assert.ok(!releaseWorkflow.includes("environment: release"));
   assert.ok(
