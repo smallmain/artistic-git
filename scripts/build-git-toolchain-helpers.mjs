@@ -1,9 +1,10 @@
 /* global process */
 
 import { spawnSync } from "node:child_process";
-import { chmod, cp, mkdir, rename, rm, stat } from "node:fs/promises";
+import { chmod, cp, mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 
+import { atomicPublishDirectory } from "./atomic-directory-publish.mjs";
 import { expectedManifestPaths, repoRoot } from "./git-dist-lib.mjs";
 
 export async function buildGitToolchainHelpers({
@@ -120,22 +121,5 @@ function runCommand(executable, args, options = {}) {
     throw new Error(
       `${options.label ?? executable} failed: ${result.stderr || result.stdout || `exit ${result.status}`}`,
     );
-  }
-}
-
-async function atomicPublishDirectory(source, destination) {
-  await mkdir(path.dirname(destination), { recursive: true });
-  const backup = `${destination}.backup-${process.pid}-${Date.now()}`;
-  const existing = await stat(destination).catch(() => null);
-  if (existing) await rename(destination, backup);
-  try {
-    await rename(source, destination);
-    await rm(backup, { recursive: true, force: true });
-  } catch (error) {
-    await rm(destination, { recursive: true, force: true });
-    if (existing && (await stat(backup).catch(() => null))) {
-      await rename(backup, destination);
-    }
-    throw error;
   }
 }

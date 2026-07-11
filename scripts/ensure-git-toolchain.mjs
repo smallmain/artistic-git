@@ -7,7 +7,6 @@ import {
   cp,
   mkdir,
   readFile,
-  rename,
   rm,
   stat,
   utimes,
@@ -16,6 +15,7 @@ import {
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { atomicPublishDirectory } from "./atomic-directory-publish.mjs";
 import { buildGitToolchainHelpers } from "./build-git-toolchain-helpers.mjs";
 import { checkDistRoot } from "./check-git-dist.mjs";
 import { buildGitToolchainBase } from "./fetch-git-dist.mjs";
@@ -30,7 +30,6 @@ import {
   computeToolchainState,
   ensureCacheDirectories,
   normalizeTarget,
-  pathExists,
 } from "./git-toolchain-state.mjs";
 
 export async function ensureGitToolchain(targetName) {
@@ -450,21 +449,6 @@ async function staleLockCanBeRemoved(lockPath) {
     return false;
   } catch {
     return true;
-  }
-}
-
-async function atomicPublishDirectory(source, destination) {
-  await mkdir(path.dirname(destination), { recursive: true });
-  const backup = `${destination}.backup-${process.pid}-${Date.now()}`;
-  const existing = await pathExists(destination);
-  if (existing) await rename(destination, backup);
-  try {
-    await rename(source, destination);
-    await rm(backup, { recursive: true, force: true });
-  } catch (error) {
-    await rm(destination, { recursive: true, force: true });
-    if (existing) await rename(backup, destination);
-    throw error;
   }
 }
 

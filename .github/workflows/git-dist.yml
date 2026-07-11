@@ -10,6 +10,8 @@ on:
       - "git-dist.toml"
       - "git-toolchain.lock.json"
       - "scripts/build-git-toolchain-helpers.mjs"
+      - "scripts/atomic-directory-publish.mjs"
+      - "scripts/atomic-directory-publish.node-tests.mjs"
       - "scripts/git-toolchain-*.mjs"
       - "scripts/fetch-git-dist.mjs"
       - "scripts/fetch-git-dist.node-tests.mjs"

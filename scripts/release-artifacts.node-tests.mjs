@@ -862,6 +862,8 @@ test("CI and audit workflows enforce the pinned embedded toolchain", () => {
   for (const fingerprintInput of [
     '      - ".gitattributes"',
     '      - "Cargo.toml"',
+    '      - "scripts/atomic-directory-publish.mjs"',
+    '      - "scripts/atomic-directory-publish.node-tests.mjs"',
     '      - "scripts/build-git-toolchain-helpers.mjs"',
     '      - "scripts/fetch-git-dist.node-tests.mjs"',
   ]) {

@@ -23,7 +23,7 @@
     "e2e:real-git:report:test": "node --test scripts/e2e-real-git-report.node-tests.mjs",
     "git-toolchain:ensure": "node scripts/ensure-git-toolchain.mjs",
     "git-toolchain:verify": "node scripts/check-git-dist.mjs",
-    "git-toolchain:build:test": "node --test scripts/fetch-git-dist.node-tests.mjs",
+    "git-toolchain:build:test": "node --test scripts/atomic-directory-publish.node-tests.mjs scripts/fetch-git-dist.node-tests.mjs",
     "git-toolchain:config:check": "node scripts/check-git-toolchain-config.mjs",
     "git-toolchain:state:test": "node --test scripts/git-toolchain-state.node-tests.mjs",
     "git-toolchain:update": "node scripts/update-git-toolchain.mjs",
