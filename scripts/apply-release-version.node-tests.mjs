@@ -52,7 +52,7 @@ dependencies = [
 [[package]]
 name = "bytemuck"
 version = "1.25.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
+source = "registry+example-crates-index"
 
 [[package]]
 name = "artistic-git-shell"
@@ -70,7 +70,7 @@ dependencies = [
 [[package]]
 name = "bytemuck"
 version = "1.25.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
+source = "registry+example-crates-index"
 
 [[package]]
 name = "artistic-git-shell"
