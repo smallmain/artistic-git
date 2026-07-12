@@ -497,10 +497,14 @@ function evaluateCiWorkflowContract(source) {
   requireTokens(
     summaryJob,
     [
-      "needs:\n      - test\n      - perf\n      - e2e",
+      "needs:\n      - test\n      - perf\n      - e2e\n      - dry-run\n      - package",
       "(github.event_name != 'workflow_dispatch' || inputs.platform_scope == 'all')",
+      "Download release rehearsal evidence",
+      "Detect release rehearsal evidence",
       "Generate readiness summary",
       "Upload readiness summary",
+      "if: always() && steps.release-rehearsal-evidence.outputs.present == 'true'",
+      "Readiness summary will include same-run release rehearsal evidence.",
     ],
     failures,
     "phase12 evidence summary job",
@@ -510,11 +514,20 @@ function evaluateCiWorkflowContract(source) {
       "publish job must wait for the parallel test, e2e, and perf gates",
     );
   }
-  const readinessCondition =
-    "if: always() && steps.release-rehearsal-evidence.outputs.run_id != ''";
-  if (summaryJob.split(readinessCondition).length - 1 !== 3) {
+  if (
+    summaryJob.includes("release_rehearsal_run_id:") ||
+    summaryJob.includes("run-id: ${{ steps.release-rehearsal-evidence.outputs.run_id }}") ||
+    summaryJob.includes("ARTISTIC_GIT_RELEASE_REHEARSAL_RUN_ID")
+  ) {
     failures.push(
-      "readiness download, generation, and upload must all require an explicit release rehearsal run id",
+      "phase12 evidence must consume same-run release rehearsal artifacts without a cross-run id",
+    );
+  }
+  const readinessCondition =
+    "if: always() && steps.release-rehearsal-evidence.outputs.present == 'true'";
+  if (summaryJob.split(readinessCondition).length - 1 !== 2) {
+    failures.push(
+      "readiness generation and upload must both require same-run release rehearsal evidence",
     );
   }
   if (summaryJob.includes("continue-on-error")) {

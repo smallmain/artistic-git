@@ -66,6 +66,61 @@ test("readiness reports ready only for current passing evidence", async () => {
   }
 });
 
+test("soft operator blockers keep dry-run readiness non-fatal when Phase 12 is ready", async () => {
+  const fixture = await createFixture("soft-operator-blockers");
+  try {
+    await writeJson(
+      path.join(fixture.artifactsDir, "phase12.json"),
+      phase12Summary({ e2e: true, perf: true }),
+    );
+    await writeJson(
+      path.join(fixture.artifactsDir, "release.json"),
+      releaseReport({ status: "skipped" }),
+    );
+    const hard = runReadiness(fixture);
+    assert.notEqual(hard.status, 0);
+    const soft = runReadiness(fixture, {
+      ARTISTIC_GIT_READINESS_SOFT_OPERATOR_BLOCKERS: "1",
+    });
+    assert.equal(soft.status, 0, soft.stderr);
+    const summary = await fixture.readSummary();
+    assert.equal(summary.overallStatus, "blocked");
+    assert.ok(
+      summary.remainingBlockers.every(
+        (entry) => entry.category === "operator-evidence",
+      ),
+    );
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("soft operator blockers still fail when Phase 12 evidence is blocked", async () => {
+  const fixture = await createFixture("soft-operator-still-hard-phase12");
+  try {
+    await writeJson(
+      path.join(fixture.artifactsDir, "phase12.json"),
+      phase12Summary({ e2e: true, perf: false }),
+    );
+    await writeJson(
+      path.join(fixture.artifactsDir, "release.json"),
+      releaseReport({ status: "skipped" }),
+    );
+    const result = runReadiness(fixture, {
+      ARTISTIC_GIT_READINESS_SOFT_OPERATOR_BLOCKERS: "1",
+    });
+    assert.notEqual(result.status, 0);
+    const summary = await fixture.readSummary();
+    assert.ok(
+      summary.remainingBlockers.some(
+        (entry) => entry.itemId === "phase12-performance",
+      ),
+    );
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test("readiness evaluates passing Phase 12 tasks independently", async () => {
   const fixture = await createFixture("independent-phase12-tasks");
   try {
@@ -228,7 +283,7 @@ async function createFixture(name) {
   };
 }
 
-function runReadiness(fixture) {
+function runReadiness(fixture, env = {}) {
   return spawnSync(
     process.execPath,
     [
@@ -237,7 +292,13 @@ function runReadiness(fixture) {
       `--report-dir=${fixture.reportDir}`,
       `--expected-head-sha=${currentHead}`,
     ],
-    { encoding: "utf8" },
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        ...env,
+      },
+    },
   );
 }
 

@@ -34,11 +34,6 @@ on:
           - auto
           - light
           - heavy
-      release_rehearsal_run_id:
-        description: "Completed run id whose release-rehearsal-* artifacts should be included in readiness evidence."
-        required: false
-        default: ""
-        type: string
       bump:
         description: "Override the calculated SemVer bump for manual releases."
         type: choice
@@ -747,6 +742,8 @@ jobs:
       - test
       - perf
       - e2e
+      - dry-run
+      - package
     if: >-
       ${{ always() &&
         (github.event_name != 'workflow_dispatch' || inputs.platform_scope == 'all')
@@ -768,12 +765,14 @@ jobs:
         with:
           pattern: phase12-perf-*
           path: ${{ runner.temp }}/phase12-evidence-input
+          if-no-files-found: warn
 
       - name: Download phase 12 E2E reports
         uses: actions/download-artifact@v4
         with:
           pattern: e2e-real-git-report-*
           path: ${{ runner.temp }}/phase12-evidence-input
+          if-no-files-found: warn
 
       - name: Generate phase 12 evidence summary
         run: |
@@ -782,34 +781,38 @@ jobs:
             --report-dir="${{ runner.temp }}/phase12-evidence-summary" \
             --current-head-sha="${GITHUB_SHA}"
 
-      - name: Resolve release rehearsal evidence artifacts
-        id: release-rehearsal-evidence
-        if: always()
-        shell: bash
-        env:
-          DISPATCH_RELEASE_REHEARSAL_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.release_rehearsal_run_id || '' }}
-          DEFAULT_RELEASE_REHEARSAL_RUN_ID: ${{ vars.ARTISTIC_GIT_RELEASE_REHEARSAL_RUN_ID }}
-        run: |
-          set -euo pipefail
-          run_id="${DISPATCH_RELEASE_REHEARSAL_RUN_ID:-${DEFAULT_RELEASE_REHEARSAL_RUN_ID:-}}"
-          echo "run_id=${run_id}" >> "$GITHUB_OUTPUT"
-          if [ -n "$run_id" ]; then
-            echo "Readiness summary will include release rehearsal evidence from Release run ${run_id}."
-          else
-            echo "No Release run id configured for release rehearsal readiness evidence."
-          fi
-
       - name: Download release rehearsal evidence
-        if: always() && steps.release-rehearsal-evidence.outputs.run_id != ''
+        if: always()
         uses: actions/download-artifact@v4
         with:
           pattern: release-rehearsal-*
           path: ${{ runner.temp }}/phase12-evidence-input
-          run-id: ${{ steps.release-rehearsal-evidence.outputs.run_id }}
-          github-token: ${{ github.token }}
+          if-no-files-found: warn
+
+      - name: Detect release rehearsal evidence
+        id: release-rehearsal-evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          input_dir="${{ runner.temp }}/phase12-evidence-input"
+          found=false
+          if [ -d "$input_dir" ] && find "$input_dir" -type f \( -name '*release-rehearsal*' -o -path '*/release-rehearsal-*/*' \) | grep -q .; then
+            found=true
+          fi
+          echo "present=${found}" >> "$GITHUB_OUTPUT"
+          if [ "$found" = "true" ]; then
+            echo "Readiness summary will include same-run release rehearsal evidence."
+          else
+            echo "No same-run release-rehearsal-* artifacts were available for readiness evidence."
+          fi
 
       - name: Generate readiness summary
-        if: always() && steps.release-rehearsal-evidence.outputs.run_id != ''
+        if: always() && steps.release-rehearsal-evidence.outputs.present == 'true'
+        env:
+          # Dry-run/package checklists are same-run operator evidence; keep them
+          # visible in readiness without failing every PR/main evidence job.
+          ARTISTIC_GIT_READINESS_SOFT_OPERATOR_BLOCKERS: "1"
         run: |
           node scripts/readiness-summary.mjs \
             --artifacts-dir="${{ runner.temp }}/phase12-evidence-input" \
@@ -827,7 +830,7 @@ jobs:
           retention-days: 14
 
       - name: Upload readiness summary
-        if: always() && steps.release-rehearsal-evidence.outputs.run_id != ''
+        if: always() && steps.release-rehearsal-evidence.outputs.present == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: readiness-summary
@@ -1075,6 +1078,26 @@ jobs:
 
       - name: Check release scripts and bundle resources
         run: pnpm release:check
+
+      - name: Generate release rehearsal package checklist
+        env:
+          ARTISTIC_GIT_RELEASE_REHEARSAL_REPORT_DIR: ${{ runner.temp }}/release-rehearsal
+          ARTISTIC_GIT_RELEASE_REHEARSAL_ARTIFACT_NAME: release-rehearsal-${{ runner.os }}
+          ARTISTIC_GIT_RELEASE_WORKFLOW_RUN_URL: https://github.com/${{github.repository}}/actions/runs/${{github.run_id}}
+          ARTISTIC_GIT_RELEASE_WORKFLOW_ATTEMPT: ${{ github.run_attempt }}
+          ARTISTIC_GIT_RELEASE_WORKFLOW_SHA: ${{ github.sha }}
+          ARTISTIC_GIT_RELEASE_PLAN_VERSION: ${{ needs.plan.outputs.version }}
+          ARTISTIC_GIT_RELEASE_PLAN_TAG: ${{ needs.plan.outputs.tag }}
+          ARTISTIC_GIT_RELEASE_MODE_REASON: ${{ needs.plan.outputs.mode_reason }}
+        run: pnpm release:rehearsal:checklist
+
+      - name: Upload release rehearsal package checklist
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-rehearsal-${{ runner.os }}
+          path: ${{ runner.temp }}/release-rehearsal/
+          retention-days: 14
 
       - name: Apply release version to package manifests
         shell: bash
