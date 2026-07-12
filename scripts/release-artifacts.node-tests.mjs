@@ -759,7 +759,7 @@ test("release workflow supports full package audits without publishing", () => {
       .filter((matrix) => matrix.length === 1)
       .map(([entry]) => entry.os)
       .sort(),
-    ["macos-latest", "ubuntu-22.04", "windows-latest"],
+    ["macos-14", "ubuntu-22.04", "windows-2022"],
   );
   assert.ok(
     publishJob.includes("if: needs.plan.outputs.publish_release == 'true'"),

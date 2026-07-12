@@ -153,10 +153,10 @@ jobs:
           - os: ubuntu-22.04
             gitDistTarget: linux-x86_64
             rustTargets: x86_64-unknown-linux-gnu
-          - os: macos-latest
+          - os: macos-14
             gitDistTarget: macos-universal
             rustTargets: aarch64-apple-darwin,x86_64-apple-darwin
-          - os: windows-latest
+          - os: windows-2022
             gitDistTarget: windows-x86_64
             rustTargets: x86_64-pc-windows-msvc
 
@@ -275,12 +275,12 @@ jobs:
         include: >-
           ${{ fromJSON(
             (needs.plan.outputs.publish_release == 'true' || needs.plan.outputs.package_scope == 'all') &&
-            '[{"os":"macos-latest","bundles":"app,dmg","target":"universal-apple-darwin","gitDistTarget":"macos-universal","artifactName":"artistic-git-macos"},{"os":"windows-latest","bundles":"nsis","target":"x86_64-pc-windows-msvc","gitDistTarget":"windows-x86_64","artifactName":"artistic-git-windows"},{"os":"ubuntu-22.04","bundles":"appimage,deb","target":"x86_64-unknown-linux-gnu","gitDistTarget":"linux-x86_64","artifactName":"artistic-git-linux"}]' ||
+            '[{"os":"macos-14","bundles":"app,dmg","target":"universal-apple-darwin","gitDistTarget":"macos-universal","artifactName":"artistic-git-macos"},{"os":"windows-2022","bundles":"nsis","target":"x86_64-pc-windows-msvc","gitDistTarget":"windows-x86_64","artifactName":"artistic-git-windows"},{"os":"ubuntu-22.04","bundles":"appimage,deb","target":"x86_64-unknown-linux-gnu","gitDistTarget":"linux-x86_64","artifactName":"artistic-git-linux"}]' ||
             needs.plan.outputs.package_scope == 'windows' &&
-            '[{"os":"windows-latest","bundles":"nsis","target":"x86_64-pc-windows-msvc","gitDistTarget":"windows-x86_64","artifactName":"artistic-git-windows"}]' ||
+            '[{"os":"windows-2022","bundles":"nsis","target":"x86_64-pc-windows-msvc","gitDistTarget":"windows-x86_64","artifactName":"artistic-git-windows"}]' ||
             needs.plan.outputs.package_scope == 'linux' &&
             '[{"os":"ubuntu-22.04","bundles":"appimage,deb","target":"x86_64-unknown-linux-gnu","gitDistTarget":"linux-x86_64","artifactName":"artistic-git-linux"}]' ||
-            '[{"os":"macos-latest","bundles":"app,dmg","target":"universal-apple-darwin","gitDistTarget":"macos-universal","artifactName":"artistic-git-macos"}]'
+            '[{"os":"macos-14","bundles":"app,dmg","target":"universal-apple-darwin","gitDistTarget":"macos-universal","artifactName":"artistic-git-macos"}]'
           ) }}
 
     steps:
@@ -336,7 +336,7 @@ jobs:
       - name: Set up fixed Rust toolchain
         uses: dtolnay/rust-toolchain@1.96.1
         with:
-          targets: ${{ matrix.os == 'macos-latest' && 'x86_64-apple-darwin,aarch64-apple-darwin' || matrix.target }}
+          targets: ${{ matrix.os == 'macos-14' && 'x86_64-apple-darwin,aarch64-apple-darwin' || matrix.target }}
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
