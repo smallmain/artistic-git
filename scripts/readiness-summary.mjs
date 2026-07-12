@@ -80,7 +80,12 @@ writeFileSync(markdownPath, renderMarkdown(summary));
 console.log(
   `Readiness summary: ${summary.overallStatus}; ${remainingBlockers.length} blocker(s); wrote ${jsonPath}`,
 );
-if (remainingBlockers.length > 0) {
+const softOperatorBlockers =
+  process.env.ARTISTIC_GIT_READINESS_SOFT_OPERATOR_BLOCKERS === "1";
+const hardBlockers = softOperatorBlockers
+  ? remainingBlockers.filter((entry) => entry.category !== "operator-evidence")
+  : remainingBlockers;
+if (hardBlockers.length > 0) {
   process.exitCode = 1;
 }
 

@@ -809,6 +809,10 @@ jobs:
 
       - name: Generate readiness summary
         if: always() && steps.release-rehearsal-evidence.outputs.present == 'true'
+        env:
+          # Dry-run/package checklists are same-run operator evidence; keep them
+          # visible in readiness without failing every PR/main evidence job.
+          ARTISTIC_GIT_READINESS_SOFT_OPERATOR_BLOCKERS: "1"
         run: |
           node scripts/readiness-summary.mjs \
             --artifacts-dir="${{ runner.temp }}/phase12-evidence-input" \

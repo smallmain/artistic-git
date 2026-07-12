@@ -1075,6 +1075,7 @@ test("release and audit workflows enforce the pinned embedded toolchain", () => 
     "pattern: release-rehearsal-*",
     "path: ${{ runner.temp }}/phase12-evidence-input",
     "Readiness summary will include same-run release rehearsal evidence.",
+    "ARTISTIC_GIT_READINESS_SOFT_OPERATOR_BLOCKERS: \"1\"",
     "Generate release rehearsal dry-run checklist",
     "Generate release rehearsal package checklist",
     "Upload release rehearsal package checklist",
