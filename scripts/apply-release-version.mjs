@@ -69,6 +69,25 @@ export function replaceCargoPackageVersion(
   return raw.replace(packageVersion, `version = "${version}"`);
 }
 
+export function readCargoPackageName(raw, filePath = "Cargo.toml") {
+  const packageName = /^name = "([^"]+)"$/m.exec(raw);
+  if (!packageName) {
+    throw new Error(`Missing package name in ${filePath}`);
+  }
+  return packageName[1];
+}
+
+export function replaceCargoLockPackageVersion(raw, packageName, version) {
+  const escapedName = packageName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const packageVersion = new RegExp(
+    `(name = "${escapedName}"\\nversion = ")[^"]+(")`,
+  );
+  if (!packageVersion.test(raw)) {
+    throw new Error(`Missing Cargo.lock package entry for ${packageName}`);
+  }
+  return raw.replace(packageVersion, `$1${version}$2`);
+}
+
 export async function applyReleaseVersion({
   version,
   cwd = repoRoot,
@@ -76,6 +95,7 @@ export async function applyReleaseVersion({
 } = {}) {
   const normalizedVersion = validateReleaseVersion(version);
   const updated = [];
+  const cargoPackageNames = [];
 
   for (const manifest of manifests) {
     const filePath = path.resolve(cwd, manifest.path);
@@ -85,6 +105,7 @@ export async function applyReleaseVersion({
     if (manifest.kind === "json") {
       next = replaceJsonVersionField(previous, normalizedVersion, manifest.path);
     } else if (manifest.kind === "cargo") {
+      cargoPackageNames.push(readCargoPackageName(previous, manifest.path));
       next = replaceCargoPackageVersion(
         previous,
         normalizedVersion,
@@ -98,6 +119,31 @@ export async function applyReleaseVersion({
       await writeFile(filePath, next);
     }
     updated.push(manifest.path);
+  }
+
+  // Keep Cargo.lock workspace package versions aligned without re-resolving
+  // third-party crates (cargo metadata does not always rewrite these entries).
+  const lockPath = path.resolve(cwd, "Cargo.lock");
+  try {
+    const previousLock = await readFile(lockPath, "utf8");
+    let nextLock = previousLock;
+    for (const packageName of cargoPackageNames) {
+      nextLock = replaceCargoLockPackageVersion(
+        nextLock,
+        packageName,
+        normalizedVersion,
+      );
+    }
+    if (nextLock !== previousLock) {
+      await writeFile(lockPath, nextLock);
+      updated.push("Cargo.lock");
+    }
+  } catch (error) {
+    if (error && typeof error === "object" && error.code === "ENOENT") {
+      // Optional in unit fixtures that only cover manifest files.
+    } else {
+      throw error;
+    }
   }
 
   return {
@@ -155,8 +201,9 @@ function usage() {
   node scripts/apply-release-version.mjs --version 0.2.2
   RELEASE_VERSION=0.2.2 node scripts/apply-release-version.mjs
 
-Writes the release version into package.json, tauri.conf.json, and the Cargo
-package manifests used for the displayed app version.`;
+Writes the release version into package.json, tauri.conf.json, the Cargo
+package manifests used for the displayed app version, and matching Cargo.lock
+workspace package entries when present.`;
 }
 
 async function main() {
