@@ -580,6 +580,9 @@ graph TD
 
 - [x] Tauri 打包配置：macOS 13+ Universal `.dmg` + `.app.tar.gz` + 更新签名；Windows x64 NSIS `.exe`（**perUser/currentUser** 安装，自更新免 UAC 可静默）；Linux `.AppImage`（主推，自带 webkit，glibc 2.31+）+ `.deb`（Ubuntu 22.04+ / webkit2gtk-4.1）
 - [x] Release 工作流：推送 main 自动构建发布，但仅在来源为 main 且仓库变量 `ENABLE_MAIN_RELEASE=true` 时发布，不使用人工审批；未开启时只测试 + dry-run 打包；`workflow_dispatch` 手动触发（默认自动计算版本，可手动指定级别覆盖）；PR 只测试不发布
+  - 流程变更（2026-07-12）：CI 收敛为双 workflow——`Release`（plan/test×3/perf×3/e2e×2/dry-run|package/evidence/publish）与 `Git Toolchain`（contract/cold audit×3/keep-warm×3，cron `0 6 */5 * *`）。phase12 heavy perf 并行；readiness 消费 same-run `release-rehearsal-*`（不再依赖跨 run id）；operator dry-run blocker 软失败。
+  - 验证（2026-07-12）：`ENABLE_MAIN_RELEASE=true` 下正式发布 `v0.2.3`（run `29200553512`）与 `v0.2.4`（run `29202483242`）；三平台 package、签名资产与 `latest.json` 通过。版本回写提交使用 `--sync-cargo-lock` 仅在 publish 后同步 `Cargo.lock`，打包过程保持 canonical lock 以免 helper fingerprint 失败。
+  - 自动发布：维护者意图为 main 有变更且测试全绿后持续自动发布，因此 `ENABLE_MAIN_RELEASE` 在发布窗口外保持 `true`（覆盖 2026-07-10 的 post-release 关闭习惯）。
 - [x] 版本计算：初始 `0.1.0`；解析自上一 tag 提交（Conventional Commits）：仅 fix→patch；feat/refactor→minor；BREAKING CHANGE/`!`→major；无法解析→patch；自动打 tag
 - [x] 更新日志 = 自上一 tag 以来所有提交信息，写入 Release notes
 - [x] 上传全平台二进制到 GitHub Releases + 生成 `latest.json`；Tauri 更新签名（私钥存 GitHub Secrets）；仓库与 Releases 公开

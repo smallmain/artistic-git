@@ -88,17 +88,19 @@ signing; those certificates are tracked as future release-hardening work. Move
 the macOS app to `/Applications` and use right-click → Open once to approve it
 in Gatekeeper. On Windows, SmartScreen may require More info → Run anyway.
 
-The release workflow runs on `main` pushes and `workflow_dispatch`, but it
-publishes only from `main` when `ENABLE_MAIN_RELEASE=true`. No GitHub
-Environment or manual approval step is used. When the gate is not enabled, the
-workflow runs tests and a Tauri `--no-bundle` dry-run build without publishing.
-Manual runs can keep the automatic version calculation or override the SemVer
-bump level. Every release job restores the exact repository-local toolchain
-cache, runs ensure and verification on its own platform, bundles that fixed
-resource tree, and verifies the packaged manifest and file hashes. Release
-packaging does not consume a binary artifact from another workflow. The
-repository and GitHub Releases must stay public so updater asset URLs remain
-reachable.
+CI is only two workflows: `Release` (tests, parallel phase12 perf, E2E, dry-run
+or full package, evidence, optional publish) and `Git Toolchain` (contract,
+cold three-platform audit, and scheduled keep-warm for cache freshness). The
+release workflow runs on `main` pushes and `workflow_dispatch`, but it publishes
+only from `main` when `ENABLE_MAIN_RELEASE=true`. No GitHub Environment or
+manual approval step is used. When the gate is not enabled, the workflow runs
+tests and a Tauri `--no-bundle` dry-run build without publishing. Manual runs
+can keep the automatic version calculation or override the SemVer bump level.
+Every release job restores the exact repository-local toolchain cache, runs
+ensure and verification on its own platform, bundles that fixed resource tree,
+and verifies the packaged manifest and file hashes. Release packaging does not
+consume a binary artifact from another workflow. The repository and GitHub
+Releases must stay public so updater asset URLs remain reachable.
 
 Publishing requires a Tauri updater key pair generated outside the repository.
 Store the public key in GitHub Variables as `TAURI_UPDATER_PUBLIC_KEY` (or the
