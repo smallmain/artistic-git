@@ -1069,19 +1069,32 @@ test("release and audit workflows enforce the pinned embedded toolchain", () => 
     /pnpm phase12:evidence:test/,
   );
   for (const token of [
-    "release_rehearsal_run_id:",
-    "Resolve release rehearsal evidence artifacts",
-    "DEFAULT_RELEASE_REHEARSAL_RUN_ID: ${{ vars.ARTISTIC_GIT_RELEASE_REHEARSAL_RUN_ID }}",
     "Download release rehearsal evidence",
-    "if: always() && steps.release-rehearsal-evidence.outputs.run_id != ''",
+    "Detect release rehearsal evidence",
+    "if: always() && steps.release-rehearsal-evidence.outputs.present == 'true'",
     "pattern: release-rehearsal-*",
     "path: ${{ runner.temp }}/phase12-evidence-input",
-    "run-id: ${{ steps.release-rehearsal-evidence.outputs.run_id }}",
-    "github-token: ${{ github.token }}",
-    "Readiness summary will include release rehearsal evidence from Release run",
+    "Readiness summary will include same-run release rehearsal evidence.",
+    "Generate release rehearsal dry-run checklist",
+    "Generate release rehearsal package checklist",
+    "Upload release rehearsal package checklist",
   ]) {
     assert.ok(releaseWorkflow.includes(token), token);
   }
+  assert.ok(
+    !releaseWorkflow.includes("release_rehearsal_run_id:"),
+    "cross-run release_rehearsal_run_id input must be removed",
+  );
+  assert.ok(
+    !releaseWorkflow.includes("ARTISTIC_GIT_RELEASE_REHEARSAL_RUN_ID"),
+    "readiness must not depend on a configured cross-run rehearsal variable",
+  );
+  assert.ok(
+    !releaseWorkflow.includes(
+      "run-id: ${{ steps.release-rehearsal-evidence.outputs.run_id }}",
+    ),
+    "readiness must download same-run release-rehearsal artifacts",
+  );
   assert.ok(
     releaseWorkflow.indexOf("Download release rehearsal evidence") >
       releaseWorkflow.indexOf("Generate phase 12 evidence summary"),
@@ -1094,22 +1107,22 @@ test("release and audit workflows enforce the pinned embedded toolchain", () => 
   assert.ok(releaseWorkflow.includes("name: readiness-summary"));
   assert.match(
     releaseWorkflow,
-    /Resolve release rehearsal evidence artifacts[\s\S]+if: always\(\)/,
+    /Detect release rehearsal evidence[\s\S]+if: always\(\)/,
   );
   const readinessEvidenceCondition =
-    "if: always() && steps.release-rehearsal-evidence.outputs.run_id != ''";
+    "if: always() && steps.release-rehearsal-evidence.outputs.present == 'true'";
   assert.equal(
     releaseWorkflow.split(readinessEvidenceCondition).length - 1,
-    3,
-    "readiness download, generation, and upload all require explicit rehearsal evidence",
+    2,
+    "readiness generation and upload require same-run rehearsal evidence",
   );
   assert.match(
     releaseWorkflow,
-    /- name: Generate readiness summary\n\s+if: always\(\) && steps\.release-rehearsal-evidence\.outputs\.run_id != ''/,
+    /- name: Generate readiness summary\n\s+if: always\(\) && steps\.release-rehearsal-evidence\.outputs\.present == 'true'/,
   );
   assert.match(
     releaseWorkflow,
-    /- name: Upload readiness summary\n\s+if: always\(\) && steps\.release-rehearsal-evidence\.outputs\.run_id != ''/,
+    /- name: Upload readiness summary\n\s+if: always\(\) && steps\.release-rehearsal-evidence\.outputs\.present == 'true'/,
   );
   assert.match(
     releaseWorkflow,
@@ -1118,6 +1131,11 @@ test("release and audit workflows enforce the pinned embedded toolchain", () => 
   const phase12SummaryJob = releaseWorkflow.slice(
     releaseWorkflow.indexOf("\n  phase12-evidence-summary:\n"),
     releaseWorkflow.indexOf("\n  dry-run:\n"),
+  );
+  assert.match(
+    phase12SummaryJob,
+    /needs:\n\s+- test\n\s+- perf\n\s+- e2e\n\s+- dry-run\n\s+- package/,
+    "evidence summary must wait for same-run dry-run/package rehearsal producers",
   );
   assert.doesNotMatch(
     phase12SummaryJob,

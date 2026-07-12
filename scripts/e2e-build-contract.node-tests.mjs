@@ -75,8 +75,8 @@ test("manual CI platform scope prunes runner matrices without weakening push CI"
   );
   assert.match(
     summaryJob,
-    /needs:\n\s+- test\n\s+- perf\n\s+- e2e/,
-    "the evidence summary must join parallel test, perf, and E2E gates",
+    /needs:\n\s+- test\n\s+- perf\n\s+- e2e\n\s+- dry-run\n\s+- package/,
+    "the evidence summary must join test, perf, E2E, and same-run packaging gates",
   );
   assert.match(
     ciWorkflow,
