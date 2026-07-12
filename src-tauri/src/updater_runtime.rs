@@ -189,6 +189,20 @@ pub async fn check_for_updates(
 
     emit_check_status(&app_handle, &state, &checking_event)?;
 
+    // Local `tauri dev` builds keep a placeholder updater public key and are
+    // not installable packages. Skip network checks so development never hits
+    // signature/decoding failures from the placeholder key.
+    if updates_disabled_in_current_build() {
+        return failed_check_status(
+            &app_handle,
+            &state,
+            request_id,
+            source,
+            target_window_label,
+            development_update_disabled_message().to_owned(),
+        );
+    }
+
     let updater = match app_handle
         .updater_builder()
         .timeout(UPDATE_CHECK_TIMEOUT)
@@ -601,6 +615,14 @@ fn update_status_target_window_label(
             focused_window_label.or_else(|| Some(request_window_label.to_owned()))
         }
     }
+}
+
+fn updates_disabled_in_current_build() -> bool {
+    cfg!(debug_assertions)
+}
+
+fn development_update_disabled_message() -> &'static str {
+    "updates are disabled in development builds"
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1064,6 +1086,15 @@ mod tests {
         .expect_err("missing target should fail");
 
         assert!(error.contains("linux-x86_64"));
+    }
+
+    #[test]
+    fn development_builds_disable_updater_network_checks() {
+        assert_eq!(
+            development_update_disabled_message(),
+            "updates are disabled in development builds"
+        );
+        assert_eq!(updates_disabled_in_current_build(), cfg!(debug_assertions));
     }
 
     #[test]

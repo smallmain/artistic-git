@@ -111,10 +111,25 @@
   border-color: hsl(var(--border));
 }
 
+html,
+body,
+#root {
+  height: 100%;
+}
+
+html {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
 body {
   min-width: 960px;
   min-height: 600px;
   margin: 0;
+}
+
+#root {
+  overflow: hidden;
 }
 
 :where(

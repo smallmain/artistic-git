@@ -12,7 +12,8 @@ const read = (relativePath) => readFile(path.join(root, relativePath), "utf8");
 
 test("manual CI platform scope prunes runner matrices without weakening push CI", async () => {
   const ciWorkflow = await read(".github/workflows/release.yml");
-  const testJob = workflowJob(ciWorkflow, "test", "e2e");
+  const testJob = workflowJob(ciWorkflow, "test", "perf");
+  const perfJob = workflowJob(ciWorkflow, "perf", "e2e");
   const e2eJob = workflowJob(ciWorkflow, "e2e", "phase12-evidence-summary");
   const summaryJob = workflowJob(
     ciWorkflow,
@@ -24,7 +25,7 @@ test("manual CI platform scope prunes runner matrices without weakening push CI"
     ciWorkflow,
     /platform_scope:\n\s+description:[\s\S]+?default: all\n\s+type: choice\n\s+options:\n\s+- all\n\s+- windows\n\s+- linux\n\s+- macos/,
   );
-  for (const job of [testJob, e2eJob, summaryJob]) {
+  for (const job of [testJob, perfJob, e2eJob, summaryJob]) {
     assert.match(
       job,
       /github\.event_name != 'workflow_dispatch' \|\| inputs\.platform_scope == 'all'/,
@@ -37,11 +38,17 @@ test("manual CI platform scope prunes runner matrices without weakening push CI"
   ]) {
     assert.equal(
       ciWorkflow.split(scopedMatrix).length - 1,
-      2,
-      `${scopedMatrix} must select both test and E2E matrices`,
+      3,
+      `${scopedMatrix} must select test, perf, and E2E matrices`,
     );
   }
   assert.deepEqual(matrixPlatformOptions(testJob), [
+    ["ubuntu-22.04", "macos-latest", "windows-latest"],
+    ["windows-latest"],
+    ["ubuntu-22.04"],
+    ["macos-latest"],
+  ]);
+  assert.deepEqual(matrixPlatformOptions(perfJob), [
     ["ubuntu-22.04", "macos-latest", "windows-latest"],
     ["windows-latest"],
     ["ubuntu-22.04"],
@@ -61,10 +68,15 @@ test("manual CI platform scope prunes runner matrices without weakening push CI"
     /\n\s+needs: test\n/,
     "platform test and E2E jobs must run in parallel; the summary joins both gates",
   );
+  assert.doesNotMatch(
+    perfJob,
+    /\n\s+needs:\n|\n\s+needs: /,
+    "perf must run as a sibling gate and must not wait on test or E2E",
+  );
   assert.match(
     summaryJob,
-    /needs:\n\s+- test\n\s+- e2e/,
-    "the evidence summary must join both parallel test and E2E gates",
+    /needs:\n\s+- test\n\s+- perf\n\s+- e2e/,
+    "the evidence summary must join parallel test, perf, and E2E gates",
   );
   assert.match(
     ciWorkflow,
@@ -81,21 +93,28 @@ test("manual CI platform scope prunes runner matrices without weakening push CI"
     /phase12_perf_profile:\n\s+description:[\s\S]+?default: auto\n\s+type: choice\n\s+options:\n\s+- auto\n\s+- light\n\s+- heavy/,
   );
   assert.match(
-    testJob,
+    perfJob,
     /PHASE12_PERF_PROFILE: >-\n\s+\$\{\{ inputs\.phase12_perf_profile == 'heavy' && 'heavy' \|\|\n\s+inputs\.phase12_perf_profile == 'light' && 'light' \|\|\n\s+\(github\.event_name != 'workflow_dispatch' \|\| inputs\.platform_scope == 'all'\) && 'heavy' \|\|\n\s+'light' \}\}/,
     "explicit profiles take precedence, while full CI auto-resolves to heavy and partial CI to light",
   );
-  assert.match(
+  assert.match(perfJob, /Verify phase 12 perf envelope\n\s+timeout-minutes: 30/);
+  assert.doesNotMatch(
     testJob,
-    /Verify phase 12 perf envelope\n\s+if: always\(\)\n\s+timeout-minutes: 30/,
+    /Verify phase 12 perf envelope/,
+    "perf must not serialize behind the platform test job",
   );
-  assert.match(testJob, /case "\$PHASE12_PERF_PROFILE" in/);
-  assert.match(testJob, /heavy\) pnpm -s phase12:perf -- --heavy ;;/);
-  assert.match(testJob, /light\) pnpm -s phase12:perf -- --light ;;/);
+  assert.match(perfJob, /case "\$PHASE12_PERF_PROFILE" in/);
+  assert.match(perfJob, /heavy\) pnpm -s phase12:perf -- --heavy ;;/);
+  assert.match(perfJob, /light\) pnpm -s phase12:perf -- --light ;;/);
   assert.match(
-    testJob,
+    perfJob,
     /\*\) echo "::error::invalid resolved phase 12 perf profile:[^"]+"; exit 1 ;;/,
     "an invalid resolved profile must fail closed",
+  );
+  assert.match(
+    ciWorkflow,
+    /publish:\n[\s\S]+?needs: \[plan, test, e2e, perf, package\]/,
+    "publish must wait for the parallel perf gate",
   );
 
   const phase12Audit = spawnSync(

@@ -13,6 +13,7 @@ import type {
 } from "@/lib/ipc/update-types";
 import { useWindowStore } from "@/store/window-store";
 
+import { isDevelopmentRuntime } from "./development-runtime";
 import { UpdaterPromptDialog } from "./UpdaterPromptDialog";
 
 export const AUTO_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
@@ -267,7 +268,13 @@ export function UpdaterRuntimeBridge() {
   ]);
 
   React.useEffect(() => {
-    if (appSettings === null || appSettings.updates?.autoCheck === false) {
+    // Development builds use a placeholder updater public key and are not
+    // installable release packages, so automatic update checks stay disabled.
+    if (
+      isDevelopmentRuntime() ||
+      appSettings === null ||
+      appSettings.updates?.autoCheck === false
+    ) {
       return;
     }
 

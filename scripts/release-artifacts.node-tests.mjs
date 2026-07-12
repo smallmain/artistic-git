@@ -767,14 +767,21 @@ test("release workflow supports full package audits without publishing", () => {
 });
 
 test("release workflow applies the release version to displayed app versions", () => {
-  for (const manifest of [
-    '"package.json"',
-    '"src-tauri/tauri.conf.json"',
-    '"src-tauri/Cargo.toml"',
-    '"crates/app/Cargo.toml"',
-  ]) {
-    assert.ok(releaseWorkflow.includes(manifest), manifest);
-  }
+  assert.ok(
+    releaseWorkflow.includes(
+      'node scripts/apply-release-version.mjs --version "$RELEASE_VERSION"',
+    ),
+  );
+  assert.ok(
+    releaseWorkflow.includes(
+      "Commit released version to the default branch",
+    ),
+  );
+  assert.ok(
+    releaseWorkflow.includes(
+      'git commit -m "chore(release): set version to $RELEASE_VERSION [skip ci]"',
+    ),
+  );
   assert.ok(
     releaseWorkflow.includes("cargo metadata --format-version 1 --no-deps"),
   );
@@ -1028,14 +1035,14 @@ test("release workflow shares one pinned per-target Rust cache across all jobs",
   const action = "Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4";
   assert.equal(
     releaseWorkflow.split(action).length - 1,
-    4,
-    "test, e2e, dry-run, and package jobs share the pinned Rust cache action",
+    5,
+    "test, perf, e2e, dry-run, and package jobs share the pinned Rust cache action",
   );
   assert.equal(
     releaseWorkflow.split(
       "shared-key: artistic-git-${{ matrix.gitDistTarget }}",
     ).length - 1,
-    4,
+    5,
     "every job uses the shared-key form so caches are shared per target",
   );
   assert.ok(
@@ -1047,7 +1054,7 @@ test("release workflow shares one pinned per-target Rust cache across all jobs",
   assert.equal(
     releaseWorkflow.split("save-if: ${{ github.ref == 'refs/heads/main' }}")
       .length - 1,
-    4,
+    5,
     "every Rust cache only writes from main to avoid pull-request cache churn",
   );
   assert.ok(releaseWorkflow.includes('cache-on-failure: "true"'));
@@ -1131,13 +1138,13 @@ test("release and audit workflows enforce the pinned embedded toolchain", () => 
   const helperKey = "key: ${{ steps.toolchain-cache-key.outputs.helper-key }}";
   assert.equal(
     releaseWorkflow.split(baseKey).length - 1,
-    4,
-    "test, e2e, dry-run, and package jobs each restore one exact base cache",
+    5,
+    "test, perf, e2e, dry-run, and package jobs each restore one exact base cache",
   );
   assert.equal(
     releaseWorkflow.split(helperKey).length - 1,
-    4,
-    "test, e2e, dry-run, and package jobs each restore one exact helper cache",
+    5,
+    "test, perf, e2e, dry-run, and package jobs each restore one exact helper cache",
   );
   assert.ok(!releaseWorkflow.includes("git-toolchain-v1-"));
   assert.ok(!releaseWorkflow.includes("git-toolchain-v2-"));
