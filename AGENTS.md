@@ -1,0 +1,1 @@
+- Unless there are exceptional circumstances, Git commits and pushes should be performed automatically after passing tests.
