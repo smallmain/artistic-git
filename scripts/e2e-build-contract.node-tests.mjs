@@ -11,10 +11,14 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (relativePath) => readFile(path.join(root, relativePath), "utf8");
 
 test("manual CI platform scope prunes runner matrices without weakening push CI", async () => {
-  const ciWorkflow = await read(".github/workflows/ci.yml");
+  const ciWorkflow = await read(".github/workflows/release.yml");
   const testJob = workflowJob(ciWorkflow, "test", "e2e");
   const e2eJob = workflowJob(ciWorkflow, "e2e", "phase12-evidence-summary");
-  const summaryJob = workflowJob(ciWorkflow, "phase12-evidence-summary", null);
+  const summaryJob = workflowJob(
+    ciWorkflow,
+    "phase12-evidence-summary",
+    "dry-run",
+  );
 
   assert.match(
     ciWorkflow,
@@ -128,7 +132,6 @@ test("E2E instrumentation is explicit and excluded from release builds", async (
     loggingSource,
     wdioConfig,
     releaseWorkflow,
-    ciWorkflow,
     fullChainSource,
   ] = await Promise.all([
     read("src-tauri/Cargo.toml"),
@@ -138,7 +141,6 @@ test("E2E instrumentation is explicit and excluded from release builds", async (
     read("crates/core/src/logging.rs"),
     read("wdio.tauri.conf.ts"),
     read(".github/workflows/release.yml"),
-    read(".github/workflows/ci.yml"),
     read("e2e/tauri/full-chain-real-git.e2e.ts"),
   ]);
   const e2eConfig = JSON.parse(e2eConfigText);
@@ -192,7 +194,7 @@ test("E2E instrumentation is explicit and excluded from release builds", async (
     "artifacts/e2e-real-git-clone-diagnostic-*",
     "${{ runner.temp }}/tauri-e2e-profile/",
   ]) {
-    assert.ok(ciWorkflow.includes(required), required);
+    assert.ok(releaseWorkflow.includes(required), required);
   }
 
   const defaultTree = spawnSync(

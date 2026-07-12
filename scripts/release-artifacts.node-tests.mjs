@@ -37,9 +37,6 @@ const releaseWorkflow = normalizeNewlines(
     "utf8",
   ),
 );
-const ciWorkflow = normalizeNewlines(
-  await readFile(path.join(repoRoot, ".github", "workflows", "ci.yml"), "utf8"),
-);
 const gitDistWorkflow = normalizeNewlines(
   await readFile(
     path.join(repoRoot, ".github", "workflows", "git-dist.yml"),
@@ -635,11 +632,11 @@ test("release workflow installs pnpm before setting up Node in the publish job",
 
 test("release plan does not cache a pnpm store it never creates", () => {
   const planStart = releaseWorkflow.indexOf("\n  plan:\n");
-  const dryRunStart = releaseWorkflow.indexOf("\n  dry-run:\n");
+  const testStart = releaseWorkflow.indexOf("\n  test:\n");
   assert.notEqual(planStart, -1, "plan job block");
-  assert.notEqual(dryRunStart, -1, "dry-run job block");
+  assert.notEqual(testStart, -1, "test job block");
 
-  const planJob = releaseWorkflow.slice(planStart, dryRunStart);
+  const planJob = releaseWorkflow.slice(planStart, testStart);
   assert.ok(!planJob.includes("cache: pnpm"));
   assert.ok(planJob.includes("package-manager-cache: false"));
   assert.ok(!planJob.includes("pnpm install"));
@@ -671,15 +668,15 @@ test("release workflow supports full package audits without publishing", () => {
   for (const token of [
     "package_audit:",
     'description: "Build and audit selected release packages without publishing."',
-    "package_scope:",
-    "package_scope: ${{ steps.mode.outputs.package_scope }}",
+    "platform_scope:",
+    "platform_scope: ${{ steps.mode.outputs.platform_scope }}",
     "build_packages: ${{ steps.mode.outputs.build_packages }}",
     "DISPATCH_PACKAGE_AUDIT: ${{ github.event.inputs.package_audit || 'false' }}",
-    "DISPATCH_PACKAGE_SCOPE: ${{ github.event.inputs.package_scope || 'all' }}",
+    "DISPATCH_PLATFORM_SCOPE: ${{ github.event.inputs.platform_scope || 'all' }}",
     'if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$DISPATCH_PACKAGE_AUDIT" = "true" ]; then',
     "package audit: manual package build without publishing",
     'echo "build_packages=$build_packages" >> "$GITHUB_OUTPUT"',
-    'echo "package_scope=$package_scope" >> "$GITHUB_OUTPUT"',
+    'echo "platform_scope=$platform_scope" >> "$GITHUB_OUTPUT"',
   ]) {
     assert.ok(releaseWorkflow.includes(token), token);
   }
@@ -710,19 +707,19 @@ test("release workflow supports full package audits without publishing", () => {
     releaseWorkflow.indexOf("\n          elif ", packageAuditMode),
   );
   assert.ok(packageAuditBranch.includes("build_packages=true"));
-  assert.ok(
-    packageAuditBranch.includes('package_scope="$DISPATCH_PACKAGE_SCOPE"'),
-  );
   assert.ok(!packageAuditBranch.includes("publish_release=true"));
   assert.ok(
+    releaseWorkflow.includes('platform_scope="$DISPATCH_PLATFORM_SCOPE"'),
+  );
+  assert.ok(
     packageJob.includes(
-      "needs.plan.outputs.publish_release == 'true' || needs.plan.outputs.package_scope == 'all'",
+      "needs.plan.outputs.publish_release == 'true' || needs.plan.outputs.platform_scope == 'all'",
     ),
     "publishing always expands the complete package matrix",
   );
   for (const scope of ["windows", "linux"]) {
     assert.ok(
-      packageJob.includes(`needs.plan.outputs.package_scope == '${scope}'`),
+      packageJob.includes(`needs.plan.outputs.platform_scope == '${scope}'`),
       scope,
     );
   }
@@ -732,7 +729,7 @@ test("release workflow supports full package audits without publishing", () => {
   ]) {
     assert.ok(
       releaseWorkflow.includes(
-        `publish_release=true\n            build_packages=true\n            reason="${reason}"`,
+        `publish_release=true\n            build_packages=true\n            platform_scope=all\n            reason="${reason}"`,
       ),
       reason,
     );
@@ -1027,27 +1024,39 @@ test("release workflow configures Linux AppImage runtime prerequisites", () => {
   }
 });
 
-test("CI and release share a pinned per-target Rust dependency cache", () => {
+test("release workflow shares one pinned per-target Rust cache across all jobs", () => {
   const action = "Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4";
-  assert.equal(releaseWorkflow.split(action).length - 1, 2);
-  assert.equal(ciWorkflow.split(action).length - 1, 2);
-  assert.ok(
-    releaseWorkflow.includes(
+  assert.equal(
+    releaseWorkflow.split(action).length - 1,
+    4,
+    "test, e2e, dry-run, and package jobs share the pinned Rust cache action",
+  );
+  assert.equal(
+    releaseWorkflow.split(
       "shared-key: artistic-git-${{ matrix.gitDistTarget }}",
-    ),
+    ).length - 1,
+    4,
+    "every job uses the shared-key form so caches are shared per target",
   );
   assert.ok(
-    ciWorkflow.includes("key: artistic-git-${{ matrix.gitDistTarget }}"),
+    !releaseWorkflow.includes(
+      "\n          key: artistic-git-${{ matrix.gitDistTarget }}",
+    ),
+    "Rust caches must not use a job-scoped key: form",
   );
-  for (const workflow of [releaseWorkflow, ciWorkflow]) {
-    assert.ok(workflow.includes('cache-on-failure: "true"'));
-    assert.ok(!workflow.includes("Swatinem/rust-cache@v2"));
-  }
+  assert.equal(
+    releaseWorkflow.split("save-if: ${{ github.ref == 'refs/heads/main' }}")
+      .length - 1,
+    4,
+    "every Rust cache only writes from main to avoid pull-request cache churn",
+  );
+  assert.ok(releaseWorkflow.includes('cache-on-failure: "true"'));
+  assert.ok(!releaseWorkflow.includes("Swatinem/rust-cache@v2"));
 });
 
-test("CI and audit workflows enforce the pinned embedded toolchain", () => {
-  assert.ok(ciWorkflow.includes("run: pnpm release:check"));
-  assert.ok(ciWorkflow.includes("if: runner.os == 'Linux'"));
+test("release and audit workflows enforce the pinned embedded toolchain", () => {
+  assert.ok(releaseWorkflow.includes("run: pnpm release:check"));
+  assert.ok(releaseWorkflow.includes("if: runner.os == 'Linux'"));
   assert.match(
     packageJson.scripts["release:check"],
     /pnpm phase12:evidence:test/,
@@ -1064,84 +1073,86 @@ test("CI and audit workflows enforce the pinned embedded toolchain", () => {
     "github-token: ${{ github.token }}",
     "Readiness summary will include release rehearsal evidence from Release run",
   ]) {
-    assert.ok(ciWorkflow.includes(token), token);
+    assert.ok(releaseWorkflow.includes(token), token);
   }
   assert.ok(
-    ciWorkflow.indexOf("Download release rehearsal evidence") >
-      ciWorkflow.indexOf("Generate phase 12 evidence summary"),
+    releaseWorkflow.indexOf("Download release rehearsal evidence") >
+      releaseWorkflow.indexOf("Generate phase 12 evidence summary"),
   );
   assert.ok(
-    ciWorkflow.indexOf("Download release rehearsal evidence") <
-      ciWorkflow.indexOf("Generate readiness summary"),
+    releaseWorkflow.indexOf("Download release rehearsal evidence") <
+      releaseWorkflow.indexOf("Generate readiness summary"),
   );
-  assert.ok(ciWorkflow.includes("node scripts/readiness-summary.mjs"));
-  assert.ok(ciWorkflow.includes("name: readiness-summary"));
+  assert.ok(releaseWorkflow.includes("node scripts/readiness-summary.mjs"));
+  assert.ok(releaseWorkflow.includes("name: readiness-summary"));
   assert.match(
-    ciWorkflow,
+    releaseWorkflow,
     /Resolve release rehearsal evidence artifacts[\s\S]+if: always\(\)/,
   );
   const readinessEvidenceCondition =
     "if: always() && steps.release-rehearsal-evidence.outputs.run_id != ''";
   assert.equal(
-    ciWorkflow.split(readinessEvidenceCondition).length - 1,
+    releaseWorkflow.split(readinessEvidenceCondition).length - 1,
     3,
     "readiness download, generation, and upload all require explicit rehearsal evidence",
   );
   assert.match(
-    ciWorkflow,
+    releaseWorkflow,
     /- name: Generate readiness summary\n\s+if: always\(\) && steps\.release-rehearsal-evidence\.outputs\.run_id != ''/,
   );
   assert.match(
-    ciWorkflow,
+    releaseWorkflow,
     /- name: Upload readiness summary\n\s+if: always\(\) && steps\.release-rehearsal-evidence\.outputs\.run_id != ''/,
   );
   assert.match(
-    ciWorkflow,
+    releaseWorkflow,
     /- name: Upload phase 12 evidence summary\n\s+if: always\(\)/,
   );
-  const phase12SummaryJob = ciWorkflow.slice(
-    ciWorkflow.indexOf("\n  phase12-evidence-summary:\n"),
+  const phase12SummaryJob = releaseWorkflow.slice(
+    releaseWorkflow.indexOf("\n  phase12-evidence-summary:\n"),
+    releaseWorkflow.indexOf("\n  dry-run:\n"),
   );
   assert.doesNotMatch(
     phase12SummaryJob,
     /continue-on-error/,
     "evidence and readiness blockers must fail the summary job",
   );
-  for (const workflow of [ciWorkflow, releaseWorkflow]) {
-    for (const directory of ["downloads", "bases", "helpers"]) {
-      assert.ok(
-        workflow.includes(`.cache/artistic-git/git-toolchain/${directory}`),
-      );
-    }
-    assert.ok(workflow.includes("scripts/emit-git-toolchain-cache-key.mjs"));
-    const baseKey = "key: ${{ steps.toolchain-cache-key.outputs.base-key }}";
-    const helperKey =
-      "key: ${{ steps.toolchain-cache-key.outputs.helper-key }}";
-    assert.equal(
-      workflow.split(baseKey).length - 1,
-      2,
-      "test and package jobs each restore one exact base cache",
-    );
-    assert.equal(
-      workflow.split(helperKey).length - 1,
-      2,
-      "test and package jobs each restore one exact helper cache",
-    );
-    assert.ok(!workflow.includes("git-toolchain-v1-"));
-    assert.ok(!workflow.includes("git-toolchain-v2-"));
-    assert.ok(!workflow.includes("hashFiles('git-toolchain.lock.json'"));
-    assert.ok(!workflow.includes("git-toolchain/work"));
-    assert.ok(!workflow.includes("git-toolchain/locks"));
-    assert.ok(workflow.includes("pnpm git-toolchain:ensure -- --target="));
-    assert.ok(workflow.includes("pnpm git-toolchain:verify -- --target="));
-    assert.ok(workflow.includes("dtolnay/rust-toolchain@1.96.1"));
-    assert.ok(!workflow.includes("restore-keys:"));
+  for (const directory of ["downloads", "bases", "helpers"]) {
     assert.ok(
-      workflow.includes(
-        ".cache/artistic-git/git-toolchain/helpers\n          key: ${{ steps.toolchain-cache-key.outputs.helper-key }}",
+      releaseWorkflow.includes(
+        `.cache/artistic-git/git-toolchain/${directory}`,
       ),
     );
   }
+  assert.ok(
+    releaseWorkflow.includes("scripts/emit-git-toolchain-cache-key.mjs"),
+  );
+  const baseKey = "key: ${{ steps.toolchain-cache-key.outputs.base-key }}";
+  const helperKey = "key: ${{ steps.toolchain-cache-key.outputs.helper-key }}";
+  assert.equal(
+    releaseWorkflow.split(baseKey).length - 1,
+    4,
+    "test, e2e, dry-run, and package jobs each restore one exact base cache",
+  );
+  assert.equal(
+    releaseWorkflow.split(helperKey).length - 1,
+    4,
+    "test, e2e, dry-run, and package jobs each restore one exact helper cache",
+  );
+  assert.ok(!releaseWorkflow.includes("git-toolchain-v1-"));
+  assert.ok(!releaseWorkflow.includes("git-toolchain-v2-"));
+  assert.ok(!releaseWorkflow.includes("hashFiles('git-toolchain.lock.json'"));
+  assert.ok(!releaseWorkflow.includes("git-toolchain/work"));
+  assert.ok(!releaseWorkflow.includes("git-toolchain/locks"));
+  assert.ok(releaseWorkflow.includes("pnpm git-toolchain:ensure -- --target="));
+  assert.ok(releaseWorkflow.includes("pnpm git-toolchain:verify -- --target="));
+  assert.ok(releaseWorkflow.includes("dtolnay/rust-toolchain@1.96.1"));
+  assert.ok(!releaseWorkflow.includes("restore-keys:"));
+  assert.ok(
+    releaseWorkflow.includes(
+      ".cache/artistic-git/git-toolchain/helpers\n          key: ${{ steps.toolchain-cache-key.outputs.helper-key }}",
+    ),
+  );
   assert.ok(
     gitDistWorkflow.includes("Build embedded toolchain from a cold cache"),
   );
@@ -1168,7 +1179,14 @@ test("CI and audit workflows enforce the pinned embedded toolchain", () => {
   assert.ok(
     releaseWorkflow.includes("release-size-audit-${{ matrix.gitDistTarget }}"),
   );
-  assert.ok(!gitDistWorkflow.includes("actions/cache@"));
+  const gitDistAuditJob = gitDistWorkflow.slice(
+    gitDistWorkflow.indexOf("\n  audit:\n"),
+    gitDistWorkflow.indexOf("\n  keep-warm:\n"),
+  );
+  assert.ok(
+    !gitDistAuditJob.includes("actions/cache@"),
+    "the cold-build audit job must not restore any cache",
+  );
   assert.ok(!gitDistWorkflow.includes("restore-keys:"));
   assert.ok(
     !gitDistWorkflow.includes("artistic-git-dist-${{ matrix.target }}"),

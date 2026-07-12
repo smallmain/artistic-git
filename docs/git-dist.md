@@ -24,7 +24,7 @@ flow is:
    ```
 
 3. Review the config and lock diff.
-4. Run a clean three-platform Git Toolchain Audit workflow.
+4. Run the Git Toolchain workflow's clean three-platform build audit.
 
 The update command does not query or select the newest upstream release.
 
@@ -112,8 +112,9 @@ therefore does not invalidate Git, Git LFS, or OpenSSH. Every job still runs
 ensure and verify, so cache contents are an optimization rather than trusted
 build input.
 
-The Git Toolchain Audit workflow performs a cold build for all three targets and
-uploads only `manifest.json`, `build-evidence.json`, and `size-report.json`.
+The Git Toolchain workflow's audit job performs a cold build for all three
+targets and uploads only `manifest.json`, `build-evidence.json`, and
+`size-report.json`.
 The size report measures component composition and same-hash copies of the main
 Git binary. macOS/Linux must reduce those duplicate bytes by at least 80% from
 the audited v0.1.2 expanded distributions. It also emits total and per-component

@@ -25,7 +25,7 @@ const sourceFiles = {
   app: "src/App.tsx",
   appTest: "src/App.test.tsx",
   boundary: "src/components/layout/AppErrorBoundary.tsx",
-  ci: ".github/workflows/ci.yml",
+  ci: ".github/workflows/release.yml",
   commands: "src/lib/ipc/commands.ts",
   crashDialog: "src/components/dialogs/CrashDetailsDialog.tsx",
   crashInjectionE2e: "e2e/tauri/crash-isolation.e2e.ts",
