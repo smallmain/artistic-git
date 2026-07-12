@@ -112,13 +112,22 @@ therefore does not invalidate Git, Git LFS, or OpenSSH. Every job still runs
 ensure and verify, so cache contents are an optimization rather than trusted
 build input.
 
-The Git Toolchain workflow's audit job performs a cold build for all three
-targets and uploads only `manifest.json`, `build-evidence.json`, and
-`size-report.json`.
+The Git Toolchain workflow has three jobs:
+
+- `contract` validates the pinned config, lock, bundle resource mapping, and
+  size-audit tests (skipped on the keep-warm schedule).
+- `audit` performs a cold build for all three targets and uploads only
+  `manifest.json`, `build-evidence.json`, and `size-report.json`.
+- `keep-warm` runs on `workflow_dispatch` and a every-5-days schedule
+  (`0 6 */5 * *` UTC). It restores the fingerprint-addressed base/helper caches
+  for each target, rebuilds on miss, and verifies the tree so GitHub's ~7-day
+  unused-cache eviction does not force a cold Release path.
+
 The size report measures component composition and same-hash copies of the main
 Git binary. macOS/Linux must reduce those duplicate bytes by at least 80% from
 the audited v0.1.2 expanded distributions. It also emits total and per-component
 `+10%` recommended budgets for fixing the first post-change CI baseline.
-Release jobs build or reuse their own exact cache and never download a complete
-toolchain from another workflow. Before and after bundling, release jobs validate
-the manifest, file hashes, and runtime executables.
+Release jobs restore the same exact base/helper keys (and a shared per-target
+Rust cache written only from `main`), then run ensure and verify. They never
+download a complete toolchain from another workflow. Before and after bundling,
+release jobs validate the manifest, file hashes, and runtime executables.
