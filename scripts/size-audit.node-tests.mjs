@@ -127,6 +127,13 @@ test(
       assert.equal(audit.physicalFileCount, 1);
       assert.equal(audit.symlinkCount, 1);
       assert.equal(audit.symlinkBytes, 9);
+      assert.equal(audit.duplicateContent.groupCount, 1);
+      assert.equal(audit.duplicateContent.reclaimableBytes, 8);
+      assert.equal(audit.duplicateContent.alreadySharedByHardlinksBytes, 8);
+      assert.deepEqual(audit.duplicateContent.groups[0].paths, [
+        "bin/canonical",
+        "bin/hardlink",
+      ]);
       assert.deepEqual(audit.largestDirectories, [
         { path: "bin", logicalBytes: 25, entryCount: 3 },
       ]);
@@ -162,6 +169,29 @@ test("reports final bundles and compression ratios against a measured tree", asy
     assert.equal(bundles.files[0].compression.packageToExpandedRatio, 0.2);
     assert.equal(bundles.files[1].compression, undefined);
     assert.equal(bundles.files[2].compression.packageToExpandedRatio, 0.25);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("uses a package-specific expanded tree for DEB compression", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "size-audit-deb-basis-"));
+  try {
+    await writeFile(path.join(root, "Artistic Git.AppImage"), Buffer.alloc(50));
+    await writeFile(path.join(root, "Artistic Git.deb"), Buffer.alloc(25));
+
+    const bundles = await auditBundles([root], {
+      compressionBasis: { label: "installed", logicalBytes: 200 },
+      compressionBasesByType: {
+        deb: { label: "deb-installed", logicalBytes: 100 },
+      },
+    });
+    const appImage = bundles.files.find(({ type }) => type === "appimage");
+    const deb = bundles.files.find(({ type }) => type === "deb");
+    assert.equal(appImage.compression.basisTree, "installed");
+    assert.equal(appImage.compression.packageToExpandedRatio, 0.25);
+    assert.equal(deb.compression.basisTree, "deb-installed");
+    assert.equal(deb.compression.packageToExpandedRatio, 0.25);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -576,6 +606,7 @@ test("parses repeatable trees and bundle directories", () => {
       "--bundle-dir",
       "assets-two",
       "--compression-basis=installed",
+      "--bundle-compression-basis=deb=deb-installed",
       "--baseline=size-baselines.json",
       "--output=report.json",
     ]),
@@ -584,6 +615,7 @@ test("parses repeatable trees and bundle directories", () => {
       gitDistRoot: "dist",
       trees: [{ label: "installed", root: "app-dir" }],
       bundleRoots: ["assets-one", "assets-two"],
+      bundleCompressionBasisLabels: { deb: "deb-installed" },
       compressionBasisLabel: "installed",
       baselinePath: "size-baselines.json",
       output: "report.json",

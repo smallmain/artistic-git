@@ -21,7 +21,8 @@
         }
       },
       "installedTrees": {
-        "installed": 326601235
+        "installed": 326601235,
+        "deb-installed": 77106545
       },
       "bundles": {
         "appimage": 109279736,

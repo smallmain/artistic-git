@@ -20,9 +20,11 @@ import { createServer } from "node:https";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { loadGitDistConfig } from "./git-dist-lib.mjs";
 import {
   ensureGitTransportBuiltinWrappers,
   extractionCommand,
+  macosGitArchBuildSettings,
   normalizeGitExecutableCopies,
   stripLinuxExecutables,
   stripMacosBinary,
@@ -39,6 +41,64 @@ const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
 );
+
+test("macOS Git build settings pin optimization and each target architecture", async () => {
+  const { data: config } = await loadGitDistConfig();
+  const recipe = config.build.macos.git;
+  const inheritedEnv = {
+    CFLAGS: "-O0 -arch host-architecture",
+    LDFLAGS: "-arch host-architecture",
+    MACOSX_DEPLOYMENT_TARGET: "99.0",
+  };
+
+  for (const [arch, host] of [
+    ["arm64", "aarch64-apple-darwin"],
+    ["x86_64", "x86_64-apple-darwin"],
+  ]) {
+    const settings = macosGitArchBuildSettings(recipe, arch, inheritedEnv);
+    assert.deepEqual(settings.configureFlags, [
+      "--prefix=/git",
+      `--host=${host}`,
+    ]);
+    assert.equal(
+      settings.env.CFLAGS,
+      `-O2 -arch ${arch} -mmacosx-version-min=13.0`,
+    );
+    assert.equal(
+      settings.env.LDFLAGS,
+      `-arch ${arch} -mmacosx-version-min=13.0`,
+    );
+    assert.equal(settings.env.MACOSX_DEPLOYMENT_TARGET, "13.0");
+    assert.equal(settings.env.CC, "clang");
+    assert.doesNotMatch(settings.env.CFLAGS, /host-architecture|-O0/);
+    assert.doesNotMatch(settings.env.LDFLAGS, /host-architecture/);
+  }
+});
+
+test("macOS Git build settings reject unpinned optimization and host", () => {
+  assert.throws(
+    () =>
+      macosGitArchBuildSettings(
+        {
+          deployment_target: "13.0",
+          arch_hosts: { arm64: "aarch64-apple-darwin" },
+          cflags: [],
+        },
+        "arm64",
+        {},
+      ),
+    /must include an explicit optimization flag/,
+  );
+  assert.throws(
+    () =>
+      macosGitArchBuildSettings(
+        { deployment_target: "13.0", arch_hosts: {}, cflags: ["-O2"] },
+        "x86_64",
+        {},
+      ),
+    /has no configure host for x86_64/,
+  );
+});
 
 test("extractor selection supports extensionless cached ZIP assets on every platform", () => {
   const archivePath = path.join("cache", "downloads", "sha256", "asset");

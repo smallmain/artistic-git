@@ -5,6 +5,7 @@ import {
   access,
   chmod,
   cp,
+  lstat,
   mkdir,
   readdir,
   readFile,
@@ -37,6 +38,120 @@ const hostTargetByPlatform = {
   darwin: "macos-universal",
   linux: "linux-x86_64",
 };
+
+// Git for Windows bundles Git Credential Manager even though Artistic Git
+// always injects its own credential helper. This is the exact runtime payload
+// from the pinned GCM 2.8.0 archive, plus Git for Windows' selector shim.
+export const WINDOWS_MINGIT_GCM_RUNTIME_FILES = Object.freeze([
+  "mingw64/bin/Atlassian.Bitbucket.dll",
+  "mingw64/bin/Avalonia.Base.dll",
+  "mingw64/bin/Avalonia.Controls.dll",
+  "mingw64/bin/Avalonia.DesignerSupport.dll",
+  "mingw64/bin/Avalonia.Dialogs.dll",
+  "mingw64/bin/Avalonia.Markup.Xaml.dll",
+  "mingw64/bin/Avalonia.Markup.dll",
+  "mingw64/bin/Avalonia.Metal.dll",
+  "mingw64/bin/Avalonia.MicroCom.dll",
+  "mingw64/bin/Avalonia.OpenGL.dll",
+  "mingw64/bin/Avalonia.Remote.Protocol.dll",
+  "mingw64/bin/Avalonia.Skia.dll",
+  "mingw64/bin/Avalonia.Themes.Fluent.dll",
+  "mingw64/bin/Avalonia.Vulkan.dll",
+  "mingw64/bin/Avalonia.Win32.dll",
+  "mingw64/bin/Avalonia.dll",
+  "mingw64/bin/GitHub.dll",
+  "mingw64/bin/GitLab.dll",
+  "mingw64/bin/HarfBuzzSharp.dll",
+  "mingw64/bin/MicroCom.Runtime.dll",
+  "mingw64/bin/Microsoft.AzureRepos.dll",
+  "mingw64/bin/Microsoft.Bcl.AsyncInterfaces.dll",
+  "mingw64/bin/Microsoft.Identity.Client.Broker.dll",
+  "mingw64/bin/Microsoft.Identity.Client.Extensions.Msal.dll",
+  "mingw64/bin/Microsoft.Identity.Client.NativeInterop.dll",
+  "mingw64/bin/Microsoft.Identity.Client.dll",
+  "mingw64/bin/Microsoft.IdentityModel.Abstractions.dll",
+  "mingw64/bin/SkiaSharp.dll",
+  "mingw64/bin/System.Buffers.dll",
+  "mingw64/bin/System.CommandLine.dll",
+  "mingw64/bin/System.ComponentModel.Annotations.dll",
+  "mingw64/bin/System.Diagnostics.DiagnosticSource.dll",
+  "mingw64/bin/System.IO.FileSystem.AccessControl.dll",
+  "mingw64/bin/System.Memory.dll",
+  "mingw64/bin/System.Numerics.Vectors.dll",
+  "mingw64/bin/System.Runtime.CompilerServices.Unsafe.dll",
+  "mingw64/bin/System.Security.AccessControl.dll",
+  "mingw64/bin/System.Security.Cryptography.ProtectedData.dll",
+  "mingw64/bin/System.Security.Principal.Windows.dll",
+  "mingw64/bin/System.Text.Encodings.Web.dll",
+  "mingw64/bin/System.Text.Json.dll",
+  "mingw64/bin/System.Threading.Tasks.Extensions.dll",
+  "mingw64/bin/System.ValueTuple.dll",
+  "mingw64/bin/av_libglesv2.dll",
+  "mingw64/bin/gcmcore.dll",
+  "mingw64/bin/git-credential-helper-selector.exe",
+  "mingw64/bin/git-credential-manager.exe",
+  "mingw64/bin/git-credential-manager.exe.config",
+  "mingw64/bin/libHarfBuzzSharp.dll",
+  "mingw64/bin/libSkiaSharp.dll",
+  "mingw64/bin/msalruntime.dll",
+]);
+
+export const WINDOWS_MINGIT_REQUIRED_FILES = Object.freeze([
+  "LICENSE.txt",
+  "mingw64/bin/git-askpass.exe",
+  "mingw64/bin/git-remote-https.exe",
+  "mingw64/bin/git.exe",
+  "mingw64/doc/git-credential-manager/LICENSE",
+  "mingw64/doc/git-credential-manager/NOTICE",
+  "mingw64/doc/git-credential-manager/README.md",
+  "usr/bin/ssh-add.exe",
+  "usr/bin/ssh-agent.exe",
+  "usr/bin/ssh.exe",
+  "usr/lib/ssh/ssh-pkcs11-helper.exe",
+  "usr/lib/ssh/ssh-sk-helper.exe",
+  "usr/share/licenses/openssh/LICENCE",
+]);
+
+// Win32-OpenSSH is retained as a complete client. Only server executables,
+// host configuration, and service installation support are removed.
+export const WINDOWS_OPENSSH_SERVER_FILES = Object.freeze([
+  "FixHostFilePermissions.ps1",
+  "install-sshd.ps1",
+  "moduli",
+  "openssh-events.man",
+  "sftp-server.exe",
+  "ssh-shellhost.exe",
+  "sshd-auth.exe",
+  "sshd-session.exe",
+  "sshd.exe",
+  "sshd_config_default",
+  "uninstall-sshd.ps1",
+]);
+
+export const WINDOWS_OPENSSH_REQUIRED_CLIENT_FILES = Object.freeze([
+  "FixUserFilePermissions.ps1",
+  "LICENSE.txt",
+  "NOTICE.txt",
+  "OpenSSHUtils.psd1",
+  "OpenSSHUtils.psm1",
+  "_manifest/spdx_2.2/ESRPClientLogs1022194139642.json",
+  "_manifest/spdx_2.2/bsi.cose",
+  "_manifest/spdx_2.2/bsi.json",
+  "_manifest/spdx_2.2/manifest.cat",
+  "_manifest/spdx_2.2/manifest.spdx.cose",
+  "_manifest/spdx_2.2/manifest.spdx.json",
+  "_manifest/spdx_2.2/manifest.spdx.json.sha256",
+  "libcrypto.dll",
+  "scp.exe",
+  "sftp.exe",
+  "ssh-add.exe",
+  "ssh-agent.exe",
+  "ssh-keygen.exe",
+  "ssh-keyscan.exe",
+  "ssh-pkcs11-helper.exe",
+  "ssh-sk-helper.exe",
+  "ssh.exe",
+]);
 
 const requiredVersionKeys = [
   "git",
@@ -142,8 +257,8 @@ export function validateGitDistConfig(config, options = {}) {
   ) {
     errors.push("helpers.rust_toolchain must be a non-empty string");
   }
-  if (config.helpers?.profile !== "release") {
-    errors.push('helpers.profile must be "release"');
+  if (config.helpers?.profile !== "git-toolchain-helper") {
+    errors.push('helpers.profile must be "git-toolchain-helper"');
   }
   if (config.manifest?.schema_version !== 2) {
     errors.push("manifest.schema_version must be 2");
@@ -482,11 +597,196 @@ async function copyPreparedSource({
 }
 
 async function finalizePreparedDist({ config, targetName, tempOutputDir }) {
+  if (targetName === "windows-x86_64") {
+    await pruneWindowsGitDist({ config, distRoot: tempOutputDir });
+    return;
+  }
   if (targetName !== "macos-universal") {
     return;
   }
 
   await finalizeMacosUniversalGitLfs({ config, tempOutputDir });
+}
+
+export async function pruneWindowsGitDist({ config, distRoot }) {
+  const layout = config.resources.layout;
+  const minGitRoot = path.join(distRoot, normalizeResourcePath(layout.git));
+  const openSshRoot = path.join(
+    distRoot,
+    normalizeResourcePath(layout.windows_openssh),
+  );
+
+  await assertPinnedFilesRetained({
+    label: "pinned MinGit client and license payload",
+    paths: WINDOWS_MINGIT_REQUIRED_FILES,
+    root: minGitRoot,
+  });
+  await assertPinnedFilesRetained({
+    label: "pinned Win32-OpenSSH client, license, and SPDX payload",
+    paths: WINDOWS_OPENSSH_REQUIRED_CLIENT_FILES,
+    root: openSshRoot,
+  });
+
+  // Preflight both sources before deleting either one. A partially extracted
+  // pinned archive must never publish a partially pruned base cache.
+  const gcmState = await inspectPinnedRemovalSet({
+    label: "pinned MinGit GCM 2.8.0 runtime",
+    paths: WINDOWS_MINGIT_GCM_RUNTIME_FILES,
+    root: minGitRoot,
+  });
+  const openSshState = await inspectPinnedOpenSshInventory(openSshRoot);
+
+  await removePinnedFiles(minGitRoot, gcmState.presentPaths);
+  await removePinnedFiles(openSshRoot, openSshState.presentPaths);
+
+  await inspectPinnedRemovalSet({
+    label: "pinned MinGit GCM 2.8.0 runtime",
+    paths: WINDOWS_MINGIT_GCM_RUNTIME_FILES,
+    root: minGitRoot,
+  });
+  await inspectPinnedOpenSshInventory(openSshRoot);
+  await assertPinnedFilesRetained({
+    label: "pinned MinGit client and license payload",
+    paths: WINDOWS_MINGIT_REQUIRED_FILES,
+    root: minGitRoot,
+  });
+  await assertPinnedFilesRetained({
+    label: "pinned Win32-OpenSSH client, license, and SPDX payload",
+    paths: WINDOWS_OPENSSH_REQUIRED_CLIENT_FILES,
+    root: openSshRoot,
+  });
+
+  return {
+    minGitGcm: {
+      alreadyPruned: gcmState.alreadyPruned,
+      removedFiles: gcmState.presentPaths.length,
+    },
+    openSshServer: {
+      alreadyPruned: openSshState.alreadyPruned,
+      removedFiles: openSshState.presentPaths.length,
+    },
+  };
+}
+
+async function assertPinnedFilesRetained({ label, paths, root }) {
+  const invalid = [];
+  for (const relativePath of paths) {
+    const kind = await explicitFileKind(path.join(root, relativePath));
+    if (kind !== "file") {
+      invalid.push(`${relativePath} (${kind})`);
+    }
+  }
+  if (invalid.length > 0) {
+    throw new GitDistConfigError(`${label} is incomplete`, [
+      `expected regular files: ${invalid.join(", ")}`,
+    ]);
+  }
+}
+
+async function inspectPinnedRemovalSet({ label, paths, root }) {
+  const states = [];
+  for (const relativePath of paths) {
+    states.push({
+      kind: await explicitFileKind(path.join(root, relativePath)),
+      relativePath,
+    });
+  }
+  const presentPaths = states
+    .filter(({ kind }) => kind === "file")
+    .map(({ relativePath }) => relativePath);
+  const invalid = states.filter(
+    ({ kind }) => kind !== "file" && kind !== "missing",
+  );
+  if (
+    invalid.length > 0 ||
+    (presentPaths.length > 0 && presentPaths.length !== paths.length)
+  ) {
+    const missing = states
+      .filter(({ kind }) => kind === "missing")
+      .map(({ relativePath }) => relativePath);
+    throw new GitDistConfigError(`${label} is partially present`, [
+      `expected either all ${paths.length} regular files or none`,
+      ...(missing.length > 0 ? [`missing: ${missing.join(", ")}`] : []),
+      ...(invalid.length > 0
+        ? [
+            `wrong type: ${invalid
+              .map(({ kind, relativePath }) => `${relativePath} (${kind})`)
+              .join(", ")}`,
+          ]
+        : []),
+    ]);
+  }
+  return {
+    alreadyPruned: presentPaths.length === 0,
+    presentPaths,
+  };
+}
+
+async function inspectPinnedOpenSshInventory(root) {
+  const observed = (await regularFileResourcePaths(root)).sort();
+  const retained = [...WINDOWS_OPENSSH_REQUIRED_CLIENT_FILES].sort();
+  const complete = [
+    ...WINDOWS_OPENSSH_REQUIRED_CLIENT_FILES,
+    ...WINDOWS_OPENSSH_SERVER_FILES,
+  ].sort();
+  if (samePaths(observed, complete)) {
+    return {
+      alreadyPruned: false,
+      presentPaths: [...WINDOWS_OPENSSH_SERVER_FILES],
+    };
+  }
+  if (samePaths(observed, retained)) {
+    return { alreadyPruned: true, presentPaths: [] };
+  }
+
+  const expected = new Set(complete);
+  const actual = new Set(observed);
+  const missing = complete.filter((relativePath) => !actual.has(relativePath));
+  const unexpected = observed.filter(
+    (relativePath) => !expected.has(relativePath),
+  );
+  throw new GitDistConfigError(
+    "pinned Win32-OpenSSH archive inventory is not recognized",
+    [
+      `expected either ${complete.length} complete files or ${retained.length} client-only files`,
+      ...(missing.length > 0 ? [`missing: ${missing.join(", ")}`] : []),
+      ...(unexpected.length > 0
+        ? [`unexpected: ${unexpected.join(", ")}`]
+        : []),
+    ],
+  );
+}
+
+async function explicitFileKind(filePath) {
+  let fileStat;
+  try {
+    fileStat = await lstat(filePath);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return "missing";
+    }
+    throw error;
+  }
+  if (fileStat.isFile()) {
+    return "file";
+  }
+  if (fileStat.isDirectory()) {
+    return "directory";
+  }
+  if (fileStat.isSymbolicLink()) {
+    return "symlink";
+  }
+  return "other";
+}
+
+async function removePinnedFiles(root, relativePaths) {
+  for (const relativePath of relativePaths) {
+    await rm(path.join(root, relativePath));
+  }
+}
+
+function samePaths(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 async function finalizeMacosUniversalGitLfs({ config, tempOutputDir }) {

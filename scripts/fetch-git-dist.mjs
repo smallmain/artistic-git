@@ -321,9 +321,7 @@ async function buildMacosGit({ config, sourceRoot, installRoot }) {
 
   const recipe = config.build?.macos?.git;
   const arches = recipe?.arches ?? ["arm64", "x86_64"];
-  const deploymentTarget = recipe?.deployment_target ?? "13.0";
   const makeFlags = recipe?.make_flags ?? [];
-  const configureFlags = gitConfigureFlags(recipe);
   const makePrefixFlag = `prefix=${gitInstallPrefix(recipe)}`;
   const archInstalls = [];
 
@@ -342,14 +340,11 @@ async function buildMacosGit({ config, sourceRoot, installRoot }) {
     });
     await mkdir(archInstallRoot, { recursive: true });
 
-    const archFlags = `-arch ${arch} -mmacosx-version-min=${deploymentTarget}`;
-    const buildEnv = {
-      ...process.env,
-      CC: "clang",
-      CFLAGS: archFlags,
-      LDFLAGS: archFlags,
-      MACOSX_DEPLOYMENT_TARGET: deploymentTarget,
-    };
+    const { configureFlags, env: buildEnv } = macosGitArchBuildSettings(
+      recipe,
+      arch,
+      process.env,
+    );
 
     await runCommand("./configure", configureFlags, {
       cwd: buildRoot,
@@ -392,6 +387,39 @@ async function buildMacosGit({ config, sourceRoot, installRoot }) {
       .filter((entry) => entry.path !== base.path)
       .map((entry) => entry.path),
   });
+}
+
+export function macosGitArchBuildSettings(
+  recipe,
+  arch,
+  inheritedEnv = process.env,
+) {
+  const deploymentTarget = recipe?.deployment_target ?? "13.0";
+  const host = recipe?.arch_hosts?.[arch];
+  if (!host) {
+    fail(`macOS Git build recipe has no configure host for ${arch}`);
+  }
+
+  const cflags = recipe?.cflags ?? [];
+  if (!cflags.some((flag) => /^-O(?:[0-3sgz]|fast)$/.test(flag))) {
+    fail("macOS Git build recipe must include an explicit optimization flag");
+  }
+
+  const targetFlags = [
+    "-arch",
+    arch,
+    `-mmacosx-version-min=${deploymentTarget}`,
+  ];
+  return {
+    configureFlags: [...gitConfigureFlags(recipe), `--host=${host}`],
+    env: {
+      ...inheritedEnv,
+      CC: "clang",
+      CFLAGS: [...cflags, ...targetFlags].join(" "),
+      LDFLAGS: targetFlags.join(" "),
+      MACOSX_DEPLOYMENT_TARGET: deploymentTarget,
+    },
+  };
 }
 
 const gitTransportBuiltinWrappers = [

@@ -197,11 +197,14 @@ function summarizeLargestDirectories(records, limit = 25) {
 }
 
 export async function auditDirectory(root, { label = "tree" } = {}) {
-  const { records, directoryCount } = await scanDirectory(root);
+  const { records, directoryCount } = await scanDirectory(root, {
+    hashFiles: true,
+  });
   const summary = summarizeRecords(records, directoryCount);
   return {
     label,
     ...summary,
+    duplicateContent: buildDuplicateReport(records),
     topLevel: summarizeTopLevel(records),
     largestDirectories: summarizeLargestDirectories(records),
     largestFiles: summarizeLargestFiles(records),
@@ -303,7 +306,10 @@ function classifyBundle(relativePath) {
   )?.[1];
 }
 
-export async function auditBundles(roots, { compressionBasis = null } = {}) {
+export async function auditBundles(
+  roots,
+  { compressionBasis = null, compressionBasesByType = {} } = {},
+) {
   const files = [];
   for (const root of roots) {
     const { records } = await scanDirectory(root);
@@ -322,21 +328,24 @@ export async function auditBundles(roots, { compressionBasis = null } = {}) {
         bytes: record.bytes,
         recommendedBudgetBytes: recommendedBudget(record.bytes),
       };
+      const selectedCompressionBasis =
+        compressionBasesByType[type] ?? compressionBasis;
       if (
-        compressionBasis &&
+        selectedCompressionBasis &&
         !type.endsWith("signature") &&
-        compressionBasis.logicalBytes > 0
+        selectedCompressionBasis.logicalBytes > 0
       ) {
         bundle.compression = {
-          basisTree: compressionBasis.label,
-          expandedLogicalBytes: compressionBasis.logicalBytes,
+          basisTree: selectedCompressionBasis.label,
+          expandedLogicalBytes: selectedCompressionBasis.logicalBytes,
           packageToExpandedRatio: Number(
-            (record.bytes / compressionBasis.logicalBytes).toFixed(6),
+            (record.bytes / selectedCompressionBasis.logicalBytes).toFixed(6),
           ),
           estimatedReductionPercent: Number(
-            ((1 - record.bytes / compressionBasis.logicalBytes) * 100).toFixed(
-              2,
-            ),
+            (
+              (1 - record.bytes / selectedCompressionBasis.logicalBytes) *
+              100
+            ).toFixed(2),
           ),
         };
       }
@@ -588,6 +597,7 @@ export async function buildSizeAuditReport({
   trees = [],
   bundleRoots = [],
   compressionBasisLabel,
+  bundleCompressionBasisLabels = {},
   legacyDuplicateBaselineBytes,
   baseline,
   baselineSource,
@@ -647,7 +657,20 @@ export async function buildSizeAuditReport({
         `compression basis tree was not measured: ${compressionBasisLabel}`,
       );
     }
-    bundles = await auditBundles(bundleRoots, { compressionBasis });
+    const compressionBasesByType = {};
+    for (const [type, label] of Object.entries(bundleCompressionBasisLabels)) {
+      const selected = installedTrees.find((tree) => tree.label === label);
+      if (!selected) {
+        throw new Error(
+          `compression basis tree for bundle type ${type} was not measured: ${label}`,
+        );
+      }
+      compressionBasesByType[type] = selected;
+    }
+    bundles = await auditBundles(bundleRoots, {
+      compressionBasis,
+      compressionBasesByType,
+    });
   }
 
   const report = {
@@ -685,6 +708,19 @@ function parseTree(value) {
   };
 }
 
+function parseBundleCompressionBasis(value) {
+  const separator = value.indexOf("=");
+  if (separator <= 0 || separator === value.length - 1) {
+    throw new Error(
+      `--bundle-compression-basis must use bundle-type=tree-label, got: ${value}`,
+    );
+  }
+  return {
+    type: value.slice(0, separator),
+    label: value.slice(separator + 1),
+  };
+}
+
 function optionValue(args, index, name) {
   const argument = args[index];
   if (argument === name) {
@@ -704,6 +740,7 @@ export function parseArgs(args) {
     gitDistRoot: "src-tauri/resources/git-dist",
     trees: [],
     bundleRoots: [],
+    bundleCompressionBasisLabels: {},
   };
   for (let index = 0; index < args.length;) {
     let parsed;
@@ -721,6 +758,16 @@ export function parseArgs(args) {
       options.bundleRoots.push(parsed.value);
     } else if ((parsed = optionValue(args, index, "--compression-basis"))) {
       options.compressionBasisLabel = parsed.value;
+    } else if (
+      (parsed = optionValue(args, index, "--bundle-compression-basis"))
+    ) {
+      const { type, label } = parseBundleCompressionBasis(parsed.value);
+      if (options.bundleCompressionBasisLabels[type]) {
+        throw new Error(
+          `duplicate --bundle-compression-basis for bundle type: ${type}`,
+        );
+      }
+      options.bundleCompressionBasisLabels[type] = label;
     } else if (
       (parsed = optionValue(args, index, "--legacy-duplicate-baseline"))
     ) {

@@ -488,6 +488,55 @@ jobs:
           test -f "$RUNNER_TEMP/artistic-git-canonical-Cargo.lock"
           cp "$RUNNER_TEMP/artistic-git-canonical-Cargo.lock" Cargo.lock
 
+      - name: Optimize and re-sign macOS release bundles
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          dmgs=()
+          updaters=()
+          while IFS= read -r -d '' dmg; do dmgs+=("$dmg"); done < <(
+            find "target/${{ matrix.target }}/release/bundle/dmg" -maxdepth 1 -type f -name '*.dmg' -print0
+          )
+          while IFS= read -r -d '' updater; do updaters+=("$updater"); done < <(
+            find "target/${{ matrix.target }}/release/bundle/macos" -maxdepth 1 -type f -name '*.app.tar.gz' -print0
+          )
+          if [ "${#dmgs[@]}" -ne 1 ] || [ "${#updaters[@]}" -ne 1 ]; then
+            echo "Expected exactly one macOS DMG and updater, found ${#dmgs[@]} DMG and ${#updaters[@]} updater." >&2
+            exit 1
+          fi
+          audit_dir="artifacts/release-size-audit-${{ matrix.gitDistTarget }}"
+          mkdir -p "$audit_dir"
+          node scripts/optimize-macos-release-bundles.mjs \
+            "--dmg=${dmgs[0]}" \
+            "--updater=${updaters[0]}" \
+            "--report=$audit_dir/macos-bundle-optimization-report.json"
+
+      - name: Repack and re-sign Linux DEB with xz
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          debs=()
+          while IFS= read -r -d '' deb; do debs+=("$deb"); done < <(
+            find "target/${{ matrix.target }}/release/bundle/deb" -maxdepth 1 -type f -name '*.deb' -print0
+          )
+          if [ "${#debs[@]}" -ne 1 ]; then
+            echo "Expected exactly one Linux DEB to repack, found ${#debs[@]}." >&2
+            exit 1
+          fi
+          audit_dir="artifacts/release-size-audit-${{ matrix.gitDistTarget }}"
+          mkdir -p "$audit_dir"
+          node scripts/repack-deb.mjs \
+            "--deb=${debs[0]}" \
+            "--report=$audit_dir/deb-repack-report.json"
+
       - name: Install Windows bundle for resource verification
         if: runner.os == 'Windows'
         shell: pwsh
@@ -640,13 +689,33 @@ jobs:
           test -d "$installed_tree"
           mkdir -p "$AUDIT_DIR"
           cp src-tauri/resources/git-dist/manifest.json "$AUDIT_DIR/manifest.json"
-          node scripts/size-audit.mjs \
-            "--target=$TOOLCHAIN_TARGET" \
-            "--baseline=size-baselines.json" \
-            "--tree=installed=$installed_tree" \
-            "--bundle-dir=release-assets" \
-            "--compression-basis=installed" \
+          audit_args=(
+            "--target=$TOOLCHAIN_TARGET"
+            "--baseline=size-baselines.json"
+            "--tree=installed=$installed_tree"
+            "--bundle-dir=release-assets"
+            "--compression-basis=installed"
             "--output=$AUDIT_DIR/size-report.json"
+          )
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            debs=()
+            while IFS= read -r -d '' deb; do debs+=("$deb"); done < <(
+              find release-assets -maxdepth 1 -type f -name '*.deb' -print0
+            )
+            if [ "${#debs[@]}" -ne 1 ]; then
+              echo "Expected exactly one staged Linux DEB, found ${#debs[@]}." >&2
+              exit 1
+            fi
+            deb_tree="$RUNNER_TEMP/artistic-git-deb-tree"
+            rm -rf "$deb_tree"
+            mkdir -p "$deb_tree"
+            dpkg-deb --extract "${debs[0]}" "$deb_tree"
+            audit_args+=(
+              "--tree=deb-installed=$deb_tree"
+              "--bundle-compression-basis=deb=deb-installed"
+            )
+          fi
+          node scripts/size-audit.mjs "${audit_args[@]}"
           node --input-type=module <<'NODE'
           import { readFile, writeFile } from "node:fs/promises";
           import path from "node:path";

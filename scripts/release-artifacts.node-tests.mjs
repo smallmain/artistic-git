@@ -904,6 +904,65 @@ test("release workflow ensures and checks staged and packaged git-dist resources
   assert.ok(!releaseWorkflow.includes("src-tauri/target/"));
 });
 
+test("release workflow repacks, verifies, and re-signs the one Linux DEB before staging", () => {
+  const repackStep = releaseWorkflow.indexOf(
+    "- name: Repack and re-sign Linux DEB with xz",
+  );
+  const packagedSmoke = releaseWorkflow.indexOf(
+    "- name: Verify and smoke packaged embedded Git resources",
+  );
+  const stageAssets = releaseWorkflow.indexOf("- name: Stage release assets");
+  assert.ok(repackStep > 0 && repackStep < packagedSmoke);
+  assert.ok(packagedSmoke < stageAssets);
+
+  const step = releaseWorkflow.slice(repackStep, packagedSmoke);
+  assert.ok(step.includes("runner.os == 'Linux'"));
+  assert.ok(
+    step.includes('find "target/${{ matrix.target }}/release/bundle/deb"'),
+  );
+  assert.ok(step.includes('if [ "${#debs[@]}" -ne 1 ]'));
+  assert.ok(step.includes("node scripts/repack-deb.mjs"));
+  assert.ok(step.includes("TAURI_SIGNING_PRIVATE_KEY:"));
+  assert.ok(step.includes("TAURI_SIGNING_PRIVATE_KEY_PASSWORD:"));
+  assert.ok(!step.includes("continue-on-error"));
+  assert.ok(!step.includes("|| true"));
+
+  const sizeAuditStep = releaseWorkflow.slice(
+    releaseWorkflow.indexOf("- name: Generate release size audit"),
+    releaseWorkflow.indexOf("- name: Upload release size audit"),
+  );
+  assert.ok(sizeAuditStep.includes("dpkg-deb --extract"));
+  assert.ok(sizeAuditStep.includes("--tree=deb-installed="));
+  assert.ok(
+    sizeAuditStep.includes("--bundle-compression-basis=deb=deb-installed"),
+  );
+  assert.ok(sizeAuditStep.includes("--baseline=size-baselines.json"));
+  assert.ok(!sizeAuditStep.includes("deb-tree-size-report.json"));
+});
+
+test("release workflow optimizes and re-signs macOS bundles before staging", () => {
+  const optimizeStep = releaseWorkflow.indexOf(
+    "- name: Optimize and re-sign macOS release bundles",
+  );
+  const packagedSmoke = releaseWorkflow.indexOf(
+    "- name: Verify and smoke packaged embedded Git resources",
+  );
+  const stageAssets = releaseWorkflow.indexOf("- name: Stage release assets");
+  assert.ok(optimizeStep > 0 && optimizeStep < packagedSmoke);
+  assert.ok(packagedSmoke < stageAssets);
+
+  const step = releaseWorkflow.slice(optimizeStep, packagedSmoke);
+  assert.ok(step.includes("runner.os == 'macOS'"));
+  assert.ok(step.includes("node scripts/optimize-macos-release-bundles.mjs"));
+  assert.ok(step.includes("macos-bundle-optimization-report.json"));
+  assert.ok(!step.includes('rm -f "${updaters[0]}.sig"'));
+  assert.ok(!step.includes("pnpm tauri signer sign"));
+  assert.ok(step.includes("TAURI_SIGNING_PRIVATE_KEY:"));
+  assert.ok(step.includes("TAURI_SIGNING_PRIVATE_KEY_PASSWORD:"));
+  assert.ok(!step.includes("continue-on-error"));
+  assert.ok(!step.includes("|| true"));
+});
+
 test("release workflow configures Linux AppImage runtime prerequisites", () => {
   const packageStart = releaseWorkflow.indexOf("\n  package:\n");
   const publishStart = releaseWorkflow.indexOf("\n  publish:\n");

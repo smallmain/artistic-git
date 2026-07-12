@@ -14,6 +14,7 @@ export async function buildGitToolchainHelpers({
   target,
   workRoot,
 }) {
+  const profile = config.helpers.profile;
   const targetTriples =
     target === "macos-universal"
       ? ["aarch64-apple-darwin", "x86_64-apple-darwin"]
@@ -45,17 +46,7 @@ export async function buildGitToolchainHelpers({
     for (const triple of targetTriples) {
       runCommand(
         "cargo",
-        [
-          `+${rustToolchain}`,
-          "build",
-          "--locked",
-          "-p",
-          "artistic-git-helpers",
-          "--bins",
-          "--release",
-          "--target",
-          triple,
-        ],
+        helperCargoBuildArgs({ profile, rustToolchain, triple }),
         {
           cwd: repoRoot,
           env: { ...process.env, CARGO_TARGET_DIR: cargoTargetDir },
@@ -69,7 +60,7 @@ export async function buildGitToolchainHelpers({
     for (const manifestPath of [paths.credentialHelper, paths.sshAskpass]) {
       const basename = path.basename(manifestPath);
       const architectureBinaries = targetTriples.map((triple) =>
-        path.join(cargoTargetDir, triple, "release", basename),
+        path.join(cargoTargetDir, triple, profile, basename),
       );
       const destination = path.join(temporaryOutput, basename);
       if (target === "macos-universal") {
@@ -91,6 +82,30 @@ export async function buildGitToolchainHelpers({
   } finally {
     await rm(buildRoot, { recursive: true, force: true });
   }
+}
+
+export function helperCargoBuildArgs({ profile, rustToolchain, triple }) {
+  for (const [label, value] of Object.entries({
+    profile,
+    rustToolchain,
+    triple,
+  })) {
+    if (typeof value !== "string" || value.length === 0) {
+      throw new Error(`helper ${label} must be a non-empty string`);
+    }
+  }
+  return [
+    `+${rustToolchain}`,
+    "build",
+    "--locked",
+    "-p",
+    "artistic-git-helpers",
+    "--bins",
+    "--profile",
+    profile,
+    "--target",
+    triple,
+  ];
 }
 
 function helperTargetTriple(target) {
