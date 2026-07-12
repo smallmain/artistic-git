@@ -92,7 +92,7 @@ jobs:
       - name: Restore Rust build cache
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
-          shared-key: artistic-git-${{ matrix.gitDistTarget }}
+          key: artistic-git-${{ matrix.gitDistTarget }}
           cache-on-failure: "true"
 
       - name: Install frontend dependencies
@@ -275,7 +275,7 @@ jobs:
       - name: Restore Rust build cache
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
-          shared-key: artistic-git-${{ matrix.gitDistTarget }}
+          key: artistic-git-${{ matrix.gitDistTarget }}
           cache-on-failure: "true"
 
       - name: Install frontend dependencies

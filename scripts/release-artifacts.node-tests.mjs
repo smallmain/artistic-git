@@ -1031,10 +1031,15 @@ test("CI and release share a pinned per-target Rust dependency cache", () => {
   const action = "Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4";
   assert.equal(releaseWorkflow.split(action).length - 1, 2);
   assert.equal(ciWorkflow.split(action).length - 1, 2);
+  assert.ok(
+    releaseWorkflow.includes(
+      "shared-key: artistic-git-${{ matrix.gitDistTarget }}",
+    ),
+  );
+  assert.ok(
+    ciWorkflow.includes("key: artistic-git-${{ matrix.gitDistTarget }}"),
+  );
   for (const workflow of [releaseWorkflow, ciWorkflow]) {
-    assert.ok(
-      workflow.includes("shared-key: artistic-git-${{ matrix.gitDistTarget }}"),
-    );
     assert.ok(workflow.includes('cache-on-failure: "true"'));
     assert.ok(!workflow.includes("Swatinem/rust-cache@v2"));
   }

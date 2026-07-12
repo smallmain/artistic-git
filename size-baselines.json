@@ -2,11 +2,13 @@
   "schemaVersion": 1,
   "budgetMultiplier": 1.1,
   "provenance": {
-    "workflowRunId": "29138268574",
-    "workflowRunUrl": "https://github.com/smallmain/artistic-git/actions/runs/29138268574",
-    "commitSha": "64dac79ad239592f0c25f82b4422ff336decf456",
+    "workflowRunId": "29177025587",
+    "workflowRunUrl": "https://github.com/smallmain/artistic-git/actions/runs/29177025587",
+    "toolchainAuditWorkflowRunId": "29176500471",
+    "toolchainAuditWorkflowRunUrl": "https://github.com/smallmain/artistic-git/actions/runs/29176500471",
+    "commitSha": "9070ce80bc01804adf562a29315a2239e6ee29e0",
     "toolchainRevision": "2026.07.12.1",
-    "runnerPolicy": "First successful three-platform GitHub-hosted release package audit after the size optimization"
+    "runnerPolicy": "Pinned ubuntu-22.04, macos-14, and windows-2022 clean toolchain and release package audits after the cross-platform size optimization"
   },
   "targets": {
     "linux-x86_64": {
@@ -21,12 +23,12 @@
         }
       },
       "installedTrees": {
-        "installed": 326601235,
-        "deb-installed": 77106545
+        "installed": 325639003,
+        "deb-installed": 76140217
       },
       "bundles": {
-        "appimage": 109279736,
-        "deb": 34606880
+        "appimage": 109046264,
+        "deb": 14925796
       }
     },
     "macos-universal": {
@@ -41,11 +43,11 @@
         }
       },
       "installedTrees": {
-        "installed": 119388121
+        "installed": 103140441
       },
       "bundles": {
-        "dmg": 47453013,
-        "updater-archive": 48605486
+        "dmg": 43845573,
+        "updater-archive": 46493667
       }
     },
     "windows-x86_64": {
@@ -61,10 +63,10 @@
         }
       },
       "installedTrees": {
-        "installed": 142686405
+        "installed": 107570222
       },
       "bundles": {
-        "windows-installer": 37022070
+        "windows-installer": 27819433
       }
     }
   }
