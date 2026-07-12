@@ -1009,28 +1009,7 @@ jobs:
         run: |
           set -euo pipefail
           cp Cargo.lock "$RUNNER_TEMP/artistic-git-canonical-Cargo.lock"
-          node --input-type=module <<'NODE'
-          import { readFile, writeFile } from "node:fs/promises";
-
-          const version = process.env.RELEASE_VERSION;
-          for (const file of ["package.json", "src-tauri/tauri.conf.json"]) {
-            const json = JSON.parse(await readFile(file, "utf8"));
-            json.version = version;
-            await writeFile(file, `${JSON.stringify(json, null, 2)}\n`);
-          }
-
-          for (const file of ["src-tauri/Cargo.toml", "crates/app/Cargo.toml"]) {
-            const manifest = await readFile(file, "utf8");
-            const packageVersion = /^version = "[^"]+"$/m;
-            if (!packageVersion.test(manifest)) {
-              throw new Error(`Missing package version in ${file}`);
-            }
-            await writeFile(
-              file,
-              manifest.replace(packageVersion, `version = "${version}"`),
-            );
-          }
-          NODE
+          node scripts/apply-release-version.mjs --version "$RELEASE_VERSION"
           cargo metadata --format-version 1 --no-deps >/dev/null
 
       - name: Inject updater public key
@@ -1457,3 +1436,26 @@ jobs:
             --title "Artistic Git $TAG_NAME" \
             --target "$GITHUB_SHA" \
             --notes-file release-plan/RELEASE_NOTES.md
+
+      - name: Commit released version to the default branch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+          TAG_NAME: ${{ needs.plan.outputs.tag }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$DEFAULT_BRANCH"
+          git checkout -B "release-version-$RELEASE_VERSION" "origin/$DEFAULT_BRANCH"
+          node scripts/apply-release-version.mjs --version "$RELEASE_VERSION"
+          cargo metadata --format-version 1 --no-deps >/dev/null
+          if git diff --quiet -- package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml crates/app/Cargo.toml Cargo.lock; then
+            echo "Release version $RELEASE_VERSION is already committed on $DEFAULT_BRANCH."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml crates/app/Cargo.toml Cargo.lock
+          git commit -m "chore(release): set version to $RELEASE_VERSION [skip ci]"
+          git push origin "HEAD:$DEFAULT_BRANCH"

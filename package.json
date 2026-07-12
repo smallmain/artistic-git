@@ -1,6 +1,6 @@
 {
   "name": "artistic-git",
-  "version": "0.1.0",
+  "version": "0.2.2",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.7.0",
@@ -35,7 +35,8 @@
     "phase9:close-guard:audit": "node scripts/check-phase9-close-guard-audit.mjs",
     "phase9:crash-isolation:audit": "node scripts/check-phase9-crash-isolation-audit.mjs",
     "release:version": "node scripts/release-version.mjs",
-    "release:version:test": "node --test scripts/release-version.node-tests.mjs",
+    "release:version:test": "node --test scripts/release-version.node-tests.mjs scripts/apply-release-version.node-tests.mjs",
+    "release:apply-version": "node scripts/apply-release-version.mjs",
     "release:updater-pubkey": "node scripts/apply-tauri-updater-public-key.mjs",
     "release:updater-pubkey:test": "node --test scripts/apply-tauri-updater-public-key.node-tests.mjs",
     "release:latest-json": "node scripts/generate-tauri-latest-json.mjs",

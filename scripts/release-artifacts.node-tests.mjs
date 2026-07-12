@@ -767,14 +767,21 @@ test("release workflow supports full package audits without publishing", () => {
 });
 
 test("release workflow applies the release version to displayed app versions", () => {
-  for (const manifest of [
-    '"package.json"',
-    '"src-tauri/tauri.conf.json"',
-    '"src-tauri/Cargo.toml"',
-    '"crates/app/Cargo.toml"',
-  ]) {
-    assert.ok(releaseWorkflow.includes(manifest), manifest);
-  }
+  assert.ok(
+    releaseWorkflow.includes(
+      'node scripts/apply-release-version.mjs --version "$RELEASE_VERSION"',
+    ),
+  );
+  assert.ok(
+    releaseWorkflow.includes(
+      "Commit released version to the default branch",
+    ),
+  );
+  assert.ok(
+    releaseWorkflow.includes(
+      'git commit -m "chore(release): set version to $RELEASE_VERSION [skip ci]"',
+    ),
+  );
   assert.ok(
     releaseWorkflow.includes("cargo metadata --format-version 1 --no-deps"),
   );

@@ -20,6 +20,13 @@ maps to a major bump, and unparsed commit messages fall back to patch.
 
 - Release publishing is disabled unless the source ref is `main` and
   `ENABLE_MAIN_RELEASE=true`; it does not use an Environment approval step.
+- After a successful publish, CI applies the released version to
+  `package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, and
+  `crates/app/Cargo.toml`, then commits it back to the default branch with
+  `[skip ci]` so local/dev builds show the same version as GitHub Releases.
+- Local `tauri dev` builds do not run automatic updater checks. Development
+  builds keep a placeholder updater public key and reject update network
+  checks.
 - Unsigned release outputs are CI/development artifacts only. Do not add
   Gatekeeper, SmartScreen, or package-manager bypass instructions for official
   releases.

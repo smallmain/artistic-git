@@ -29,6 +29,14 @@ import {
   UpdaterRuntimeBridge,
 } from "./UpdaterRuntimeBridge";
 
+const developmentRuntimeMocks = vi.hoisted(() => ({
+  isDevelopmentRuntime: vi.fn(() => false),
+}));
+
+vi.mock("./development-runtime", () => ({
+  isDevelopmentRuntime: developmentRuntimeMocks.isDevelopmentRuntime,
+}));
+
 type AppEventHandler = EventCallback<AppEventPayloads[AppEventName]>;
 type UpdateStatusHandler = EventCallback<AppEventPayloads["update-status"]>;
 
@@ -58,6 +66,7 @@ let updateStatusHandler: UpdateStatusHandler | null = null;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  developmentRuntimeMocks.isDevelopmentRuntime.mockReturnValue(false);
   appEventHandlers = new Map();
   updateStatusHandler = null;
   bridgeMocks.listenAppEvent.mockImplementation(
@@ -366,6 +375,23 @@ describe("UpdaterRuntimeBridge", () => {
           },
         }}
       >
+        <UpdaterRuntimeBridge />
+      </TestProviders>,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(AUTO_UPDATE_INITIAL_DELAY_MS);
+    });
+
+    expect(bridgeMocks.checkForUpdates).not.toHaveBeenCalled();
+  });
+
+  it("does not schedule automatic checks in development builds", async () => {
+    vi.useFakeTimers();
+    developmentRuntimeMocks.isDevelopmentRuntime.mockReturnValue(true);
+
+    render(
+      <TestProviders>
         <UpdaterRuntimeBridge />
       </TestProviders>,
     );
