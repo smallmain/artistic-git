@@ -1569,7 +1569,7 @@ jobs:
           set -euo pipefail
           git fetch origin "$DEFAULT_BRANCH"
           git checkout -B "release-version-$RELEASE_VERSION" "origin/$DEFAULT_BRANCH"
-          node scripts/apply-release-version.mjs --version "$RELEASE_VERSION"
+          node scripts/apply-release-version.mjs --version "$RELEASE_VERSION" --sync-cargo-lock
           cargo metadata --format-version 1 --no-deps >/dev/null
           if git diff --quiet -- package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml crates/app/Cargo.toml Cargo.lock; then
             echo "Release version $RELEASE_VERSION is already committed on $DEFAULT_BRANCH."

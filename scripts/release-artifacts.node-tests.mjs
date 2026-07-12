@@ -774,6 +774,11 @@ test("release workflow applies the release version to displayed app versions", (
   );
   assert.ok(
     releaseWorkflow.includes(
+      'node scripts/apply-release-version.mjs --version "$RELEASE_VERSION" --sync-cargo-lock',
+    ),
+  );
+  assert.ok(
+    releaseWorkflow.includes(
       "Commit released version to the default branch",
     ),
   );

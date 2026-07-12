@@ -92,6 +92,9 @@ export async function applyReleaseVersion({
   version,
   cwd = repoRoot,
   manifests = releaseVersionManifests,
+  // Package jobs must keep the canonical Cargo.lock for helper fingerprinting.
+  // Only the post-publish version commit should rewrite lock package versions.
+  syncCargoLock = false,
 } = {}) {
   const normalizedVersion = validateReleaseVersion(version);
   const updated = [];
@@ -121,28 +124,29 @@ export async function applyReleaseVersion({
     updated.push(manifest.path);
   }
 
-  // Keep Cargo.lock workspace package versions aligned without re-resolving
-  // third-party crates (cargo metadata does not always rewrite these entries).
-  const lockPath = path.resolve(cwd, "Cargo.lock");
-  try {
-    const previousLock = await readFile(lockPath, "utf8");
-    let nextLock = previousLock;
-    for (const packageName of cargoPackageNames) {
-      nextLock = replaceCargoLockPackageVersion(
-        nextLock,
-        packageName,
-        normalizedVersion,
-      );
-    }
-    if (nextLock !== previousLock) {
-      await writeFile(lockPath, nextLock);
-      updated.push("Cargo.lock");
-    }
-  } catch (error) {
-    if (error && typeof error === "object" && error.code === "ENOENT") {
-      // Optional in unit fixtures that only cover manifest files.
-    } else {
-      throw error;
+  if (syncCargoLock) {
+    // Align workspace package versions without re-resolving third-party crates.
+    const lockPath = path.resolve(cwd, "Cargo.lock");
+    try {
+      const previousLock = await readFile(lockPath, "utf8");
+      let nextLock = previousLock;
+      for (const packageName of cargoPackageNames) {
+        nextLock = replaceCargoLockPackageVersion(
+          nextLock,
+          packageName,
+          normalizedVersion,
+        );
+      }
+      if (nextLock !== previousLock) {
+        await writeFile(lockPath, nextLock);
+        updated.push("Cargo.lock");
+      }
+    } catch (error) {
+      if (error && typeof error === "object" && error.code === "ENOENT") {
+        // Optional in unit fixtures that only cover manifest files.
+      } else {
+        throw error;
+      }
     }
   }
 
@@ -163,6 +167,7 @@ function parseArgs(argv) {
   const options = {
     cwd: repoRoot,
     version: null,
+    syncCargoLock: false,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -184,6 +189,8 @@ function parseArgs(argv) {
       options.version = readValue("--version");
     } else if (arg === "--cwd" || arg.startsWith("--cwd=")) {
       options.cwd = path.resolve(readValue("--cwd"));
+    } else if (arg === "--sync-cargo-lock") {
+      options.syncCargoLock = true;
     } else {
       throw new Error(`unknown argument: ${arg}`);
     }
@@ -199,11 +206,13 @@ function parseArgs(argv) {
 function usage() {
   return `Usage:
   node scripts/apply-release-version.mjs --version 0.2.2
+  node scripts/apply-release-version.mjs --version 0.2.2 --sync-cargo-lock
   RELEASE_VERSION=0.2.2 node scripts/apply-release-version.mjs
 
-Writes the release version into package.json, tauri.conf.json, the Cargo
-package manifests used for the displayed app version, and matching Cargo.lock
-workspace package entries when present.`;
+Writes the release version into package.json, tauri.conf.json, and the Cargo
+package manifests used for the displayed app version. Pass --sync-cargo-lock
+only for the post-publish version commit so package jobs keep the canonical
+Cargo.lock used by helper fingerprinting.`;
 }
 
 async function main() {
@@ -216,6 +225,7 @@ async function main() {
   const result = await applyReleaseVersion({
     version: options.version,
     cwd: options.cwd,
+    syncCargoLock: options.syncCargoLock,
   });
   console.log(
     `applied release version ${result.version} to ${result.files.join(", ")}`,

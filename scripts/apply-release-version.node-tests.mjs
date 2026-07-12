@@ -79,7 +79,7 @@ version = "0.1.0"
   );
 });
 
-test("writes the release version into package, cargo manifests, and Cargo.lock", async () => {
+test("writes the release version into package and cargo manifests without touching Cargo.lock by default", async () => {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-release-version-"));
   await mkdir(path.join(tmpDir, "src-tauri"), { recursive: true });
   await mkdir(path.join(tmpDir, "crates", "app"), { recursive: true });
@@ -121,10 +121,10 @@ version = "0.1.0"
   });
 
   assert.equal(result.version, "0.2.2");
-  assert.deepEqual(result.files, [
-    ...releaseVersionManifests.map((item) => item.path),
-    "Cargo.lock",
-  ]);
+  assert.deepEqual(
+    result.files,
+    releaseVersionManifests.map((item) => item.path),
+  );
   assert.equal(
     JSON.parse(await readFile(path.join(tmpDir, "package.json"), "utf8"))
       .version,
@@ -144,6 +144,57 @@ version = "0.1.0"
     await readFile(path.join(tmpDir, "crates", "app", "Cargo.toml"), "utf8"),
     /^version = "0\.2\.2"$/m,
   );
+  const lock = await readFile(path.join(tmpDir, "Cargo.lock"), "utf8");
+  assert.match(lock, /name = "artistic-git-app"\nversion = "0\.1\.0"/);
+  assert.match(lock, /name = "artistic-git-shell"\nversion = "0\.1\.0"/);
+});
+
+test("optionally syncs Cargo.lock workspace package versions for the version commit", async () => {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "ag-release-version-"));
+  await mkdir(path.join(tmpDir, "src-tauri"), { recursive: true });
+  await mkdir(path.join(tmpDir, "crates", "app"), { recursive: true });
+  await writeFile(
+    path.join(tmpDir, "package.json"),
+    `${JSON.stringify({ name: "artistic-git", version: "0.1.0" }, null, 2)}\n`,
+  );
+  await writeFile(
+    path.join(tmpDir, "src-tauri", "tauri.conf.json"),
+    `${JSON.stringify({ productName: "Artistic Git", version: "0.1.0" }, null, 2)}\n`,
+  );
+  await writeFile(
+    path.join(tmpDir, "src-tauri", "Cargo.toml"),
+    `[package]\nname = "artistic-git-shell"\nversion = "0.1.0"\nedition = "2021"\n`,
+  );
+  await writeFile(
+    path.join(tmpDir, "crates", "app", "Cargo.toml"),
+    `[package]\nname = "artistic-git-app"\nversion = "0.1.0"\nedition = "2021"\n`,
+  );
+  await writeFile(
+    path.join(tmpDir, "Cargo.lock"),
+    `[[package]]
+name = "artistic-git-app"
+version = "0.1.0"
+
+[[package]]
+name = "bytemuck"
+version = "1.25.0"
+
+[[package]]
+name = "artistic-git-shell"
+version = "0.1.0"
+`,
+  );
+
+  const result = await applyReleaseVersion({
+    version: "0.2.2",
+    cwd: tmpDir,
+    syncCargoLock: true,
+  });
+
+  assert.deepEqual(result.files, [
+    ...releaseVersionManifests.map((item) => item.path),
+    "Cargo.lock",
+  ]);
   const lock = await readFile(path.join(tmpDir, "Cargo.lock"), "utf8");
   assert.match(lock, /name = "artistic-git-app"\nversion = "0\.2\.2"/);
   assert.match(lock, /name = "artistic-git-shell"\nversion = "0\.2\.2"/);
