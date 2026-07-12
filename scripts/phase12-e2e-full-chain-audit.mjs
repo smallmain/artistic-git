@@ -23,7 +23,7 @@ const reportPath = path.resolve(
 const markdownPath = reportPath.replace(/\.json$/i, ".md");
 
 const sourceFiles = {
-  ci: ".github/workflows/ci.yml",
+  ci: ".github/workflows/release.yml",
   packageJson: "package.json",
   rust: "crates/app/src/full_chain_e2e.rs",
   wdio: "e2e/tauri/full-chain-real-git.e2e.ts",

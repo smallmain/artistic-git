@@ -1,4 +1,4 @@
-name: Git Toolchain Audit
+name: Git Toolchain
 
 on:
   pull_request:
@@ -27,6 +27,10 @@ on:
       - "docs/git-dist.md"
       - ".github/workflows/git-dist.yml"
   workflow_dispatch:
+  schedule:
+    # Every ~5 days at 06:00 UTC to refresh the embedded toolchain cache before
+    # GitHub's 7-day unused-cache eviction removes the warm base/helper entries.
+    - cron: "0 6 */5 * *"
 
 permissions:
   contents: read
@@ -39,6 +43,7 @@ env:
 jobs:
   contract:
     name: Validate toolchain contract
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-22.04
 
     steps:
@@ -168,3 +173,71 @@ jobs:
           path: artifacts/git-toolchain-audit-${{ matrix.target }}/
           if-no-files-found: error
           retention-days: 14
+
+  keep-warm:
+    name: Warm toolchain cache (${{ matrix.target }})
+    # Scheduled runs (and manual dispatch) refresh the fingerprint-addressed
+    # base/helper caches so the Release workflow stays on the hot path. Pull
+    # requests exercise the cold-build audit instead.
+    if: github.event_name != 'pull_request'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: windows-x86_64
+            os: windows-2022
+            rustTargets: x86_64-pc-windows-msvc
+          - target: macos-universal
+            os: macos-14
+            rustTargets: aarch64-apple-darwin,x86_64-apple-darwin
+          - target: linux-x86_64
+            os: ubuntu-22.04
+            rustTargets: x86_64-unknown-linux-gnu
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Set up fixed Rust toolchain
+        uses: dtolnay/rust-toolchain@1.96.1
+        with:
+          targets: ${{ matrix.rustTargets }}
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Compute embedded toolchain cache key
+        id: toolchain-cache-key
+        run: node scripts/emit-git-toolchain-cache-key.mjs --target=${{ matrix.target }}
+
+      - name: Restore and refresh embedded toolchain base cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cache/artistic-git/git-toolchain/downloads
+            .cache/artistic-git/git-toolchain/bases
+          key: ${{ steps.toolchain-cache-key.outputs.base-key }}
+
+      - name: Restore and refresh embedded toolchain helper cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/artistic-git/git-toolchain/helpers
+          key: ${{ steps.toolchain-cache-key.outputs.helper-key }}
+
+      - name: Ensure embedded toolchain (rebuild on cache miss)
+        run: pnpm git-toolchain:ensure -- --target=${{ matrix.target }}
+
+      - name: Verify embedded toolchain
+        run: pnpm git-toolchain:verify -- --target=${{ matrix.target }}
