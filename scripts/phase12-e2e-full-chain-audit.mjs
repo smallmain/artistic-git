@@ -395,7 +395,8 @@ function evaluateGate(gate) {
 
 function evaluateCiWorkflowContract(source) {
   const failures = [];
-  const testJob = workflowJob(source, "test", "e2e", failures);
+  const testJob = workflowJob(source, "test", "perf", failures);
+  const perfJob = workflowJob(source, "perf", "e2e", failures);
   const e2eJob = workflowJob(
     source,
     "e2e",
@@ -420,6 +421,16 @@ function evaluateCiWorkflowContract(source) {
       "(github.event_name != 'workflow_dispatch' || inputs.platform_scope == 'all')",
       "inputs.platform_scope == 'windows' &&",
       "inputs.platform_scope == 'linux' &&",
+    ],
+    failures,
+    "test job",
+  );
+  requireTokens(
+    perfJob,
+    [
+      "(github.event_name != 'workflow_dispatch' || inputs.platform_scope == 'all')",
+      "inputs.platform_scope == 'windows' &&",
+      "inputs.platform_scope == 'linux' &&",
       "inputs.phase12_perf_profile == 'heavy' && 'heavy' ||",
       "inputs.phase12_perf_profile == 'light' && 'light' ||",
       "(github.event_name != 'workflow_dispatch' || inputs.platform_scope == 'all') && 'heavy' ||",
@@ -428,10 +439,17 @@ function evaluateCiWorkflowContract(source) {
       "light) pnpm -s phase12:perf -- --light ;;",
       "invalid resolved phase 12 perf profile",
       "timeout-minutes: 30",
+      "Verify phase 12 perf envelope",
     ],
     failures,
-    "test job",
+    "perf job",
   );
+  if (/Verify phase 12 perf envelope/.test(testJob)) {
+    failures.push("test job must not serialize phase 12 perf behind unit tests");
+  }
+  if (/\n\s+needs:/.test(perfJob)) {
+    failures.push("perf job must run in parallel and must not need other gates");
+  }
   requireTokens(
     e2eJob,
     [
@@ -456,6 +474,17 @@ function evaluateCiWorkflowContract(source) {
     failures,
   );
   compareMatrixPlatforms(
+    perfJob,
+    [
+      ["ubuntu-22.04", "macos-latest", "windows-latest"],
+      ["windows-latest"],
+      ["ubuntu-22.04"],
+      ["macos-latest"],
+    ],
+    "perf job",
+    failures,
+  );
+  compareMatrixPlatforms(
     e2eJob,
     [["ubuntu-22.04", "windows-latest"], ["windows-latest"], ["ubuntu-22.04"]],
     "e2e job",
@@ -468,7 +497,7 @@ function evaluateCiWorkflowContract(source) {
   requireTokens(
     summaryJob,
     [
-      "needs:\n      - test\n      - e2e",
+      "needs:\n      - test\n      - perf\n      - e2e",
       "(github.event_name != 'workflow_dispatch' || inputs.platform_scope == 'all')",
       "Generate readiness summary",
       "Upload readiness summary",
@@ -476,6 +505,11 @@ function evaluateCiWorkflowContract(source) {
     failures,
     "phase12 evidence summary job",
   );
+  if (!/needs: \[plan, test, e2e, perf, package\]/.test(source)) {
+    failures.push(
+      "publish job must wait for the parallel test, e2e, and perf gates",
+    );
+  }
   const readinessCondition =
     "if: always() && steps.release-rehearsal-evidence.outputs.run_id != ''";
   if (summaryJob.split(readinessCondition).length - 1 !== 3) {

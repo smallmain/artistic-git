@@ -334,8 +334,81 @@ jobs:
           path: ${{ runner.temp }}/phase12-failure-matrix/
           retention-days: 14
 
+  # Phase 12 perf uses only the embedded git-dist (no app compile). Keep it as a
+  # sibling gate so heavy benchmarks do not serialize behind clippy/cargo test.
+  perf:
+    name: Perf (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: >-
+          ${{ fromJSON(
+            (github.event_name != 'workflow_dispatch' || inputs.platform_scope == 'all') &&
+            '[{"os":"ubuntu-22.04","gitDistTarget":"linux-x86_64","rustTargets":"x86_64-unknown-linux-gnu"},{"os":"macos-latest","gitDistTarget":"macos-universal","rustTargets":"aarch64-apple-darwin,x86_64-apple-darwin"},{"os":"windows-latest","gitDistTarget":"windows-x86_64","rustTargets":"x86_64-pc-windows-msvc"}]' ||
+            inputs.platform_scope == 'windows' &&
+            '[{"os":"windows-latest","gitDistTarget":"windows-x86_64","rustTargets":"x86_64-pc-windows-msvc"}]' ||
+            inputs.platform_scope == 'linux' &&
+            '[{"os":"ubuntu-22.04","gitDistTarget":"linux-x86_64","rustTargets":"x86_64-unknown-linux-gnu"}]' ||
+            '[{"os":"macos-latest","gitDistTarget":"macos-universal","rustTargets":"aarch64-apple-darwin,x86_64-apple-darwin"}]'
+          ) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+
+      # Helper rebuild on a cold toolchain cache still needs the pinned Rust toolchain.
+      - name: Set up fixed Rust toolchain
+        uses: dtolnay/rust-toolchain@1.96.1
+        with:
+          targets: ${{ matrix.rustTargets }}
+
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        with:
+          shared-key: artistic-git-${{ matrix.gitDistTarget }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: "true"
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Compute embedded toolchain cache key
+        id: toolchain-cache-key
+        run: node scripts/emit-git-toolchain-cache-key.mjs --target=${{ matrix.gitDistTarget }}
+
+      - name: Restore embedded toolchain base cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cache/artistic-git/git-toolchain/downloads
+            .cache/artistic-git/git-toolchain/bases
+          key: ${{ steps.toolchain-cache-key.outputs.base-key }}
+
+      - name: Restore embedded toolchain helper cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/artistic-git/git-toolchain/helpers
+          key: ${{ steps.toolchain-cache-key.outputs.helper-key }}
+
+      - name: Ensure embedded toolchain
+        run: pnpm git-toolchain:ensure -- --target=${{ matrix.gitDistTarget }}
+
+      - name: Verify embedded toolchain
+        run: pnpm git-toolchain:verify -- --target=${{ matrix.gitDistTarget }}
+
       - name: Verify phase 12 perf envelope
-        if: always()
         timeout-minutes: 30
         shell: bash
         env:
@@ -672,6 +745,7 @@ jobs:
     name: Phase 12 evidence summary
     needs:
       - test
+      - perf
       - e2e
     if: >-
       ${{ always() &&
@@ -1371,7 +1445,7 @@ jobs:
 
   publish:
     name: Publish GitHub Release
-    needs: [plan, test, e2e, package]
+    needs: [plan, test, e2e, perf, package]
     if: needs.plan.outputs.publish_release == 'true'
     runs-on: ubuntu-22.04
     permissions:
