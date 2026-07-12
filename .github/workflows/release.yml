@@ -624,11 +624,35 @@ jobs:
       - name: Run Tauri E2E on Windows
         id: tauri_e2e_windows
         if: runner.os == 'Windows'
+        shell: bash
         env:
           ARTISTIC_GIT_E2E_LOG_DIR: ${{ runner.temp }}/tauri-e2e-logs/main
           ARTISTIC_GIT_E2E_PROFILE_DIR: ${{ runner.temp }}/tauri-e2e-profile/main
           ARTISTIC_GIT_E2E_SPEC_SET: real
-        run: pnpm e2e:tauri:ci
+          ARTISTIC_GIT_E2E_START_TIMEOUT_MS: "120000"
+          ARTISTIC_GIT_E2E_CONNECTION_RETRY_TIMEOUT_MS: "240000"
+          ARTISTIC_GIT_E2E_CONNECTION_RETRY_COUNT: "3"
+        run: |
+          set -euo pipefail
+          # tauri-driver on Windows occasionally fails to become ready within the
+          # service's initial 10s probe; retry the suite once after a clean kill.
+          attempt=1
+          max_attempts=2
+          while true; do
+            if pnpm e2e:tauri:ci; then
+              exit 0
+            fi
+            if [ "$attempt" -ge "$max_attempts" ]; then
+              echo "::error::Windows Tauri E2E failed after ${max_attempts} attempts"
+              exit 1
+            fi
+            echo "::warning::Windows Tauri E2E attempt ${attempt} failed; cleaning up and retrying"
+            taskkill //F //IM tauri-driver.exe //T >/dev/null 2>&1 || true
+            taskkill //F //IM msedgedriver.exe //T >/dev/null 2>&1 || true
+            taskkill //F //IM artistic-git-shell.exe //T >/dev/null 2>&1 || true
+            attempt=$((attempt + 1))
+            sleep 5
+          done
 
       - name: Run phase 9 crash isolation E2E evidence on Linux
         id: phase9_crash_e2e_linux
