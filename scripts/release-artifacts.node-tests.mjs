@@ -783,6 +783,11 @@ test("release workflow applies the release version to displayed app versions", (
     ),
   );
   assert.ok(
+    releaseWorkflow.includes(
+      "git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml crates/app/Cargo.toml Cargo.lock",
+    ),
+  );
+  assert.ok(
     releaseWorkflow.includes("cargo metadata --format-version 1 --no-deps"),
   );
   const saveLock = releaseWorkflow.indexOf(
