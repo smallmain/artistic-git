@@ -156,6 +156,21 @@ function fixtureDeb({ dataTar = fixtureDataTar() } = {}) {
   ]);
 }
 
+function withoutArNameTerminators(source) {
+  const archive = Buffer.from(source);
+  let offset = 8;
+  while (offset < archive.length) {
+    const header = archive.subarray(offset, offset + 60);
+    const identifier = header.subarray(0, 16).toString("ascii");
+    const terminator = identifier.indexOf("/");
+    assert.ok(terminator > 0);
+    header[terminator] = 0x20;
+    const size = Number(header.subarray(48, 58).toString("ascii").trim());
+    offset += 60 + size + (size % 2);
+  }
+  return archive;
+}
+
 async function fakeDecompress(member) {
   if (member.name === "data.tar.gz") {
     return decompressDataTar(member);
@@ -196,6 +211,15 @@ test("ar codec emits canonical Debian members and rejects extra members", () => 
         { name: "unexpected", data: Buffer.from("unexpected") },
       ]),
     /exactly three members/,
+  );
+});
+
+test("ar parser accepts dpkg short member names without slash terminators", () => {
+  assert.deepEqual(
+    parseArArchive(withoutArNameTerminators(fixtureDeb())).map(
+      ({ name }) => name,
+    ),
+    ["debian-binary", "control.tar.gz", "data.tar.gz"],
   );
 });
 

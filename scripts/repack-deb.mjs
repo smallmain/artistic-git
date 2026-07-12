@@ -71,10 +71,12 @@ export function parseArArchive(archive) {
       fail(`invalid ar member header trailer at byte ${offset}`);
     }
     const identifier = header.subarray(0, 16).toString("ascii").trim();
-    if (!identifier.endsWith("/") || identifier.startsWith("#1/")) {
+    if (identifier.startsWith("#1/")) {
       fail(`unsupported ar member identifier: ${JSON.stringify(identifier)}`);
     }
-    const name = identifier.slice(0, -1);
+    const name = identifier.endsWith("/")
+      ? identifier.slice(0, -1)
+      : identifier;
     if (!name || name.includes("/") || name.length > 15) {
       fail(`invalid ar member name: ${JSON.stringify(name)}`);
     }
