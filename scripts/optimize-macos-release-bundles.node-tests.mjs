@@ -2,7 +2,15 @@ import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -166,6 +174,51 @@ test("optimizer writes evidence only after both bundle transforms succeed", asyn
       /ENOENT/,
     );
     assert.equal(await readFile(dmgPath, "utf8"), "original dmg");
+    assert.equal(await readFile(updaterPath, "utf8"), "original updater");
+    assert.equal(await readFile(signaturePath, "utf8"), "original signature");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("incomplete rollback retains the original backup", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "ag-macos-rollback-"));
+  try {
+    const dmgPath = path.join(root, "fixture.dmg");
+    const updaterPath = path.join(root, "fixture.tar.gz");
+    const signaturePath = `${updaterPath}.sig`;
+    await writeFile(dmgPath, "original dmg");
+    await writeFile(updaterPath, "original updater");
+    await writeFile(signaturePath, "original signature");
+
+    await assert.rejects(
+      optimizeMacosReleaseBundles({
+        dmgPath,
+        updaterPath,
+        reportPath: path.join(root, "report.json"),
+        convertDmg: async (filePath) => {
+          await rm(filePath);
+          await mkdir(filePath);
+          throw new Error("fixture conversion failure");
+        },
+        recompressUpdater: async () => {
+          throw new Error("must not run");
+        },
+        signUpdater: async () => {
+          throw new Error("must not run");
+        },
+      }),
+      /rollback was incomplete/,
+    );
+
+    const rollbackFiles = (await readdir(root)).filter((entry) =>
+      entry.endsWith(".rollback"),
+    );
+    assert.equal(rollbackFiles.length, 1);
+    assert.equal(
+      await readFile(path.join(root, rollbackFiles[0]), "utf8"),
+      "original dmg",
+    );
     assert.equal(await readFile(updaterPath, "utf8"), "original updater");
     assert.equal(await readFile(signaturePath, "utf8"), "original signature");
   } finally {

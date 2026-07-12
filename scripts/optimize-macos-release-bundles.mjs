@@ -247,8 +247,18 @@ async function snapshotFile(filePath, label) {
 }
 
 async function restoreSnapshot(snapshot) {
-  await copyFile(snapshot.backup, snapshot.path);
-  await chmod(snapshot.path, snapshot.mode);
+  try {
+    await rename(snapshot.backup, snapshot.path);
+  } catch (error) {
+    if (
+      process.platform !== "win32" ||
+      !["EACCES", "EEXIST", "EPERM"].includes(error?.code)
+    ) {
+      throw error;
+    }
+    await rm(snapshot.path, { force: true });
+    await rename(snapshot.backup, snapshot.path);
+  }
 }
 
 export async function optimizeMacosReleaseBundles({
@@ -267,6 +277,7 @@ export async function optimizeMacosReleaseBundles({
     `.${path.basename(resolvedReport)}.${randomUUID()}.candidate`,
   );
   const snapshots = [];
+  const retainedBackups = new Set();
 
   try {
     snapshots.push(await snapshotFile(dmgPath, "macOS DMG"));
@@ -305,6 +316,7 @@ export async function optimizeMacosReleaseBundles({
         await restoreSnapshot(snapshot);
       } catch (rollbackError) {
         rollbackErrors.push(rollbackError);
+        retainedBackups.add(snapshot.backup);
       }
     }
     if (rollbackErrors.length > 0) {
@@ -318,7 +330,9 @@ export async function optimizeMacosReleaseBundles({
   } finally {
     await Promise.all([
       rm(reportCandidate, { force: true }),
-      ...snapshots.map(({ backup }) => rm(backup, { force: true })),
+      ...snapshots
+        .filter(({ backup }) => !retainedBackups.has(backup))
+        .map(({ backup }) => rm(backup, { force: true })),
     ]);
   }
 }

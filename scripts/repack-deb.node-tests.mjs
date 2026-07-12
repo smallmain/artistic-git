@@ -276,7 +276,9 @@ test("file repack validates and signs the candidate before publishing", async ()
       "data.tar.xz",
     );
     assert.match(await readFile(`${debPath}.sig`, "utf8"), /^signature:/);
-    assert.equal((await stat(debPath)).mode & 0o777, 0o640);
+    if (process.platform !== "win32") {
+      assert.equal((await stat(debPath)).mode & 0o777, 0o640);
+    }
     const report = JSON.parse(await readFile(reportPath, "utf8"));
     assert.equal(report.outputSha256, result.report.outputSha256);
     assert.equal(report.package, path.basename(debPath));
