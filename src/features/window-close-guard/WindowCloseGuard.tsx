@@ -1,6 +1,5 @@
 import { AlertTriangle } from "lucide-react";
 import * as React from "react";
-import { listen } from "@tauri-apps/api/event";
 import { useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/dialogs/ConfirmDialog";
@@ -11,6 +10,7 @@ import {
   closeCurrentWindow,
   setWindowCloseGuard,
 } from "@/lib/ipc/commands";
+import { listenRuntimeEvent } from "@/lib/ipc/events";
 
 type WindowCloseBlockedReason = "closeWindow" | "quit";
 
@@ -109,7 +109,7 @@ export function WindowCloseGuard({
     let mounted = true;
     let unlisten: (() => void) | undefined;
 
-    void listen<WindowCloseBlockedEvent | WindowCloseBlockedReason>(
+    void listenRuntimeEvent<WindowCloseBlockedEvent | WindowCloseBlockedReason>(
       "window-close-blocked",
       (event) => {
         if (!mounted) {

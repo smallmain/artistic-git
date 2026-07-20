@@ -58,6 +58,8 @@ export type SyncFeedback =
 
 interface RepositorySidebarProps {
   branchActionsDisabledReason?: string;
+  branchesTruncated?: boolean;
+  branchesUnavailable?: boolean;
   branches: BranchListItem[];
   busy: boolean;
   fetchState?: FetchStateEvent | null;
@@ -74,7 +76,10 @@ interface RepositorySidebarProps {
   onShowSafetyBackups?: () => void;
   onSidebarLayoutChange?: (layout: Required<SidebarLayoutSettings>) => void;
   onSyncBranch?: (branch: BranchListItem) => void;
+  remoteStateKnown?: boolean;
   repository: RepositorySummary;
+  stashesTruncated?: boolean;
+  stashesUnavailable?: boolean;
   stashes: StashListItem[];
   syncFeedback?: SyncFeedback | null;
 }
@@ -83,9 +88,20 @@ const minSidebarWidth = 260;
 const maxSidebarWidth = 460;
 const minBranchRatio = 35;
 const maxBranchRatio = 78;
+const branchRowHeight = 44;
+const branchVirtualOverscan = 6;
+const defaultBranchViewportHeight = 720;
+const stashRowHeight = 44;
+const stashVirtualOverscan = 6;
+
+function fallbackBranchViewportHeight() {
+  return Math.max(defaultBranchViewportHeight, window.innerHeight);
+}
 
 export function RepositorySidebar({
   branchActionsDisabledReason,
+  branchesTruncated = false,
+  branchesUnavailable = false,
   branches,
   busy,
   fetchState,
@@ -102,7 +118,10 @@ export function RepositorySidebar({
   onShowSafetyBackups,
   onSidebarLayoutChange,
   onSyncBranch,
+  remoteStateKnown = true,
   repository,
+  stashesTruncated = false,
+  stashesUnavailable = false,
   stashes,
   syncFeedback,
 }: RepositorySidebarProps) {
@@ -111,20 +130,48 @@ export function RepositorySidebar({
   const setSidebarLayout = useWindowStore((state) => state.setSidebarLayout);
   const [branchQuery, setBranchQuery] = React.useState("");
   const [stashQuery, setStashQuery] = React.useState("");
+  const deferredBranchQuery = React.useDeferredValue(branchQuery);
+  const deferredStashQuery = React.useDeferredValue(stashQuery);
+  const branchViewportRef = React.useRef<HTMLDivElement>(null);
+  const stashViewportRef = React.useRef<HTMLDivElement>(null);
+  const [branchViewport, setBranchViewport] = React.useState({
+    height: fallbackBranchViewportHeight(),
+    scrollTop: 0,
+  });
+  const resetBranchScroll = React.useCallback(() => {
+    if (branchViewportRef.current) {
+      branchViewportRef.current.scrollTop = 0;
+    }
+    setBranchViewport((current) =>
+      current.scrollTop === 0 ? current : { ...current, scrollTop: 0 },
+    );
+  }, []);
+  const [stashViewport, setStashViewport] = React.useState({
+    height: fallbackBranchViewportHeight(),
+    scrollTop: 0,
+  });
+  const resetStashScroll = React.useCallback(() => {
+    if (stashViewportRef.current) {
+      stashViewportRef.current.scrollTop = 0;
+    }
+    setStashViewport((current) =>
+      current.scrollTop === 0 ? current : { ...current, scrollTop: 0 },
+    );
+  }, []);
 
   const filteredBranches = React.useMemo(
     () =>
       branches.filter((branch) =>
-        branch.name.toLowerCase().includes(branchQuery.toLowerCase()),
+        branch.name.toLowerCase().includes(deferredBranchQuery.toLowerCase()),
       ),
-    [branchQuery, branches],
+    [branches, deferredBranchQuery],
   );
   const filteredStashes = React.useMemo(
     () =>
       stashes.filter((stash) =>
-        stash.name.toLowerCase().includes(stashQuery.toLowerCase()),
+        stash.name.toLowerCase().includes(deferredStashQuery.toLowerCase()),
       ),
-    [stashQuery, stashes],
+    [deferredStashQuery, stashes],
   );
   const hasPendingSync = React.useMemo(
     () =>
@@ -138,6 +185,87 @@ export function RepositorySidebar({
     [branches, repository.hasRemote],
   );
   const projectSyncComplete = syncFeedback?.kind === "all";
+  const virtualBranches = React.useMemo(() => {
+    const visibleCount =
+      Math.ceil(branchViewport.height / branchRowHeight) +
+      branchVirtualOverscan * 2;
+    const requestedStart =
+      Math.floor(branchViewport.scrollTop / branchRowHeight) -
+      branchVirtualOverscan;
+    const start = Math.min(
+      Math.max(0, requestedStart),
+      Math.max(0, filteredBranches.length - visibleCount),
+    );
+    const end = Math.min(filteredBranches.length, start + visibleCount);
+
+    return filteredBranches.slice(start, end).map((branch, offset) => ({
+      branch,
+      index: start + offset,
+    }));
+  }, [branchViewport, filteredBranches]);
+  const virtualStashes = React.useMemo(() => {
+    const visibleCount =
+      Math.ceil(stashViewport.height / stashRowHeight) +
+      stashVirtualOverscan * 2;
+    const requestedStart =
+      Math.floor(stashViewport.scrollTop / stashRowHeight) -
+      stashVirtualOverscan;
+    const start = Math.min(
+      Math.max(0, requestedStart),
+      Math.max(0, filteredStashes.length - visibleCount),
+    );
+    const end = Math.min(filteredStashes.length, start + visibleCount);
+
+    return filteredStashes.slice(start, end).map((stash, offset) => ({
+      index: start + offset,
+      stash,
+    }));
+  }, [filteredStashes, stashViewport]);
+  React.useEffect(() => {
+    const viewport = branchViewportRef.current;
+    if (!viewport || typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    const observer = new ResizeObserver(([entry]) => {
+      const height = entry?.contentRect.height ?? 0;
+      if (height > 0) {
+        setBranchViewport((current) =>
+          current.height === height ? current : { ...current, height },
+        );
+      }
+    });
+    observer.observe(viewport);
+    return () => {
+      observer.disconnect();
+    };
+  }, [sidebarLayout.branchesCollapsed]);
+  React.useEffect(() => {
+    const viewport = stashViewportRef.current;
+    if (!viewport || typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    const observer = new ResizeObserver(([entry]) => {
+      const height = entry?.contentRect.height ?? 0;
+      if (height > 0) {
+        setStashViewport((current) =>
+          current.height === height ? current : { ...current, height },
+        );
+      }
+    });
+    observer.observe(viewport);
+    return () => {
+      observer.disconnect();
+    };
+  }, [sidebarLayout.stashesCollapsed]);
+  const finishActiveResizeRef = React.useRef<(() => void) | null>(null);
+  React.useEffect(
+    () => () => {
+      finishActiveResizeRef.current?.();
+    },
+    [],
+  );
   const updateSidebarLayout = React.useCallback(
     (layout: Partial<SidebarLayoutSettings>) => {
       const nextLayout = {
@@ -152,33 +280,52 @@ export function RepositorySidebar({
 
   const startSidebarResize = React.useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
+      finishActiveResizeRef.current?.();
       const startX = event.clientX;
       const startWidth = sidebarLayout.widthPx;
+      let nextLayout = sidebarLayout;
 
       event.currentTarget.setPointerCapture?.(event.pointerId);
 
       const handlePointerMove = (moveEvent: PointerEvent) => {
-        updateSidebarLayout({
+        nextLayout = {
+          ...nextLayout,
           widthPx: clamp(
             startWidth + moveEvent.clientX - startX,
             minSidebarWidth,
             maxSidebarWidth,
           ),
-        });
+        };
+        setSidebarLayout(nextLayout);
       };
-      const handlePointerUp = () => {
+      let finished = false;
+      const finishResize = () => {
+        if (finished) {
+          return;
+        }
+        finished = true;
         window.removeEventListener("pointermove", handlePointerMove);
-        window.removeEventListener("pointerup", handlePointerUp);
+        window.removeEventListener("pointerup", finishResize);
+        window.removeEventListener("pointercancel", finishResize);
+        window.removeEventListener("blur", finishResize);
+        if (finishActiveResizeRef.current === finishResize) {
+          finishActiveResizeRef.current = null;
+        }
+        onSidebarLayoutChange?.(nextLayout);
       };
 
       window.addEventListener("pointermove", handlePointerMove);
-      window.addEventListener("pointerup", handlePointerUp);
+      window.addEventListener("pointerup", finishResize);
+      window.addEventListener("pointercancel", finishResize);
+      window.addEventListener("blur", finishResize);
+      finishActiveResizeRef.current = finishResize;
     },
-    [sidebarLayout.widthPx, updateSidebarLayout],
+    [onSidebarLayoutChange, setSidebarLayout, sidebarLayout],
   );
 
   const startSectionResize = React.useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
+      finishActiveResizeRef.current?.();
       const container = event.currentTarget.parentElement;
 
       if (!container) {
@@ -186,29 +333,46 @@ export function RepositorySidebar({
       }
 
       const rect = container.getBoundingClientRect();
+      let nextLayout = sidebarLayout;
 
       event.currentTarget.setPointerCapture?.(event.pointerId);
 
       const handlePointerMove = (moveEvent: PointerEvent) => {
         const ratio = ((moveEvent.clientY - rect.top) / rect.height) * 100;
 
-        updateSidebarLayout({
+        nextLayout = {
+          ...nextLayout,
           branchSectionRatioPercent: clamp(
             Math.round(ratio),
             minBranchRatio,
             maxBranchRatio,
           ),
-        });
+        };
+        setSidebarLayout(nextLayout);
       };
-      const handlePointerUp = () => {
+      let finished = false;
+      const finishResize = () => {
+        if (finished) {
+          return;
+        }
+        finished = true;
         window.removeEventListener("pointermove", handlePointerMove);
-        window.removeEventListener("pointerup", handlePointerUp);
+        window.removeEventListener("pointerup", finishResize);
+        window.removeEventListener("pointercancel", finishResize);
+        window.removeEventListener("blur", finishResize);
+        if (finishActiveResizeRef.current === finishResize) {
+          finishActiveResizeRef.current = null;
+        }
+        onSidebarLayoutChange?.(nextLayout);
       };
 
       window.addEventListener("pointermove", handlePointerMove);
-      window.addEventListener("pointerup", handlePointerUp);
+      window.addEventListener("pointerup", finishResize);
+      window.addEventListener("pointercancel", finishResize);
+      window.addEventListener("blur", finishResize);
+      finishActiveResizeRef.current = finishResize;
     },
-    [updateSidebarLayout],
+    [onSidebarLayoutChange, setSidebarLayout, sidebarLayout],
   );
 
   return (
@@ -234,6 +398,7 @@ export function RepositorySidebar({
           <RepositoryRemoteStatus
             fetchState={fetchState}
             hasRemote={repository.hasRemote}
+            remoteStateKnown={remoteStateKnown}
           />
           {repository.hasRemote ? (
             <IconButton
@@ -295,17 +460,38 @@ export function RepositorySidebar({
       <div className="flex min-h-0 flex-1 flex-col">
         <SidebarSection
           collapsed={sidebarLayout.branchesCollapsed}
-          emptyLabel={t("repository.noSearchResults")}
+          emptyLabel={
+            branchesUnavailable
+              ? t("repository.branchesLoadError")
+              : t("repository.noSearchResults")
+          }
           filteredCount={filteredBranches.length}
           icon={<GitBranch className="size-4" aria-hidden="true" />}
           maxHeight={`${sidebarLayout.branchSectionRatioPercent}%`}
           onCollapseChange={(branchesCollapsed) => {
+            resetBranchScroll();
             updateSidebarLayout({ branchesCollapsed });
           }}
-          onQueryChange={setBranchQuery}
+          onQueryChange={(query) => {
+            setBranchQuery(query);
+            resetBranchScroll();
+          }}
+          onScroll={(event) => {
+            const { clientHeight, scrollTop } = event.currentTarget;
+            setBranchViewport({
+              height: clientHeight || fallbackBranchViewportHeight(),
+              scrollTop,
+            });
+          }}
           query={branchQuery}
           searchLabel={t("repository.searchBranches")}
-          title={t("repository.branches")}
+          scrollTestId="sidebar-branches-scroll"
+          scrollViewportRef={branchViewportRef}
+          title={
+            branchesTruncated
+              ? t("repository.branchesTruncated", { count: branches.length })
+              : t("repository.branches")
+          }
         >
           {onShowSafetyBackups ? (
             <button
@@ -320,9 +506,14 @@ export function RepositorySidebar({
               </span>
             </button>
           ) : null}
-          <ul className="space-y-1">
-            {filteredBranches.map((branch) => (
+          <ul
+            className="relative"
+            style={{ height: filteredBranches.length * branchRowHeight }}
+          >
+            {virtualBranches.map(({ branch, index }) => (
               <BranchRow
+                ariaPosInSet={index + 1}
+                ariaSetSize={filteredBranches.length}
                 branch={branch}
                 branchActionsDisabledReason={branchActionsDisabledReason}
                 busy={busy}
@@ -333,6 +524,13 @@ export function RepositorySidebar({
                 onDelete={onDeleteBranch}
                 onFocus={onBranchFocus}
                 onSync={onSyncBranch}
+                style={{
+                  height: branchRowHeight - 4,
+                  left: 0,
+                  position: "absolute",
+                  right: 0,
+                  top: index * branchRowHeight,
+                }}
                 syncFeedback={syncFeedback}
               />
             ))}
@@ -348,27 +546,60 @@ export function RepositorySidebar({
 
         <SidebarSection
           collapsed={sidebarLayout.stashesCollapsed}
-          emptyLabel={t("repository.noSearchResults")}
+          emptyLabel={
+            stashesUnavailable
+              ? t("repository.stashesLoadError")
+              : t("repository.noSearchResults")
+          }
           filteredCount={filteredStashes.length}
           icon={<Layers className="size-4" aria-hidden="true" />}
           maxHeight={`${100 - sidebarLayout.branchSectionRatioPercent}%`}
           onCollapseChange={(stashesCollapsed) => {
+            resetStashScroll();
             updateSidebarLayout({ stashesCollapsed });
           }}
-          onQueryChange={setStashQuery}
+          onQueryChange={(query) => {
+            setStashQuery(query);
+            resetStashScroll();
+          }}
+          onScroll={(event) => {
+            const { clientHeight, scrollTop } = event.currentTarget;
+            setStashViewport({
+              height: clientHeight || fallbackBranchViewportHeight(),
+              scrollTop,
+            });
+          }}
           query={stashQuery}
           searchLabel={t("repository.searchStashes")}
-          title={t("repository.stashes")}
+          scrollTestId="sidebar-stashes-scroll"
+          scrollViewportRef={stashViewportRef}
+          title={
+            stashesTruncated
+              ? t("repository.stashesTruncated", { count: stashes.length })
+              : t("repository.stashes")
+          }
         >
-          <ul className="space-y-1">
-            {filteredStashes.map((stash) => (
+          <ul
+            className="relative"
+            style={{ height: filteredStashes.length * stashRowHeight }}
+          >
+            {virtualStashes.map(({ index, stash }) => (
               <StashRow
+                ariaPosInSet={index + 1}
+                ariaSetSize={filteredStashes.length}
                 busy={busy}
                 key={stash.id}
                 onApply={onApplyStash}
                 onDelete={onDeleteStash}
                 onDetails={onShowStashDetails}
                 stash={stash}
+                style={{
+                  height: stashRowHeight - 4,
+                  left: 0,
+                  position: "absolute",
+                  right: 0,
+                  top: index * stashRowHeight,
+                }}
               />
             ))}
           </ul>
@@ -388,11 +619,17 @@ export function RepositorySidebar({
 function RepositoryRemoteStatus({
   fetchState,
   hasRemote,
+  remoteStateKnown,
 }: {
   fetchState?: FetchStateEvent | null;
   hasRemote: boolean;
+  remoteStateKnown: boolean;
 }) {
   const { t } = useTranslation();
+  if (!remoteStateKnown) {
+    return null;
+  }
+
   if (!hasRemote) {
     return (
       <Tooltip content={t("repository.noRemote")}>
@@ -451,8 +688,11 @@ interface SidebarSectionProps {
   maxHeight: string;
   onCollapseChange: (collapsed: boolean) => void;
   onQueryChange: (query: string) => void;
+  onScroll?: React.UIEventHandler<HTMLDivElement>;
   query: string;
   searchLabel: string;
+  scrollTestId?: string;
+  scrollViewportRef?: React.Ref<HTMLDivElement>;
   title: string;
 }
 
@@ -465,8 +705,11 @@ function SidebarSection({
   maxHeight,
   onCollapseChange,
   onQueryChange,
+  onScroll,
   query,
   searchLabel,
+  scrollTestId,
+  scrollViewportRef,
   title,
 }: SidebarSectionProps) {
   return (
@@ -502,7 +745,12 @@ function SidebarSection({
               value={query}
             />
           </label>
-          <div className="min-h-0 flex-1 overflow-auto">
+          <div
+            className="min-h-0 flex-1 overflow-auto"
+            data-testid={scrollTestId}
+            onScroll={onScroll}
+            ref={scrollViewportRef}
+          >
             {filteredCount === 0 ? (
               <p className="px-2 py-6 text-center text-sm text-muted-foreground">
                 {emptyLabel}
@@ -518,6 +766,8 @@ function SidebarSection({
 }
 
 interface BranchRowProps {
+  ariaPosInSet?: number;
+  ariaSetSize?: number;
   branch: BranchListItem;
   branchActionsDisabledReason?: string;
   busy: boolean;
@@ -527,10 +777,13 @@ interface BranchRowProps {
   onDelete?: (branch: BranchListItem) => void;
   onFocus: (branch: BranchListItem) => void;
   onSync?: (branch: BranchListItem) => void;
+  style?: React.CSSProperties;
   syncFeedback?: SyncFeedback | null;
 }
 
 function BranchRow({
+  ariaPosInSet,
+  ariaSetSize,
   branch,
   branchActionsDisabledReason,
   busy,
@@ -540,6 +793,7 @@ function BranchRow({
   onDelete,
   onFocus,
   onSync,
+  style,
   syncFeedback,
 }: BranchRowProps) {
   const { t } = useTranslation();
@@ -564,11 +818,15 @@ function BranchRow({
 
   return (
     <li
+      aria-posinset={ariaPosInSet}
+      aria-setsize={ariaSetSize}
       className="group relative"
+      data-testid="branch-row"
       onContextMenu={(event) => {
         event.preventDefault();
         setMenuOpen(true);
       }}
+      style={style}
     >
       <button
         className="grid h-10 w-full grid-cols-[14px_auto_1fr_auto] items-center gap-2 rounded-md px-2 text-left text-sm hover:bg-accent"
@@ -729,22 +987,34 @@ function MenuButton({
 }
 
 function StashRow({
+  ariaPosInSet,
+  ariaSetSize,
   busy,
   onApply,
   onDelete,
   onDetails,
   stash,
+  style,
 }: {
+  ariaPosInSet?: number;
+  ariaSetSize?: number;
   busy: boolean;
   onApply?: (stash: StashListItem) => void;
   onDelete?: (stash: StashListItem) => void;
   onDetails?: (stash: StashListItem) => void;
   stash: StashListItem;
+  style?: React.CSSProperties;
 }) {
   const { t } = useTranslation();
 
   return (
-    <li className="group relative">
+    <li
+      aria-posinset={ariaPosInSet}
+      aria-setsize={ariaSetSize}
+      className="group relative"
+      data-testid="stash-row"
+      style={style}
+    >
       <button
         className="grid h-10 w-full grid-cols-[auto_1fr_auto] items-center gap-2 rounded-md px-2 text-left text-sm hover:bg-accent"
         type="button"

@@ -1,9 +1,13 @@
 import {
   AlertTriangle,
   Archive,
+  ChevronLeft,
+  ChevronRight,
   FileText,
   History,
+  Loader2,
   Trash2,
+  X,
 } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
@@ -19,12 +23,14 @@ import {
 import { ConfirmDialog } from "@/components/dialogs/ConfirmDialog";
 import { DialogFrame } from "@/components/dialogs/DialogFrame";
 import { Button } from "@/components/ui/button";
+import { BranchSelect } from "@/components/ui/branch-select";
 import {
   ConflictResolutionOverlay,
   type ConflictResolutionApi,
 } from "@/features/conflicts";
 import { HistoryWorkbench } from "@/features/history/HistoryWorkbench";
 import {
+  isDeferredLocalChange,
   LocalChangesPanel,
   type LocalChangeItem,
 } from "@/features/local-changes";
@@ -49,6 +55,7 @@ import {
   listBranches,
   listConflicts,
   listLocalChanges,
+  localChangeDetail,
   listSafetyBackups,
   listStashes,
   loadProjectSettings,
@@ -106,9 +113,19 @@ type SyncStatusTranslator = (
   key: string,
   options?: Record<string, unknown>,
 ) => string;
+const stashDetailsFilePageSize = 200;
+const safetyBackupPageSize = 100;
 
 interface RepositoryShellProps {
   repositoryPath: string;
+}
+
+interface RepositoryReadError {
+  error: unknown;
+  id: "branches" | "projectSettings" | "stashes" | "summary";
+  message: string;
+  retry: () => void;
+  retrying: boolean;
 }
 
 export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
@@ -152,6 +169,8 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   const [safetyBackups, setSafetyBackups] = React.useState<
     SafetyBackupSummary[]
   >([]);
+  const [safetyBackupsTruncated, setSafetyBackupsTruncated] =
+    React.useState(false);
   const [safetyBackupToDelete, setSafetyBackupToDelete] =
     React.useState<SafetyBackupSummary | null>(null);
   const [reviewModeState, setReviewModeState] =
@@ -177,6 +196,10 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     React.useState<BranchListItem | null>(null);
   const [deleteRemoteBranch, setDeleteRemoteBranch] = React.useState(false);
   const [stashActionBusy, setStashActionBusy] = React.useState(false);
+  const [cancellingOperationId, setCancellingOperationId] = React.useState<
+    string | null
+  >(null);
+  const cancellingOperationRef = React.useRef<string | null>(null);
   const [stashIds, setStashIds] = React.useState<string[] | null>(null);
   const [stashMessage, setStashMessage] = React.useState("");
   const [stashScope, setStashScope] = React.useState<StashScope>("all");
@@ -191,6 +214,8 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   const [localChangeCheckedIds, setLocalChangeCheckedIds] = React.useState<
     string[]
   >([]);
+  const [selectedLocalChange, setSelectedLocalChange] =
+    React.useState<LocalChangeItem | null>(null);
   const [focusedBranch, setFocusedBranch] =
     React.useState<BranchListItem | null>(null);
   const summaryQuery = useQuery({
@@ -226,6 +251,43 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     queryKey: ["repository", repositoryPath, "projectSettings"] as const,
     retry: false,
   });
+  const repositoryReadErrors: RepositoryReadError[] = [];
+  if (summaryQuery.error !== null) {
+    repositoryReadErrors.push({
+      error: summaryQuery.error,
+      id: "summary",
+      message: t("repository.summaryLoadError"),
+      retry: () => void summaryQuery.refetch(),
+      retrying: summaryQuery.isFetching,
+    });
+  }
+  if (branchesQuery.error !== null) {
+    repositoryReadErrors.push({
+      error: branchesQuery.error,
+      id: "branches",
+      message: t("repository.branchesLoadError"),
+      retry: () => void branchesQuery.refetch(),
+      retrying: branchesQuery.isFetching,
+    });
+  }
+  if (stashesQuery.error !== null) {
+    repositoryReadErrors.push({
+      error: stashesQuery.error,
+      id: "stashes",
+      message: t("repository.stashesLoadError"),
+      retry: () => void stashesQuery.refetch(),
+      retrying: stashesQuery.isFetching,
+    });
+  }
+  if (projectSettingsQuery.error !== null) {
+    repositoryReadErrors.push({
+      error: projectSettingsQuery.error,
+      id: "projectSettings",
+      message: t("repository.projectSettingsLoadError"),
+      retry: () => void projectSettingsQuery.refetch(),
+      retrying: projectSettingsQuery.isFetching,
+    });
+  }
   const branches = React.useMemo(
     () => branchesQuery.data?.branches.map(mapBranchSummaryToItem) ?? [],
     [branchesQuery.data],
@@ -249,6 +311,55 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     () => localChangesQuery.data?.changes.map(mapLocalChangeToItem) ?? [],
     [localChangesQuery.data],
   );
+  const deferredDetailRequest =
+    activeTab === "localChanges" &&
+    !localChangesQuery.isFetching &&
+    !localChangesQuery.error &&
+    isDeferredLocalChange(selectedLocalChange)
+      ? selectedLocalChange
+      : null;
+  const localChangeDetailQuery = useQuery({
+    enabled: deferredDetailRequest !== null,
+    queryFn: ({ signal }) => {
+      if (!deferredDetailRequest) {
+        return Promise.reject(new Error("No local change preview selected."));
+      }
+
+      return runCancellableLocalChangeDetail(
+        signal,
+        repositoryPath,
+        deferredDetailRequest,
+      );
+    },
+    queryKey: [
+      "repository",
+      repositoryPath,
+      "localChangeDetail",
+      localChangesQuery.dataUpdatedAt,
+      deferredDetailRequest?.id ?? null,
+      deferredDetailRequest?.payload.newPath ?? null,
+      deferredDetailRequest?.submodule?.path ?? null,
+    ] as const,
+    retry: false,
+  });
+  const loadedLocalChangeDetail = React.useMemo(
+    () =>
+      localChangeDetailQuery.data
+        ? mapLocalChangeToItem(localChangeDetailQuery.data)
+        : null,
+    [localChangeDetailQuery.data],
+  );
+  const localChangeDetailState = isDeferredLocalChange(selectedLocalChange)
+    ? {
+        change: loadedLocalChangeDetail,
+        error: localChangeDetailQuery.error,
+        loading:
+          deferredDetailRequest === null ||
+          localChangeDetailQuery.isPending ||
+          localChangeDetailQuery.isFetching,
+        selectedId: selectedLocalChange.id,
+      }
+    : undefined;
   const renormalizeSuggestion =
     localChangesQuery.data?.renormalizeSuggestion ?? null;
   const renormalizeSuggestionKey = renormalizeSuggestion
@@ -304,6 +415,16 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         .at(-1) ?? null,
     [operations, repositoryPath, windowLabel],
   );
+
+  React.useEffect(() => {
+    if (
+      cancellingOperationRef.current &&
+      cancellingOperationRef.current !== activeOperation?.operationId
+    ) {
+      cancellingOperationRef.current = null;
+      setCancellingOperationId(null);
+    }
+  }, [activeOperation?.operationId]);
   const fetchState = liveFetchState ?? storedFetchState;
   const effectiveProjectSettings = React.useMemo(
     () =>
@@ -416,6 +537,9 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         currentBranch?.name ??
         effectiveFocusedBranch?.name ??
         "",
+      // React Query retains successful data during a failed refresh, preserving
+      // the last confirmed value. An initial unknown state stays conservative so
+      // it cannot start remote operations before the summary has loaded.
       hasRemote: summaryQuery.data?.hasOrigin ?? false,
       path: repositoryPath,
       projectName:
@@ -430,6 +554,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       t,
     ],
   );
+  const remoteStateKnown = summaryQuery.data !== undefined;
   const localChangeCount = localChanges.length;
   const branchActionsDisabledReason = summaryQuery.data?.isUnborn
     ? t("repository.unbornBranchActionsDisabled")
@@ -437,7 +562,6 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   const activeOperationBusy = activeOperation !== null;
   const busy =
     activeOperationBusy ||
-    fetchBusy ||
     syncBusy ||
     commitBusy ||
     restoreBusy ||
@@ -791,6 +915,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     try {
       const response = await listSafetyBackups({ repositoryPath });
       setSafetyBackups(response.backups);
+      setSafetyBackupsTruncated(response.truncated);
       setSafetyBackupsOpen(true);
     } catch (error) {
       window.dispatchEvent(
@@ -816,6 +941,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       setSafetyBackupToDelete(null);
       const response = await listSafetyBackups({ repositoryPath });
       setSafetyBackups(response.backups);
+      setSafetyBackupsTruncated(response.truncated);
       await queryClient.invalidateQueries({
         queryKey: repoQueryKeys.branches(repositoryPath),
       });
@@ -1363,6 +1489,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     setRestoreBusy(true);
     try {
       await restoreChanges({
+        operationId: createRepositoryOperationId("restore-changes"),
         paths: selectedRestorePaths,
         repositoryPath,
       });
@@ -1528,6 +1655,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         }
         return response;
       },
+      cancelOperation,
       completeConflictResolution: async (request) => {
         const response = await completeConflictResolution(request);
         const revertAutoStash = revertAutoStashByOperation[request.operationId];
@@ -1654,6 +1782,37 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     writeOperationBusy,
   ]);
 
+  const cancelActiveOperation = React.useCallback(async () => {
+    if (
+      !activeOperation?.cancellable ||
+      cancellingOperationRef.current !== null
+    ) {
+      return;
+    }
+
+    const operationId = activeOperation.operationId;
+    cancellingOperationRef.current = operationId;
+    setCancellingOperationId(operationId);
+    try {
+      const response = await cancelOperation({ operationId });
+      if (
+        !response.cancelled &&
+        cancellingOperationRef.current === operationId
+      ) {
+        cancellingOperationRef.current = null;
+        setCancellingOperationId(null);
+      }
+    } catch (error) {
+      if (cancellingOperationRef.current === operationId) {
+        cancellingOperationRef.current = null;
+        setCancellingOperationId(null);
+      }
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:error", { detail: error }),
+      );
+    }
+  }, [activeOperation]);
+
   return (
     <main
       className="flex h-screen min-h-0 bg-background text-foreground"
@@ -1662,7 +1821,11 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     >
       <RepositorySidebar
         branchActionsDisabledReason={branchActionsDisabledReason}
+        branchesUnavailable={
+          branchesQuery.error !== null && branchesQuery.data === undefined
+        }
         branches={branches}
+        branchesTruncated={branchesQuery.data?.truncated ?? false}
         busy={interactionBusy}
         fetchState={fetchState}
         onApplyStash={(stash) => void applyStash(stash)}
@@ -1689,8 +1852,13 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         onShowSafetyBackups={() => void refreshSafetyBackups()}
         onShowStashDetails={(stash) => void showStashDetails(stash)}
         onSyncBranch={(branch) => void runSyncBranch(branch)}
+        remoteStateKnown={remoteStateKnown}
         repository={repository}
+        stashesUnavailable={
+          stashesQuery.error !== null && stashesQuery.data === undefined
+        }
         stashes={stashes}
+        stashesTruncated={stashesQuery.data?.truncated ?? false}
         syncFeedback={syncFeedback}
       />
       <section className="flex min-w-0 flex-1 flex-col">
@@ -1730,12 +1898,42 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
               testId="repository-tab-local-changes"
             />
           </nav>
-          <div className="min-w-0 text-numeric text-sm text-muted-foreground">
-            {busyLabel}
+          <div
+            aria-live="polite"
+            className="flex min-w-0 items-center gap-2 text-numeric text-sm text-muted-foreground"
+          >
+            <span className="truncate">
+              {cancellingOperationId
+                ? t("repository.operationCancelling")
+                : busyLabel}
+            </span>
+            {activeOperation?.cancellable ? (
+              <Button
+                className="h-8 shrink-0 gap-1.5 px-2"
+                disabled={cancellingOperationId !== null}
+                onClick={() => void cancelActiveOperation()}
+                type="button"
+                variant="ghost"
+              >
+                {cancellingOperationId ? (
+                  <Loader2
+                    className="size-3.5 animate-spin"
+                    aria-hidden="true"
+                  />
+                ) : (
+                  <X className="size-3.5" aria-hidden="true" />
+                )}
+                {t("actions.cancel")}
+              </Button>
+            ) : null}
           </div>
         </header>
 
-        {!repository.hasRemote ? (
+        {repositoryReadErrors.length > 0 ? (
+          <RepositoryReadErrorStrip errors={repositoryReadErrors} />
+        ) : null}
+
+        {remoteStateKnown && !repository.hasRemote ? (
           <div className="flex shrink-0 items-center justify-between gap-3 border-b bg-warning/10 px-4 py-2 text-sm">
             <span className="flex min-w-0 items-center gap-2">
               <AlertTriangle className="size-4 shrink-0" aria-hidden="true" />
@@ -1782,18 +1980,26 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
                     }));
                   }}
                   onWriteBusyChange={setHistoryWriteBusy}
+                  writeDisabled={writeOperationBusy}
                 />
               </div>
             </div>
           ) : (
             <LocalChangesPanel
-              busy={interactionBusy}
+              busy={interactionBusy || localChangesQuery.isFetching}
               changes={localChanges}
+              detailState={localChangeDetailState}
+              error={localChangesQuery.error}
               initialCheckedIds={localChangeCheckedIds}
+              loadDeferredDetails
+              loading={localChangesQuery.isFetching}
               onCheckedChange={setLocalChangeCheckedIds}
               onCommit={setCommitIds}
               onPreviewRenormalize={runPreviewRenormalize}
+              onRetry={() => void localChangesQuery.refetch()}
+              onRetryDetail={() => void localChangeDetailQuery.refetch()}
               onRestore={setRestoreIds}
+              onSelectedChange={setSelectedLocalChange}
               onStash={openCreateStashDialog}
               onViewModeChange={(viewMode) => {
                 void persistProjectPreferences({
@@ -1824,6 +2030,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         />
       ) : null}
       <ConfirmDialog
+        busy={reviewBusy}
         confirmLabel={t("review.recover")}
         description={t("review.recoveryDescription")}
         onConfirm={() => void runRecoverReviewMode()}
@@ -1856,8 +2063,10 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
           }
         }}
         open={safetyBackupsOpen}
+        truncated={safetyBackupsTruncated}
       />
       <ConfirmDialog
+        busy={safetyBackupBusy}
         confirmLabel={t("repository.deleteSafetyBackup")}
         description={t("repository.deleteSafetyBackupDescription", {
           name: safetyBackupToDelete?.name ?? "",
@@ -1954,7 +2163,13 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       />
       <RestoreChangesDialog
         busy={restoreBusy}
+        canCancel={
+          activeOperation?.label === "Restoring changes" &&
+          activeOperation.cancellable
+        }
+        cancelling={cancellingOperationId !== null}
         count={selectedRestorePaths.length}
+        onCancelOperation={() => void cancelActiveOperation()}
         onConfirm={() => void runRestore()}
         onOpenChange={(open) => {
           if (!open && !restoreBusy) {
@@ -1964,6 +2179,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         open={restoreIds !== null}
       />
       <ConfirmDialog
+        busy={stashActionBusy}
         confirmLabel={t("repository.deleteStash")}
         description={t("repository.deleteStashDescription", {
           name: stashToDelete?.name ?? "",
@@ -2007,6 +2223,39 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       />
     </main>
   );
+}
+
+async function runCancellableLocalChangeDetail(
+  signal: AbortSignal,
+  repositoryPath: string,
+  change: LocalChangeItem,
+): Promise<LocalChange> {
+  throwIfLocalChangeDetailAborted(signal);
+  const operationId = createRepositoryOperationId("local-change-detail");
+  const cancel = () => {
+    void cancelOperation({ operationId }).catch(() => undefined);
+  };
+  signal.addEventListener("abort", cancel, { once: true });
+
+  try {
+    const detail = await localChangeDetail({
+      operationId,
+      oldPath: change.payload.oldPath,
+      path: change.payload.newPath,
+      repositoryPath,
+      submodule: change.submodule,
+    });
+    throwIfLocalChangeDetailAborted(signal);
+    return detail;
+  } finally {
+    signal.removeEventListener("abort", cancel);
+  }
+}
+
+function throwIfLocalChangeDetailAborted(signal: AbortSignal): void {
+  if (signal.aborted) {
+    throw new DOMException("Local change preview was cancelled.", "AbortError");
+  }
 }
 
 function pathsForChangeIds(
@@ -2055,6 +2304,8 @@ function operationLabel(label: string, t: (key: string) => string): string {
       return t("repository.reviewMode");
     case "Committing changes":
       return t("localChanges.commitBusy");
+    case "Restoring changes":
+      return t("localChanges.restoreBusy");
     case "Reverting commit":
       return t("history.revert.busy");
     case "Updating submodules":
@@ -2280,6 +2531,7 @@ function SafetyBackupsDialog({
   onDelete,
   onOpenChange,
   open,
+  truncated,
 }: {
   backups: SafetyBackupSummary[];
   busy: boolean;
@@ -2290,8 +2542,25 @@ function SafetyBackupsDialog({
   onDelete: (backup: SafetyBackupSummary) => void;
   onOpenChange: (open: boolean) => void;
   open: boolean;
+  truncated: boolean;
 }) {
   const { t } = useTranslation();
+  const [pageState, setPageState] = React.useState<{
+    backups: SafetyBackupSummary[];
+    pageIndex: number;
+  } | null>(null);
+  const pageCount = Math.max(
+    1,
+    Math.ceil(backups.length / safetyBackupPageSize),
+  );
+  const pageIndex =
+    pageState?.backups === backups
+      ? Math.min(pageState.pageIndex, pageCount - 1)
+      : 0;
+  const visibleBackups = backups.slice(
+    pageIndex * safetyBackupPageSize,
+    (pageIndex + 1) * safetyBackupPageSize,
+  );
 
   if (!open) {
     return null;
@@ -2320,40 +2589,92 @@ function SafetyBackupsDialog({
           {t("repository.noSafetyBackups")}
         </p>
       ) : (
-        <ul className="grid gap-2">
-          {backups.map((backup) => (
-            <li
-              className="grid grid-cols-[auto_1fr_auto] items-center gap-3 rounded-md border bg-background p-3"
-              key={backup.refName}
-            >
-              <Archive className="size-4 text-muted-foreground" />
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium">
-                  {backup.originalBranch ?? backup.refName}
-                </p>
-                <p className="truncate text-xs text-muted-foreground">
-                  {backup.createdAtUnixMillis
-                    ? formatDate(Number(backup.createdAtUnixMillis), {
-                        dateStyle: "medium",
-                        timeStyle: "short",
-                      })
-                    : backup.refName}
-                  {backup.headOid ? ` · ${shortOid(backup.headOid)}` : ""}
-                </p>
-              </div>
+        <div className="space-y-3">
+          {truncated ? (
+            <p className="text-sm text-muted-foreground" role="status">
+              {t("repository.safetyBackupsTruncated", {
+                count: backups.length,
+              })}
+            </p>
+          ) : null}
+          <ul className="grid gap-2">
+            {visibleBackups.map((backup) => (
+              <li
+                className="grid grid-cols-[auto_1fr_auto] items-center gap-3 rounded-md border bg-background p-3"
+                data-testid="safety-backup-row"
+                key={backup.refName}
+              >
+                <Archive className="size-4 text-muted-foreground" />
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium">
+                    {backup.originalBranch ?? backup.refName}
+                  </p>
+                  <p className="truncate text-xs text-muted-foreground">
+                    {backup.createdAtUnixMillis
+                      ? formatDate(Number(backup.createdAtUnixMillis), {
+                          dateStyle: "medium",
+                          timeStyle: "short",
+                        })
+                      : backup.refName}
+                    {backup.headOid ? ` · ${shortOid(backup.headOid)}` : ""}
+                  </p>
+                </div>
+                <Button
+                  disabled={busy}
+                  onClick={() => onDelete(backup)}
+                  size="icon"
+                  title={t("repository.deleteSafetyBackup")}
+                  type="button"
+                  variant="ghost"
+                >
+                  <Trash2 className="size-4" aria-hidden="true" />
+                </Button>
+              </li>
+            ))}
+          </ul>
+          {pageCount > 1 ? (
+            <div className="flex items-center justify-between gap-2 border-t pt-2">
               <Button
-                disabled={busy}
-                onClick={() => onDelete(backup)}
+                aria-label={t("repository.previousSafetyBackupsPage")}
+                disabled={busy || pageIndex === 0}
+                onClick={() =>
+                  setPageState({
+                    backups,
+                    pageIndex: Math.max(0, pageIndex - 1),
+                  })
+                }
                 size="icon"
-                title={t("repository.deleteSafetyBackup")}
+                title={t("repository.previousSafetyBackupsPage")}
                 type="button"
                 variant="ghost"
               >
-                <Trash2 className="size-4" aria-hidden="true" />
+                <ChevronLeft className="size-4" aria-hidden="true" />
               </Button>
-            </li>
-          ))}
-        </ul>
+              <span className="text-xs text-muted-foreground">
+                {t("repository.safetyBackupsPage", {
+                  page: pageIndex + 1,
+                  total: pageCount,
+                })}
+              </span>
+              <Button
+                aria-label={t("repository.nextSafetyBackupsPage")}
+                disabled={busy || pageIndex >= pageCount - 1}
+                onClick={() =>
+                  setPageState({
+                    backups,
+                    pageIndex: Math.min(pageCount - 1, pageIndex + 1),
+                  })
+                }
+                size="icon"
+                title={t("repository.nextSafetyBackupsPage")}
+                type="button"
+                variant="ghost"
+              >
+                <ChevronRight className="size-4" aria-hidden="true" />
+              </Button>
+            </div>
+          ) : null}
+        </div>
       )}
     </DialogFrame>
   );
@@ -2493,6 +2814,14 @@ function CreateBranchDialog({
   validation: BranchNameValidationResponse | null;
 }) {
   const { t } = useTranslation();
+  const baseBranchOptions = React.useMemo(
+    () =>
+      baseBranches.map((branch) => ({
+        label: branch.name,
+        value: branch.name,
+      })),
+    [baseBranches],
+  );
 
   if (!baseBranch) {
     return null;
@@ -2528,33 +2857,29 @@ function CreateBranchDialog({
       onOpenChange={onOpenChange}
       title={t("repository.createBranchTitle")}
     >
-      <label className="grid gap-2 text-sm">
-        <span className="font-medium">{t("repository.branchBase")}</span>
-        <select
-          className="h-9 rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      <div className="grid gap-2 text-sm">
+        <BranchSelect
           disabled={busy}
-          onChange={(event) => {
+          label={t("repository.branchBase")}
+          noResultsLabel={t("repository.noSearchResults")}
+          onChange={(value) => {
             const nextBase = baseBranches.find(
-              (branch) => branch.name === event.target.value,
+              (branch) => branch.name === value,
             );
             if (nextBase) {
               onBaseBranchChange(nextBase);
             }
           }}
+          options={baseBranchOptions}
+          searchLabel={t("repository.searchBranches")}
           value={baseBranch.name}
-        >
-          {baseBranches.map((branch) => (
-            <option key={branch.name} value={branch.name}>
-              {branch.name}
-            </option>
-          ))}
-        </select>
+        />
         {baseBranch.remoteOnly ? (
           <span className="text-xs text-muted-foreground">
             {t("repository.branchBaseRemoteOnly")}
           </span>
         ) : null}
-      </label>
+      </div>
 
       <label className="grid gap-2 text-sm">
         <span className="font-medium">{t("repository.branchName")}</span>
@@ -2883,13 +3208,19 @@ function CommitChangesDialog({
 
 function RestoreChangesDialog({
   busy,
+  canCancel,
+  cancelling,
   count,
+  onCancelOperation,
   onConfirm,
   onOpenChange,
   open,
 }: {
   busy: boolean;
+  canCancel: boolean;
+  cancelling: boolean;
   count: number;
+  onCancelOperation: () => void;
   onConfirm: () => void;
   onOpenChange: (open: boolean) => void;
   open: boolean;
@@ -2904,27 +3235,28 @@ function RestoreChangesDialog({
 
   return (
     <DialogFrame
+      closeOnEscape={!busy}
       description={description}
       footer={
         <div className="flex justify-end gap-2">
           <Button
-            disabled={busy}
-            onClick={() => onOpenChange(false)}
+            disabled={busy && (!canCancel || cancelling)}
+            onClick={busy ? onCancelOperation : () => onOpenChange(false)}
             type="button"
             variant="ghost"
           >
-            {t("actions.cancel")}
+            {cancelling
+              ? t("repository.operationCancelling")
+              : t("actions.cancel")}
           </Button>
-          <Button
-            disabled={busy}
-            onClick={onConfirm}
-            type="button"
-            variant="destructive"
-          >
-            {t("localChanges.restoreConfirm")}
-          </Button>
+          {busy ? null : (
+            <Button onClick={onConfirm} type="button" variant="destructive">
+              {t("localChanges.restoreConfirm")}
+            </Button>
+          )}
         </div>
       }
+      hideCloseButton={busy}
       onOpenChange={onOpenChange}
       title={t("localChanges.restoreTitle")}
     >
@@ -2940,6 +3272,17 @@ function RestoreChangesDialog({
       <p className="rounded-md border bg-background p-3 text-sm text-muted-foreground">
         {description}
       </p>
+      {busy ? (
+        <div
+          className="flex items-center gap-2 text-sm text-muted-foreground"
+          role="status"
+        >
+          <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+          {cancelling
+            ? t("repository.operationCancelling")
+            : t("localChanges.restoreBusy")}
+        </div>
+      ) : null}
     </DialogFrame>
   );
 }
@@ -3011,22 +3354,149 @@ function StashDetailsDialog({
           <div className="border-b px-3 py-2 text-sm font-medium">
             {t("repository.stashFiles", { count: details.files.length })}
           </div>
-          <ul className="max-h-80 overflow-auto p-1 text-sm">
-            {details.files.map((file) => (
-              <li className="rounded px-2 py-1" key={file.path}>
-                <span className="block truncate">{file.path}</span>
-                <span className="text-xs text-muted-foreground">
-                  {t(`diff.changeKind.${file.changeKind}`)}
-                </span>
-              </li>
-            ))}
-          </ul>
+          <StashDetailsFileList files={details.files} />
         </div>
         <pre className="max-h-80 overflow-auto rounded-md border bg-background p-3 text-xs">
           {details.rawDiff || t("repository.stashNoDiff")}
         </pre>
       </div>
     </DialogFrame>
+  );
+}
+
+function StashDetailsFileList({
+  files,
+}: {
+  files: StashDetailsResponse["files"];
+}) {
+  const { t } = useTranslation();
+  const [pageIndex, setPageIndex] = React.useState(0);
+  const pageCount = Math.max(
+    1,
+    Math.ceil(files.length / stashDetailsFilePageSize),
+  );
+  const currentPageIndex = Math.min(pageIndex, pageCount - 1);
+  const visibleFiles = files.slice(
+    currentPageIndex * stashDetailsFilePageSize,
+    (currentPageIndex + 1) * stashDetailsFilePageSize,
+  );
+
+  return (
+    <>
+      <ul className="max-h-80 overflow-auto p-1 text-sm">
+        {visibleFiles.map((file) => (
+          <li
+            className="rounded px-2 py-1"
+            data-testid="stash-detail-file"
+            key={file.path}
+          >
+            <span className="block truncate">{file.path}</span>
+            <span className="text-xs text-muted-foreground">
+              {t(`diff.changeKind.${file.changeKind}`)}
+            </span>
+          </li>
+        ))}
+      </ul>
+      {pageCount > 1 ? (
+        <div className="flex items-center justify-between gap-2 border-t p-2">
+          <Button
+            aria-label={t("repository.previousStashFilesPage")}
+            disabled={currentPageIndex === 0}
+            onClick={() => setPageIndex(Math.max(0, currentPageIndex - 1))}
+            size="icon"
+            title={t("repository.previousStashFilesPage")}
+            type="button"
+            variant="ghost"
+          >
+            <ChevronLeft className="size-4" aria-hidden="true" />
+          </Button>
+          <span className="text-xs text-muted-foreground">
+            {t("repository.stashFilesPage", {
+              page: currentPageIndex + 1,
+              total: pageCount,
+            })}
+          </span>
+          <Button
+            aria-label={t("repository.nextStashFilesPage")}
+            disabled={currentPageIndex >= pageCount - 1}
+            onClick={() =>
+              setPageIndex(Math.min(pageCount - 1, currentPageIndex + 1))
+            }
+            size="icon"
+            title={t("repository.nextStashFilesPage")}
+            type="button"
+            variant="ghost"
+          >
+            <ChevronRight className="size-4" aria-hidden="true" />
+          </Button>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function RepositoryReadErrorStrip({
+  errors,
+}: {
+  errors: RepositoryReadError[];
+}) {
+  const { t } = useTranslation();
+
+  return (
+    <div
+      aria-label={t("repository.readErrorsTitle")}
+      className="shrink-0 border-b border-destructive/30 bg-destructive/10 px-4 py-3"
+      role="alert"
+    >
+      <div className="mb-2 flex items-center gap-2 text-sm font-medium text-destructive">
+        <AlertTriangle className="size-4 shrink-0" aria-hidden="true" />
+        <span>{t("repository.readErrorsTitle")}</span>
+      </div>
+      <ul className="grid gap-2">
+        {errors.map((error) => (
+          <li
+            className="flex flex-wrap items-center justify-between gap-2 text-sm"
+            data-testid={`repository-read-error-${error.id}`}
+            key={error.id}
+          >
+            <span className="min-w-0 flex-1">{error.message}</span>
+            <div className="flex shrink-0 items-center gap-1">
+              <Button
+                className="h-8 px-2"
+                onClick={() => {
+                  window.dispatchEvent(
+                    new CustomEvent("artistic-git:error", {
+                      detail: error.error,
+                    }),
+                  );
+                }}
+                type="button"
+                variant="ghost"
+              >
+                {t("repository.viewErrorDetails")}
+              </Button>
+              <Button
+                className="h-8 gap-1.5 px-2"
+                disabled={error.retrying}
+                onClick={error.retry}
+                type="button"
+                variant="secondary"
+              >
+                {error.retrying ? (
+                  <Loader2
+                    className="size-3.5 animate-spin"
+                    aria-hidden="true"
+                  />
+                ) : null}
+                {error.retrying
+                  ? t("repository.retryingLoad")
+                  : t("repository.retryLoad")}
+              </Button>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

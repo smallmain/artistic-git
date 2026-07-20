@@ -1,4 +1,5 @@
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -137,6 +138,71 @@ describe("SettingsModal", () => {
     ).toBeDisabled();
   });
 
+  it("blocks closing and repeated saves while settings are being written", async () => {
+    let finishSave: (() => void) | undefined;
+    commandMocks.saveAppSettings.mockImplementation(
+      ({ settings }) =>
+        new Promise((resolve) => {
+          finishSave = () => resolve(settings);
+        }),
+    );
+    const onOpenChange = vi.fn();
+    render(
+      <TestProviders>
+        <SettingsModal onOpenChange={onOpenChange} open />
+      </TestProviders>,
+    );
+
+    const saveButton = await screen.findByRole("button", {
+      name: "Save update check settings",
+    });
+    fireEvent.click(saveButton);
+    fireEvent.click(saveButton);
+
+    expect(commandMocks.saveAppSettings).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText("Saving settings...")).toBeInTheDocument();
+    const closeButtons = screen.getAllByRole("button", { name: "Close" });
+    expect(closeButtons).toHaveLength(1);
+    expect(closeButtons[0]).toBeDisabled();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onOpenChange).not.toHaveBeenCalled();
+
+    await act(async () => {
+      finishSave?.();
+    });
+    await waitFor(() => expect(closeButtons[0]).toBeEnabled());
+  });
+
+  it("blocks stale settings immediately when the modal reopens", async () => {
+    const onOpenChange = vi.fn();
+    const view = render(
+      <TestProviders>
+        <SettingsModal onOpenChange={onOpenChange} open />
+      </TestProviders>,
+    );
+    await screen.findByRole("button", {
+      name: "Save update check settings",
+    });
+
+    view.rerender(<TestProviders>{null}</TestProviders>);
+    commandMocks.settingsSnapshot.mockReturnValueOnce(
+      new Promise(() => undefined),
+    );
+    commandMocks.listHttpsCredentials.mockReturnValueOnce(
+      new Promise(() => undefined),
+    );
+    view.rerender(
+      <TestProviders>
+        <SettingsModal onOpenChange={onOpenChange} open />
+      </TestProviders>,
+    );
+
+    expect(screen.getByTestId("settings-content")).toHaveAttribute("inert");
+    expect(screen.getByRole("status")).toHaveTextContent("Loading settings...");
+    expect(screen.getAllByRole("button", { name: "Close" })).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Close" })).toBeDisabled();
+  });
+
   it("invalidates repository queries after origin is removed", async () => {
     const queryClient = createAppQueryClient();
     const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
@@ -266,14 +332,10 @@ describe("SettingsModal", () => {
         name: "Add automatic branch update",
       }),
     );
-    fireEvent.change(screen.getByLabelText("Branch to update"), {
-      target: { value: "design" },
-    });
-    fireEvent.change(screen.getByLabelText("Get updates from"), {
-      target: { value: "release" },
-    });
+    chooseBranch("Branch to update", "design", "design (remote only)");
+    chooseBranch("Get updates from", "release");
 
-    expect(screen.getAllByText("design (remote only)")).toHaveLength(2);
+    expect(screen.getByText("design (remote only)")).toBeInTheDocument();
 
     const saveButtons = screen.getAllByRole("button", {
       name: "Save project settings",
@@ -588,6 +650,14 @@ function TestProviders({
       </QueryClientProvider>
     </I18nextProvider>
   );
+}
+
+function chooseBranch(label: string, branch: string, optionLabel = branch) {
+  fireEvent.click(screen.getByRole("combobox", { name: label }));
+  fireEvent.change(screen.getByRole("searchbox", { name: "Search branches" }), {
+    target: { value: branch },
+  });
+  fireEvent.click(screen.getByRole("option", { name: optionLabel }));
 }
 
 function branchSummary(

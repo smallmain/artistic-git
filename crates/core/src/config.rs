@@ -3,7 +3,7 @@ use specta::Type;
 use std::{
     collections::BTreeMap,
     fs::{self, File},
-    io::{self, ErrorKind, Write},
+    io::{self, ErrorKind, Read, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
     time::{Duration, Instant},
@@ -21,6 +21,7 @@ pub const DEFAULT_SIDEBAR_WIDTH_PX: u16 = 280;
 pub const DEFAULT_BRANCH_SECTION_RATIO_PERCENT: u8 = 60;
 pub const DEFAULT_LARGE_FILE_THRESHOLD_MB: u32 = 50;
 pub const DEFAULT_DEBOUNCE_DELAY: Duration = Duration::from_millis(250);
+const CONFIG_FILE_LIMIT_BYTES: usize = 8 * 1024 * 1024;
 
 pub type ConfigStoreResult<T> = Result<T, ConfigStoreError>;
 
@@ -716,10 +717,30 @@ where
     T: DeserializeOwned + Default,
 {
     match File::open(path) {
-        Ok(file) => serde_json::from_reader(file).map_err(|source| ConfigStoreError::Parse {
-            path: path.to_path_buf(),
-            source,
-        }),
+        Ok(file) => {
+            let mut bytes = Vec::with_capacity(CONFIG_FILE_LIMIT_BYTES.min(64 * 1024));
+            file.take(CONFIG_FILE_LIMIT_BYTES.saturating_add(1) as u64)
+                .read_to_end(&mut bytes)
+                .map_err(|source| ConfigStoreError::Read {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
+            if bytes.len() > CONFIG_FILE_LIMIT_BYTES {
+                return Err(ConfigStoreError::Read {
+                    path: path.to_path_buf(),
+                    source: io::Error::new(
+                        ErrorKind::InvalidData,
+                        format!(
+                            "config file exceeds the {CONFIG_FILE_LIMIT_BYTES}-byte application safety limit"
+                        ),
+                    ),
+                });
+            }
+            serde_json::from_slice(&bytes).map_err(|source| ConfigStoreError::Parse {
+                path: path.to_path_buf(),
+                source,
+            })
+        }
         Err(source) if source.kind() == ErrorKind::NotFound => Ok(T::default()),
         Err(source) => Err(ConfigStoreError::Read {
             path: path.to_path_buf(),
@@ -858,6 +879,28 @@ mod tests {
 
         assert_eq!(settings.appearance.theme, ThemePreference::Dark);
         assert!(!settings.git.auto_fetch);
+    }
+
+    #[test]
+    fn oversized_config_is_rejected_before_json_parsing() {
+        let temp_dir = tempdir().expect("create temp dir");
+        let paths = ConfigPaths::new(
+            temp_dir.path().join("settings.json"),
+            temp_dir.path().join("projects.json"),
+        );
+        std::fs::write(
+            &paths.settings_path,
+            vec![b' '; CONFIG_FILE_LIMIT_BYTES + 1],
+        )
+        .expect("write oversized config");
+
+        let error = ConfigStore::load(paths).expect_err("oversized config should fail");
+
+        assert!(matches!(
+            error,
+            ConfigStoreError::Read { source, .. }
+                if source.kind() == ErrorKind::InvalidData
+        ));
     }
 
     #[test]

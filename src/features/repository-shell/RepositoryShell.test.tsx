@@ -20,7 +20,7 @@ import type {
   LocalChange,
   OperationProgressEvent,
 } from "@/lib/ipc/generated";
-import type { WindowStoreState } from "@/store/window-store";
+import { useWindowStore, type WindowStoreState } from "@/store/window-store";
 
 import { RepositoryShell } from "./RepositoryShell";
 
@@ -46,6 +46,7 @@ const commandMocks = vi.hoisted(() => ({
   listBranches: vi.fn(),
   listConflicts: vi.fn(),
   listLocalChanges: vi.fn(),
+  localChangeDetail: vi.fn(),
   listSafetyBackups: vi.fn(),
   listStashes: vi.fn(),
   logPage: vi.fn(),
@@ -93,6 +94,21 @@ function renderWithProviders(
     >
       {ui}
     </AppProviders>,
+  );
+}
+
+function OperationSwitcher({
+  operation,
+}: {
+  operation: OperationProgressEvent;
+}) {
+  const setOperationProgress = useWindowStore(
+    (state) => state.setOperationProgress,
+  );
+  return (
+    <button onClick={() => setOperationProgress(operation)} type="button">
+      switch operation
+    </button>
   );
 }
 
@@ -156,6 +172,36 @@ function createLocalChange({
     path: newPath,
     payload,
     worktreeStatus,
+  };
+}
+
+function createDeferredLocalChange({
+  metadataOnly = false,
+  path,
+  submodule = null,
+}: {
+  metadataOnly?: boolean;
+  path: string;
+  submodule?: LocalChange["submodule"];
+}): LocalChange {
+  const change = createLocalChange({
+    changeKind: "modified",
+    fileKind: metadataOnly ? "oversizedText" : "deferred",
+    indexStatus: "M",
+    newPath: path,
+    worktreeStatus: "M",
+  });
+
+  return {
+    ...change,
+    payload: {
+      ...change.payload,
+      metadata: {
+        ...change.payload.metadata,
+        previewDeferred: "true",
+      },
+    },
+    submodule,
   };
 }
 
@@ -274,6 +320,17 @@ beforeEach(() => {
     ],
     renormalizeSuggestion: null,
   });
+  commandMocks.localChangeDetail.mockResolvedValue(
+    createLocalChange({
+      changeKind: "modified",
+      fileKind: "text",
+      indexStatus: "M",
+      newPath: "src/app.ts",
+      newText: "console.log('new')\n",
+      oldText: "console.log('old')\n",
+      worktreeStatus: "M",
+    }),
+  );
   commandMocks.previewRenormalize.mockResolvedValue({
     samplePaths: [],
     totalPaths: 0,
@@ -473,6 +530,401 @@ describe("RepositoryShell loading state", () => {
 
     expect(screen.queryByText("src/preview/render-preview.ts")).toBeNull();
     expect(screen.queryByLabelText("File comparison")).toBeNull();
+  });
+
+  it("shows local change query errors and retries without discarding details", async () => {
+    const queryError = {
+      operation: "git status --porcelain=v1 -z",
+      repositoryPath: "/repo/art",
+      stderr: "fatal: index file corrupt",
+      summary: "Unable to list local changes",
+    };
+    commandMocks.listLocalChanges.mockRejectedValue(queryError);
+
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    await waitFor(() =>
+      expect(commandMocks.listLocalChanges).toHaveBeenCalledTimes(1),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: /Local Changes/ }),
+    );
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "Couldn't load local changes",
+      }),
+    ).toBeVisible();
+    expect(screen.queryByText("No matching changes")).not.toBeInTheDocument();
+
+    const receivedDetails: unknown[] = [];
+    const handleError = (event: Event) => {
+      receivedDetails.push((event as CustomEvent).detail);
+    };
+    window.addEventListener("artistic-git:error", handleError);
+
+    try {
+      fireEvent.click(
+        screen.getByRole("button", { name: "View error details" }),
+      );
+      expect(receivedDetails).toEqual([queryError]);
+      expect(receivedDetails[0]).toBe(queryError);
+
+      commandMocks.listLocalChanges.mockResolvedValue({
+        changes: [
+          createLocalChange({
+            changeKind: "added",
+            fileKind: "text",
+            indexStatus: "?",
+            newPath: "recovered-local.txt",
+            newText: "recovered\n",
+            worktreeStatus: "?",
+          }),
+        ],
+        renormalizeSuggestion: null,
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+      expect(
+        await screen.findAllByText("recovered-local.txt"),
+      ).not.toHaveLength(0);
+      expect(
+        screen.queryByRole("heading", {
+          name: "Couldn't load local changes",
+        }),
+      ).not.toBeInTheDocument();
+    } finally {
+      window.removeEventListener("artistic-git:error", handleError);
+    }
+  });
+
+  it("shows each repository read error with isolated retry and full details", async () => {
+    const errors = {
+      branches: {
+        operation: "git for-each-ref",
+        stderr: "fatal: packed-refs is corrupt",
+        summary: "Unable to list branches",
+      },
+      projectSettings: {
+        path: "/repo/art/.git/artistic-git.json",
+        summary: "Unable to load project settings",
+      },
+      stashes: {
+        operation: "git stash list",
+        stderr: "fatal: bad stash ref",
+        summary: "Unable to list stashes",
+      },
+      summary: {
+        operation: "git status",
+        stderr: "fatal: not a git repository",
+        summary: "Unable to read repository status",
+      },
+    };
+    commandMocks.repositorySummary.mockRejectedValue(errors.summary);
+    commandMocks.listBranches.mockRejectedValue(errors.branches);
+    commandMocks.listStashes.mockRejectedValue(errors.stashes);
+    commandMocks.loadProjectSettings.mockRejectedValue(errors.projectSettings);
+
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    const summaryError = await screen.findByTestId(
+      "repository-read-error-summary",
+    );
+    const branchesError = screen.getByTestId("repository-read-error-branches");
+    const stashesError = screen.getByTestId("repository-read-error-stashes");
+    const settingsError = screen.getByTestId(
+      "repository-read-error-projectSettings",
+    );
+    expect(summaryError).toHaveTextContent(
+      "Repository status could not be loaded.",
+    );
+    expect(branchesError).toHaveTextContent("Branches could not be loaded.");
+    expect(stashesError).toHaveTextContent("Stashes could not be loaded.");
+    expect(settingsError).toHaveTextContent(
+      "Project settings could not be loaded.",
+    );
+    expect(screen.queryByText("No matching items")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("No remote repository configured"),
+    ).not.toBeInTheDocument();
+
+    const receivedDetails: unknown[] = [];
+    const handleError = (event: Event) => {
+      receivedDetails.push((event as CustomEvent).detail);
+    };
+    window.addEventListener("artistic-git:error", handleError);
+
+    try {
+      for (const row of [
+        summaryError,
+        branchesError,
+        stashesError,
+        settingsError,
+      ]) {
+        fireEvent.click(
+          within(row).getByRole("button", { name: "View error details" }),
+        );
+      }
+      expect(receivedDetails).toEqual([
+        errors.summary,
+        errors.branches,
+        errors.stashes,
+        errors.projectSettings,
+      ]);
+      expect(receivedDetails[0]).toBe(errors.summary);
+      expect(receivedDetails[1]).toBe(errors.branches);
+      expect(receivedDetails[2]).toBe(errors.stashes);
+      expect(receivedDetails[3]).toBe(errors.projectSettings);
+
+      commandMocks.repositorySummary.mockResolvedValue({
+        currentBranch: "main",
+        hasOrigin: false,
+        headOid: "abc1234",
+        inProgress: false,
+        isDetached: false,
+        isUnborn: false,
+        remoteMode: "noRemote",
+        repositoryPath: "/repo/art",
+      });
+      fireEvent.click(
+        within(summaryError).getByRole("button", { name: "Try again" }),
+      );
+
+      await waitFor(() => {
+        expect(commandMocks.repositorySummary).toHaveBeenCalledTimes(2);
+        expect(
+          screen.queryByTestId("repository-read-error-summary"),
+        ).not.toBeInTheDocument();
+      });
+      expect(commandMocks.listBranches).toHaveBeenCalledTimes(1);
+      expect(commandMocks.listStashes).toHaveBeenCalledTimes(1);
+      expect(commandMocks.loadProjectSettings).toHaveBeenCalledTimes(1);
+
+      commandMocks.listBranches.mockResolvedValue({ branches: [] });
+      commandMocks.listStashes.mockResolvedValue({ stashes: [] });
+      commandMocks.loadProjectSettings.mockResolvedValue({
+        largeFileCheck: { enabled: true, thresholdMb: 50 },
+        localChangesViewMode: "flat",
+        path: "/repo/art",
+        sidebar: {
+          branchSectionRatioPercent: 60,
+          branchesCollapsed: false,
+          stashesCollapsed: false,
+          widthPx: 280,
+        },
+      });
+      fireEvent.click(
+        within(branchesError).getByRole("button", { name: "Try again" }),
+      );
+      fireEvent.click(
+        within(stashesError).getByRole("button", { name: "Try again" }),
+      );
+      fireEvent.click(
+        within(settingsError).getByRole("button", { name: "Try again" }),
+      );
+
+      await waitFor(() => {
+        expect(commandMocks.listBranches).toHaveBeenCalledTimes(2);
+        expect(commandMocks.listStashes).toHaveBeenCalledTimes(2);
+        expect(commandMocks.loadProjectSettings).toHaveBeenCalledTimes(2);
+        expect(
+          screen.queryByLabelText(
+            "Some repository information could not be loaded",
+          ),
+        ).not.toBeInTheDocument();
+      });
+    } finally {
+      window.removeEventListener("artistic-git:error", handleError);
+    }
+  });
+});
+
+describe("RepositoryShell deferred local-change previews", () => {
+  it("loads one deferred submodule preview without blocking the file list", async () => {
+    const submodule = { name: "deps/lib", path: "deps/lib" };
+    const deferred = createDeferredLocalChange({
+      path: "deps/lib/art.ts",
+      submodule,
+    });
+    const loaded = {
+      ...createLocalChange({
+        changeKind: "modified",
+        fileKind: "text",
+        indexStatus: "M",
+        newPath: "deps/lib/art.ts",
+        newText: "loaded-submodule-preview\n",
+        oldText: "old\n",
+        worktreeStatus: "M",
+      }),
+      submodule,
+    };
+    const pendingDetail = createPendingResponse(loaded);
+    commandMocks.listLocalChanges.mockResolvedValue({
+      changes: [deferred],
+      renormalizeSuggestion: null,
+    });
+    commandMocks.localChangeDetail.mockReturnValue(pendingDetail.promise);
+
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: /Local Changes/ }),
+    );
+
+    expect(await screen.findByText("Loading file preview...")).toBeVisible();
+    expect(screen.getAllByText("deps/lib/art.ts").length).toBeGreaterThan(0);
+    expect(
+      screen.getByText("deps/lib/art.ts").closest("aside"),
+    ).not.toHaveAttribute("inert");
+    await waitFor(() =>
+      expect(commandMocks.localChangeDetail).toHaveBeenCalledTimes(1),
+    );
+    expect(commandMocks.localChangeDetail).toHaveBeenCalledWith({
+      operationId: expect.stringMatching(/^local-change-detail-/),
+      oldPath: null,
+      path: "deps/lib/art.ts",
+      repositoryPath: "/repo/art",
+      submodule,
+    });
+
+    await act(async () => pendingDetail.resolve());
+    expect(await screen.findByText("loaded-submodule-preview")).toBeVisible();
+    expect(screen.getAllByText("deps/lib/art.ts").length).toBeGreaterThan(0);
+  });
+
+  it("cancels an obsolete preview and never shows its late result", async () => {
+    const firstDeferred = createDeferredLocalChange({ path: "first.ts" });
+    const secondDeferred = createDeferredLocalChange({ path: "second.ts" });
+    const firstPending = createPendingResponse(
+      createLocalChange({
+        changeKind: "modified",
+        fileKind: "text",
+        indexStatus: "M",
+        newPath: "stale-first-result.ts",
+        newText: "stale-first-preview\n",
+        oldText: "old\n",
+        worktreeStatus: "M",
+      }),
+    );
+    const secondPending = createPendingResponse(
+      createLocalChange({
+        changeKind: "modified",
+        fileKind: "text",
+        indexStatus: "M",
+        newPath: "loaded-second-result.ts",
+        newText: "loaded-second-preview\n",
+        oldText: "old\n",
+        worktreeStatus: "M",
+      }),
+    );
+    commandMocks.listLocalChanges.mockResolvedValue({
+      changes: [firstDeferred, secondDeferred],
+      renormalizeSuggestion: null,
+    });
+    commandMocks.localChangeDetail.mockImplementation(
+      ({ path }: { path: string }) =>
+        path === "first.ts" ? firstPending.promise : secondPending.promise,
+    );
+
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: /Local Changes/ }),
+    );
+    await waitFor(() =>
+      expect(commandMocks.localChangeDetail).toHaveBeenCalledTimes(1),
+    );
+    const firstRequest = commandMocks.localChangeDetail.mock.calls[0][0] as {
+      operationId: string;
+    };
+
+    fireEvent.click(screen.getByText("second.ts"));
+
+    await waitFor(() =>
+      expect(commandMocks.localChangeDetail).toHaveBeenCalledTimes(2),
+    );
+    await waitFor(() =>
+      expect(commandMocks.cancelOperation).toHaveBeenCalledWith({
+        operationId: firstRequest.operationId,
+      }),
+    );
+    expect(screen.getByText("Loading file preview...")).toBeVisible();
+
+    await act(async () => firstPending.resolve());
+    expect(screen.queryByText("stale-first-result.ts")).not.toBeInTheDocument();
+    expect(screen.queryByText("stale-first-preview")).not.toBeInTheDocument();
+    expect(screen.getByText("Loading file preview...")).toBeVisible();
+
+    await act(async () => secondPending.resolve());
+    expect(await screen.findByText("loaded-second-result.ts")).toBeVisible();
+    expect(screen.getByText("loaded-second-preview")).toBeVisible();
+  });
+
+  it("shows complete preview errors and retries metadata-deferred files", async () => {
+    const deferred = createDeferredLocalChange({
+      metadataOnly: true,
+      path: "metadata-deferred.txt",
+    });
+    const detailError = {
+      operation: "localChangeDetail",
+      repositoryPath: "/repo/art",
+      stderr: "fatal: cannot read metadata-deferred.txt",
+      summary: "Unable to load local change preview",
+    };
+    commandMocks.listLocalChanges.mockResolvedValue({
+      changes: [deferred],
+      renormalizeSuggestion: null,
+    });
+    commandMocks.localChangeDetail.mockRejectedValue(detailError);
+
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: /Local Changes/ }),
+    );
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "Couldn't load this preview",
+      }),
+    ).toBeVisible();
+    expect(screen.getAllByText("metadata-deferred.txt").length).toBeGreaterThan(
+      0,
+    );
+
+    const receivedDetails: unknown[] = [];
+    const handleError = (event: Event) => {
+      receivedDetails.push((event as CustomEvent).detail);
+    };
+    window.addEventListener("artistic-git:error", handleError);
+
+    try {
+      fireEvent.click(
+        screen.getByRole("button", { name: "View error details" }),
+      );
+      expect(receivedDetails[0]).toBe(detailError);
+
+      commandMocks.localChangeDetail.mockResolvedValue(
+        createLocalChange({
+          changeKind: "modified",
+          fileKind: "text",
+          indexStatus: "M",
+          newPath: "metadata-deferred.txt",
+          newText: "preview-recovered\n",
+          oldText: "old\n",
+          worktreeStatus: "M",
+        }),
+      );
+      fireEvent.click(
+        screen.getByRole("button", { name: "Try loading again" }),
+      );
+
+      expect(await screen.findByText("preview-recovered")).toBeVisible();
+      expect(
+        screen.queryByRole("heading", {
+          name: "Couldn't load this preview",
+        }),
+      ).not.toBeInTheDocument();
+    } finally {
+      window.removeEventListener("artistic-git:error", handleError);
+    }
   });
 });
 
@@ -719,6 +1171,11 @@ describe("RepositoryShell stash flow", () => {
   });
 
   it("requires confirmation before deleting a stash", async () => {
+    const pendingDelete = createPendingResponse({
+      deletedSelector: "stash@{0}",
+      stdout: "",
+    });
+    commandMocks.deleteStash.mockReturnValueOnce(pendingDelete.promise);
     commandMocks.listStashes.mockResolvedValue({
       stashes: [
         stashEntry({
@@ -743,11 +1200,27 @@ describe("RepositoryShell stash flow", () => {
     );
 
     await waitFor(() => expect(commandMocks.deleteStash).toHaveBeenCalled());
+    expect(
+      within(dialog).getByRole("button", { name: "Delete stash" }),
+    ).toBeDisabled();
+    expect(
+      within(dialog).getByRole("button", { name: "Cancel" }),
+    ).toBeDisabled();
+    expect(
+      within(dialog).queryByRole("button", { name: "Close" }),
+    ).not.toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(dialog).toBeInTheDocument();
     expect(commandMocks.deleteStash).toHaveBeenCalledWith({
       operationId: expect.stringMatching(/^delete-stash-/),
       repositoryPath: "/repo/art",
       selector: "stash@{0}",
     });
+
+    await act(async () => {
+      pendingDelete.resolve();
+    });
+    await waitFor(() => expect(dialog).not.toBeInTheDocument());
   });
 
   it("shows stash details with creation time, files, diff, and Auto Stash origin", async () => {
@@ -795,6 +1268,44 @@ describe("RepositoryShell stash flow", () => {
     expect(dialog).toHaveTextContent("src/app.ts");
     expect(dialog).toHaveTextContent("Modified");
     expect(dialog).toHaveTextContent("diff --git a/src/app.ts b/src/app.ts");
+  });
+
+  it("keeps large stash detail file lists on bounded pages", async () => {
+    commandMocks.listStashes.mockResolvedValue({
+      stashes: [stashEntry({ message: "Large stash", selector: "stash@{0}" })],
+    });
+    commandMocks.stashDetails.mockResolvedValue({
+      entry: stashEntry({ message: "Large stash", selector: "stash@{0}" }),
+      files: Array.from({ length: 205 }, (_, index) => ({
+        changeKind: "modified" as const,
+        fileKind: "text" as const,
+        oldPath: null,
+        patch: "",
+        path: `generated/file-${index}.txt`,
+      })),
+      rawDiff: "",
+    });
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Stash details" }),
+    );
+    const dialog = await screen.findByRole("dialog");
+
+    expect(within(dialog).getAllByTestId("stash-detail-file")).toHaveLength(
+      200,
+    );
+    expect(within(dialog).getByText("Page 1 of 2")).toBeInTheDocument();
+
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Next stash files page" }),
+    );
+
+    expect(within(dialog).getAllByTestId("stash-detail-file")).toHaveLength(5);
+    expect(
+      within(dialog).getByText("generated/file-200.txt"),
+    ).toBeInTheDocument();
+    expect(within(dialog).getByText("Page 2 of 2")).toBeInTheDocument();
   });
 });
 
@@ -871,6 +1382,15 @@ describe("RepositoryShell review mode", () => {
   });
 
   it("prompts to recover a previous review mode stash", async () => {
+    const pendingRecovery = createPendingResponse({
+      conflict: null,
+      repositoryPath: "/repo/art",
+      stashRecovery: null,
+      status: "applied",
+    });
+    commandMocks.recoverReviewModeStash.mockReturnValueOnce(
+      pendingRecovery.promise,
+    );
     commandMocks.reviewModeRecovery.mockResolvedValueOnce({
       autoStash: stashEntry({
         isAutoStash: true,
@@ -897,10 +1417,151 @@ describe("RepositoryShell review mode", () => {
         repositoryPath: "/repo/art",
       }),
     );
+    expect(
+      within(dialog).getByRole("button", { name: "Restore changes" }),
+    ).toBeDisabled();
+    expect(
+      within(dialog).getByRole("button", { name: "Cancel" }),
+    ).toBeDisabled();
+    expect(
+      within(dialog).queryByRole("button", { name: "Close" }),
+    ).not.toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(dialog).toBeInTheDocument();
+
+    await act(async () => {
+      pendingRecovery.resolve();
+    });
+    await waitFor(() => expect(dialog).not.toBeInTheDocument());
   });
 });
 
 describe("RepositoryShell close guard", () => {
+  it("passes the active write lock to history revert actions", async () => {
+    commandMocks.logPage.mockResolvedValue({
+      commits: [
+        {
+          authorEmail: "mira@example.test",
+          authorName: "Mira Chen",
+          authoredAtUnixSeconds: "1783488000",
+          oid: "d4512aa7e8fb9ec3f93a545cb658f7de71f18291",
+          parents: ["1111111111111111111111111111111111111111"],
+          refs: ["HEAD -> main"],
+          subject: "Blocked history revert",
+        },
+      ],
+      nextAfter: null,
+    });
+    const activeOperation: OperationProgressEvent = {
+      cancellable: true,
+      label: "Syncing",
+      operationId: "sync-blocks-revert",
+      progress: { kind: "indeterminate" },
+      repositoryPath: "/repo/art",
+      windowLabel: "repo-1",
+    };
+
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />, {
+      activeRepositoryPath: "/repo/art",
+      operationsById: {
+        [activeOperation.operationId]: activeOperation,
+      },
+    });
+
+    fireEvent.click(
+      (await screen.findByText("Blocked history revert")).closest("button")!,
+    );
+    const revertButton = await screen.findByTestId("history-revert-open");
+    expect(revertButton).toBeDisabled();
+    fireEvent.click(revertButton);
+    expect(commandMocks.revertCommit).not.toHaveBeenCalled();
+  });
+
+  it("offers one responsive cancel request for a running operation", async () => {
+    const pendingCancel = createPendingResponse({ cancelled: false });
+    commandMocks.cancelOperation.mockReturnValueOnce(pendingCancel.promise);
+    const activeOperation: OperationProgressEvent = {
+      cancellable: true,
+      label: "sync",
+      operationId: "sync-active",
+      progress: { kind: "indeterminate" },
+      repositoryPath: "/repo/art",
+      windowLabel: "repo-1",
+    };
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />, {
+      operationsById: {
+        [activeOperation.operationId]: activeOperation,
+      },
+    });
+
+    const cancelButton = await screen.findByRole("button", { name: "Cancel" });
+    fireEvent.click(cancelButton);
+    fireEvent.click(cancelButton);
+
+    expect(commandMocks.cancelOperation).toHaveBeenCalledTimes(1);
+    expect(commandMocks.cancelOperation).toHaveBeenCalledWith({
+      operationId: "sync-active",
+    });
+    expect(cancelButton).toBeDisabled();
+    expect(screen.getByText("Cancelling operation...")).toBeInTheDocument();
+
+    await act(async () => {
+      pendingCancel.resolve();
+    });
+    await waitFor(() => expect(cancelButton).toBeEnabled());
+  });
+
+  it("does not let a stale cancel response unlock the replacement operation", async () => {
+    const pendingFirstCancel = createPendingResponse({ cancelled: false });
+    const pendingSecondCancel = createPendingResponse({ cancelled: false });
+    commandMocks.cancelOperation
+      .mockReturnValueOnce(pendingFirstCancel.promise)
+      .mockReturnValueOnce(pendingSecondCancel.promise);
+    const firstOperation: OperationProgressEvent = {
+      cancellable: true,
+      label: "sync",
+      operationId: "sync-first",
+      progress: { kind: "indeterminate" },
+      repositoryPath: "/repo/art",
+      windowLabel: "repo-1",
+    };
+    const secondOperation: OperationProgressEvent = {
+      ...firstOperation,
+      operationId: "sync-second",
+    };
+    renderWithProviders(
+      <>
+        <RepositoryShell repositoryPath="/repo/art" />
+        <OperationSwitcher operation={secondOperation} />
+      </>,
+      {
+        operationsById: {
+          [firstOperation.operationId]: firstOperation,
+        },
+      },
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "switch operation" }));
+    const replacementCancelButton = await screen.findByRole("button", {
+      name: "Cancel",
+    });
+    await waitFor(() => expect(replacementCancelButton).toBeEnabled());
+    fireEvent.click(replacementCancelButton);
+    expect(commandMocks.cancelOperation).toHaveBeenCalledTimes(2);
+    expect(replacementCancelButton).toBeDisabled();
+
+    await act(async () => {
+      pendingFirstCancel.resolve();
+    });
+    expect(replacementCancelButton).toBeDisabled();
+
+    await act(async () => {
+      pendingSecondCancel.resolve();
+    });
+    await waitFor(() => expect(replacementCancelButton).toBeEnabled());
+  });
+
   it("guards non-cancellable active backend operations as wait-only", async () => {
     const errors: unknown[] = [];
     const handleError = (event: Event) => {
@@ -957,6 +1618,8 @@ describe("RepositoryShell close guard", () => {
   });
 
   it("cancels a cancellable active backend operation before closing", async () => {
+    const pendingCancel = createPendingResponse({ cancelled: true });
+    commandMocks.cancelOperation.mockReturnValueOnce(pendingCancel.promise);
     const activeOperation: OperationProgressEvent = {
       cancellable: true,
       label: "sync",
@@ -988,6 +1651,11 @@ describe("RepositoryShell close guard", () => {
         operationId: "sync-active",
       }),
     );
+    expect(commandMocks.closeCurrentWindow).not.toHaveBeenCalled();
+
+    await act(async () => {
+      pendingCancel.resolve();
+    });
     expect(commandMocks.setWindowCloseGuard).toHaveBeenLastCalledWith({
       active: false,
     });
@@ -1280,6 +1948,21 @@ describe("RepositoryShell close guard", () => {
 });
 
 describe("RepositoryShell branch flow", () => {
+  it("keeps repository controls responsive during a background fetch", async () => {
+    commandMocks.fetchRepository.mockReturnValueOnce(
+      new Promise(() => undefined),
+    );
+
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    await waitFor(() =>
+      expect(commandMocks.fetchRepository).toHaveBeenCalledTimes(1),
+    );
+    expect(
+      await screen.findByRole("button", { name: "Review Mode" }),
+    ).toBeEnabled();
+  });
+
   it("fetches when the repository opens and when the window regains focus", async () => {
     renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
 
@@ -1342,7 +2025,7 @@ describe("RepositoryShell branch flow", () => {
     const dialog = await openCreateBranchDialog("main");
     const baseSelect = within(dialog).getByLabelText("Starting branch");
     expect(baseSelect).toHaveValue("main");
-    fireEvent.change(baseSelect, { target: { value: "concept-pass" } });
+    chooseBranch("Starting branch", "concept-pass");
     expect(baseSelect).toHaveValue("concept-pass");
     expect(dialog).toHaveTextContent(
       "This branch exists only on the remote. A local copy will be created automatically.",
@@ -1493,7 +2176,9 @@ describe("RepositoryShell branch flow", () => {
     await waitFor(() => expect(commandMocks.checkoutBranch).toHaveBeenCalled());
 
     fireEvent.click(screen.getByRole("button", { name: /Local Changes/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Commit" }));
+    const commitButton = screen.getByRole("button", { name: "Commit" });
+    await waitFor(() => expect(commitButton).toBeEnabled());
+    fireEvent.click(commitButton);
     const commitDialog = screen.getByRole("dialog", {
       name: "Commit changes",
     });
@@ -1899,6 +2584,11 @@ describe("RepositoryShell branch flow", () => {
   });
 
   it("opens safety backups and deletes one only after confirmation", async () => {
+    const pendingDelete = createPendingResponse({
+      backupBranch: "backup/feature/lookdev-1760000000000",
+      repositoryPath: "/repo/art",
+    });
+    commandMocks.deleteSafetyBackup.mockReturnValueOnce(pendingDelete.promise);
     mockBranchList();
     commandMocks.listSafetyBackups
       .mockResolvedValueOnce({
@@ -1947,6 +2637,58 @@ describe("RepositoryShell branch flow", () => {
         repositoryPath: "/repo/art",
       }),
     );
+    expect(
+      within(confirm).getByRole("button", { name: "Delete safety backup" }),
+    ).toBeDisabled();
+    expect(
+      within(confirm).getByRole("button", { name: "Cancel" }),
+    ).toBeDisabled();
+    expect(
+      within(confirm).queryByRole("button", { name: "Close" }),
+    ).not.toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(confirm).toBeInTheDocument();
+
+    await act(async () => {
+      pendingDelete.resolve();
+    });
+    await waitFor(() => expect(confirm).not.toBeInTheDocument());
+  });
+
+  it("keeps large safety backup lists on bounded pages", async () => {
+    mockBranchList();
+    commandMocks.listSafetyBackups.mockResolvedValue({
+      backups: Array.from({ length: 105 }, (_, index) =>
+        safetyBackupSummary({
+          name: `backup/main-${index}`,
+          refName: `refs/heads/backup/main-${index}`,
+        }),
+      ),
+      truncated: true,
+    });
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Safety backups" }),
+    );
+    const dialog = await screen.findByRole("dialog", {
+      name: "Safety backups",
+    });
+
+    expect(within(dialog).getAllByTestId("safety-backup-row")).toHaveLength(
+      100,
+    );
+    expect(dialog).toHaveTextContent("Showing the latest 105 safety backups.");
+    expect(within(dialog).getByText("Page 1 of 2")).toBeInTheDocument();
+
+    fireEvent.click(
+      within(dialog).getByRole("button", {
+        name: "Next safety backups page",
+      }),
+    );
+
+    expect(within(dialog).getAllByTestId("safety-backup-row")).toHaveLength(5);
+    expect(within(dialog).getByText("Page 2 of 2")).toBeInTheDocument();
   });
 });
 
@@ -2190,6 +2932,7 @@ describe("RepositoryShell restore flow", () => {
 
     await waitFor(() => expect(commandMocks.restoreChanges).toHaveBeenCalled());
     expect(commandMocks.restoreChanges).toHaveBeenCalledWith({
+      operationId: expect.stringMatching(/^restore-changes-/),
       paths: ["assets/texture.png"],
       repositoryPath: "/repo/art",
     });
@@ -2275,6 +3018,14 @@ async function findSidebarText(text: string): Promise<HTMLElement> {
   return element;
 }
 
+function chooseBranch(label: string, branch: string) {
+  fireEvent.click(screen.getByRole("combobox", { name: label }));
+  fireEvent.change(screen.getByRole("searchbox", { name: "Search branches" }), {
+    target: { value: branch },
+  });
+  fireEvent.click(screen.getByRole("option", { name: branch }));
+}
+
 function mockBranchList() {
   commandMocks.listBranches.mockResolvedValue({
     branches: [
@@ -2328,6 +3079,18 @@ function branchSummary({
         : `refs/heads/${shortName}`,
     shortName,
     upstream: existence === "localAndRemote" ? `origin/${shortName}` : null,
+  };
+}
+
+function createPendingResponse<T>(response: T) {
+  let settle!: (value: T) => void;
+  const promise = new Promise<T>((resolve) => {
+    settle = resolve;
+  });
+
+  return {
+    promise,
+    resolve: () => settle(response),
   };
 }
 

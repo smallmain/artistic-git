@@ -1,5 +1,4 @@
 import * as React from "react";
-import { listen } from "@tauri-apps/api/event";
 
 import { AppErrorBoundary } from "@/components/layout/AppErrorBoundary";
 import { CrashDetailsDialog } from "@/components/dialogs/CrashDetailsDialog";
@@ -20,6 +19,7 @@ import {
   windowContext,
 } from "@/lib/ipc/commands";
 import type { AppError } from "@/lib/ipc/generated";
+import { listenRuntimeEvent } from "@/lib/ipc/events";
 import { useWindowStore } from "@/store/window-store";
 import { useTheme } from "@/theme/ThemeProvider";
 
@@ -172,7 +172,7 @@ function AppMenuBridge() {
     };
 
     let unlisten: (() => void) | undefined;
-    void listen<{ id: string }>("app-menu", (event) => {
+    void listenRuntimeEvent<{ id: string }>("app-menu", (event) => {
       handleMenuAction(event.payload.id);
     }).then((resolvedUnlisten) => {
       unlisten = resolvedUnlisten;
@@ -229,9 +229,11 @@ function GlobalSettingsModal() {
   const open = useWindowStore((state) => state.settingsModalOpen);
   const closeSettings = useWindowStore((state) => state.closeSettings);
 
-  return (
-    <SettingsModal onOpenChange={closeSettingsFromOpenChange} open={open} />
-  );
+  if (!open) {
+    return null;
+  }
+
+  return <SettingsModal onOpenChange={closeSettingsFromOpenChange} open />;
 
   function closeSettingsFromOpenChange(nextOpen: boolean) {
     if (!nextOpen) {
@@ -276,7 +278,7 @@ function GlobalErrorDialogs({
     window.addEventListener("unhandledrejection", handleUnhandledRejection);
     window.addEventListener("artistic-git:error", handleAppError);
     window.addEventListener("artistic-git:crash", handleAppCrash);
-    void listen<CrashDialogPayload>("crash-reported", (event) => {
+    void listenRuntimeEvent<CrashDialogPayload>("crash-reported", (event) => {
       setCrash(event.payload);
     }).then((resolvedUnlisten) => {
       unlistenCrashReported = resolvedUnlisten;

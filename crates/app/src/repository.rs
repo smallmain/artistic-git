@@ -1,3 +1,5 @@
+#[cfg(test)]
+use artistic_git_contracts::StashEntry;
 use artistic_git_contracts::{
     AcceptRemoteHistoryRequest, AcceptRemoteHistoryResponse, AppError, AppErrorCategory, AppResult,
     BranchExistence, BranchListResponse, BranchNameValidationRequest, BranchNameValidationResponse,
@@ -9,23 +11,22 @@ use artistic_git_contracts::{
     DeleteSafetyBackupRequest, DeleteSafetyBackupResponse, DeleteStashRequest, DeleteStashResponse,
     DiffAsset, DiffChangeKind, DiffContent, DiffFileKind, DiffPayload, FetchRepositoryRequest,
     FetchRepositoryResponse, FetchStateEvent, GitCommandError, IndexLockInfo, LfsContentStatus,
-    LocalChange, LocalChangeSubmodule, LocalChangesRenormalizeSuggestion, LocalChangesResponse,
-    LogPageRequest, LogPageResponse, LogSearchRequest, OpenRepositoryRequest,
+    LocalChange, LocalChangeDetailRequest, LocalChangeSubmodule, LocalChangesRenormalizeSuggestion,
+    LocalChangesResponse, LogPageRequest, LogPageResponse, LogSearchRequest, OpenRepositoryRequest,
     OpenRepositoryResponse, OperationId, OperationProgressEvent, ProgressState,
     RemoteRepositoryProbeRequest, RemoteRepositoryProbeResponse, RemoteSettingsResponse,
     RenormalizePreviewRequest, RenormalizePreviewResponse, RepositoryHeadState, RepositoryHealth,
     RepositoryMiddleState, RepositoryMiddleStateKind, RepositoryOpenWarning,
     RepositoryOpenWarningKind, RepositoryPathRequest, RepositoryRemote, RepositoryRemoteMode,
     RepositorySummary, RestoreStashRequest, RestoreStashResponse, SafetyBackupListResponse,
-    SaveRemoteSettingsRequest, StashDetailsRequest, StashDetailsResponse, StashEntry,
-    StashListResponse,
+    SaveRemoteSettingsRequest, StashDetailsRequest, StashDetailsResponse, StashListResponse,
 };
 use artistic_git_core::config::{
     AppSettings, ConfigActor, GitUserSettings, ProjectSettings, WindowGeometry,
 };
 use artistic_git_core::diff_engine::{
     classify_diff_file, detect_image, parse_lfs_pointer, DiffChangeKind as CoreDiffChangeKind,
-    DiffFileKind as CoreDiffFileKind, DiffFileProbe,
+    DiffFileKind as CoreDiffFileKind, DiffFileProbe, OVERSIZED_TEXT_BYTES,
 };
 use artistic_git_core::keyring::{KeyringVault, SystemCredentialStore};
 use artistic_git_git_runner::{
@@ -38,9 +39,9 @@ use std::{
     io::{self, Read},
     path::{Component, Path, PathBuf},
     process::{Command, Output, Stdio},
-    sync::{mpsc, Arc, Mutex},
+    sync::{mpsc, Arc, Condvar, Mutex},
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 const DEFAULT_LOG_LIMIT: usize = 200;
@@ -50,6 +51,19 @@ const RENORMALIZE_SUGGESTION_THRESHOLD: usize = 1_000;
 const RENORMALIZE_SUGGESTION_MIN_MODIFIED_PERCENT: usize = 80;
 const RENORMALIZE_SUGGESTION_SAMPLE_LIMIT: usize = 8;
 const PROBE_REMOTE_REPOSITORY_OPERATION: &str = "probeRemoteRepository";
+const LOCAL_CHANGE_PREVIEW_FILE_LIMIT: usize = 250;
+const LOCAL_CHANGE_PREVIEW_TOTAL_BYTES: usize = 8 * 1024 * 1024;
+const LOCAL_CHANGE_ENTRY_LIMIT: usize = 5_000;
+const COMMAND_OUTPUT_LIMIT_BYTES: usize = 16 * 1024 * 1024;
+const COMMAND_OUTPUT_DIAGNOSTIC_BYTES: usize = 64 * 1024;
+const PROGRESS_LINE_LIMIT_BYTES: usize = 8 * 1024;
+const OUTPUT_READER_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+const LFS_RULE_SCAN_ENTRY_LIMIT: usize = 100_000;
+const LFS_ATTRIBUTES_READ_LIMIT: usize = 64 * 1024;
+const BRANCH_LIST_ENTRY_LIMIT: usize = 5_000;
+const REMOTE_BRANCH_LIST_ENTRY_LIMIT: usize = 5_000;
+const WORKTREE_GITDIR_FILE_LIMIT_BYTES: usize = 64 * 1024;
+const CANCEL_COMPLETION_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone)]
 pub struct RepositoryBackend {
@@ -63,16 +77,28 @@ pub struct RepositoryBackend {
 
 #[derive(Debug, Default)]
 struct CancellableOperationRegistry {
-    operations: Mutex<BTreeMap<String, CancelToken>>,
+    operations: Mutex<BTreeMap<String, CancellableOperationEntry>>,
+    completion: Condvar,
+}
+
+#[derive(Debug)]
+struct CancellableOperationEntry {
+    phase: CancellableOperationPhase,
+    token: CancelToken,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CancellableOperationPhase {
+    Reserved,
+    Running,
 }
 
 impl CancellableOperationRegistry {
-    fn register(
+    fn reserve(
         self: &Arc<Self>,
         operation_id: &OperationId,
-        token: CancelToken,
         operation_name: &str,
-    ) -> AppResult<CancellableOperationGuard> {
+    ) -> AppResult<CancellableOperationReservation> {
         let mut operations = self
             .operations
             .lock()
@@ -84,11 +110,59 @@ impl CancellableOperationRegistry {
             )));
         }
 
-        operations.insert(operation_id.as_str().to_owned(), token);
-        Ok(CancellableOperationGuard {
+        operations.insert(
+            operation_id.as_str().to_owned(),
+            CancellableOperationEntry {
+                phase: CancellableOperationPhase::Reserved,
+                token: CancelToken::new(),
+            },
+        );
+        Ok(CancellableOperationReservation {
             operation_id: operation_id.as_str().to_owned(),
             registry: Arc::clone(self),
         })
+    }
+
+    fn register(
+        self: &Arc<Self>,
+        operation_id: &OperationId,
+        operation_name: &str,
+    ) -> AppResult<(CancelToken, CancellableOperationGuard)> {
+        let mut operations = self
+            .operations
+            .lock()
+            .map_err(|_| operation_registry_error(operation_name))?;
+        let token = match operations.get_mut(operation_id.as_str()) {
+            Some(entry) if entry.phase == CancellableOperationPhase::Reserved => {
+                entry.phase = CancellableOperationPhase::Running;
+                entry.token.clone()
+            }
+            Some(_) => {
+                return Err(logged(AppError::expected(
+                    "operation is already registered",
+                    operation_name,
+                )));
+            }
+            None => {
+                let token = CancelToken::new();
+                operations.insert(
+                    operation_id.as_str().to_owned(),
+                    CancellableOperationEntry {
+                        phase: CancellableOperationPhase::Running,
+                        token: token.clone(),
+                    },
+                );
+                token
+            }
+        };
+
+        Ok((
+            token,
+            CancellableOperationGuard {
+                operation_id: operation_id.as_str().to_owned(),
+                registry: Arc::clone(self),
+            },
+        ))
     }
 
     fn cancel(&self, operation_id: &OperationId) -> AppResult<bool> {
@@ -97,7 +171,7 @@ impl CancellableOperationRegistry {
             .lock()
             .map_err(|_| operation_registry_error("cancelOperation"))?
             .get(operation_id.as_str())
-            .cloned();
+            .map(|entry| entry.token.clone());
 
         if let Some(token) = token {
             token.cancel();
@@ -107,10 +181,75 @@ impl CancellableOperationRegistry {
         }
     }
 
+    fn cancel_and_wait(&self, operation_id: &OperationId, operation_name: &str) -> AppResult<bool> {
+        let mut operations = self
+            .operations
+            .lock()
+            .map_err(|_| operation_registry_error(operation_name))?;
+        let Some(token) = operations
+            .get(operation_id.as_str())
+            .map(|entry| entry.token.clone())
+        else {
+            return Ok(false);
+        };
+
+        token.cancel();
+        let deadline = Instant::now() + CANCEL_COMPLETION_TIMEOUT;
+        while operations.contains_key(operation_id.as_str()) {
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(operation_cancellation_timeout_error(
+                    operation_id,
+                    operation_name,
+                ));
+            }
+            let remaining = deadline.saturating_duration_since(now);
+            let (next, timeout) = self
+                .completion
+                .wait_timeout(operations, remaining)
+                .map_err(|_| operation_registry_error(operation_name))?;
+            operations = next;
+            if timeout.timed_out() && operations.contains_key(operation_id.as_str()) {
+                return Err(operation_cancellation_timeout_error(
+                    operation_id,
+                    operation_name,
+                ));
+            }
+        }
+
+        Ok(true)
+    }
+
     fn unregister(&self, operation_id: &str) {
         if let Ok(mut operations) = self.operations.lock() {
-            operations.remove(operation_id);
+            if operations.remove(operation_id).is_some() {
+                self.completion.notify_all();
+            }
         }
+    }
+
+    fn unregister_reservation(&self, operation_id: &str) {
+        if let Ok(mut operations) = self.operations.lock() {
+            if operations
+                .get(operation_id)
+                .is_some_and(|entry| entry.phase == CancellableOperationPhase::Reserved)
+            {
+                operations.remove(operation_id);
+                self.completion.notify_all();
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct CancellableOperationReservation {
+    operation_id: String,
+    registry: Arc<CancellableOperationRegistry>,
+}
+
+impl Drop for CancellableOperationReservation {
+    fn drop(&mut self) {
+        self.registry.unregister_reservation(&self.operation_id);
     }
 }
 
@@ -264,14 +403,16 @@ impl RepositoryBackend {
         F: Fn(OperationProgressEvent),
     {
         let operation_id = request.operation_id.clone();
-        let token = CancelToken::new();
-        let _operation_guard = operation_id
+        let registered = operation_id
             .as_ref()
             .map(|operation_id| {
                 self.cancellable_operations
-                    .register(operation_id, token.clone(), "cloneRepository")
+                    .register(operation_id, "cloneRepository")
             })
             .transpose()?;
+        let (token, _operation_guard) = registered
+            .map(|(token, guard)| (token, Some(guard)))
+            .unwrap_or_else(|| (CancelToken::new(), None));
 
         crate::git_ops::with_auth_runtime_for_operation(
             self.auth_runtime.as_ref(),
@@ -302,6 +443,18 @@ impl RepositoryBackend {
         })
     }
 
+    pub fn cancel_clone_repository_and_wait(
+        &self,
+        request: CancelCloneRepositoryRequest,
+    ) -> AppResult<CancelCloneRepositoryResponse> {
+        let response = self.cancel_operation_and_wait(CancelOperationRequest {
+            operation_id: request.operation_id,
+        })?;
+        Ok(CancelCloneRepositoryResponse {
+            cancelled: response.cancelled,
+        })
+    }
+
     pub fn cancel_operation(
         &self,
         request: CancelOperationRequest,
@@ -311,20 +464,46 @@ impl RepositoryBackend {
         })
     }
 
-    fn run_cancellable_operation<T>(
+    pub fn cancel_operation_and_wait(
+        &self,
+        request: CancelOperationRequest,
+    ) -> AppResult<CancelOperationResponse> {
+        Ok(CancelOperationResponse {
+            cancelled: self
+                .cancellable_operations
+                .cancel_and_wait(&request.operation_id, "cancelOperation")?,
+        })
+    }
+
+    pub fn reserve_cancellable_operation(
+        &self,
+        operation_id: Option<&OperationId>,
+        operation_name: &str,
+    ) -> AppResult<Option<CancellableOperationReservation>> {
+        operation_id
+            .map(|operation_id| {
+                self.cancellable_operations
+                    .reserve(operation_id, operation_name)
+            })
+            .transpose()
+    }
+
+    pub(crate) fn run_cancellable_operation<T>(
         &self,
         operation_id: Option<OperationId>,
         operation_name: &str,
         action: impl FnOnce() -> AppResult<T>,
     ) -> AppResult<T> {
-        let token = CancelToken::new();
-        let _operation_guard = operation_id
+        let registered = operation_id
             .as_ref()
             .map(|operation_id| {
                 self.cancellable_operations
-                    .register(operation_id, token.clone(), operation_name)
+                    .register(operation_id, operation_name)
             })
             .transpose()?;
+        let (token, _operation_guard) = registered
+            .map(|(token, guard)| (token, Some(guard)))
+            .unwrap_or_else(|| (CancelToken::new(), None));
 
         crate::git_ops::with_cancel_token_for_operation(&token, action)
     }
@@ -340,8 +519,12 @@ impl RepositoryBackend {
         self.fetch_states.started_event(repository_path)
     }
 
-    pub fn fetch_state_event(&self, repository_path: &str) -> FetchStateEvent {
-        self.fetch_states.snapshot_event(repository_path)
+    pub fn fetch_failed_event(
+        &self,
+        repository_path: &str,
+        message: impl Into<String>,
+    ) -> FetchStateEvent {
+        self.fetch_states.failed_event(repository_path, message)
     }
 
     pub fn fetch_repository(
@@ -649,6 +832,13 @@ impl RepositoryBackend {
         list_local_changes(&self.runner, request)
     }
 
+    pub fn local_change_detail(&self, request: LocalChangeDetailRequest) -> AppResult<LocalChange> {
+        let operation_id = request.operation_id.clone();
+        self.run_cancellable_operation(operation_id, "localChangeDetail", || {
+            local_change_detail(&self.runner, request)
+        })
+    }
+
     pub fn preview_renormalize(
         &self,
         request: RenormalizePreviewRequest,
@@ -703,11 +893,19 @@ impl RepositoryBackend {
     }
 
     pub fn log_page(&self, request: LogPageRequest) -> AppResult<LogPageResponse> {
-        log_page_with_cancel(&self.runner, request, &CancelToken::new())
+        let operation_id = request.operation_id.clone();
+        self.run_cancellable_operation(operation_id, "logPage", || {
+            let token = crate::git_ops::active_cancel_token().unwrap_or_default();
+            log_page_with_cancel(&self.runner, request, &token)
+        })
     }
 
     pub fn search_log(&self, request: LogSearchRequest) -> AppResult<LogPageResponse> {
-        search_log_with_cancel(&self.runner, request, &CancelToken::new())
+        let operation_id = request.operation_id.clone();
+        self.run_cancellable_operation(operation_id, "searchLog", || {
+            let token = crate::git_ops::active_cancel_token().unwrap_or_default();
+            search_log_with_cancel(&self.runner, request, &token)
+        })
     }
 
     pub fn commit_changes(
@@ -732,7 +930,10 @@ impl RepositoryBackend {
         &self,
         request: artistic_git_contracts::RestoreChangesRequest,
     ) -> AppResult<artistic_git_contracts::RestoreChangesResponse> {
-        crate::restore_changes(&self.runner, request)
+        let operation_id = request.operation_id.clone();
+        self.run_cancellable_operation(operation_id, "restoreChanges", || {
+            crate::restore_changes(&self.runner, request)
+        })
     }
 
     pub fn revert_commit(
@@ -1178,9 +1379,31 @@ pub fn clone_repository_with_cancel_and_progress<F>(
 where
     F: Fn(OperationProgressEvent),
 {
+    crate::git_ops::with_cancel_token_for_operation(cancel_token, || {
+        clone_repository_with_cancel_and_progress_inner(
+            runner,
+            config,
+            request,
+            cancel_token,
+            progress,
+        )
+    })
+}
+
+fn clone_repository_with_cancel_and_progress_inner<F>(
+    runner: &GitRunner,
+    config: Option<&ConfigActor>,
+    request: CloneRepositoryRequest,
+    cancel_token: &CancelToken,
+    progress: F,
+) -> AppResult<CloneRepositoryResponse>
+where
+    F: Fn(OperationProgressEvent),
+{
     let target = validate_clone_target(&request)?;
     let url = validate_remote_repository_url(&request.url, "cloneRepository")?;
     let branch_name = validate_clone_branch_name(runner, request.branch_name.as_deref())?;
+    let operation_id = request.operation_id.clone();
 
     let _permit = runner
         .operation_concurrency()
@@ -1193,9 +1416,13 @@ where
         branch_name.as_deref(),
         &target,
         cancel_token,
-        request.operation_id.as_ref(),
-        progress,
+        operation_id.as_ref(),
+        &progress,
     )?;
+    if cancel_token.is_cancelled() {
+        cleanup_clone_target(&target);
+        return Err(cancelled_error("cloneRepository"));
+    }
     if let Some(branch_name) = branch_name.as_deref() {
         let current_branch = git_stdout(
             runner,
@@ -1219,17 +1446,23 @@ where
         }
     }
 
-    let repository = open_repository_impl(
+    let repository = match open_repository_impl(
         runner,
         config,
         OpenRepositoryRequest {
             path: display_path(&target.path),
             tool_identity: request.tool_identity,
         },
-        None,
-        &|_| {},
+        operation_id.as_ref(),
+        &progress,
         false,
-    )?;
+    ) {
+        Ok(repository) => repository,
+        Err(error) => {
+            cleanup_clone_target(&target);
+            return Err(error);
+        }
+    };
 
     Ok(CloneRepositoryResponse { repository })
 }
@@ -1266,7 +1499,8 @@ pub fn list_branches(
         Some(&root),
         [
             "for-each-ref",
-            "--format=%(refname)%00%(objectname)%00%(committerdate:unix)%00%(upstream:short)",
+            "--sort=-committerdate",
+            "--format=%(refname)%00%(objectname)%00%(committerdate:unix)%00%(upstream:short)%00%(upstream:track,nobracket)",
             "refs/heads",
             "refs/remotes",
         ],
@@ -1274,9 +1508,16 @@ pub fn list_branches(
     )?;
 
     let mut merged = BTreeMap::<String, BranchAccumulator>::new();
+    if let Some(current_branch) = current_branch
+        .as_ref()
+        .filter(|branch| !branch.starts_with("backup/"))
+    {
+        merged.insert(current_branch.clone(), BranchAccumulator::default());
+    }
+    let mut truncated = false;
     for line in output.lines() {
         let parts = line.split('\0').collect::<Vec<_>>();
-        if parts.len() < 4 {
+        if parts.len() < 5 {
             continue;
         }
 
@@ -1284,17 +1525,27 @@ pub fn list_branches(
         let oid = empty_to_none(parts[1]).map(str::to_owned);
         let commit_time = empty_to_none(parts[2]).map(str::to_owned);
         let upstream = empty_to_none(parts[3]).map(str::to_owned);
+        let upstream_track = parts[4].trim().to_owned();
 
         if let Some(local) = refname.strip_prefix("refs/heads/") {
             if local.starts_with("backup/") {
+                continue;
+            }
+            if !merged.contains_key(local) && merged.len() > BRANCH_LIST_ENTRY_LIMIT {
+                truncated = true;
                 continue;
             }
             let entry = merged.entry(local.to_owned()).or_default();
             entry.local_oid = oid;
             entry.local_time = commit_time;
             entry.upstream = upstream;
+            entry.upstream_track = Some(upstream_track);
         } else if let Some(remote) = refname.strip_prefix("refs/remotes/origin/") {
             if remote == "HEAD" || remote.starts_with("backup/") {
+                continue;
+            }
+            if !merged.contains_key(remote) && merged.len() > BRANCH_LIST_ENTRY_LIMIT {
+                truncated = true;
                 continue;
             }
             let entry = merged.entry(remote.to_owned()).or_default();
@@ -1321,8 +1572,13 @@ pub fn list_branches(
             })
             .then_with(|| left.short_name.cmp(&right.short_name))
     });
+    truncated |= branches.len() > BRANCH_LIST_ENTRY_LIMIT;
+    branches.truncate(BRANCH_LIST_ENTRY_LIMIT);
 
-    Ok(BranchListResponse { branches })
+    Ok(BranchListResponse {
+        branches,
+        truncated,
+    })
 }
 
 pub fn list_local_changes(
@@ -1330,7 +1586,17 @@ pub fn list_local_changes(
     request: RepositoryPathRequest,
 ) -> AppResult<LocalChangesResponse> {
     let root = canonical_repository_path(&request.repository_path, "listLocalChanges")?;
-    let mut changes = list_local_changes_for_repository(runner, &root, None)?;
+    let mut preview_budget = LocalChangePreviewBudget::default();
+    let mut entry_budget = LocalChangeEntryBudget::default();
+    let mut changes = list_local_changes_for_repository(
+        runner,
+        &root,
+        None,
+        &mut preview_budget,
+        &mut entry_budget,
+        &[],
+        LocalChangeLoadPolicy::Batch,
+    )?;
 
     if repository_has_submodules(&root) {
         for submodule_root in initialized_submodule_paths(runner, &root, "listLocalChanges")? {
@@ -1346,6 +1612,10 @@ pub fn list_local_changes(
                 runner,
                 &submodule_root,
                 Some(submodule),
+                &mut preview_budget,
+                &mut entry_budget,
+                &[],
+                LocalChangeLoadPolicy::Batch,
             )?);
         }
     }
@@ -1362,19 +1632,28 @@ fn list_local_changes_for_repository(
     runner: &GitRunner,
     root: &Path,
     submodule: Option<LocalChangeSubmodule>,
+    preview_budget: &mut LocalChangePreviewBudget,
+    entry_budget: &mut LocalChangeEntryBudget,
+    path_filters: &[String],
+    load_policy: LocalChangeLoadPolicy,
 ) -> AppResult<Vec<LocalChange>> {
-    let output = git_output_bytes(
-        runner,
-        Some(root),
-        ["status", "--porcelain=v1", "-z", "--find-renames"],
-        "listLocalChanges",
-    )?;
+    let mut args = vec![
+        OsString::from("status"),
+        OsString::from("--porcelain=v1"),
+        OsString::from("-z"),
+        OsString::from("--find-renames"),
+    ];
+    if !path_filters.is_empty() {
+        args.push(OsString::from("--"));
+        args.extend(path_filters.iter().map(crate::git_ops::literal_pathspec));
+    }
+    let output = git_output_bytes(runner, Some(root), args, load_policy.operation_name())?;
+    entry_budget.reserve(local_change_entry_count_bytes(&output), root)?;
     let fields = output
         .split(|byte| *byte == 0)
         .filter(|field| !field.is_empty())
         .map(|field| String::from_utf8_lossy(field).into_owned())
         .collect::<Vec<_>>();
-
     let mut changes = Vec::new();
     let mut index = 0;
     while index < fields.len() {
@@ -1406,15 +1685,16 @@ fn list_local_changes_for_repository(
             continue;
         }
 
-        let (payload, diff) = local_change_diff(
-            runner,
+        let diff_context = LocalChangeDiffContext {
             root,
-            &path,
-            old_path.as_deref(),
+            path: &path,
+            old_path: old_path.as_deref(),
             change_kind,
-            &index_status,
-            &worktree_status,
-        )?;
+            index_status: &index_status,
+            worktree_status: &worktree_status,
+            load_policy,
+        };
+        let (payload, diff) = local_change_diff(runner, diff_context, preview_budget)?;
 
         let mut change = LocalChange {
             change_kind,
@@ -1434,6 +1714,148 @@ fn list_local_changes_for_repository(
     }
 
     Ok(changes)
+}
+
+pub fn local_change_detail(
+    runner: &GitRunner,
+    request: LocalChangeDetailRequest,
+) -> AppResult<LocalChange> {
+    const OPERATION: &str = "localChangeDetail";
+    let root = canonical_repository_path(&request.repository_path, OPERATION)?;
+    let requested_path = request.path;
+    let requested_old_path = request.old_path;
+    let (target_root, path_filters, submodule) = if let Some(submodule) = request.submodule {
+        let requested_submodule = canonical_or_self(&repository_relative_path(
+            &root,
+            &submodule.path,
+            OPERATION,
+        )?);
+        let initialized = initialized_submodule_paths(runner, &root, OPERATION)?;
+        if !initialized.iter().any(|path| path == &requested_submodule) {
+            return Err(logged(AppError::expected(
+                "the selected submodule is no longer available",
+                OPERATION,
+            )));
+        }
+        let canonical_submodule_path =
+            repository_relative_display_path(&root, &requested_submodule).ok_or_else(|| {
+                logged(AppError::expected(
+                    "the selected submodule path is outside the repository",
+                    OPERATION,
+                ))
+            })?;
+        let prefix = format!("{}/", canonical_submodule_path.trim_end_matches('/'));
+        let inner_path = requested_path.strip_prefix(&prefix).ok_or_else(|| {
+            logged(AppError::expected(
+                "the selected file does not belong to the requested submodule",
+                OPERATION,
+            ))
+        })?;
+        repository_relative_path(&requested_submodule, inner_path, OPERATION)?;
+        let inner_old_path = requested_old_path
+            .as_deref()
+            .map(|old_path| {
+                old_path.strip_prefix(&prefix).ok_or_else(|| {
+                    logged(AppError::expected(
+                        "the previous file path does not belong to the requested submodule",
+                        OPERATION,
+                    ))
+                })
+            })
+            .transpose()?;
+        if let Some(inner_old_path) = inner_old_path {
+            repository_relative_path(&requested_submodule, inner_old_path, OPERATION)?;
+        }
+        let mut path_filters = vec![inner_path.to_owned()];
+        if let Some(inner_old_path) = inner_old_path {
+            path_filters.push(inner_old_path.to_owned());
+        }
+        (
+            requested_submodule,
+            path_filters,
+            Some(LocalChangeSubmodule {
+                name: canonical_submodule_path.clone(),
+                path: canonical_submodule_path,
+            }),
+        )
+    } else {
+        repository_relative_path(&root, &requested_path, OPERATION)?;
+        let mut path_filters = vec![requested_path.clone()];
+        if let Some(old_path) = requested_old_path.as_deref() {
+            repository_relative_path(&root, old_path, OPERATION)?;
+            path_filters.push(old_path.to_owned());
+        }
+        (root.clone(), path_filters, None)
+    };
+
+    let mut preview_budget = LocalChangePreviewBudget::default();
+    let mut entry_budget = LocalChangeEntryBudget::default();
+    let changes = list_local_changes_for_repository(
+        runner,
+        &target_root,
+        submodule,
+        &mut preview_budget,
+        &mut entry_budget,
+        &path_filters,
+        LocalChangeLoadPolicy::Detail,
+    )?;
+
+    changes
+        .into_iter()
+        .find(|change| change.path == requested_path)
+        .ok_or_else(|| {
+            logged(AppError::expected(
+                "the selected local change no longer exists; reload local changes and try again",
+                OPERATION,
+            ))
+        })
+}
+
+fn local_change_entry_count_bytes(output: &[u8]) -> usize {
+    let fields = output
+        .split(|byte| *byte == 0)
+        .filter(|field| !field.is_empty());
+    let mut count = 0;
+    let mut skip_rename_source = false;
+    for field in fields {
+        if skip_rename_source {
+            skip_rename_source = false;
+            continue;
+        }
+        if field.len() < 3 {
+            continue;
+        }
+        count += 1;
+        skip_rename_source = field[0] == b'R' || field[1] == b'R';
+    }
+    count
+}
+
+#[derive(Debug, Default)]
+struct LocalChangeEntryBudget {
+    used: usize,
+}
+
+impl LocalChangeEntryBudget {
+    fn reserve(&mut self, count: usize, repository_path: &Path) -> AppResult<()> {
+        let detected = self.used.saturating_add(count);
+        if detected > LOCAL_CHANGE_ENTRY_LIMIT {
+            return Err(logged(
+                AppError::expected(
+                    format!(
+                        "too many local changes to display safely (limit: {LOCAL_CHANGE_ENTRY_LIMIT}; detected at least: {detected})"
+                    ),
+                    "listLocalChanges",
+                )
+                .with_context(
+                    artistic_git_contracts::OperationContext::new("listLocalChanges")
+                        .with_repository_path(display_path(repository_path)),
+                ),
+            ));
+        }
+        self.used = detected;
+        Ok(())
+    }
 }
 
 fn qualify_submodule_local_change(change: &mut LocalChange, submodule: &LocalChangeSubmodule) {
@@ -1627,7 +2049,12 @@ pub fn list_stashes(
     let output = match git_stdout(
         runner,
         Some(&root),
-        ["stash", "list", "--format=%gd%x00%H%x00%ct%x00%gs%x1e"],
+        [
+            "stash",
+            "list",
+            "--max-count=5001",
+            "--format=%gd%x00%H%x00%ct%x00%gs%x1e",
+        ],
         "listStashes",
     ) {
         Ok(output) => output,
@@ -1635,13 +2062,7 @@ pub fn list_stashes(
         Err(error) => return Err(error),
     };
 
-    let stashes = output
-        .split('\x1e')
-        .filter(|record| !record.trim().is_empty())
-        .filter_map(parse_stash_record)
-        .collect();
-
-    Ok(StashListResponse { stashes })
+    Ok(crate::stash_impl::parse_stash_list_response(&output))
 }
 
 pub fn log_page_with_cancel(
@@ -1795,6 +2216,7 @@ fn validate_clone_branch_name(
 fn parse_remote_repository_probe(output: &str) -> RemoteRepositoryProbeResponse {
     let mut default_branch = None;
     let mut branches = BTreeSet::new();
+    let mut truncated = false;
 
     for line in output.lines() {
         let Some((value, reference)) = line.split_once('\t') else {
@@ -1811,8 +2233,19 @@ fn parse_remote_repository_probe(output: &str) -> RemoteRepositoryProbeResponse 
         }
         if let Some(branch) = reference.strip_prefix("refs/heads/") {
             if !branch.is_empty() {
-                branches.insert(branch.to_owned());
+                if branches.len() < REMOTE_BRANCH_LIST_ENTRY_LIMIT || branches.contains(branch) {
+                    branches.insert(branch.to_owned());
+                } else {
+                    truncated = true;
+                }
             }
+        }
+    }
+
+    if let Some(default_branch) = default_branch.as_ref() {
+        if !branches.contains(default_branch) && truncated {
+            branches.pop_last();
+            branches.insert(default_branch.clone());
         }
     }
 
@@ -1822,6 +2255,7 @@ fn parse_remote_repository_probe(output: &str) -> RemoteRepositoryProbeResponse 
         is_empty: branches.is_empty(),
         default_branch,
         branches,
+        truncated,
     }
 }
 
@@ -1884,10 +2318,10 @@ fn run_clone_command<F>(
     target: &CloneTarget,
     cancel_token: &CancelToken,
     operation_id: Option<&OperationId>,
-    progress: F,
+    progress: &F,
 ) -> AppResult<()>
 where
-    F: Fn(OperationProgressEvent),
+    F: Fn(OperationProgressEvent) + ?Sized,
 {
     const OPERATION: &str = "cloneRepository";
     let repository_path = display_path(&target.path);
@@ -1900,7 +2334,7 @@ where
     emit_clone_progress(
         operation_id,
         Some(repository_path.as_str()),
-        &progress,
+        progress,
         "Cloning repository",
         ProgressState::Indeterminate,
     );
@@ -1934,62 +2368,90 @@ where
     let mut command = plan.to_command();
     command.current_dir(&target.parent);
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    crate::git_ops::prepare_child_process_tree(&mut command);
     let mut child = command
         .spawn()
         .map_err(|source| spawn_error(&plan, source, OPERATION))?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    let stdout_reader = stdout.map(spawn_output_reader);
-    let (progress_tx, progress_rx) = mpsc::channel();
-    let stderr_reader = stderr.map(|stderr| spawn_clone_stderr_reader(stderr, progress_tx));
+    let mut stdout_reader = stdout.map(spawn_output_reader);
+    let (progress_tx, progress_rx) = mpsc::sync_channel(128);
+    let mut stderr_reader = stderr.map(|stderr| spawn_clone_stderr_reader(stderr, progress_tx));
 
-    let status;
-    loop {
+    let status = loop {
         drain_clone_progress(
             operation_id,
             Some(repository_path.as_str()),
-            &progress,
+            progress,
             &progress_rx,
         );
-        if cancel_token.is_cancelled() {
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = stdout_reader.map(|reader| reader.join());
-            let _ = stderr_reader.map(|reader| reader.join());
-            cleanup_clone_target(target);
-            return Err(cancelled_error(OPERATION));
-        }
         match child.try_wait() {
-            Ok(Some(exit_status)) => {
-                status = exit_status;
-                break;
+            Ok(Some(status)) => break status,
+            Ok(None) if cancel_token.is_cancelled() => {
+                if let Some(status) = crate::git_ops::terminate_child_process_tree(&mut child)
+                    .ok()
+                    .filter(|status| status.success())
+                {
+                    break status;
+                }
+                discard_output_reader(&mut stdout_reader);
+                discard_output_reader(&mut stderr_reader);
+                cleanup_clone_target(target);
+                return Err(cancelled_error(OPERATION));
             }
             Ok(None) => thread::sleep(Duration::from_millis(20)),
             Err(source) => {
-                let _ = stdout_reader.map(|reader| reader.join());
-                let _ = stderr_reader.map(|reader| reader.join());
+                let _ = crate::git_ops::terminate_child_process_tree(&mut child);
+                discard_output_reader(&mut stdout_reader);
+                discard_output_reader(&mut stderr_reader);
                 cleanup_clone_target(target);
                 return Err(spawn_error(&plan, source, OPERATION));
             }
         }
-    }
+    };
     drain_clone_progress(
         operation_id,
         Some(repository_path.as_str()),
-        &progress,
+        progress,
         &progress_rx,
     );
 
-    let stdout = stdout_reader
-        .and_then(|reader| reader.join().ok())
-        .unwrap_or_default();
-    let stderr = stderr_reader
-        .and_then(|reader| reader.join().ok())
-        .unwrap_or_default();
+    let output_deadline = Instant::now() + OUTPUT_READER_DRAIN_TIMEOUT;
+    let stdout = match collect_output_reader(
+        &mut stdout_reader,
+        "stdout",
+        OPERATION,
+        output_deadline,
+        None,
+        Some(&plan),
+        status.code(),
+    ) {
+        Ok(output) => output,
+        Err(error) => {
+            discard_output_reader(&mut stderr_reader);
+            cleanup_clone_target(target);
+            return Err(error);
+        }
+    };
+    let stderr = match collect_output_reader(
+        &mut stderr_reader,
+        "stderr",
+        OPERATION,
+        output_deadline,
+        None,
+        Some(&plan),
+        status.code(),
+    ) {
+        Ok(output) => output,
+        Err(error) => {
+            cleanup_clone_target(target);
+            return Err(error);
+        }
+    };
     drain_clone_progress(
         operation_id,
         Some(repository_path.as_str()),
-        &progress,
+        progress,
         &progress_rx,
     );
 
@@ -2002,7 +2464,7 @@ where
         emit_clone_progress(
             operation_id,
             Some(repository_path.as_str()),
-            &progress,
+            progress,
             "Clone complete",
             ProgressState::Percent { value: 100.0 },
         );
@@ -2024,25 +2486,163 @@ fn handle_clone_output(
     }
 }
 
-fn spawn_output_reader<R>(mut reader: R) -> thread::JoinHandle<Vec<u8>>
+#[derive(Debug)]
+struct BoundedCommandOutput {
+    bytes: Vec<u8>,
+    exceeded_limit: bool,
+}
+
+type OutputReader = thread::JoinHandle<io::Result<BoundedCommandOutput>>;
+
+fn read_bounded_command_output<R>(reader: R) -> io::Result<BoundedCommandOutput>
 where
-    R: Read + Send + 'static,
+    R: Read,
 {
-    thread::spawn(move || {
-        let mut output = Vec::new();
-        let _ = reader.read_to_end(&mut output);
-        output
+    read_bounded_command_output_with_limit(reader, COMMAND_OUTPUT_LIMIT_BYTES)
+}
+
+fn read_bounded_command_output_with_limit<R>(
+    mut reader: R,
+    limit_bytes: usize,
+) -> io::Result<BoundedCommandOutput>
+where
+    R: Read,
+{
+    const READ_CHUNK_BYTES: usize = 16 * 1024;
+
+    let capture_limit = limit_bytes.saturating_add(1);
+    let mut output = Vec::with_capacity(capture_limit.min(READ_CHUNK_BYTES));
+    let mut buffer = [0_u8; READ_CHUNK_BYTES];
+    loop {
+        let bytes_read = match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(bytes_read) => bytes_read,
+            Err(source) if source.kind() == io::ErrorKind::Interrupted => continue,
+            Err(source) => return Err(source),
+        };
+        let captured_bytes = bytes_read.min(capture_limit.saturating_sub(output.len()));
+        output.extend_from_slice(&buffer[..captured_bytes]);
+    }
+    let exceeded_limit = output.len() > limit_bytes;
+    output.truncate(limit_bytes);
+    Ok(BoundedCommandOutput {
+        bytes: output,
+        exceeded_limit,
     })
 }
 
-fn spawn_clone_stderr_reader<R>(
-    mut reader: R,
-    progress_tx: mpsc::Sender<String>,
-) -> thread::JoinHandle<Vec<u8>>
+fn spawn_output_reader<R>(reader: R) -> OutputReader
+where
+    R: Read + Send + 'static,
+{
+    thread::spawn(move || read_bounded_command_output(reader))
+}
+
+fn discard_output_reader(reader: &mut Option<OutputReader>) {
+    // Git hooks and transport helpers can outlive Git while retaining its pipes.
+    // Detaching the reader keeps cancellation from waiting on those descendants.
+    reader.take();
+}
+
+fn collect_output_reader(
+    reader: &mut Option<OutputReader>,
+    stream_name: &str,
+    operation_name: &str,
+    deadline: Instant,
+    cancel_token: Option<&CancelToken>,
+    plan: Option<&GitCommandPlan>,
+    exit_code: Option<i32>,
+) -> AppResult<Vec<u8>> {
+    let Some(reader) = reader.take() else {
+        return Ok(Vec::new());
+    };
+    while !reader.is_finished() {
+        if cancel_token.is_some_and(CancelToken::is_cancelled) {
+            return Err(cancelled_error(operation_name));
+        }
+        if Instant::now() >= deadline {
+            return Err(output_pipe_timeout_error(stream_name, operation_name));
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    match reader.join() {
+        Ok(Ok(output)) if output.exceeded_limit => Err(output_limit_error(
+            stream_name,
+            operation_name,
+            &output.bytes,
+            plan,
+            exit_code,
+        )),
+        Ok(Ok(output)) => Ok(output.bytes),
+        Ok(Err(source)) => Err(logged(AppError::unexpected(
+            format!("failed to read git {stream_name}: {source}"),
+            operation_name,
+        ))),
+        Err(_) => Err(logged(AppError::unexpected(
+            format!("git {stream_name} reader thread panicked"),
+            operation_name,
+        ))),
+    }
+}
+
+fn output_limit_error(
+    stream_name: &str,
+    operation_name: &str,
+    output: &[u8],
+    plan: Option<&GitCommandPlan>,
+    exit_code: Option<i32>,
+) -> AppError {
+    let diagnostic = bounded_output_diagnostic(output);
+    let (stdout, stderr) = if stream_name == "stdout" {
+        (diagnostic, String::new())
+    } else {
+        (String::new(), diagnostic)
+    };
+    logged(
+        AppError::unexpected(
+            format!(
+                "git {stream_name} exceeded the {} MiB output limit; the command was stopped to protect application memory",
+                COMMAND_OUTPUT_LIMIT_BYTES / (1024 * 1024)
+            ),
+            operation_name,
+        )
+        .with_git(GitCommandError {
+            command: plan.map(GitCommandPlan::command_for_error).unwrap_or_default(),
+            exit_code,
+            stdout,
+            stderr,
+        }),
+    )
+}
+
+fn bounded_output_diagnostic(output: &[u8]) -> String {
+    if output.len() <= COMMAND_OUTPUT_DIAGNOSTIC_BYTES {
+        return String::from_utf8_lossy(output).into_owned();
+    }
+    let half = COMMAND_OUTPUT_DIAGNOSTIC_BYTES / 2;
+    format!(
+        "{}\n\n[output truncated: showing first and last {half} bytes]\n\n{}",
+        String::from_utf8_lossy(&output[..half]),
+        String::from_utf8_lossy(&output[output.len() - half..]),
+    )
+}
+
+fn output_pipe_timeout_error(stream_name: &str, operation_name: &str) -> AppError {
+    logged(AppError::unexpected(
+        format!(
+            "git {stream_name} remained open after the command exited; a child process may still be holding the output pipe"
+        ),
+        operation_name,
+    ))
+}
+
+fn spawn_clone_stderr_reader<R>(reader: R, progress_tx: mpsc::SyncSender<String>) -> OutputReader
 where
     R: Read + Send + 'static,
 {
     thread::spawn(move || {
+        let mut reader = reader;
+        let capture_limit = COMMAND_OUTPUT_LIMIT_BYTES.saturating_add(1);
         let mut stderr = Vec::new();
         let mut pending = String::new();
         let mut buffer = [0_u8; 1024];
@@ -2053,27 +2653,41 @@ where
                 Ok(read) => read,
                 Err(_) => break,
             };
-            stderr.extend_from_slice(&buffer[..read]);
+            let captured_bytes = read.min(capture_limit.saturating_sub(stderr.len()));
+            stderr.extend_from_slice(&buffer[..captured_bytes]);
 
-            for character in String::from_utf8_lossy(&buffer[..read]).chars() {
+            if stderr.len() >= capture_limit {
+                continue;
+            }
+
+            for character in String::from_utf8_lossy(&buffer[..captured_bytes]).chars() {
                 if character == '\r' || character == '\n' {
                     let line = pending.trim().to_owned();
                     if !line.is_empty() {
-                        let _ = progress_tx.send(line);
+                        let _ = progress_tx.try_send(line);
                     }
                     pending.clear();
                 } else {
-                    pending.push(character);
+                    if pending.len().saturating_add(character.len_utf8())
+                        <= PROGRESS_LINE_LIMIT_BYTES
+                    {
+                        pending.push(character);
+                    }
                 }
             }
         }
 
         let line = pending.trim().to_owned();
         if !line.is_empty() {
-            let _ = progress_tx.send(line);
+            let _ = progress_tx.try_send(line);
         }
 
-        stderr
+        let exceeded_limit = stderr.len() > COMMAND_OUTPUT_LIMIT_BYTES;
+        stderr.truncate(COMMAND_OUTPUT_LIMIT_BYTES);
+        Ok(BoundedCommandOutput {
+            bytes: stderr,
+            exceeded_limit,
+        })
     })
 }
 
@@ -2083,7 +2697,7 @@ fn drain_clone_progress<F>(
     progress: &F,
     progress_rx: &mpsc::Receiver<String>,
 ) where
-    F: Fn(OperationProgressEvent),
+    F: Fn(OperationProgressEvent) + ?Sized,
 {
     while let Ok(line) = progress_rx.try_recv() {
         emit_clone_progress(
@@ -2103,7 +2717,7 @@ fn emit_clone_progress<F>(
     label: impl Into<String>,
     progress_state: ProgressState,
 ) where
-    F: Fn(OperationProgressEvent),
+    F: Fn(OperationProgressEvent) + ?Sized,
 {
     let Some(operation_id) = operation_id else {
         return;
@@ -2146,6 +2760,7 @@ where
         return Ok(());
     }
     let repository_path = display_path(root);
+    let cancellable = crate::git_ops::active_cancel_token().is_some();
 
     emit_operation_progress(
         operation_id,
@@ -2153,7 +2768,7 @@ where
         progress,
         "Updating submodules",
         ProgressState::Indeterminate,
-        false,
+        cancellable,
     );
 
     let plan = runner
@@ -2195,7 +2810,7 @@ where
         progress,
         "Submodules ready",
         ProgressState::Percent { value: 100.0 },
-        false,
+        cancellable,
     );
 
     Ok(())
@@ -2225,6 +2840,7 @@ fn pull_submodule_lfs_objects<F>(
 where
     F: Fn(OperationProgressEvent) + ?Sized,
 {
+    let cancellable = crate::git_ops::active_cancel_token().is_some();
     for submodule in initialized_submodule_paths(runner, root, operation_name)? {
         if !submodule_has_lfs_files(runner, &submodule, operation_name)? {
             continue;
@@ -2236,7 +2852,7 @@ where
             progress,
             "Downloading submodule LFS objects",
             ProgressState::Indeterminate,
-            false,
+            cancellable,
         );
         run_git_lfs_for_submodule(runner, &submodule, ["install", "--local"], operation_name)?;
         run_git_lfs_for_submodule_with_progress(
@@ -2292,14 +2908,8 @@ fn submodule_has_lfs_files(
     let plan = runner.git_lfs_command_plan(["ls-files"]);
     let mut command = plan.to_command();
     command.current_dir(submodule);
-    let output = command
-        .output()
-        .map_err(|source| spawn_error(&plan, source, operation_name))?;
-    if output.status.success() {
-        Ok(!String::from_utf8_lossy(&output.stdout).trim().is_empty())
-    } else {
-        Err(command_failure(&plan, output, operation_name))
-    }
+    let output = command_to_output(command, &plan, operation_name)?;
+    Ok(!output.stdout.trim().is_empty())
 }
 
 fn run_git_lfs_for_submodule<I, S>(
@@ -2357,59 +2967,95 @@ fn run_command_with_progress<F>(
 where
     F: Fn(OperationProgressEvent) + ?Sized,
 {
+    let cancel_token = crate::git_ops::active_cancel_token();
+    if cancel_token.as_ref().is_some_and(CancelToken::is_cancelled) {
+        return Err(cancelled_error(operation_name));
+    }
+    let cancellable = cancel_token.is_some();
     let mut command = plan.to_command();
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    crate::git_ops::prepare_child_process_tree(&mut command);
     let mut child = command
         .spawn()
         .map_err(|source| spawn_error(&plan, source, operation_name))?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    let stdout_reader = stdout.map(spawn_output_reader);
-    let (progress_tx, progress_rx) = mpsc::channel();
-    let stderr_reader = stderr.map(|stderr| spawn_clone_stderr_reader(stderr, progress_tx));
+    let mut stdout_reader = stdout.map(spawn_output_reader);
+    let (progress_tx, progress_rx) = mpsc::sync_channel(128);
+    let mut stderr_reader = stderr.map(|stderr| spawn_clone_stderr_reader(stderr, progress_tx));
 
-    let status;
-    loop {
+    let status = loop {
         drain_operation_progress(
             operation_id,
             repository_path,
             progress,
             &progress_rx,
             label_for_line,
+            cancellable,
         );
         match child.try_wait() {
-            Ok(Some(exit_status)) => {
-                status = exit_status;
-                break;
+            Ok(Some(status)) => break status,
+            Ok(None) if cancel_token.as_ref().is_some_and(CancelToken::is_cancelled) => {
+                if let Some(status) = crate::git_ops::terminate_child_process_tree(&mut child)
+                    .ok()
+                    .filter(|status| status.success())
+                {
+                    break status;
+                }
+                discard_output_reader(&mut stdout_reader);
+                discard_output_reader(&mut stderr_reader);
+                return Err(cancelled_error(operation_name));
             }
             Ok(None) => thread::sleep(Duration::from_millis(20)),
             Err(source) => {
-                let _ = stdout_reader.map(|reader| reader.join());
-                let _ = stderr_reader.map(|reader| reader.join());
+                let _ = crate::git_ops::terminate_child_process_tree(&mut child);
+                discard_output_reader(&mut stdout_reader);
+                discard_output_reader(&mut stderr_reader);
                 return Err(spawn_error(&plan, source, operation_name));
             }
         }
-    }
+    };
     drain_operation_progress(
         operation_id,
         repository_path,
         progress,
         &progress_rx,
         label_for_line,
+        cancellable,
     );
 
-    let stdout = stdout_reader
-        .and_then(|reader| reader.join().ok())
-        .unwrap_or_default();
-    let stderr = stderr_reader
-        .and_then(|reader| reader.join().ok())
-        .unwrap_or_default();
+    let output_deadline = Instant::now() + OUTPUT_READER_DRAIN_TIMEOUT;
+    let stdout = match collect_output_reader(
+        &mut stdout_reader,
+        "stdout",
+        operation_name,
+        output_deadline,
+        None,
+        Some(&plan),
+        status.code(),
+    ) {
+        Ok(output) => output,
+        Err(error) => {
+            discard_output_reader(&mut stderr_reader);
+            return Err(error);
+        }
+    };
+    let stderr = collect_output_reader(
+        &mut stderr_reader,
+        "stderr",
+        operation_name,
+        output_deadline,
+        None,
+        Some(&plan),
+        status.code(),
+    )?;
     drain_operation_progress(
         operation_id,
         repository_path,
         progress,
         &progress_rx,
         label_for_line,
+        cancellable,
     );
 
     let output = Output {
@@ -2430,6 +3076,7 @@ fn drain_operation_progress<F>(
     progress: &F,
     progress_rx: &mpsc::Receiver<String>,
     label_for_line: fn(&str) -> &'static str,
+    cancellable: bool,
 ) where
     F: Fn(OperationProgressEvent) + ?Sized,
 {
@@ -2440,7 +3087,7 @@ fn drain_operation_progress<F>(
             progress,
             label_for_line(&line),
             parse_git_progress_line(&line),
-            false,
+            cancellable,
         );
     }
 }
@@ -2494,6 +3141,20 @@ fn open_busy_error(error: OperationBusy) -> AppError {
 fn operation_registry_error(operation_name: &str) -> AppError {
     logged(AppError::unexpected(
         "operation registry is unavailable",
+        operation_name,
+    ))
+}
+
+fn operation_cancellation_timeout_error(
+    operation_id: &OperationId,
+    operation_name: &str,
+) -> AppError {
+    logged(AppError::expected(
+        format!(
+            "The operation is still finishing its cleanup after {} seconds. Keep this window open and try again. Operation ID: {}",
+            CANCEL_COMPLETION_TIMEOUT.as_secs(),
+            operation_id.as_str()
+        ),
         operation_name,
     ))
 }
@@ -2680,7 +3341,7 @@ fn write_local_config_if_changed(
 }
 
 fn install_lfs_if_needed(runner: &GitRunner, root: &Path) -> AppResult<()> {
-    if !repository_has_lfs_rules(root) {
+    if !repository_has_lfs_rules(root)? {
         return Ok(());
     }
 
@@ -2706,7 +3367,10 @@ fn clean_tool_worktree_residue(git_common_dir: &Path) {
         }
 
         let gitdir = path.join("gitdir");
-        let remove = fs::read_to_string(&gitdir)
+        let remove = read_file_with_limit(&gitdir, WORKTREE_GITDIR_FILE_LIMIT_BYTES)
+            .ok()
+            .filter(|bytes| bytes.len() <= WORKTREE_GITDIR_FILE_LIMIT_BYTES)
+            .and_then(|bytes| String::from_utf8(bytes).ok())
             .map(|target| !Path::new(target.trim()).exists())
             .unwrap_or(false);
         if remove {
@@ -2999,6 +3663,15 @@ fn branch_ahead_behind(
         return Ok((0, 0));
     }
 
+    let matching_upstream_track = entry
+        .upstream
+        .as_deref()
+        .filter(|upstream| upstream.strip_prefix("origin/") == Some(short_name))
+        .and(entry.upstream_track.as_deref());
+    if let Some(counts) = matching_upstream_track.and_then(parse_upstream_track) {
+        return Ok(counts);
+    }
+
     let spec = format!("{short_name}...origin/{short_name}");
     let output = git_stdout(
         runner,
@@ -3016,6 +3689,30 @@ fn branch_ahead_behind(
         .and_then(|value| value.parse().ok())
         .unwrap_or(0);
     Ok((ahead, behind))
+}
+
+fn parse_upstream_track(track: &str) -> Option<(u32, u32)> {
+    let track = track.trim();
+    if track.is_empty() {
+        return Some((0, 0));
+    }
+
+    let mut ahead = 0;
+    let mut behind = 0;
+    for part in track.split(',').map(str::trim) {
+        let mut fields = part.split_whitespace();
+        let direction = fields.next()?;
+        let count = fields.next()?.parse().ok()?;
+        if fields.next().is_some() {
+            return None;
+        }
+        match direction {
+            "ahead" => ahead = count,
+            "behind" => behind = count,
+            _ => return None,
+        }
+    }
+    Some((ahead, behind))
 }
 
 fn run_log_command<I>(
@@ -3080,6 +3777,7 @@ fn parse_log_records(output: &str) -> Vec<CommitSummary> {
         .collect()
 }
 
+#[cfg(test)]
 fn parse_stash_record(record: &str) -> Option<StashEntry> {
     let parts = record
         .trim_matches(|value| value == '\n' || value == '\x1e')
@@ -3113,6 +3811,7 @@ fn parse_stash_record(record: &str) -> Option<StashEntry> {
     })
 }
 
+#[cfg(test)]
 fn display_stash_message(message: &str) -> String {
     message
         .strip_prefix("On ")
@@ -3121,6 +3820,7 @@ fn display_stash_message(message: &str) -> String {
         .to_owned()
 }
 
+#[cfg(test)]
 fn branch_from_stash_message(message: &str) -> Option<String> {
     message
         .strip_prefix("WIP on ")
@@ -3140,15 +3840,294 @@ fn local_change_kind(index_status: &str, worktree_status: &str) -> DiffChangeKin
     }
 }
 
-fn local_change_diff(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocalChangeLoadPolicy {
+    Batch,
+    Detail,
+}
+
+impl LocalChangeLoadPolicy {
+    fn operation_name(self) -> &'static str {
+        match self {
+            Self::Batch => "listLocalChanges",
+            Self::Detail => "localChangeDetail",
+        }
+    }
+
+    fn fetch_missing_lfs(self) -> bool {
+        matches!(self, Self::Detail)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LocalChangeDiffContext<'a> {
+    root: &'a Path,
+    path: &'a str,
+    old_path: Option<&'a str>,
+    change_kind: DiffChangeKind,
+    index_status: &'a str,
+    worktree_status: &'a str,
+    load_policy: LocalChangeLoadPolicy,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct LocalChangePreviewSizes {
+    new_expected: bool,
+    new_size: Option<u64>,
+    old_expected: bool,
+    old_size: Option<u64>,
+}
+
+#[derive(Debug, Default)]
+struct LocalChangePreview {
+    sizes: LocalChangePreviewSizes,
+    old_content: Option<Vec<u8>>,
+    new_content: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocalChangePreviewDecision {
+    Load,
+    Oversized,
+    Deferred,
+}
+
+#[derive(Debug)]
+struct LocalChangePreviewBudget {
+    remaining_bytes: usize,
+    remaining_files: usize,
+}
+
+impl Default for LocalChangePreviewBudget {
+    fn default() -> Self {
+        Self {
+            remaining_bytes: LOCAL_CHANGE_PREVIEW_TOTAL_BYTES,
+            remaining_files: LOCAL_CHANGE_PREVIEW_FILE_LIMIT,
+        }
+    }
+}
+
+impl LocalChangePreviewBudget {
+    fn exhausted(&self) -> bool {
+        self.remaining_files == 0 || self.remaining_bytes == 0
+    }
+
+    fn reserve(&mut self, sizes: LocalChangePreviewSizes) -> LocalChangePreviewDecision {
+        if self.exhausted() {
+            return LocalChangePreviewDecision::Deferred;
+        }
+        self.remaining_files -= 1;
+
+        let per_file_limit = OVERSIZED_TEXT_BYTES as u64;
+        if sizes.old_size.is_some_and(|size| size > per_file_limit)
+            || sizes.new_size.is_some_and(|size| size > per_file_limit)
+        {
+            return LocalChangePreviewDecision::Oversized;
+        }
+
+        let estimated_bytes = [
+            (sizes.old_expected, sizes.old_size),
+            (sizes.new_expected, sizes.new_size),
+        ]
+        .into_iter()
+        .filter(|(expected, _)| *expected)
+        .map(|(_, size)| {
+            size.and_then(|size| usize::try_from(size).ok())
+                .unwrap_or(OVERSIZED_TEXT_BYTES)
+        })
+        .sum::<usize>();
+        if estimated_bytes > self.remaining_bytes {
+            return LocalChangePreviewDecision::Deferred;
+        }
+
+        self.remaining_bytes -= estimated_bytes;
+        LocalChangePreviewDecision::Load
+    }
+}
+
+fn prepare_local_change_preview(
+    runner: &GitRunner,
+    context: LocalChangeDiffContext<'_>,
+) -> AppResult<LocalChangePreview> {
+    let operation_name = context.load_policy.operation_name();
+    let mut sizes = local_change_preview_sizes(
+        runner,
+        context.root,
+        context.path,
+        context.old_path,
+        context.change_kind,
+        operation_name,
+    );
+
+    let old_content = if sizes.old_size.is_some_and(|size| size <= 1024) {
+        optional_git_blob_at_rev_path(
+            runner,
+            context.root,
+            "HEAD",
+            context.old_path.unwrap_or(context.path),
+            operation_name,
+        )?
+    } else {
+        None
+    };
+    let new_content = if sizes.new_size.is_some_and(|size| size <= 1024) {
+        local_change_new_content(
+            runner,
+            context.root,
+            context.path,
+            context.index_status,
+            context.worktree_status,
+            operation_name,
+        )?
+    } else {
+        None
+    };
+
+    sizes.new_size = effective_local_change_preview_size(sizes.new_size, new_content.as_deref());
+    sizes.old_size = effective_local_change_preview_size(sizes.old_size, old_content.as_deref());
+
+    Ok(LocalChangePreview {
+        sizes,
+        old_content,
+        new_content,
+    })
+}
+
+fn effective_local_change_preview_size(
+    raw_size: Option<u64>,
+    content: Option<&[u8]>,
+) -> Option<u64> {
+    content
+        .and_then(parse_lfs_pointer)
+        .map(|pointer| pointer.size)
+        .or(raw_size)
+}
+
+fn local_change_preview_sizes(
     runner: &GitRunner,
     root: &Path,
     path: &str,
     old_path: Option<&str>,
     change_kind: DiffChangeKind,
+    operation_name: &str,
+) -> LocalChangePreviewSizes {
+    let old_expected = !matches!(change_kind, DiffChangeKind::Added);
+    let new_expected = !matches!(change_kind, DiffChangeKind::Deleted);
+    let old_size = old_expected
+        .then(|| {
+            git_blob_size(
+                runner,
+                root,
+                "HEAD",
+                old_path.unwrap_or(path),
+                operation_name,
+            )
+        })
+        .flatten();
+    let new_size = new_expected
+        .then(|| {
+            let worktree_path = repository_relative_path(root, path, operation_name).ok()?;
+            fs::metadata(worktree_path)
+                .ok()
+                .filter(|metadata| metadata.is_file())
+                .map(|metadata| metadata.len())
+                .or_else(|| git_blob_size(runner, root, "", path, operation_name))
+        })
+        .flatten();
+
+    LocalChangePreviewSizes {
+        new_expected,
+        new_size,
+        old_expected,
+        old_size,
+    }
+}
+
+fn git_blob_size(
+    runner: &GitRunner,
+    root: &Path,
+    rev: &str,
+    path: &str,
+    operation_name: &str,
+) -> Option<u64> {
+    let spec = if rev.is_empty() {
+        format!(":{path}")
+    } else {
+        format!("{rev}:{path}")
+    };
+    git_stdout(
+        runner,
+        Some(root),
+        ["cat-file".to_owned(), "-s".to_owned(), spec],
+        operation_name,
+    )
+    .ok()?
+    .trim()
+    .parse()
+    .ok()
+}
+
+fn local_change_preview_placeholder(
+    path: &str,
+    old_path: Option<&str>,
+    change_kind: DiffChangeKind,
     index_status: &str,
     worktree_status: &str,
+    sizes: LocalChangePreviewSizes,
+    deferred: bool,
+) -> (DiffPayload, DiffContent) {
+    let mut metadata = BTreeMap::new();
+    metadata.insert("indexStatus".to_owned(), index_status.to_owned());
+    metadata.insert("worktreeStatus".to_owned(), worktree_status.to_owned());
+    metadata.insert(
+        "previewLimitBytes".to_owned(),
+        OVERSIZED_TEXT_BYTES.to_string(),
+    );
+    if deferred {
+        metadata.insert("previewDeferred".to_owned(), "true".to_owned());
+    }
+    if let Some(size) = sizes.old_size {
+        metadata.insert("oldBytes".to_owned(), size.to_string());
+    }
+    if let Some(size) = sizes.new_size {
+        metadata.insert("newBytes".to_owned(), size.to_string());
+    }
+
+    (
+        DiffPayload {
+            old_path: old_path.map(ToOwned::to_owned),
+            new_path: path.to_owned(),
+            change_kind,
+            file_kind: if deferred {
+                DiffFileKind::Deferred
+            } else {
+                DiffFileKind::OversizedText
+            },
+            lfs_lock: None,
+            metadata,
+        },
+        if deferred {
+            DiffContent::Deferred { message: None }
+        } else {
+            DiffContent::OversizedText { message: None }
+        },
+    )
+}
+
+fn local_change_diff(
+    runner: &GitRunner,
+    context: LocalChangeDiffContext<'_>,
+    preview_budget: &mut LocalChangePreviewBudget,
 ) -> AppResult<(DiffPayload, DiffContent)> {
+    let LocalChangeDiffContext {
+        root,
+        path,
+        old_path,
+        change_kind,
+        index_status,
+        worktree_status,
+        ..
+    } = context;
     if let Some(submodule) = submodule_pointer_change(
         runner,
         root,
@@ -3161,15 +4140,46 @@ fn local_change_diff(
         return Ok(submodule);
     }
 
-    let mut contents = local_change_contents(
-        runner,
-        root,
-        path,
-        old_path,
-        change_kind,
-        index_status,
-        worktree_status,
-    )?;
+    if preview_budget.exhausted() {
+        return Ok(local_change_preview_placeholder(
+            path,
+            old_path,
+            change_kind,
+            index_status,
+            worktree_status,
+            LocalChangePreviewSizes::default(),
+            true,
+        ));
+    }
+
+    let preview = prepare_local_change_preview(runner, context)?;
+    match preview_budget.reserve(preview.sizes) {
+        LocalChangePreviewDecision::Load => {}
+        LocalChangePreviewDecision::Oversized => {
+            return Ok(local_change_preview_placeholder(
+                path,
+                old_path,
+                change_kind,
+                index_status,
+                worktree_status,
+                preview.sizes,
+                false,
+            ));
+        }
+        LocalChangePreviewDecision::Deferred => {
+            return Ok(local_change_preview_placeholder(
+                path,
+                old_path,
+                change_kind,
+                index_status,
+                worktree_status,
+                preview.sizes,
+                true,
+            ));
+        }
+    }
+
+    let mut contents = local_change_contents(runner, context, preview)?;
     let changed_lines = changed_lines_for_local_change(
         runner,
         root,
@@ -3196,9 +4206,16 @@ fn local_change_diff(
         metadata.insert("lfsFetchStatus".to_owned(), "local".to_owned());
     }
 
-    if let Some(error) = contents.lfs_error.take() {
-        metadata.insert("lfsFetchStatus".to_owned(), "error".to_owned());
-        metadata.insert("lfsError".to_owned(), error.clone());
+    if let Some(issue) = contents.lfs_issue.take() {
+        let fetch_status = match issue.status {
+            LfsContentStatus::Missing => "missing",
+            LfsContentStatus::Error => "error",
+            LfsContentStatus::Loading => "loading",
+        };
+        metadata.insert("lfsFetchStatus".to_owned(), fetch_status.to_owned());
+        if let Some(message) = issue.message.as_ref() {
+            metadata.insert("lfsError".to_owned(), message.clone());
+        }
         let payload = DiffPayload {
             old_path: old_path.map(ToOwned::to_owned),
             new_path: path.to_owned(),
@@ -3210,8 +4227,8 @@ fn local_change_diff(
         return Ok((
             payload,
             DiffContent::LfsPointer {
-                status: LfsContentStatus::Error,
-                message: Some(error),
+                status: issue.status,
+                message: issue.message,
             },
         ));
     }
@@ -3238,7 +4255,7 @@ struct LocalChangeContents {
     new_display_content: Option<Vec<u8>>,
     lfs_pointer_seen: bool,
     lfs_fetch_attempted: bool,
-    lfs_error: Option<String>,
+    lfs_issue: Option<LfsDisplayIssue>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3313,7 +4330,13 @@ fn gitlink_at_tree(
     let output = git_output_bytes(
         runner,
         Some(root),
-        ["ls-tree", "-z", rev, "--", path],
+        [
+            OsString::from("ls-tree"),
+            OsString::from("-z"),
+            OsString::from(rev),
+            OsString::from("--"),
+            crate::git_ops::literal_pathspec(path),
+        ],
         operation_name,
     )?;
     let record = output
@@ -3330,7 +4353,13 @@ fn gitlink_at_index(
     let output = git_output_bytes(
         runner,
         Some(root),
-        ["ls-files", "-s", "-z", "--", path],
+        [
+            OsString::from("ls-files"),
+            OsString::from("-s"),
+            OsString::from("-z"),
+            OsString::from("--"),
+            crate::git_ops::literal_pathspec(path),
+        ],
         "listLocalChanges",
     )?;
     let record = output
@@ -3387,22 +4416,50 @@ fn parse_ls_files_gitlink(record: &[u8]) -> Option<GitlinkPointer> {
 
 fn local_change_contents(
     runner: &GitRunner,
-    root: &Path,
-    path: &str,
-    old_path: Option<&str>,
-    change_kind: DiffChangeKind,
-    index_status: &str,
-    worktree_status: &str,
+    context: LocalChangeDiffContext<'_>,
+    preview: LocalChangePreview,
 ) -> AppResult<LocalChangeContents> {
+    let LocalChangeDiffContext {
+        root,
+        path,
+        old_path,
+        change_kind,
+        index_status,
+        worktree_status,
+        load_policy,
+    } = context;
+    let operation_name = load_policy.operation_name();
+    let LocalChangePreview {
+        old_content: preview_old_content,
+        new_content: preview_new_content,
+        ..
+    } = preview;
     let old_content = if matches!(change_kind, DiffChangeKind::Added) {
         None
+    } else if preview_old_content.is_some() {
+        preview_old_content
     } else {
-        git_blob_at_rev_path(runner, root, "HEAD", old_path.unwrap_or(path)).ok()
+        optional_git_blob_at_rev_path(
+            runner,
+            root,
+            "HEAD",
+            old_path.unwrap_or(path),
+            operation_name,
+        )?
     };
     let new_content = if matches!(change_kind, DiffChangeKind::Deleted) {
         None
+    } else if preview_new_content.is_some() {
+        preview_new_content
     } else {
-        local_change_new_content(runner, root, path, index_status, worktree_status)?
+        local_change_new_content(
+            runner,
+            root,
+            path,
+            index_status,
+            worktree_status,
+            operation_name,
+        )?
     };
 
     let mut contents = LocalChangeContents {
@@ -3412,31 +4469,31 @@ fn local_change_contents(
     };
 
     if let Some(content) = contents.old_content.as_deref() {
-        match display_content_for_side(runner, root, path, DiffSide::Old, content) {
+        match display_content_for_side(runner, root, path, DiffSide::Old, content, load_policy)? {
             Ok(resolved) => {
                 contents.old_display_content = Some(resolved.content);
                 contents.lfs_pointer_seen |= resolved.lfs_pointer;
                 contents.lfs_fetch_attempted |= resolved.fetch_attempted;
             }
-            Err(error) => {
+            Err(issue) => {
                 contents.lfs_pointer_seen = true;
-                contents.lfs_fetch_attempted |= error.fetch_attempted;
-                contents.lfs_error = Some(error.message);
+                contents.lfs_fetch_attempted |= issue.fetch_attempted;
+                contents.lfs_issue = Some(issue);
             }
         }
     }
 
     if let Some(content) = contents.new_content.as_deref() {
-        match display_content_for_side(runner, root, path, DiffSide::New, content) {
+        match display_content_for_side(runner, root, path, DiffSide::New, content, load_policy)? {
             Ok(resolved) => {
                 contents.new_display_content = Some(resolved.content);
                 contents.lfs_pointer_seen |= resolved.lfs_pointer;
                 contents.lfs_fetch_attempted |= resolved.fetch_attempted;
             }
-            Err(error) => {
+            Err(issue) => {
                 contents.lfs_pointer_seen = true;
-                contents.lfs_fetch_attempted |= error.fetch_attempted;
-                contents.lfs_error = Some(error.message);
+                contents.lfs_fetch_attempted |= issue.fetch_attempted;
+                contents.lfs_issue = Some(issue);
             }
         }
     }
@@ -3450,18 +4507,19 @@ fn local_change_new_content(
     path: &str,
     index_status: &str,
     worktree_status: &str,
+    operation_name: &str,
 ) -> AppResult<Option<Vec<u8>>> {
     if index_status == "D" || worktree_status == "D" {
         return Ok(None);
     }
 
-    let worktree_path = repository_relative_path(root, path, "listLocalChanges")?;
-    if let Ok(bytes) = fs::read(&worktree_path) {
+    let worktree_path = repository_relative_path(root, path, operation_name)?;
+    if let Ok(bytes) = read_file_with_limit(&worktree_path, OVERSIZED_TEXT_BYTES) {
         return Ok(Some(bytes));
     }
 
     if index_status != " " && index_status != "?" {
-        return Ok(git_blob_at_rev_path(runner, root, "", path).ok());
+        return optional_git_blob_at_rev_path(runner, root, "", path, operation_name);
     }
 
     Ok(None)
@@ -3490,8 +4548,9 @@ struct DisplayContent {
 }
 
 #[derive(Debug)]
-struct LfsDisplayError {
-    message: String,
+struct LfsDisplayIssue {
+    status: LfsContentStatus,
+    message: Option<String>,
     fetch_attempted: bool,
 }
 
@@ -3501,50 +4560,117 @@ fn display_content_for_side(
     path: &str,
     side: DiffSide,
     content: &[u8],
-) -> Result<DisplayContent, LfsDisplayError> {
+    load_policy: LocalChangeLoadPolicy,
+) -> AppResult<Result<DisplayContent, LfsDisplayIssue>> {
     let Some(pointer) = parse_lfs_pointer(content) else {
-        return Ok(DisplayContent {
+        return Ok(Ok(DisplayContent {
             content: content.to_vec(),
             lfs_pointer: false,
             fetch_attempted: false,
-        });
+        }));
     };
 
-    if let Ok(content) = read_local_lfs_object(runner, root, &pointer.oid, Some(pointer.size)) {
-        return Ok(DisplayContent {
-            content,
-            lfs_pointer: true,
+    if pointer.size > OVERSIZED_TEXT_BYTES as u64 {
+        return Ok(Err(LfsDisplayIssue {
+            status: LfsContentStatus::Error,
+            message: Some(format!(
+                "Git LFS {} content for {} is {} bytes, above the {} byte preview limit",
+                side.label(),
+                path,
+                pointer.size,
+                OVERSIZED_TEXT_BYTES
+            )),
             fetch_attempted: false,
-        });
+        }));
     }
 
-    if let Err(error) = fetch_lfs_object(runner, root, &pointer.oid, "listLocalChanges") {
-        return Err(LfsDisplayError {
-            message: format!(
+    match read_local_lfs_object(
+        runner,
+        root,
+        &pointer.oid,
+        Some(pointer.size),
+        load_policy.operation_name(),
+    ) {
+        Ok(content) => {
+            return Ok(Ok(DisplayContent {
+                content,
+                lfs_pointer: true,
+                fetch_attempted: false,
+            }));
+        }
+        Err(LocalLfsObjectReadError::Missing) if !load_policy.fetch_missing_lfs() => {
+            return Ok(Err(LfsDisplayIssue {
+                status: LfsContentStatus::Missing,
+                message: None,
+                fetch_attempted: false,
+            }));
+        }
+        Err(LocalLfsObjectReadError::Missing) => {}
+        Err(LocalLfsObjectReadError::Error(error)) => {
+            if operation_was_cancelled(&error) {
+                return Err(error);
+            }
+            return Ok(Err(LfsDisplayIssue {
+                status: LfsContentStatus::Error,
+                message: Some(error.summary),
+                fetch_attempted: false,
+            }));
+        }
+    }
+
+    if let Err(error) = fetch_lfs_object(runner, root, &pointer.oid, load_policy.operation_name()) {
+        if operation_was_cancelled(&error) {
+            return Err(error);
+        }
+        return Ok(Err(LfsDisplayIssue {
+            status: LfsContentStatus::Error,
+            message: Some(format!(
                 "Git LFS {} content for {} is not available locally and fetch failed: {}",
                 side.label(),
                 path,
                 error.summary
-            ),
+            )),
             fetch_attempted: true,
-        });
+        }));
     }
 
-    read_local_lfs_object(runner, root, &pointer.oid, Some(pointer.size))
-        .map(|content| DisplayContent {
+    match read_local_lfs_object(
+        runner,
+        root,
+        &pointer.oid,
+        Some(pointer.size),
+        load_policy.operation_name(),
+    ) {
+        Ok(content) => Ok(Ok(DisplayContent {
             content,
             lfs_pointer: true,
             fetch_attempted: true,
-        })
-        .map_err(|error| LfsDisplayError {
-            message: format!(
-                "Git LFS {} content for {} is still unavailable after fetch: {}",
+        })),
+        Err(LocalLfsObjectReadError::Missing) => Ok(Err(LfsDisplayIssue {
+            status: LfsContentStatus::Error,
+            message: Some(format!(
+                "Git LFS {} content for {} is still unavailable after fetch",
                 side.label(),
-                path,
-                error.summary
-            ),
+                path
+            )),
             fetch_attempted: true,
-        })
+        })),
+        Err(LocalLfsObjectReadError::Error(error)) => {
+            if operation_was_cancelled(&error) {
+                return Err(error);
+            }
+            Ok(Err(LfsDisplayIssue {
+                status: LfsContentStatus::Error,
+                message: Some(format!(
+                    "Git LFS {} content for {} is still unavailable after fetch: {}",
+                    side.label(),
+                    path,
+                    error.summary
+                )),
+                fetch_attempted: true,
+            }))
+        }
+    }
 }
 
 fn diff_content_for_kind(
@@ -3581,6 +4707,7 @@ fn diff_content_for_kind(
                 .and_then(|content| diff_asset(Some(payload.new_path.as_str()), content)),
         },
         DiffFileKind::OversizedText => DiffContent::OversizedText { message: None },
+        DiffFileKind::Deferred => DiffContent::Deferred { message: None },
         DiffFileKind::LfsPointer => DiffContent::LfsPointer {
             status: LfsContentStatus::Missing,
             message: Some("Git LFS content is not available locally yet".to_owned()),
@@ -3594,6 +4721,7 @@ fn git_blob_at_rev_path(
     root: &Path,
     rev: &str,
     path: &str,
+    operation_name: &str,
 ) -> AppResult<Vec<u8>> {
     let spec = if rev.is_empty() {
         format!(":{path}")
@@ -3604,8 +4732,33 @@ fn git_blob_at_rev_path(
         runner,
         Some(root),
         ["show".to_owned(), spec],
-        "listLocalChanges",
+        operation_name,
     )
+}
+
+fn optional_git_blob_at_rev_path(
+    runner: &GitRunner,
+    root: &Path,
+    rev: &str,
+    path: &str,
+    operation_name: &str,
+) -> AppResult<Option<Vec<u8>>> {
+    match git_blob_at_rev_path(runner, root, rev, path, operation_name) {
+        Ok(content) => Ok(Some(content)),
+        Err(error) if operation_was_cancelled(&error) => Err(error),
+        Err(_) => Ok(None),
+    }
+}
+
+fn operation_was_cancelled(error: &AppError) -> bool {
+    error.summary == "operation cancelled"
+        || crate::git_ops::active_cancel_token().is_some_and(|token| token.is_cancelled())
+}
+
+#[derive(Debug)]
+enum LocalLfsObjectReadError {
+    Missing,
+    Error(AppError),
 }
 
 fn read_local_lfs_object(
@@ -3613,22 +4766,42 @@ fn read_local_lfs_object(
     root: &Path,
     oid: &str,
     expected_size: Option<u64>,
-) -> AppResult<Vec<u8>> {
-    let path = local_lfs_object_path(runner, root, oid, "listLocalChanges")?;
-    let bytes = fs::read(&path).map_err(|source| {
-        logged(AppError::expected(
-            format!("Git LFS object is not available locally: {source}"),
-            "listLocalChanges",
-        ))
-    })?;
+    operation_name: &str,
+) -> Result<Vec<u8>, LocalLfsObjectReadError> {
+    let path = local_lfs_object_path(runner, root, oid, operation_name)
+        .map_err(LocalLfsObjectReadError::Error)?;
+    let read_limit = expected_size
+        .and_then(|size| usize::try_from(size).ok())
+        .unwrap_or(OVERSIZED_TEXT_BYTES)
+        .min(OVERSIZED_TEXT_BYTES);
+    let bytes = match read_file_with_limit(&path, read_limit) {
+        Ok(bytes) => bytes,
+        Err(source) if source.kind() == io::ErrorKind::NotFound => {
+            return Err(LocalLfsObjectReadError::Missing);
+        }
+        Err(source) => {
+            return Err(LocalLfsObjectReadError::Error(logged(AppError::expected(
+                format!("failed to read local Git LFS object: {source}"),
+                operation_name,
+            ))));
+        }
+    };
     if let Some(expected_size) = expected_size {
         if bytes.len() as u64 != expected_size {
-            return Err(logged(AppError::expected(
+            return Err(LocalLfsObjectReadError::Error(logged(AppError::expected(
                 "local Git LFS object size does not match pointer metadata",
-                "listLocalChanges",
-            )));
+                operation_name,
+            ))));
         }
     }
+    Ok(bytes)
+}
+
+fn read_file_with_limit(path: &Path, limit: usize) -> io::Result<Vec<u8>> {
+    let file = fs::File::open(path)?;
+    let mut bytes = Vec::with_capacity(limit.min(64 * 1024));
+    file.take(limit.saturating_add(1) as u64)
+        .read_to_end(&mut bytes)?;
     Ok(bytes)
 }
 
@@ -3758,7 +4931,13 @@ fn git_changed_lines(runner: &GitRunner, root: &Path, path: &str) -> Option<usiz
     let output = git_stdout(
         runner,
         Some(root),
-        ["diff", "--numstat", "HEAD", "--", path],
+        [
+            OsString::from("diff"),
+            OsString::from("--numstat"),
+            OsString::from("HEAD"),
+            OsString::from("--"),
+            crate::git_ops::literal_pathspec(path),
+        ],
         "listLocalChanges",
     )
     .ok()?;
@@ -3907,16 +5086,7 @@ where
     I: IntoIterator<Item = S>,
     S: Into<OsString>,
 {
-    let plan = plan_git(runner, root, args);
-    let output = plan
-        .to_command()
-        .output()
-        .map_err(|source| spawn_error(&plan, source, operation_name))?;
-    if output.status.success() {
-        Ok(output.stdout)
-    } else {
-        Err(command_failure(&plan, output, operation_name))
-    }
+    run_git(runner, root, args, operation_name).map(|output| output.stdout.into_bytes())
 }
 
 fn run_git<I, S>(
@@ -3949,28 +5119,8 @@ where
     }
 
     let plan = plan_git(runner, root, args);
-    let mut command = plan.to_command();
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command
-        .spawn()
-        .map_err(|source| spawn_error(&plan, source, operation_name))?;
-
-    loop {
-        if cancel_token.is_cancelled() {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(cancelled_error(operation_name));
-        }
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) => thread::sleep(Duration::from_millis(20)),
-            Err(source) => return Err(spawn_error(&plan, source, operation_name)),
-        }
-    }
-
-    let output = child
-        .wait_with_output()
-        .map_err(|source| spawn_error(&plan, source, operation_name))?;
+    let output =
+        command_output_cancellable(plan.to_command(), &plan, operation_name, cancel_token)?;
     if output.status.success() {
         Ok(CommandOutput::from_output(output))
     } else {
@@ -3979,18 +5129,142 @@ where
 }
 
 fn command_to_output(
-    mut command: Command,
+    command: Command,
     plan: &GitCommandPlan,
     operation_name: &str,
 ) -> AppResult<CommandOutput> {
-    let output = command
-        .output()
-        .map_err(|source| spawn_error(plan, source, operation_name))?;
+    let cancel_token = crate::git_ops::active_cancel_token().unwrap_or_default();
+    let output = command_output_cancellable(command, plan, operation_name, &cancel_token)?;
     if output.status.success() {
         Ok(CommandOutput::from_output(output))
     } else {
         Err(command_failure(plan, output, operation_name))
     }
+}
+
+fn command_output_cancellable(
+    mut command: Command,
+    plan: &GitCommandPlan,
+    operation_name: &str,
+    cancel_token: &CancelToken,
+) -> AppResult<Output> {
+    if cancel_token.is_cancelled() {
+        return Err(cancelled_error(operation_name));
+    }
+
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    crate::git_ops::prepare_child_process_tree(&mut command);
+    let mut child = command
+        .spawn()
+        .map_err(|source| spawn_error(plan, source, operation_name))?;
+    let mut stdout_reader = child.stdout.take().map(spawn_checked_output_reader);
+    let mut stderr_reader = child.stderr.take().map(spawn_checked_output_reader);
+
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if cancel_token.is_cancelled() => {
+                if let Some(status) = crate::git_ops::terminate_child_process_tree(&mut child)
+                    .ok()
+                    .filter(|status| status.success())
+                {
+                    break status;
+                }
+                discard_checked_output_reader(&mut stdout_reader);
+                discard_checked_output_reader(&mut stderr_reader);
+                return Err(cancelled_error(operation_name));
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(20)),
+            Err(source) => {
+                let _ = crate::git_ops::terminate_child_process_tree(&mut child);
+                discard_checked_output_reader(&mut stdout_reader);
+                discard_checked_output_reader(&mut stderr_reader);
+                return Err(spawn_error(plan, source, operation_name));
+            }
+        }
+    };
+
+    let output_deadline = Instant::now() + OUTPUT_READER_DRAIN_TIMEOUT;
+    let stdout = collect_checked_output_reader(
+        &mut stdout_reader,
+        "stdout",
+        operation_name,
+        output_deadline,
+        None,
+        Some(plan),
+        status.code(),
+    )?;
+    let stderr = collect_checked_output_reader(
+        &mut stderr_reader,
+        "stderr",
+        operation_name,
+        output_deadline,
+        None,
+        Some(plan),
+        status.code(),
+    )?;
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+type CheckedOutputReader = OutputReader;
+
+fn spawn_checked_output_reader<R>(reader: R) -> CheckedOutputReader
+where
+    R: Read + Send + 'static,
+{
+    thread::spawn(move || read_bounded_command_output(reader))
+}
+
+fn collect_checked_output_reader(
+    reader: &mut Option<CheckedOutputReader>,
+    stream_name: &str,
+    operation_name: &str,
+    deadline: Instant,
+    cancel_token: Option<&CancelToken>,
+    plan: Option<&GitCommandPlan>,
+    exit_code: Option<i32>,
+) -> AppResult<Vec<u8>> {
+    let Some(reader) = reader.take() else {
+        return Ok(Vec::new());
+    };
+
+    while !reader.is_finished() {
+        if cancel_token.is_some_and(CancelToken::is_cancelled) {
+            return Err(cancelled_error(operation_name));
+        }
+        if Instant::now() >= deadline {
+            return Err(output_pipe_timeout_error(stream_name, operation_name));
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    match reader.join() {
+        Ok(Ok(output)) if output.exceeded_limit => Err(output_limit_error(
+            stream_name,
+            operation_name,
+            &output.bytes,
+            plan,
+            exit_code,
+        )),
+        Ok(Ok(output)) => Ok(output.bytes),
+        Ok(Err(source)) => Err(logged(AppError::unexpected(
+            format!("failed to read git {stream_name}: {source}"),
+            operation_name,
+        ))),
+        Err(_) => Err(logged(AppError::unexpected(
+            format!("git {stream_name} reader thread panicked"),
+            operation_name,
+        ))),
+    }
+}
+
+fn discard_checked_output_reader(reader: &mut Option<CheckedOutputReader>) {
+    // A Git hook or transport child can retain the pipe after Git is killed.
+    reader.take();
 }
 
 fn plan_git<I, S>(runner: &GitRunner, root: Option<&Path>, args: I) -> GitCommandPlan
@@ -4081,30 +5355,59 @@ fn canonicalize_path(path: &Path, operation_name: &str) -> AppResult<PathBuf> {
     })
 }
 
-fn repository_has_lfs_rules(root: &Path) -> bool {
+fn repository_has_lfs_rules(root: &Path) -> AppResult<bool> {
+    repository_has_lfs_rules_with_limit(root, LFS_RULE_SCAN_ENTRY_LIMIT)
+}
+
+fn repository_has_lfs_rules_with_limit(root: &Path, entry_limit: usize) -> AppResult<bool> {
     let mut stack = vec![root.to_path_buf()];
+    let mut visited_entries = 0_usize;
     while let Some(dir) = stack.pop() {
+        if crate::git_ops::active_cancel_token().is_some_and(|token| token.is_cancelled()) {
+            return Err(cancelled_error("openRepository"));
+        }
         let Ok(entries) = fs::read_dir(&dir) else {
             continue;
         };
         for entry in entries.flatten() {
+            visited_entries = visited_entries.saturating_add(1);
+            if visited_entries > entry_limit {
+                // Running `git lfs install --local` is cheap and idempotent. Prefer it
+                // over an unbounded repository walk when the tree is exceptionally large.
+                return Ok(true);
+            }
+            if crate::git_ops::active_cancel_token().is_some_and(|token| token.is_cancelled()) {
+                return Err(cancelled_error("openRepository"));
+            }
             let path = entry.path();
             let file_name = path.file_name().and_then(OsStr::to_str).unwrap_or_default();
             if file_name == ".git" {
                 continue;
             }
-            if path.is_dir() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
                 stack.push(path);
-            } else if file_name == ".gitattributes"
-                && fs::read_to_string(&path)
-                    .map(|content| content.contains("filter=lfs"))
+            } else if file_type.is_file()
+                && file_name == ".gitattributes"
+                && read_file_with_limit(&path, LFS_ATTRIBUTES_READ_LIMIT)
+                    .map(|content| {
+                        String::from_utf8_lossy(
+                            &content[..content.len().min(LFS_ATTRIBUTES_READ_LIMIT)],
+                        )
+                        .contains("filter=lfs")
+                    })
                     .unwrap_or(false)
             {
-                return true;
+                return Ok(true);
             }
         }
     }
-    false
+    Ok(false)
 }
 
 fn canonical_or_self(path: &Path) -> PathBuf {
@@ -4177,6 +5480,7 @@ struct BranchAccumulator {
     local_time: Option<String>,
     remote_time: Option<String>,
     upstream: Option<String>,
+    upstream_track: Option<String>,
 }
 
 #[derive(Debug)]
@@ -4202,14 +5506,197 @@ mod tests {
     fn cancellable_operation_registry_cancels_registered_token() {
         let registry = Arc::new(CancellableOperationRegistry::default());
         let operation_id = OperationId::new("operation-1");
-        let token = CancelToken::new();
-        let _guard = registry
-            .register(&operation_id, token.clone(), "testOperation")
+        let (token, _guard) = registry
+            .register(&operation_id, "testOperation")
             .expect("register operation");
 
         assert!(!token.is_cancelled());
         assert!(registry.cancel(&operation_id).expect("cancel operation"));
         assert!(token.is_cancelled());
+    }
+
+    #[test]
+    fn local_change_preview_budget_bounds_files_and_total_bytes() {
+        let mut budget = LocalChangePreviewBudget {
+            remaining_bytes: 10,
+            remaining_files: 2,
+        };
+        assert_eq!(
+            budget.reserve(LocalChangePreviewSizes {
+                new_expected: true,
+                new_size: Some(6),
+                ..LocalChangePreviewSizes::default()
+            }),
+            LocalChangePreviewDecision::Load
+        );
+        assert_eq!(
+            budget.reserve(LocalChangePreviewSizes {
+                new_expected: true,
+                new_size: Some(5),
+                ..LocalChangePreviewSizes::default()
+            }),
+            LocalChangePreviewDecision::Deferred
+        );
+        assert_eq!(
+            budget.reserve(LocalChangePreviewSizes::default()),
+            LocalChangePreviewDecision::Deferred
+        );
+
+        let (payload, diff) = local_change_preview_placeholder(
+            "deferred.txt",
+            None,
+            DiffChangeKind::Modified,
+            " ",
+            "M",
+            LocalChangePreviewSizes::default(),
+            true,
+        );
+        assert_eq!(payload.file_kind, DiffFileKind::Deferred);
+        assert!(matches!(diff, DiffContent::Deferred { .. }));
+    }
+
+    #[test]
+    fn local_change_preview_budget_charges_lfs_pointer_declared_size() {
+        let pointer = concat!(
+            "version https://git-lfs.github.com/spec/v1\n",
+            "oid sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n",
+            "size 8\n",
+        );
+        let mut budget = LocalChangePreviewBudget {
+            remaining_bytes: 10,
+            remaining_files: 2,
+        };
+        let charged_size = effective_local_change_preview_size(
+            Some(pointer.len() as u64),
+            Some(pointer.as_bytes()),
+        );
+
+        assert_eq!(charged_size, Some(8));
+        assert_eq!(
+            budget.reserve(LocalChangePreviewSizes {
+                new_expected: true,
+                new_size: charged_size,
+                ..LocalChangePreviewSizes::default()
+            }),
+            LocalChangePreviewDecision::Load
+        );
+        assert_eq!(budget.remaining_bytes, 2);
+        assert_eq!(
+            budget.reserve(LocalChangePreviewSizes {
+                new_expected: true,
+                new_size: Some(3),
+                ..LocalChangePreviewSizes::default()
+            }),
+            LocalChangePreviewDecision::Deferred
+        );
+    }
+
+    #[test]
+    fn local_change_entry_count_treats_rename_paths_as_one_change() {
+        assert_eq!(
+            local_change_entry_count_bytes(
+                b"R  renamed.txt\0old.txt\0 M tracked.txt\0?? untracked.txt\0"
+            ),
+            3
+        );
+    }
+
+    #[test]
+    fn local_change_entry_budget_is_shared_across_repositories() {
+        let mut budget = LocalChangeEntryBudget {
+            used: LOCAL_CHANGE_ENTRY_LIMIT - 1,
+        };
+        budget
+            .reserve(1, Path::new("/repo"))
+            .expect("last available entry");
+        let error = budget
+            .reserve(1, Path::new("/repo/submodule"))
+            .expect_err("shared budget should reject the next entry");
+
+        assert!(error.summary.contains("detected at least: 5001"));
+    }
+
+    #[test]
+    fn repository_output_reader_has_a_bounded_drain_wait() {
+        let mut reader = Some(thread::spawn(|| {
+            thread::sleep(Duration::from_millis(200));
+            Ok(BoundedCommandOutput {
+                bytes: Vec::new(),
+                exceeded_limit: false,
+            })
+        }));
+        let error = collect_output_reader(
+            &mut reader,
+            "stdout",
+            "boundedDrainTest",
+            Instant::now() + Duration::from_millis(20),
+            None,
+            None,
+            None,
+        )
+        .expect_err("reader wait should time out");
+
+        assert!(error.summary.contains("remained open"));
+    }
+
+    #[test]
+    fn repository_output_reader_rejects_output_over_the_memory_limit() {
+        let mut reader = Some(thread::spawn(|| {
+            Ok(BoundedCommandOutput {
+                bytes: b"diagnostic".to_vec(),
+                exceeded_limit: true,
+            })
+        }));
+        let error = collect_output_reader(
+            &mut reader,
+            "stderr",
+            "boundedOutputTest",
+            Instant::now() + Duration::from_secs(1),
+            None,
+            None,
+            None,
+        )
+        .expect_err("over-limit output should fail explicitly");
+
+        assert!(error.summary.contains("16 MiB output limit"));
+        assert_eq!(error.git.expect("git details").stderr, "diagnostic");
+    }
+
+    #[test]
+    fn repository_output_reader_captures_one_sentinel_byte() {
+        let output = read_bounded_command_output_with_limit(io::Cursor::new(vec![b'x'; 64]), 32)
+            .expect("bounded output");
+
+        assert!(output.exceeded_limit);
+        assert_eq!(output.bytes.len(), 32);
+    }
+
+    #[test]
+    fn lfs_rule_scan_is_bounded_and_detects_attributes() {
+        let temp = TestTempDir::new("ag-lfs-rule-scan").expect("temp");
+        fs::create_dir_all(temp.path().join("nested")).expect("nested directory");
+        fs::write(
+            temp.path().join("nested/.gitattributes"),
+            "*.psd filter=lfs diff=lfs merge=lfs -text\n",
+        )
+        .expect("attributes");
+
+        assert!(repository_has_lfs_rules_with_limit(temp.path(), 10).expect("scan attributes"));
+        assert!(repository_has_lfs_rules_with_limit(temp.path(), 0)
+            .expect("bounded scan falls back to lfs initialization"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lfs_rule_scan_does_not_follow_directory_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TestTempDir::new("ag-lfs-rule-symlink").expect("temp");
+        let nested = temp.path().join("nested");
+        fs::create_dir_all(&nested).expect("nested directory");
+        symlink(temp.path(), nested.join("loop")).expect("loop symlink");
+
+        assert!(!repository_has_lfs_rules_with_limit(temp.path(), 10).expect("symlink-safe scan"));
     }
 
     #[test]
@@ -4231,9 +5718,8 @@ mod tests {
     fn cancellable_operation_guard_unregisters_on_drop() {
         let registry = Arc::new(CancellableOperationRegistry::default());
         let operation_id = OperationId::new("operation-1");
-        let token = CancelToken::new();
-        let guard = registry
-            .register(&operation_id, token, "testOperation")
+        let (_, guard) = registry
+            .register(&operation_id, "testOperation")
             .expect("register operation");
 
         drop(guard);
@@ -4245,15 +5731,48 @@ mod tests {
     fn cancellable_operation_registry_rejects_duplicate_operation_ids() {
         let registry = Arc::new(CancellableOperationRegistry::default());
         let operation_id = OperationId::new("operation-1");
-        let _guard = registry
-            .register(&operation_id, CancelToken::new(), "testOperation")
+        let (_, _guard) = registry
+            .register(&operation_id, "testOperation")
             .expect("register operation");
 
         let error = registry
-            .register(&operation_id, CancelToken::new(), "testOperation")
+            .register(&operation_id, "testOperation")
             .expect_err("duplicate operation id rejected");
 
         assert_eq!(error.summary, "operation is already registered");
+    }
+
+    #[test]
+    fn cancellable_operation_reservation_preserves_an_early_cancel() {
+        let registry = Arc::new(CancellableOperationRegistry::default());
+        let operation_id = OperationId::new("operation-1");
+        let reservation = registry
+            .reserve(&operation_id, "testOperation")
+            .expect("reserve operation");
+
+        assert!(registry.cancel(&operation_id).expect("cancel reservation"));
+        let (token, guard) = registry
+            .register(&operation_id, "testOperation")
+            .expect("claim reservation");
+        assert!(token.is_cancelled());
+
+        drop(reservation);
+        assert!(registry.cancel(&operation_id).expect("running operation"));
+        drop(guard);
+        assert!(!registry.cancel(&operation_id).expect("finished operation"));
+    }
+
+    #[test]
+    fn unclaimed_cancellable_operation_reservation_unregisters_on_drop() {
+        let registry = Arc::new(CancellableOperationRegistry::default());
+        let operation_id = OperationId::new("operation-1");
+        let reservation = registry
+            .reserve(&operation_id, "testOperation")
+            .expect("reserve operation");
+
+        drop(reservation);
+
+        assert!(!registry.cancel(&operation_id).expect("dropped reservation"));
     }
 
     #[test]
@@ -4275,6 +5794,69 @@ mod tests {
             !backend
                 .cancel_operation(CancelOperationRequest { operation_id })
                 .expect("operation guard should unregister after action")
+                .cancelled
+        );
+    }
+
+    #[test]
+    fn backend_cancel_and_wait_returns_after_operation_cleanup_finishes() {
+        let (runner, _temp) = fake_runner();
+        let backend = RepositoryBackend::new(runner, None);
+        let worker_backend = backend.clone();
+        let operation_id = OperationId::new("operation-wait");
+        let worker_operation_id = operation_id.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (cancel_seen_tx, cancel_seen_rx) = std::sync::mpsc::channel();
+        let (finish_cleanup_tx, finish_cleanup_rx) = std::sync::mpsc::channel();
+
+        let worker = thread::spawn(move || {
+            worker_backend.run_cancellable_operation(
+                Some(worker_operation_id),
+                "testOperation",
+                || {
+                    started_tx.send(()).expect("report operation start");
+                    while !crate::git_ops::active_cancel_token()
+                        .is_some_and(|token| token.is_cancelled())
+                    {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    cancel_seen_tx.send(()).expect("report cancellation");
+                    finish_cleanup_rx.recv().expect("finish cleanup signal");
+                    Ok(())
+                },
+            )
+        });
+
+        started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("operation started");
+        let cancel_backend = backend.clone();
+        let cancel_operation_id = operation_id.clone();
+        let cancel = thread::spawn(move || {
+            cancel_backend.cancel_operation_and_wait(CancelOperationRequest {
+                operation_id: cancel_operation_id,
+            })
+        });
+
+        cancel_seen_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("worker observed cancellation");
+        assert!(!cancel.is_finished());
+        finish_cleanup_tx.send(()).expect("allow cleanup to finish");
+
+        let response = cancel
+            .join()
+            .expect("cancel thread")
+            .expect("cancel response");
+        assert!(response.cancelled);
+        worker
+            .join()
+            .expect("worker thread")
+            .expect("worker operation");
+        assert!(
+            !backend
+                .cancel_operation_and_wait(CancelOperationRequest { operation_id })
+                .expect("completed operation")
                 .cancelled
         );
     }
@@ -4393,6 +5975,40 @@ mod tests {
         (runner, temp)
     }
 
+    fn lfs_policy_runner() -> (GitRunner, TestTempDir, PathBuf) {
+        let temp = TestTempDir::new("ag-local-change-lfs-policy").expect("temp");
+        let manifest = git_dist_manifest_fixture();
+        write_git_dist_manifest(temp.path(), &manifest).expect("manifest");
+        write_executable_script(
+            &temp.path().join(&manifest.paths.git_executable),
+            "#!/bin/sh\nprintf '.git\\n'\n",
+            "@echo off\r\necho .git\r\nexit /b 0\r\n",
+        )
+        .expect("git");
+        let fetch_marker = temp.path().join("lfs-fetch-started");
+        let unix_lfs = format!(
+            "#!/bin/sh\nprintf started > {marker}\nprintf 'simulated LFS fetch failure\\n' >&2\nexit 1\n",
+            marker = shell_quote(&fetch_marker),
+        );
+        let windows_lfs = format!(
+            "@echo off\r\necho started > \"{}\"\r\necho simulated LFS fetch failure 1>&2\r\nexit /b 1\r\n",
+            fetch_marker.display(),
+        );
+        write_executable_script(
+            &temp.path().join(&manifest.paths.git_lfs_executable),
+            &unix_lfs,
+            &windows_lfs,
+        )
+        .expect("git-lfs");
+        write_executable_file(&temp.path().join(&manifest.paths.credential_helper))
+            .expect("credential helper");
+        write_executable_file(&temp.path().join(&manifest.paths.ssh_askpass)).expect("ssh askpass");
+        let distribution = GitDistribution::from_manifest(temp.path().to_path_buf(), manifest)
+            .expect("distribution");
+        let runner = GitRunner::from_distribution(distribution, temp.path().join("home"));
+        (runner, temp, fetch_marker)
+    }
+
     #[derive(Debug)]
     struct TestSshPassphrasePromptSink {
         response: crate::ssh_auth::SshPassphrasePromptResult,
@@ -4427,6 +6043,33 @@ mod tests {
         assert_eq!(local_change_kind("?", "?"), DiffChangeKind::Added);
         assert_eq!(local_change_kind("R", " "), DiffChangeKind::Renamed);
         assert_eq!(local_change_kind(" ", "D"), DiffChangeKind::Deleted);
+    }
+
+    #[test]
+    fn parses_for_each_ref_upstream_tracking_counts() {
+        assert_eq!(parse_upstream_track(""), Some((0, 0)));
+        assert_eq!(parse_upstream_track("ahead 12"), Some((12, 0)));
+        assert_eq!(parse_upstream_track("behind 7"), Some((0, 7)));
+        assert_eq!(parse_upstream_track("ahead 12, behind 7"), Some((12, 7)));
+        assert_eq!(parse_upstream_track("gone"), None);
+    }
+
+    #[test]
+    fn branch_summary_reuses_matching_upstream_tracking_counts() {
+        let (runner, temp) = fake_runner();
+        let entry = BranchAccumulator {
+            local_oid: Some("local".to_owned()),
+            remote_oid: Some("remote".to_owned()),
+            upstream: Some("origin/feature/gallery".to_owned()),
+            upstream_track: Some("ahead 8, behind 3".to_owned()),
+            ..BranchAccumulator::default()
+        };
+
+        assert_eq!(
+            branch_ahead_behind(&runner, temp.path(), "feature/gallery", &entry)
+                .expect("tracking counts"),
+            (8, 3)
+        );
     }
 
     #[test]
@@ -4729,6 +6372,7 @@ mod tests {
         assert_eq!(probe.default_branch.as_deref(), Some("main"));
         assert_eq!(probe.branches, ["feature/gallery", "main"]);
         assert!(!probe.is_empty);
+        assert!(!probe.truncated);
 
         let parent = TestTempDir::new("ag-clone-parent").expect("clone parent");
         let response = clone_repository(
@@ -4784,6 +6428,7 @@ mod tests {
         assert!(probe.is_empty);
         assert!(probe.branches.is_empty());
         assert_eq!(probe.default_branch, None);
+        assert!(!probe.truncated);
     }
 
     #[test]
@@ -4800,6 +6445,25 @@ mod tests {
         assert_eq!(probe.default_branch, None);
         assert_eq!(probe.branches, ["develop", "release"]);
         assert!(!probe.is_empty);
+        assert!(!probe.truncated);
+    }
+
+    #[test]
+    fn remote_probe_caps_branches_and_keeps_the_default_branch() {
+        let mut output = "ref: refs/heads/default-branch\tHEAD\n".to_owned();
+        for index in 0..=REMOTE_BRANCH_LIST_ENTRY_LIMIT {
+            output.push_str(&format!("{index:040x}\trefs/heads/branch-{index:05}\n"));
+        }
+
+        let probe = parse_remote_repository_probe(&output);
+
+        assert_eq!(probe.branches.len(), REMOTE_BRANCH_LIST_ENTRY_LIMIT);
+        assert!(probe.truncated);
+        assert_eq!(probe.default_branch.as_deref(), Some("default-branch"));
+        assert!(probe
+            .branches
+            .iter()
+            .any(|branch| branch == "default-branch"));
     }
 
     #[test]
@@ -4949,6 +6613,180 @@ mod tests {
         assert!(events
             .iter()
             .any(|event| event.label == "Cloning repository"));
+        assert!(events.iter().all(|event| event.cancellable));
+    }
+
+    #[test]
+    fn clone_cancellation_remains_active_after_the_clone_process_finishes() {
+        let (runner, _dist_temp) = real_runner();
+        let source = TestRepo::new(&runner);
+        source.init_with_commit();
+        let parent = TestTempDir::new("ag-clone-parent").expect("clone parent");
+        let cancel_token = CancelToken::new();
+
+        let error = clone_repository_with_cancel_and_progress(
+            &runner,
+            None,
+            CloneRepositoryRequest {
+                url: display_path(&source.path),
+                branch_name: None,
+                target_parent_directory: display_path(parent.path()),
+                directory_name: "cancel-after-download".to_owned(),
+                tool_identity: None,
+                operation_id: Some(OperationId::new("clone-open-cancel-test")),
+            },
+            &cancel_token,
+            |event| {
+                if event.label == "Clone complete" {
+                    cancel_token.cancel();
+                }
+            },
+        )
+        .expect_err("clone opening phase should observe the clone cancellation token");
+
+        assert_eq!(error.summary, "operation cancelled");
+        assert!(!parent.path().join("cancel-after-download").exists());
+    }
+
+    #[test]
+    fn cancellable_git_command_drains_large_stdout_and_stderr() {
+        let (runner, dist_temp) = fake_runner();
+        let manifest = git_dist_manifest_fixture();
+        write_executable_script(
+            &dist_temp.path().join(&manifest.paths.git_executable),
+            "#!/bin/sh\ni=0\nwhile [ $i -lt 12000 ]; do\n  printf 'stdout-%s\\n' \"$i\"\n  printf 'stderr-%s\\n' \"$i\" >&2\n  i=$((i + 1))\ndone\n",
+            "@echo off\r\nfor /L %%i in (1,1,12000) do (\r\n  echo stdout-%%i\r\n  echo stderr-%%i 1>&2\r\n)\r\nexit /b 0\r\n",
+        )
+        .expect("write large-output git");
+        let (result_tx, result_rx) = mpsc::channel();
+
+        thread::spawn(move || {
+            let result = run_git_cancellable(
+                &runner,
+                None,
+                vec![OsString::from("log")],
+                "largeOutputTest",
+                &CancelToken::new(),
+            );
+            let _ = result_tx.send(result);
+        });
+
+        let output = result_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("large output should be drained while Git is running")
+            .expect("large output command");
+        assert!(output.stdout.contains("stdout-11999"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clone_cancel_does_not_join_readers_held_by_descendants() {
+        let (runner, dist_temp) = fake_runner();
+        let manifest = git_dist_manifest_fixture();
+        let parent = TestTempDir::new("ag-clone-inherited-pipe").expect("clone parent");
+        let marker = parent.path().join("clone-started");
+        let script = format!(
+            "#!/bin/sh\nmkdir inherited-pipe-clone\nprintf started > {marker}\n(sleep 3) &\nwait\n",
+            marker = shell_quote(&marker),
+        );
+        write_executable_script(
+            &dist_temp.path().join(&manifest.paths.git_executable),
+            &script,
+            "@exit /b 1\r\n",
+        )
+        .expect("write inherited-pipe git");
+        let cancel_token = CancelToken::new();
+        let thread_token = cancel_token.clone();
+        let parent_path = parent.path().to_path_buf();
+        let (result_tx, result_rx) = mpsc::channel();
+
+        let handle = thread::spawn(move || {
+            let target = CloneTarget {
+                path: parent_path.join("inherited-pipe-clone"),
+                parent: parent_path,
+                directory_name: OsString::from("inherited-pipe-clone"),
+            };
+            let result = run_clone_command(
+                &runner,
+                "https://example.test/repository.git",
+                None,
+                &target,
+                &thread_token,
+                Some(&OperationId::new("clone-inherited-pipe-test")),
+                &|_| {},
+            );
+            let _ = result_tx.send(result);
+        });
+
+        wait_for_path(&marker);
+        cancel_token.cancel();
+        let error = result_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("clone cancellation must not join inherited pipe readers")
+            .expect_err("clone should be cancelled");
+        handle.join().expect("clone thread");
+
+        assert_eq!(error.summary, "operation cancelled");
+        assert!(!parent.path().join("inherited-pipe-clone").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn submodule_update_uses_active_cancel_token_and_marks_progress_cancellable() {
+        let (runner, dist_temp) = fake_runner();
+        let manifest = git_dist_manifest_fixture();
+        let repository = TestTempDir::new("ag-submodule-cancel").expect("repository");
+        fs::write(
+            repository.path().join(".gitmodules"),
+            "[submodule \"fixture\"]\n",
+        )
+        .expect("write gitmodules");
+        let marker = repository.path().join("submodule-update-started");
+        let script = format!(
+            "#!/bin/sh\nprintf started > {marker}\n(sleep 3) &\nwait\n",
+            marker = shell_quote(&marker),
+        );
+        write_executable_script(
+            &dist_temp.path().join(&manifest.paths.git_executable),
+            &script,
+            "@exit /b 1\r\n",
+        )
+        .expect("write blocking submodule git");
+        let cancel_token = CancelToken::new();
+        let thread_token = cancel_token.clone();
+        let root = repository.path().to_path_buf();
+        let (progress_tx, progress_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+
+        let handle = thread::spawn(move || {
+            let result = crate::git_ops::with_cancel_token_for_operation(&thread_token, || {
+                update_submodules_after_checkout(
+                    &runner,
+                    &root,
+                    "syncCurrentBranch",
+                    Some(&OperationId::new("submodule-cancel-test")),
+                    &|event| {
+                        let _ = progress_tx.send(event);
+                    },
+                )
+            });
+            let _ = result_tx.send(result);
+        });
+
+        let progress = progress_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("initial submodule progress");
+        assert_eq!(progress.label, "Updating submodules");
+        assert!(progress.cancellable);
+        wait_for_path(&marker);
+        cancel_token.cancel();
+        let error = result_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("submodule cancellation should stop the running command")
+            .expect_err("submodule update should be cancelled");
+        handle.join().expect("submodule thread");
+
+        assert_eq!(error.summary, "operation cancelled");
     }
 
     #[test]
@@ -5016,6 +6854,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(labels.iter().any(|label| label == "Updating submodules"));
         assert!(labels.iter().any(|label| label == "Submodules ready"));
+        assert!(events.borrow().iter().all(|event| !event.cancellable));
     }
 
     #[test]
@@ -5159,6 +6998,20 @@ mod tests {
                 .map(|submodule| submodule.path.as_str()),
             Some("deps/lib")
         );
+
+        let detail = local_change_detail(
+            &runner,
+            LocalChangeDetailRequest {
+                repository_path: display_path(&repo.path),
+                path: "deps/lib/tracked.txt".to_owned(),
+                old_path: None,
+                submodule: tracked.submodule.clone(),
+                operation_id: None,
+            },
+        )
+        .expect("submodule local change detail");
+        assert_eq!(detail.path, "deps/lib/tracked.txt");
+        assert!(matches!(detail.diff, DiffContent::Text { .. }));
     }
 
     #[test]
@@ -5294,6 +7147,172 @@ mod tests {
             .branches
             .iter()
             .any(|branch| branch.short_name.starts_with("backup/")));
+        assert!(!branches.truncated);
+    }
+
+    #[test]
+    fn loads_one_local_change_detail_without_reloading_the_whole_list() {
+        let (runner, _dist_temp) = real_runner();
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        repo.write("tracked.txt", "two\n");
+        repo.write("unrelated.txt", "unrelated\n");
+
+        let detail = local_change_detail(
+            &runner,
+            LocalChangeDetailRequest {
+                repository_path: display_path(&repo.path),
+                path: "tracked.txt".to_owned(),
+                old_path: None,
+                submodule: None,
+                operation_id: None,
+            },
+        )
+        .expect("single local change detail");
+
+        assert_eq!(detail.path, "tracked.txt");
+        assert_eq!(detail.payload.file_kind, DiffFileKind::Text);
+        assert!(matches!(
+            detail.diff,
+            DiffContent::Text {
+                old_text: Some(ref old_text),
+                new_text: Some(ref new_text),
+                ..
+            } if old_text == "one\n" && new_text == "two\n"
+        ));
+    }
+
+    #[test]
+    fn local_change_detail_preserves_rename_detection_with_both_paths() {
+        let (runner, _dist_temp) = real_runner();
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        repo.git(["mv", "tracked.txt", "renamed.txt"]);
+
+        let detail = local_change_detail(
+            &runner,
+            LocalChangeDetailRequest {
+                repository_path: display_path(&repo.path),
+                path: "renamed.txt".to_owned(),
+                old_path: Some("tracked.txt".to_owned()),
+                submodule: None,
+                operation_id: None,
+            },
+        )
+        .expect("renamed local change detail");
+
+        assert_eq!(detail.change_kind, DiffChangeKind::Renamed);
+        assert_eq!(detail.old_path.as_deref(), Some("tracked.txt"));
+        assert_eq!(detail.path, "renamed.txt");
+    }
+
+    #[test]
+    fn local_changes_do_not_load_oversized_worktree_files() {
+        let (runner, _dist_temp) = real_runner();
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        let path = repo.path.join("oversized.txt");
+        fs::write(&path, vec![b'x'; OVERSIZED_TEXT_BYTES + 1]).expect("write oversized file");
+
+        let changes = list_local_changes(
+            &runner,
+            RepositoryPathRequest {
+                repository_path: display_path(&repo.path),
+            },
+        )
+        .expect("local changes");
+        let change = changes
+            .changes
+            .iter()
+            .find(|change| change.path == "oversized.txt")
+            .expect("oversized change");
+
+        assert_eq!(change.payload.file_kind, DiffFileKind::OversizedText);
+        assert_eq!(
+            change.payload.metadata["newBytes"],
+            (OVERSIZED_TEXT_BYTES + 1).to_string()
+        );
+        assert!(matches!(change.diff, DiffContent::OversizedText { .. }));
+    }
+
+    #[test]
+    fn batch_local_change_preview_reports_missing_lfs_without_fetching() {
+        let (runner, temp, fetch_marker) = lfs_policy_runner();
+        let repo = temp.path().join("repo");
+        fs::create_dir_all(repo.join(".git")).expect("repository");
+        let pointer = concat!(
+            "version https://git-lfs.github.com/spec/v1\n",
+            "oid sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n",
+            "size 16\n",
+        );
+        fs::write(repo.join("asset.bin"), pointer).expect("LFS pointer");
+        let mut budget = LocalChangePreviewBudget::default();
+
+        let (payload, diff) = local_change_diff(
+            &runner,
+            LocalChangeDiffContext {
+                root: &repo,
+                path: "asset.bin",
+                old_path: None,
+                change_kind: DiffChangeKind::Added,
+                index_status: "?",
+                worktree_status: "?",
+                load_policy: LocalChangeLoadPolicy::Batch,
+            },
+            &mut budget,
+        )
+        .expect("batch preview");
+
+        assert_eq!(payload.file_kind, DiffFileKind::LfsPointer);
+        assert_eq!(payload.metadata["lfsFetchStatus"], "missing");
+        assert!(matches!(
+            diff,
+            DiffContent::LfsPointer {
+                status: LfsContentStatus::Missing,
+                message: None,
+            }
+        ));
+        assert!(!fetch_marker.exists());
+    }
+
+    #[test]
+    fn local_change_detail_fetches_missing_lfs_content() {
+        let (runner, temp, fetch_marker) = lfs_policy_runner();
+        let repo = temp.path().join("repo");
+        fs::create_dir_all(repo.join(".git")).expect("repository");
+        let pointer = concat!(
+            "version https://git-lfs.github.com/spec/v1\n",
+            "oid sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n",
+            "size 16\n",
+        );
+        fs::write(repo.join("asset.bin"), pointer).expect("LFS pointer");
+        let mut budget = LocalChangePreviewBudget::default();
+
+        let (payload, diff) = local_change_diff(
+            &runner,
+            LocalChangeDiffContext {
+                root: &repo,
+                path: "asset.bin",
+                old_path: None,
+                change_kind: DiffChangeKind::Added,
+                index_status: "?",
+                worktree_status: "?",
+                load_policy: LocalChangeLoadPolicy::Detail,
+            },
+            &mut budget,
+        )
+        .expect("detail preview");
+
+        assert_eq!(payload.file_kind, DiffFileKind::LfsPointer);
+        assert_eq!(payload.metadata["lfsFetchStatus"], "error");
+        assert!(matches!(
+            diff,
+            DiffContent::LfsPointer {
+                status: LfsContentStatus::Error,
+                message: Some(_),
+            }
+        ));
+        assert!(fetch_marker.exists());
     }
 
     #[test]
@@ -5548,6 +7567,7 @@ size 16\n"
                 repository_path: display_path(&repo.path),
                 after: None,
                 limit: Some(1),
+                operation_id: None,
             },
             &CancelToken::new(),
         )
@@ -5561,6 +7581,7 @@ size 16\n"
                 pickaxe: None,
                 after: None,
                 limit: Some(200),
+                operation_id: None,
             },
             &CancelToken::new(),
         )
@@ -5571,6 +7592,63 @@ size 16\n"
         assert!(log.next_after.is_some());
         assert_eq!(search.commits.len(), 1);
         assert_eq!(search.commits[0].subject, "second searchable commit");
+    }
+
+    #[test]
+    fn backend_history_requests_claim_an_early_cancel() {
+        let (runner, _dist_temp) = real_runner();
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        let backend = RepositoryBackend::new(runner, None);
+
+        let log_operation_id = OperationId::new("cancel-log-page");
+        let _log_reservation = backend
+            .reserve_cancellable_operation(Some(&log_operation_id), "logPage")
+            .expect("reserve log page")
+            .expect("log operation id");
+        assert!(
+            backend
+                .cancel_operation(CancelOperationRequest {
+                    operation_id: log_operation_id.clone(),
+                })
+                .expect("cancel log page")
+                .cancelled
+        );
+        let log_error = backend
+            .log_page(LogPageRequest {
+                repository_path: display_path(&repo.path),
+                after: None,
+                limit: Some(200),
+                operation_id: Some(log_operation_id),
+            })
+            .expect_err("cancelled log page");
+        assert_eq!(log_error.summary, "operation cancelled");
+
+        let search_operation_id = OperationId::new("cancel-search-log");
+        let _search_reservation = backend
+            .reserve_cancellable_operation(Some(&search_operation_id), "searchLog")
+            .expect("reserve search log")
+            .expect("search operation id");
+        assert!(
+            backend
+                .cancel_operation(CancelOperationRequest {
+                    operation_id: search_operation_id.clone(),
+                })
+                .expect("cancel search log")
+                .cancelled
+        );
+        let search_error = backend
+            .search_log(LogSearchRequest {
+                repository_path: display_path(&repo.path),
+                grep: Some("initial".to_owned()),
+                author: None,
+                pickaxe: None,
+                after: None,
+                limit: Some(200),
+                operation_id: Some(search_operation_id),
+            })
+            .expect_err("cancelled search log");
+        assert_eq!(search_error.summary, "operation cancelled");
     }
 
     fn real_runner() -> (GitRunner, TestTempDir) {

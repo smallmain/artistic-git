@@ -4,6 +4,7 @@ import {
   type EventCallback,
   type UnlistenFn,
 } from "@tauri-apps/api/event";
+import { isTauri } from "@tauri-apps/api/core";
 
 import type {
   ConflictEnteredEvent,
@@ -49,12 +50,29 @@ export function listenAppEvent<TName extends AppEventName>(
   name: TName,
   handler: EventCallback<AppEventPayloads[TName]>,
 ): Promise<UnlistenFn> {
-  return listen<AppEventPayloads[TName]>(name, handler);
+  return listenRuntimeEvent<AppEventPayloads[TName]>(name, handler);
 }
 
 export function emitAppEvent<TName extends AppEventName>(
   name: TName,
   payload: AppEventPayloads[TName],
 ): Promise<void> {
+  if (!runtimeEventsAvailable()) {
+    return Promise.resolve();
+  }
   return emit(name, payload);
+}
+
+export function listenRuntimeEvent<T>(
+  name: string,
+  handler: EventCallback<T>,
+): Promise<UnlistenFn> {
+  if (!runtimeEventsAvailable()) {
+    return Promise.resolve(() => undefined);
+  }
+  return listen<T>(name, handler);
+}
+
+function runtimeEventsAvailable(): boolean {
+  return isTauri() || import.meta.env.MODE === "test";
 }

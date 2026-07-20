@@ -1,4 +1,4 @@
-use artistic_git_contracts::{AppError, AppResult, OperationContext};
+use artistic_git_contracts::{AppError, AppResult, GitCommandError, OperationContext};
 use artistic_git_core::config::{
     normalize_project_path_key, AppSettings, ConfigActor, GitUserSettings, LargeFileCheckSettings,
     LocalChangesViewMode, ProjectSettings, SidebarLayoutSettings, WindowGeometry,
@@ -8,10 +8,22 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::{
     collections::BTreeSet,
-    env, fs, io,
+    env, fs,
+    io::{self, Read},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, ExitStatus, Output, Stdio},
+    thread,
+    time::{Duration, Instant},
 };
+
+const GITIGNORE_FILE_LIMIT_BYTES: usize = 2 * 1024 * 1024;
+const AUTO_TRACKING_RULE_LIMIT: usize = 100;
+const SSH_PUBLIC_KEY_LIMIT_BYTES: usize = 64 * 1024;
+const SSH_KEYGEN_OUTPUT_LIMIT_BYTES: usize = 64 * 1024;
+const SSH_KEYGEN_TIMEOUT: Duration = Duration::from_secs(30);
+const PROCESS_OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+const SSH_KEY_COMMENT_LIMIT_BYTES: usize = 1_024;
+const SSH_KEY_PASSPHRASE_LIMIT_BYTES: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -216,6 +228,10 @@ pub fn load_project_settings(
         .project(&project_key)
         .map_err(|source| config_error(source, "loadProjectSettings"))
         .map(|project| project.unwrap_or_else(|| ProjectSettings::new(project_key)))
+        .and_then(|project| {
+            validate_auto_tracking_rule_count(&project.auto_tracking_rules, "loadProjectSettings")?;
+            Ok(project)
+        })
 }
 
 pub fn save_project_settings(
@@ -223,6 +239,7 @@ pub fn save_project_settings(
     request: SaveProjectSettingsRequest,
 ) -> AppResult<ProjectSettings> {
     let config = require_config(config, "saveProjectSettings")?;
+    validate_auto_tracking_rule_count(&request.auto_tracking_rules, "saveProjectSettings")?;
     crate::sync::validate_auto_tracking_rules(&request.auto_tracking_rules)?;
     config
         .update_project(request.repository_path, |project| {
@@ -236,6 +253,21 @@ pub fn save_project_settings(
             }
         })
         .map_err(|source| config_error(source, "saveProjectSettings"))
+}
+
+fn validate_auto_tracking_rule_count(
+    rules: &[artistic_git_core::config::AutoTrackingRule],
+    operation_name: &str,
+) -> AppResult<()> {
+    if rules.len() > AUTO_TRACKING_RULE_LIMIT {
+        return Err(crate::logged_app_error(AppError::expected(
+            format!(
+                "Automatic branch updates support at most {AUTO_TRACKING_RULE_LIMIT} rules. Remove some rules before continuing."
+            ),
+            operation_name,
+        )));
+    }
+    Ok(())
 }
 
 pub fn save_project_window_geometry(
@@ -254,7 +286,7 @@ pub fn save_project_window_geometry(
 pub fn load_gitignore(request: GitignoreRequest) -> AppResult<GitignoreFileResponse> {
     let (repository_path, gitignore_path) =
         gitignore_path(&request.repository_path, "loadGitignore")?;
-    match fs::read_to_string(&gitignore_path) {
+    match read_utf8_file_with_limit(&gitignore_path, GITIGNORE_FILE_LIMIT_BYTES) {
         Ok(content) => Ok(GitignoreFileResponse {
             repository_path,
             path: display_path(&gitignore_path),
@@ -277,6 +309,14 @@ pub fn load_gitignore(request: GitignoreRequest) -> AppResult<GitignoreFileRespo
 pub fn save_gitignore(request: SaveGitignoreRequest) -> AppResult<GitignoreFileResponse> {
     let (repository_path, gitignore_path) =
         gitignore_path(&request.repository_path, "saveGitignore")?;
+    if request.content.len() > GITIGNORE_FILE_LIMIT_BYTES {
+        return Err(crate::logged_app_error(AppError::expected(
+            format!(
+                ".gitignore is too large to edit safely (limit: {GITIGNORE_FILE_LIMIT_BYTES} bytes)"
+            ),
+            "saveGitignore",
+        )));
+    }
     fs::write(&gitignore_path, request.content).map_err(|source| {
         crate::logged_app_error(AppError::expected(
             format!("failed to save .gitignore: {source}"),
@@ -284,6 +324,20 @@ pub fn save_gitignore(request: SaveGitignoreRequest) -> AppResult<GitignoreFileR
         ))
     })?;
     load_gitignore(GitignoreRequest { repository_path })
+}
+
+fn read_utf8_file_with_limit(path: &Path, limit_bytes: usize) -> io::Result<String> {
+    let file = fs::File::open(path)?;
+    let mut bytes = Vec::with_capacity(limit_bytes.min(64 * 1024));
+    file.take(limit_bytes.saturating_add(1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > limit_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("file exceeds the {limit_bytes}-byte application safety limit"),
+        ));
+    }
+    String::from_utf8(bytes).map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))
 }
 
 pub fn identity_sources(config: Option<&ConfigActor>) -> AppResult<IdentitySourcesResponse> {
@@ -295,7 +349,7 @@ pub fn identity_sources(config: Option<&ConfigActor>) -> AppResult<IdentitySourc
     let global_gitconfig_path = real_global_gitconfig_path();
     let global_gitconfig = global_gitconfig_path
         .as_deref()
-        .and_then(|path| fs::read_to_string(path).ok())
+        .and_then(|path| read_utf8_file_with_limit(path, GITIGNORE_FILE_LIMIT_BYTES).ok())
         .map(|content| parse_gitconfig_user(&content))
         .unwrap_or_default();
 
@@ -354,10 +408,19 @@ pub fn ssh_key_status() -> AppResult<SshKeyStatus> {
         });
     };
     let public_key_path = private_key_path.with_extension("pub");
-    let public_key = fs::read_to_string(&public_key_path)
-        .ok()
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty());
+    let public_key = match read_utf8_file_with_limit(&public_key_path, SSH_PUBLIC_KEY_LIMIT_BYTES) {
+        Ok(value) => {
+            let value = value.trim().to_owned();
+            (!value.is_empty()).then_some(value)
+        }
+        Err(source) if source.kind() == io::ErrorKind::NotFound => None,
+        Err(source) => {
+            return Err(crate::logged_app_error(AppError::expected(
+                format!("failed to read SSH public key safely: {source}"),
+                "sshKeyStatus",
+            )))
+        }
+    };
 
     Ok(SshKeyStatus {
         private_key_path: Some(display_path(&private_key_path)),
@@ -400,7 +463,33 @@ pub fn generate_ssh_key(request: GenerateSshKeyRequest) -> AppResult<SshKeyStatu
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| "artistic-git".to_owned());
     let passphrase = request.passphrase.unwrap_or_default();
-    let output = Command::new("ssh-keygen")
+    if comment.len() > SSH_KEY_COMMENT_LIMIT_BYTES {
+        return Err(crate::logged_app_error(AppError::expected(
+            format!("SSH key comment is too long (limit: {SSH_KEY_COMMENT_LIMIT_BYTES} bytes)"),
+            "generateSshKey",
+        )));
+    }
+    if passphrase.len() > SSH_KEY_PASSPHRASE_LIMIT_BYTES {
+        return Err(crate::logged_app_error(AppError::expected(
+            format!(
+                "SSH key passphrase is too long (limit: {SSH_KEY_PASSPHRASE_LIMIT_BYTES} bytes)"
+            ),
+            "generateSshKey",
+        )));
+    }
+    let command_for_error = vec![
+        "ssh-keygen".to_owned(),
+        "-t".to_owned(),
+        "ed25519".to_owned(),
+        "-C".to_owned(),
+        comment.clone(),
+        "-f".to_owned(),
+        display_path(&private_key_path),
+        "-N".to_owned(),
+        "<redacted>".to_owned(),
+    ];
+    let mut command = Command::new("ssh-keygen");
+    command
         .arg("-t")
         .arg("ed25519")
         .arg("-C")
@@ -408,14 +497,13 @@ pub fn generate_ssh_key(request: GenerateSshKeyRequest) -> AppResult<SshKeyStatu
         .arg("-f")
         .arg(&private_key_path)
         .arg("-N")
-        .arg(passphrase)
-        .output()
-        .map_err(|source| {
-            crate::logged_app_error(AppError::expected(
-                format!("failed to start ssh-keygen: {source}"),
-                "generateSshKey",
-            ))
-        })?;
+        .arg(passphrase);
+    let output = run_bounded_process(
+        command,
+        command_for_error.clone(),
+        "generateSshKey",
+        SSH_KEYGEN_TIMEOUT,
+    )?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -423,14 +511,224 @@ pub fn generate_ssh_key(request: GenerateSshKeyRequest) -> AppResult<SshKeyStatu
             .lines()
             .next()
             .filter(|value| !value.trim().is_empty())
-            .unwrap_or("ssh-keygen failed");
-        return Err(crate::logged_app_error(AppError::expected(
-            summary,
-            "generateSshKey",
-        )));
+            .unwrap_or("ssh-keygen failed")
+            .to_owned();
+        return Err(crate::logged_app_error(
+            AppError::expected(summary, "generateSshKey").with_git(GitCommandError {
+                command: command_for_error,
+                exit_code: output.status.code(),
+                stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            }),
+        ));
     }
 
     ssh_key_status()
+}
+
+#[derive(Debug)]
+struct BoundedProcessStream {
+    bytes: Vec<u8>,
+    exceeded_limit: bool,
+}
+
+type ProcessOutputReader = thread::JoinHandle<io::Result<BoundedProcessStream>>;
+
+fn run_bounded_process(
+    mut command: Command,
+    command_for_error: Vec<String>,
+    operation_name: &str,
+    timeout: Duration,
+) -> AppResult<Output> {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    crate::git_ops::prepare_child_process_tree(&mut command);
+    let mut child = command.spawn().map_err(|source| {
+        crate::logged_app_error(
+            AppError::expected(format!("failed to start command: {source}"), operation_name)
+                .with_git(GitCommandError {
+                    command: command_for_error.clone(),
+                    exit_code: None,
+                    stdout: String::new(),
+                    stderr: source.to_string(),
+                }),
+        )
+    })?;
+    let mut stdout_reader = child.stdout.take().map(spawn_process_output_reader);
+    let mut stderr_reader = child.stderr.take().map(spawn_process_output_reader);
+    let deadline = Instant::now() + timeout;
+
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None)
+                if crate::git_ops::active_cancel_token()
+                    .is_some_and(|token| token.is_cancelled()) =>
+            {
+                let status = crate::git_ops::terminate_child_process_tree(&mut child).ok();
+                if let Some(status) = status.filter(ExitStatus::success) {
+                    break status;
+                }
+                let (stdout, stderr) = collect_process_output_pair(
+                    &mut stdout_reader,
+                    &mut stderr_reader,
+                    operation_name,
+                )?;
+                return Err(process_diagnostic_error(
+                    "command was cancelled",
+                    operation_name,
+                    command_for_error,
+                    status,
+                    stdout.bytes,
+                    stderr.bytes,
+                ));
+            }
+            Ok(None) if Instant::now() >= deadline => {
+                let status = crate::git_ops::terminate_child_process_tree(&mut child).ok();
+                let (stdout, stderr) = collect_process_output_pair(
+                    &mut stdout_reader,
+                    &mut stderr_reader,
+                    operation_name,
+                )?;
+                return Err(process_diagnostic_error(
+                    &format!("command timed out after {} seconds", timeout.as_secs()),
+                    operation_name,
+                    command_for_error,
+                    status,
+                    stdout.bytes,
+                    stderr.bytes,
+                ));
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(20)),
+            Err(source) => {
+                let _ = crate::git_ops::terminate_child_process_tree(&mut child);
+                return Err(crate::logged_app_error(
+                    AppError::unexpected(
+                        format!("failed to query command status: {source}"),
+                        operation_name,
+                    )
+                    .with_git(GitCommandError {
+                        command: command_for_error,
+                        exit_code: None,
+                        stdout: String::new(),
+                        stderr: source.to_string(),
+                    }),
+                ));
+            }
+        }
+    };
+
+    let (stdout, stderr) =
+        collect_process_output_pair(&mut stdout_reader, &mut stderr_reader, operation_name)?;
+    if stdout.exceeded_limit || stderr.exceeded_limit {
+        return Err(process_diagnostic_error(
+            &format!(
+                "command output exceeded the {SSH_KEYGEN_OUTPUT_LIMIT_BYTES}-byte per-stream limit"
+            ),
+            operation_name,
+            command_for_error,
+            Some(status),
+            stdout.bytes,
+            stderr.bytes,
+        ));
+    }
+
+    Ok(Output {
+        status,
+        stdout: stdout.bytes,
+        stderr: stderr.bytes,
+    })
+}
+
+fn spawn_process_output_reader<R>(mut reader: R) -> ProcessOutputReader
+where
+    R: Read + Send + 'static,
+{
+    thread::spawn(move || {
+        const READ_CHUNK_BYTES: usize = 8 * 1024;
+
+        let capture_limit = SSH_KEYGEN_OUTPUT_LIMIT_BYTES.saturating_add(1);
+        let mut bytes = Vec::with_capacity(capture_limit.min(READ_CHUNK_BYTES));
+        let mut buffer = [0_u8; READ_CHUNK_BYTES];
+        loop {
+            let bytes_read = match reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(bytes_read) => bytes_read,
+                Err(source) if source.kind() == io::ErrorKind::Interrupted => continue,
+                Err(source) => return Err(source),
+            };
+            let captured_bytes = bytes_read.min(capture_limit.saturating_sub(bytes.len()));
+            bytes.extend_from_slice(&buffer[..captured_bytes]);
+        }
+        let exceeded_limit = bytes.len() > SSH_KEYGEN_OUTPUT_LIMIT_BYTES;
+        bytes.truncate(SSH_KEYGEN_OUTPUT_LIMIT_BYTES);
+        Ok(BoundedProcessStream {
+            bytes,
+            exceeded_limit,
+        })
+    })
+}
+
+fn collect_process_output_pair(
+    stdout_reader: &mut Option<ProcessOutputReader>,
+    stderr_reader: &mut Option<ProcessOutputReader>,
+    operation_name: &str,
+) -> AppResult<(BoundedProcessStream, BoundedProcessStream)> {
+    let deadline = Instant::now() + PROCESS_OUTPUT_DRAIN_TIMEOUT;
+    let stdout = collect_process_output_reader(stdout_reader, "stdout", operation_name, deadline)?;
+    let stderr = collect_process_output_reader(stderr_reader, "stderr", operation_name, deadline)?;
+    Ok((stdout, stderr))
+}
+
+fn collect_process_output_reader(
+    reader: &mut Option<ProcessOutputReader>,
+    stream_name: &str,
+    operation_name: &str,
+    deadline: Instant,
+) -> AppResult<BoundedProcessStream> {
+    let Some(reader) = reader.take() else {
+        return Ok(BoundedProcessStream {
+            bytes: Vec::new(),
+            exceeded_limit: false,
+        });
+    };
+    while !reader.is_finished() {
+        if Instant::now() >= deadline {
+            return Err(crate::logged_app_error(AppError::unexpected(
+                format!("command {stream_name} remained open after the process exited"),
+                operation_name,
+            )));
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    match reader.join() {
+        Ok(Ok(output)) => Ok(output),
+        Ok(Err(source)) => Err(crate::logged_app_error(AppError::unexpected(
+            format!("failed to read command {stream_name}: {source}"),
+            operation_name,
+        ))),
+        Err(_) => Err(crate::logged_app_error(AppError::unexpected(
+            format!("command {stream_name} reader thread panicked"),
+            operation_name,
+        ))),
+    }
+}
+
+fn process_diagnostic_error(
+    summary: &str,
+    operation_name: &str,
+    command: Vec<String>,
+    status: Option<ExitStatus>,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+) -> AppError {
+    crate::logged_app_error(
+        AppError::expected(summary, operation_name).with_git(GitCommandError {
+            command,
+            exit_code: status.and_then(|status| status.code()),
+            stdout: String::from_utf8_lossy(&stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&stderr).into_owned(),
+        }),
+    )
 }
 
 #[derive(Debug)]
@@ -589,7 +887,7 @@ fn clean_optional_value(value: String) -> Option<String> {
 
 fn read_real_global_gitconfig_user() -> GitUserSettings {
     real_global_gitconfig_path()
-        .and_then(|path| fs::read_to_string(path).ok())
+        .and_then(|path| read_utf8_file_with_limit(&path, GITIGNORE_FILE_LIMIT_BYTES).ok())
         .map(|content| parse_gitconfig_user(&content))
         .unwrap_or_default()
 }
@@ -680,7 +978,7 @@ fn display_path(path: &Path) -> String {
 mod tests {
     use super::*;
     use artistic_git_contracts::AppErrorCategory;
-    use artistic_git_core::config::{ConfigChangeEvent, ConfigPaths};
+    use artistic_git_core::config::{AutoTrackingRule, ConfigChangeEvent, ConfigPaths};
     use artistic_git_git_runner::GitDistribution;
     use artistic_git_test_support::{require_git_dist, TestTempDir};
     use std::{
@@ -689,6 +987,78 @@ mod tests {
     };
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn bounded_text_reader_rejects_oversized_files() {
+        let temp = TestTempDir::new("ag-settings-bounded-text").expect("temp");
+        let path = temp.path().join("settings.txt");
+        fs::write(&path, b"12345").expect("write fixture");
+
+        let error = read_utf8_file_with_limit(&path, 4).expect_err("oversized file");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("4-byte"));
+    }
+
+    #[test]
+    fn automatic_branch_update_rule_count_is_bounded() {
+        let rules = (0..=AUTO_TRACKING_RULE_LIMIT)
+            .map(|index| AutoTrackingRule {
+                source_branch: format!("source-{index}"),
+                target_branch: "main".to_owned(),
+            })
+            .collect::<Vec<_>>();
+
+        let error = validate_auto_tracking_rule_count(&rules, "loadProjectSettings")
+            .expect_err("too many rules should fail");
+
+        assert!(error.summary.contains("at most 100 rules"));
+        assert_eq!(error.context.operation_name, "loadProjectSettings");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_process_times_out_and_reaps_the_process_group() {
+        let started = Instant::now();
+        let error = run_bounded_process(
+            {
+                let mut command = Command::new("sh");
+                command.args(["-c", "sleep 5"]);
+                command
+            },
+            vec!["sh".to_owned(), "-c".to_owned(), "sleep 5".to_owned()],
+            "boundedProcessTimeoutTest",
+            Duration::from_millis(20),
+        )
+        .expect_err("command should time out");
+
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(error.summary.contains("timed out"));
+        assert_eq!(error.context.operation_name, "boundedProcessTimeoutTest");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_process_rejects_unbounded_output_with_diagnostics() {
+        let error = run_bounded_process(
+            {
+                let mut command = Command::new("sh");
+                command.args([
+                    "-c",
+                    "i=0; while [ $i -lt 70000 ]; do printf x; i=$((i + 1)); done",
+                ]);
+                command
+            },
+            vec!["fixture-output-command".to_owned()],
+            "boundedProcessOutputTest",
+            Duration::from_secs(5),
+        )
+        .expect_err("command output should be bounded");
+
+        assert!(error.summary.contains("per-stream limit"));
+        let details = error.git.expect("bounded command diagnostics");
+        assert_eq!(details.command, vec!["fixture-output-command"]);
+        assert_eq!(details.stdout.len(), SSH_KEYGEN_OUTPUT_LIMIT_BYTES);
+    }
 
     #[test]
     fn parses_real_gitconfig_user_section_only() {

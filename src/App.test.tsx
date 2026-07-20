@@ -29,6 +29,8 @@ const commandMocks = vi.hoisted(() => ({
   newProjectWindow: vi.fn(),
   openLogDir: vi.fn(),
   registerWindowRepository: vi.fn(),
+  saveAppSettings: vi.fn(),
+  settingsSnapshot: vi.fn(),
   windowContext: vi.fn(),
 }));
 
@@ -43,6 +45,8 @@ vi.mock("@/lib/ipc/commands", async (importOriginal) => {
     newProjectWindow: commandMocks.newProjectWindow,
     openLogDir: commandMocks.openLogDir,
     registerWindowRepository: commandMocks.registerWindowRepository,
+    saveAppSettings: commandMocks.saveAppSettings,
+    settingsSnapshot: commandMocks.settingsSnapshot,
     windowContext: commandMocks.windowContext,
   };
 });
@@ -92,6 +96,24 @@ beforeEach(() => {
   commandMocks.registerWindowRepository.mockResolvedValue({
     label: "main",
     repositoryPath: "/repo/art-project",
+  });
+  commandMocks.saveAppSettings.mockImplementation(({ settings }) =>
+    Promise.resolve(settings),
+  );
+  commandMocks.settingsSnapshot.mockResolvedValue({
+    appVersion: "0.2.5",
+    identitySources: {
+      globalGitconfig: { email: null, name: null },
+      globalGitconfigPath: null,
+      settings: { email: null, name: null },
+    },
+    settings: {},
+    sshKey: {
+      exists: false,
+      privateKeyPath: null,
+      publicKey: null,
+      publicKeyPath: null,
+    },
   });
   commandMocks.windowContext.mockResolvedValue({
     label: "main",
@@ -147,7 +169,7 @@ describe("App", () => {
     ).toBeInTheDocument();
   });
 
-  it("routes first-run windows to the onboarding placeholder", () => {
+  it("routes first-run windows to the onboarding placeholder", async () => {
     renderWithProviders(<App />, {
       initialWindowState: { onboarded: false },
     });
@@ -159,10 +181,41 @@ describe("App", () => {
       screen.getByText(/move Artistic Git to \/Applications/),
     ).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Skip" }));
+    const skipButton = await screen.findByRole("button", { name: "Skip" });
+    await waitFor(() => expect(skipButton).toBeEnabled());
+    fireEvent.click(skipButton);
 
     expect(
-      screen.getByRole("button", { name: "Open Project" }),
+      await screen.findByRole("button", { name: "Open Project" }),
+    ).toBeInTheDocument();
+  });
+
+  it("blocks repeated setup completion while settings are saving", async () => {
+    let finishSave: (() => void) | undefined;
+    commandMocks.saveAppSettings.mockImplementation(
+      ({ settings }) =>
+        new Promise((resolve) => {
+          finishSave = () => resolve(settings);
+        }),
+    );
+    renderWithProviders(<App />, {
+      initialWindowState: { onboarded: false },
+    });
+
+    const skipButton = await screen.findByRole("button", { name: "Skip" });
+    await waitFor(() => expect(skipButton).toBeEnabled());
+    fireEvent.click(skipButton);
+    fireEvent.click(skipButton);
+
+    expect(commandMocks.saveAppSettings).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(skipButton).toBeDisabled());
+    expect(screen.queryByRole("button", { name: "Open Project" })).toBeNull();
+
+    await act(async () => {
+      finishSave?.();
+    });
+    expect(
+      await screen.findByRole("button", { name: "Open Project" }),
     ).toBeInTheDocument();
   });
 
@@ -174,8 +227,8 @@ describe("App", () => {
     });
 
     expect(
-      screen.getAllByText("No remote repository configured").length,
-    ).toBeGreaterThan(0);
+      screen.queryByText("No remote repository configured"),
+    ).not.toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /Local Changes/ }),
     ).not.toHaveTextContent("4");
@@ -578,6 +631,23 @@ describe("ConfirmDialog", () => {
 
     fireEvent.keyDown(document, { key: "Escape" });
     expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("announces progress while confirmation is busy", () => {
+    renderWithProviders(
+      <ConfirmDialog
+        busy
+        description="Delete this branch?"
+        onConfirm={vi.fn()}
+        onOpenChange={vi.fn()}
+        open
+        title="Confirm delete"
+      />,
+    );
+
+    expect(screen.getByRole("status")).toHaveTextContent("Working...");
+    expect(screen.getByRole("button", { name: "Confirm" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
   });
 });
 

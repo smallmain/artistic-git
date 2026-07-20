@@ -1,9 +1,12 @@
 import {
+  AlertTriangle,
   CheckSquare,
+  ChevronLeft,
   ChevronRight,
   FolderTree,
   GitCommit,
   List,
+  Loader2,
   MoreHorizontal,
   RefreshCw,
   Search,
@@ -24,6 +27,7 @@ import {
   filterChanges,
   formatChangePath,
   getCheckState,
+  isDeferredLocalChange,
   parentPath,
   type CheckState,
   type TreeNode,
@@ -35,15 +39,22 @@ import type {
 } from "./types";
 
 const defaultStorageKey = "artistic-git.local-changes.view-mode";
+const changeRenderPageSize = 250;
 
 export function LocalChangesPanel({
   busy = false,
   changes,
+  detailState,
+  error,
   initialCheckedIds = [],
+  loadDeferredDetails = false,
+  loading = false,
   onCheckedChange,
   onCommit,
   onSelectedChange,
   onPreviewRenormalize,
+  onRetry,
+  onRetryDetail,
   onRestore,
   onStash,
   onViewModeChange,
@@ -67,10 +78,20 @@ export function LocalChangesPanel({
       () => viewMode ?? readViewMode(storageKey),
     );
   const [contextMenu, setContextMenu] = React.useState<{
+    busyEpoch: object;
     ids: string[];
     x: number;
     y: number;
   } | null>(null);
+  const [renderPage, setRenderPage] = React.useState<{
+    changes: LocalChangeItem[];
+    pageIndex: number;
+    searchTerm: string;
+    viewMode: LocalChangesViewMode;
+  } | null>(null);
+  const changeListRef = React.useRef<HTMLDivElement>(null);
+  const contextMenuBusyEpoch = React.useMemo(() => ({ busy }), [busy]);
+  const hasError = error !== null && error !== undefined;
 
   const effectiveSelectedId = selectedId ?? internalSelectedId;
   const effectiveViewMode = viewMode ?? internalViewMode;
@@ -78,10 +99,41 @@ export function LocalChangesPanel({
     () => filterChanges(changes, searchTerm),
     [changes, searchTerm],
   );
+  const renderPageMatches =
+    renderPage?.changes === changes &&
+    renderPage.searchTerm === searchTerm &&
+    renderPage.viewMode === effectiveViewMode;
+  const renderPageCount = Math.max(
+    1,
+    Math.ceil(filteredChanges.length / changeRenderPageSize),
+  );
+  const renderPageIndex = renderPageMatches
+    ? Math.min(renderPage.pageIndex, renderPageCount - 1)
+    : 0;
+  const renderPageStart = renderPageIndex * changeRenderPageSize;
+  const renderedChanges = filteredChanges.slice(
+    renderPageStart,
+    renderPageStart + changeRenderPageSize,
+  );
   const selectedChange =
     filteredChanges.find((change) => change.id === effectiveSelectedId) ??
     filteredChanges[0] ??
     null;
+  const loadSelectedDetail =
+    loadDeferredDetails && isDeferredLocalChange(selectedChange);
+  const detailMatchesSelection = detailState?.selectedId === selectedChange?.id;
+  const detailLoading =
+    loadSelectedDetail &&
+    (!detailMatchesSelection || detailState?.loading === true);
+  const detailError =
+    loadSelectedDetail && detailMatchesSelection
+      ? (detailState?.error ?? null)
+      : null;
+  const loadedDetailChange =
+    loadSelectedDetail && detailMatchesSelection
+      ? (detailState?.change ?? null)
+      : null;
+  const previewChange = loadedDetailChange ?? selectedChange;
   const visibleIds = filteredChanges.map((change) => change.id);
   const allCheckState = getCheckState(visibleIds, checkedIds);
 
@@ -119,169 +171,303 @@ export function LocalChangesPanel({
 
   const openContextMenu = (event: React.MouseEvent, fallbackIds: string[]) => {
     event.preventDefault();
+    if (busy) {
+      setContextMenu(null);
+      return;
+    }
+
     const selectedIds = Array.from(checkedIds);
     setContextMenu({
+      busyEpoch: contextMenuBusyEpoch,
       ids: selectedIds.length > 0 ? selectedIds : fallbackIds,
       x: event.clientX,
       y: event.clientY,
     });
   };
 
+  const showErrorDetails = () => {
+    window.dispatchEvent(
+      new CustomEvent("artistic-git:error", { detail: error }),
+    );
+  };
+
   return (
     <section
-      className="grid h-full min-h-0 grid-cols-[360px_minmax(0,1fr)] overflow-hidden border bg-background"
+      aria-busy={loading}
+      className="relative grid h-full min-h-0 grid-cols-[360px_minmax(0,1fr)] overflow-hidden border bg-background"
       data-testid="local-changes-panel"
     >
-      <aside className="flex min-h-0 flex-col border-r bg-card">
-        <header className="space-y-3 border-b p-3">
-          <div className="flex items-center justify-between gap-2">
-            <TriStateCheckbox
-              ariaLabel={t("localChanges.selectAll")}
-              checkState={allCheckState}
-              onChange={(checked) => toggleIds(visibleIds, checked)}
-            />
-            <div className="flex items-center gap-1">
-              <IconButton
-                aria-pressed={effectiveViewMode === "flat"}
-                label={t("localChanges.flatView")}
-                onClick={() => updateViewMode("flat")}
-                tooltip={t("localChanges.flatView")}
-                variant={effectiveViewMode === "flat" ? "secondary" : "ghost"}
-              >
-                <List className="size-4" aria-hidden="true" />
-              </IconButton>
-              <IconButton
-                aria-pressed={effectiveViewMode === "tree"}
-                label={t("localChanges.treeView")}
-                onClick={() => updateViewMode("tree")}
-                tooltip={t("localChanges.treeView")}
-                variant={effectiveViewMode === "tree" ? "secondary" : "ghost"}
-              >
-                <FolderTree className="size-4" aria-hidden="true" />
-              </IconButton>
-            </div>
-          </div>
-          <label className="flex h-9 items-center gap-2 rounded-md border bg-background px-3 text-sm">
-            <Search
-              className="size-4 text-muted-foreground"
-              aria-hidden="true"
-            />
-            <input
-              aria-label={t("localChanges.search")}
-              className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
-              data-app-search="current"
-              onChange={(event) => setSearchTerm(event.target.value)}
-              placeholder={t("localChanges.search")}
-              value={searchTerm}
-            />
-          </label>
-          {renormalizeSuggestion ? (
-            <div className="space-y-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-sm">
+      {hasError ? (
+        <div
+          className="col-span-2 flex min-h-0 items-center justify-center p-6"
+          role="alert"
+        >
+          <div className="w-full max-w-md space-y-4 rounded-md border bg-card p-5 shadow-sm">
+            <div className="flex items-start gap-3">
+              <AlertTriangle
+                className="mt-0.5 size-5 shrink-0 text-destructive"
+                aria-hidden="true"
+              />
               <div className="space-y-1">
-                <p className="font-medium text-warning">
-                  {t("localChanges.renormalizeTitle")}
-                </p>
-                <p className="text-muted-foreground">
-                  {t("localChanges.renormalizeDescription", {
-                    count: renormalizeSuggestion.totalChanges,
-                  })}
+                <h2 className="text-sm font-semibold">
+                  {t("localChanges.loadFailedTitle")}
+                </h2>
+                <p className="text-sm text-muted-foreground">
+                  {t("localChanges.loadFailedDescription")}
                 </p>
               </div>
-              {renormalizeSuggestion.samplePaths.length > 0 ? (
-                <p className="truncate font-mono text-xs text-muted-foreground">
-                  {renormalizeSuggestion.samplePaths.join(", ")}
-                </p>
-              ) : null}
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  className="gap-2"
-                  disabled={busy || renormalizePreviewBusy}
-                  onClick={onPreviewRenormalize}
-                  type="button"
-                  variant="secondary"
-                >
-                  <RefreshCw className="size-4" aria-hidden="true" />
-                  {renormalizePreviewBusy
-                    ? t("localChanges.renormalizePreviewBusy")
-                    : t("localChanges.renormalizePreview")}
-                </Button>
-                {renormalizePreviewStatus ? (
-                  <span className="text-xs text-muted-foreground">
-                    {renormalizePreviewStatus}
-                  </span>
-                ) : null}
-              </div>
             </div>
-          ) : null}
-        </header>
-
-        <div className="min-h-0 flex-1 overflow-auto">
-          {filteredChanges.length === 0 ? (
-            <div className="p-4 text-sm text-muted-foreground">
-              {t("localChanges.empty")}
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button onClick={showErrorDetails} type="button" variant="ghost">
+                {t("localChanges.viewErrorDetails")}
+              </Button>
+              <Button className="gap-2" onClick={onRetry} type="button">
+                <RefreshCw className="size-4" aria-hidden="true" />
+                {t("localChanges.retryLoading")}
+              </Button>
             </div>
-          ) : effectiveViewMode === "flat" ? (
-            <FlatChangeList
-              changes={filteredChanges}
-              checkedIds={checkedIds}
-              onContextMenu={openContextMenu}
-              onSelect={setInternalSelectedId}
-              onToggle={toggleIds}
-              selectedId={selectedChange?.id ?? null}
-            />
-          ) : (
-            <TreeChangeList
-              changes={filteredChanges}
-              checkedIds={checkedIds}
-              onContextMenu={openContextMenu}
-              onSelect={setInternalSelectedId}
-              onToggle={toggleIds}
-              selectedId={selectedChange?.id ?? null}
-            />
-          )}
-        </div>
-
-        <footer className="flex items-center justify-between gap-3 border-t p-3">
-          <span className="text-sm text-muted-foreground">
-            {t("localChanges.selectedCount", { count: checkedIds.size })}
-          </span>
-          <Button
-            className="gap-2"
-            data-testid="local-changes-commit"
-            disabled={busy || checkedIds.size === 0}
-            onClick={() => onCommit?.(Array.from(checkedIds))}
-          >
-            <GitCommit className="size-4" aria-hidden="true" />
-            {t("localChanges.commit")}
-          </Button>
-        </footer>
-      </aside>
-
-      <div className="min-h-0 min-w-0">
-        {selectedChange?.diff ? (
-          <DiffViewer
-            content={selectedChange.diff}
-            payload={selectedChange.payload}
-            source="localChanges"
-          />
-        ) : selectedChange ? (
-          <DiffViewer
-            content={{
-              kind: mapFileKindToCard(selectedChange.payload.fileKind),
-            }}
-            payload={selectedChange.payload}
-            source="localChanges"
-          />
-        ) : (
-          <div className="flex min-h-full items-center justify-center p-6 text-sm text-muted-foreground">
-            {t("localChanges.noSelection")}
           </div>
-        )}
-      </div>
+        </div>
+      ) : (
+        <>
+          <aside
+            className="flex min-h-0 flex-col border-r bg-card"
+            inert={loading}
+          >
+            <header className="space-y-3 border-b p-3">
+              <div className="flex items-center justify-between gap-2">
+                <TriStateCheckbox
+                  ariaLabel={t("localChanges.selectAll")}
+                  checkState={allCheckState}
+                  onChange={(checked) => toggleIds(visibleIds, checked)}
+                />
+                <div className="flex items-center gap-1">
+                  <IconButton
+                    aria-pressed={effectiveViewMode === "flat"}
+                    label={t("localChanges.flatView")}
+                    onClick={() => updateViewMode("flat")}
+                    tooltip={t("localChanges.flatView")}
+                    variant={
+                      effectiveViewMode === "flat" ? "secondary" : "ghost"
+                    }
+                  >
+                    <List className="size-4" aria-hidden="true" />
+                  </IconButton>
+                  <IconButton
+                    aria-pressed={effectiveViewMode === "tree"}
+                    label={t("localChanges.treeView")}
+                    onClick={() => updateViewMode("tree")}
+                    tooltip={t("localChanges.treeView")}
+                    variant={
+                      effectiveViewMode === "tree" ? "secondary" : "ghost"
+                    }
+                  >
+                    <FolderTree className="size-4" aria-hidden="true" />
+                  </IconButton>
+                </div>
+              </div>
+              <label className="flex h-9 items-center gap-2 rounded-md border bg-background px-3 text-sm">
+                <Search
+                  className="size-4 text-muted-foreground"
+                  aria-hidden="true"
+                />
+                <input
+                  aria-label={t("localChanges.search")}
+                  className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+                  data-app-search="current"
+                  onChange={(event) => setSearchTerm(event.target.value)}
+                  placeholder={t("localChanges.search")}
+                  value={searchTerm}
+                />
+              </label>
+              {renormalizeSuggestion ? (
+                <div className="space-y-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-sm">
+                  <div className="space-y-1">
+                    <p className="font-medium text-warning">
+                      {t("localChanges.renormalizeTitle")}
+                    </p>
+                    <p className="text-muted-foreground">
+                      {t("localChanges.renormalizeDescription", {
+                        count: renormalizeSuggestion.totalChanges,
+                      })}
+                    </p>
+                  </div>
+                  {renormalizeSuggestion.samplePaths.length > 0 ? (
+                    <p className="truncate font-mono text-xs text-muted-foreground">
+                      {renormalizeSuggestion.samplePaths.join(", ")}
+                    </p>
+                  ) : null}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      className="gap-2"
+                      disabled={busy || renormalizePreviewBusy}
+                      onClick={onPreviewRenormalize}
+                      type="button"
+                      variant="secondary"
+                    >
+                      <RefreshCw className="size-4" aria-hidden="true" />
+                      {renormalizePreviewBusy
+                        ? t("localChanges.renormalizePreviewBusy")
+                        : t("localChanges.renormalizePreview")}
+                    </Button>
+                    {renormalizePreviewStatus ? (
+                      <span className="text-xs text-muted-foreground">
+                        {renormalizePreviewStatus}
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+            </header>
 
-      {contextMenu ? (
+            <div className="min-h-0 flex-1 overflow-auto" ref={changeListRef}>
+              {filteredChanges.length === 0 ? (
+                <div className="p-4 text-sm text-muted-foreground">
+                  {t("localChanges.empty")}
+                </div>
+              ) : effectiveViewMode === "flat" ? (
+                <FlatChangeList
+                  changes={renderedChanges}
+                  checkedIds={checkedIds}
+                  onContextMenu={openContextMenu}
+                  onSelect={setInternalSelectedId}
+                  onToggle={toggleIds}
+                  selectedId={selectedChange?.id ?? null}
+                />
+              ) : (
+                <TreeChangeList
+                  changes={renderedChanges}
+                  checkedIds={checkedIds}
+                  onContextMenu={openContextMenu}
+                  onSelect={setInternalSelectedId}
+                  onToggle={toggleIds}
+                  selectedId={selectedChange?.id ?? null}
+                />
+              )}
+              {renderPageCount > 1 ? (
+                <div className="flex items-center justify-between gap-2 border-t p-2">
+                  <Button
+                    aria-label={t("localChanges.previousPage")}
+                    disabled={renderPageIndex === 0}
+                    onClick={() => {
+                      setRenderPage({
+                        changes,
+                        pageIndex: Math.max(0, renderPageIndex - 1),
+                        searchTerm,
+                        viewMode: effectiveViewMode,
+                      });
+                      if (changeListRef.current) {
+                        changeListRef.current.scrollTop = 0;
+                      }
+                    }}
+                    size="icon"
+                    title={t("localChanges.previousPage")}
+                    type="button"
+                    variant="ghost"
+                  >
+                    <ChevronLeft className="size-4" aria-hidden="true" />
+                  </Button>
+                  <span className="text-xs text-muted-foreground">
+                    {t("localChanges.page", {
+                      page: renderPageIndex + 1,
+                      total: renderPageCount,
+                    })}
+                  </span>
+                  <Button
+                    aria-label={t("localChanges.nextPage")}
+                    disabled={renderPageIndex >= renderPageCount - 1}
+                    onClick={() => {
+                      setRenderPage({
+                        changes,
+                        pageIndex: Math.min(
+                          renderPageCount - 1,
+                          renderPageIndex + 1,
+                        ),
+                        searchTerm,
+                        viewMode: effectiveViewMode,
+                      });
+                      if (changeListRef.current) {
+                        changeListRef.current.scrollTop = 0;
+                      }
+                    }}
+                    size="icon"
+                    title={t("localChanges.nextPage")}
+                    type="button"
+                    variant="ghost"
+                  >
+                    <ChevronRight className="size-4" aria-hidden="true" />
+                  </Button>
+                </div>
+              ) : null}
+            </div>
+
+            <footer className="flex items-center justify-between gap-3 border-t p-3">
+              <span className="text-sm text-muted-foreground">
+                {t("localChanges.selectedCount", { count: checkedIds.size })}
+              </span>
+              <Button
+                className="gap-2"
+                data-testid="local-changes-commit"
+                disabled={busy || checkedIds.size === 0}
+                onClick={() => onCommit?.(Array.from(checkedIds))}
+              >
+                <GitCommit className="size-4" aria-hidden="true" />
+                {t("localChanges.commit")}
+              </Button>
+            </footer>
+          </aside>
+
+          <div
+            aria-busy={detailLoading}
+            className="min-h-0 min-w-0"
+            inert={loading}
+          >
+            {detailLoading ? (
+              <LocalChangeDetailLoading />
+            ) : detailError !== null && detailError !== undefined ? (
+              <LocalChangeDetailError
+                error={detailError}
+                onRetry={onRetryDetail}
+              />
+            ) : previewChange?.diff ? (
+              <DiffViewer
+                content={previewChange.diff}
+                payload={previewChange.payload}
+                source="localChanges"
+              />
+            ) : previewChange ? (
+              <DiffViewer
+                content={{
+                  kind: mapFileKindToCard(previewChange.payload.fileKind),
+                }}
+                payload={previewChange.payload}
+                source="localChanges"
+              />
+            ) : (
+              <div className="flex min-h-full items-center justify-center p-6 text-sm text-muted-foreground">
+                {t("localChanges.noSelection")}
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {loading ? (
+        <div
+          className="absolute inset-0 z-20 flex items-center justify-center gap-2 bg-card/80 text-sm font-medium"
+          role="status"
+        >
+          <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+          {t("localChanges.loading")}
+        </div>
+      ) : null}
+
+      {contextMenu &&
+      !busy &&
+      contextMenu.busyEpoch === contextMenuBusyEpoch ? (
         <ContextMenu
           ids={contextMenu.ids}
+          busy={busy}
           onClose={() => setContextMenu(null)}
           onRestore={onRestore}
           onStash={onStash}
@@ -291,6 +477,71 @@ export function LocalChangesPanel({
         />
       ) : null}
     </section>
+  );
+}
+
+function LocalChangeDetailLoading() {
+  const { t } = useTranslation();
+
+  return (
+    <div
+      className="flex min-h-full items-center justify-center gap-2 p-6 text-sm font-medium text-muted-foreground"
+      role="status"
+    >
+      <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+      {t("localChanges.previewLoading")}
+    </div>
+  );
+}
+
+function LocalChangeDetailError({
+  error,
+  onRetry,
+}: {
+  error: unknown;
+  onRetry?: () => void;
+}) {
+  const { t } = useTranslation();
+
+  return (
+    <div
+      className="flex min-h-full items-center justify-center p-6"
+      role="alert"
+    >
+      <div className="w-full max-w-md space-y-4 rounded-md border bg-card p-5 shadow-sm">
+        <div className="flex items-start gap-3">
+          <AlertTriangle
+            className="mt-0.5 size-5 shrink-0 text-destructive"
+            aria-hidden="true"
+          />
+          <div className="space-y-1">
+            <h2 className="text-sm font-semibold">
+              {t("localChanges.previewLoadFailedTitle")}
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              {t("localChanges.previewLoadFailedDescription")}
+            </p>
+          </div>
+        </div>
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button
+            onClick={() =>
+              window.dispatchEvent(
+                new CustomEvent("artistic-git:error", { detail: error }),
+              )
+            }
+            type="button"
+            variant="ghost"
+          >
+            {t("localChanges.viewErrorDetails")}
+          </Button>
+          <Button className="gap-2" onClick={onRetry} type="button">
+            <RefreshCw className="size-4" aria-hidden="true" />
+            {t("localChanges.retryPreview")}
+          </Button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -611,6 +862,7 @@ function TriStateCheckbox({
 }
 
 function ContextMenu({
+  busy,
   ids,
   onClose,
   onRestore,
@@ -619,6 +871,7 @@ function ContextMenu({
   x,
   y,
 }: {
+  busy: boolean;
   ids: string[];
   onClose: () => void;
   onRestore?: (ids: string[]) => void;
@@ -664,11 +917,13 @@ function ContextMenu({
       <button
         className={cn(
           "flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left hover:bg-accent",
-          !onStash && "text-muted-foreground",
+          (busy || !onStash) && "text-muted-foreground",
         )}
-        disabled={!onStash}
+        disabled={busy || !onStash}
         onClick={() => {
-          onStash?.(ids);
+          if (!busy) {
+            onStash?.(ids);
+          }
           onClose();
         }}
         type="button"
@@ -681,11 +936,13 @@ function ContextMenu({
       <button
         className={cn(
           "flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left hover:bg-accent",
-          !onRestore && "text-muted-foreground",
+          (busy || !onRestore) && "text-muted-foreground",
         )}
-        disabled={!onRestore}
+        disabled={busy || !onRestore}
         onClick={() => {
-          onRestore?.(ids);
+          if (!busy) {
+            onRestore?.(ids);
+          }
           onClose();
         }}
         type="button"
@@ -706,7 +963,11 @@ function readViewMode(storageKey: string): LocalChangesViewMode {
 
 function mapFileKindToCard(
   fileKind: LocalChangeItem["payload"]["fileKind"],
-): "binary" | "oversizedText" | "lfsPointer" | "moved" {
+): "binary" | "deferred" | "oversizedText" | "lfsPointer" | "moved" {
+  if (fileKind === "deferred") {
+    return "deferred";
+  }
+
   if (fileKind === "oversizedText") {
     return "oversizedText";
   }

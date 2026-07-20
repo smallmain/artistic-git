@@ -23,7 +23,12 @@ import { Tooltip } from "@/components/ui/tooltip";
 import { TruncatedText } from "@/components/ui/truncated-text";
 import { DiffViewer } from "@/features/diff";
 import { useLocalizedFormatters } from "@/i18n/format";
-import { logPage, revertCommit, searchLog } from "@/lib/ipc/commands";
+import {
+  cancelOperation,
+  logPage,
+  revertCommit,
+  searchLog,
+} from "@/lib/ipc/commands";
 import type {
   ConflictEnteredEvent,
   CommitSummary,
@@ -38,11 +43,7 @@ import { cn } from "@/lib/utils";
 import { useWindowStore } from "@/store/window-store";
 
 import { resolveAvatarPresentation } from "./avatar";
-import {
-  attachGraphRows,
-  mapCommitSummaryToHistoryCommit,
-  mergeHistoryCommits,
-} from "./history-data";
+import { mapCommitSummaryToHistoryCommit } from "./history-data";
 import {
   createMockHistorySearchSource,
   type HistorySearchSource,
@@ -56,6 +57,11 @@ import type {
   HistoryRow,
   HistorySearchMatch,
 } from "./types";
+import {
+  useIncrementalFilteredRows,
+  useIncrementalLogRows,
+  useIncrementalSearchRows,
+} from "./useIncrementalHistoryRows";
 import { useVirtualWindow } from "./useVirtualWindow";
 
 const rowHeight = 72;
@@ -81,6 +87,7 @@ interface HistoryWorkbenchProps {
   onWriteBusyChange?: (busy: boolean) => void;
   rows?: HistoryRow[];
   searchSource?: HistorySearchSource;
+  writeDisabled?: boolean;
 }
 
 interface SearchResultSnapshot {
@@ -107,11 +114,13 @@ async function loadBackendSearchPage({
   limit,
   query,
   repositoryPath,
+  signal,
 }: {
   cursor: BackendSearchCursor;
   limit: number;
   query: string;
   repositoryPath: string;
+  signal: AbortSignal;
 }): Promise<BackendSearchPage> {
   const specs = [
     {
@@ -139,12 +148,18 @@ async function loadBackendSearchPage({
         return Promise.resolve({ commits: [], nextAfter: null });
       }
 
-      return searchLog({
-        ...spec.request,
-        after: spec.after,
-        limit,
-        repositoryPath,
-      });
+      return runCancellableHistoryRequest(
+        signal,
+        `history-search-${spec.match}`,
+        (operationId) =>
+          searchLog({
+            ...spec.request,
+            after: spec.after,
+            limit,
+            operationId,
+            repositoryPath,
+          }),
+      );
     }),
   );
   const byOid = new Map<
@@ -196,6 +211,33 @@ async function loadBackendSearchPage({
   };
 }
 
+async function runCancellableHistoryRequest<T>(
+  signal: AbortSignal,
+  operationPrefix: string,
+  request: (operationId: string) => Promise<T>,
+): Promise<T> {
+  throwIfHistoryRequestAborted(signal);
+  const operationId = createHistoryOperationId(operationPrefix);
+  const cancel = () => {
+    void cancelOperation({ operationId }).catch(() => undefined);
+  };
+  signal.addEventListener("abort", cancel, { once: true });
+
+  try {
+    const response = await request(operationId);
+    throwIfHistoryRequestAborted(signal);
+    return response;
+  } finally {
+    signal.removeEventListener("abort", cancel);
+  }
+}
+
+function throwIfHistoryRequestAborted(signal: AbortSignal): void {
+  if (signal.aborted) {
+    throw new DOMException("History request was cancelled.", "AbortError");
+  }
+}
+
 function compareCommitSummaryTime(
   left: CommitSummary,
   right: CommitSummary,
@@ -218,6 +260,7 @@ export function HistoryWorkbench({
   onWriteBusyChange,
   rows = [],
   searchSource,
+  writeDisabled = false,
 }: HistoryWorkbenchProps) {
   const { t } = useTranslation();
   const effectiveNow = React.useMemo(
@@ -295,12 +338,15 @@ export function HistoryWorkbench({
     enabled: backendHistoryEnabled && !effectiveSearchTerm,
     getNextPageParam: (lastPage) => lastPage.nextAfter ?? undefined,
     initialPageParam: null as string | null,
-    queryFn: ({ pageParam }) =>
-      logPage({
-        after: pageParam,
-        limit: historyPageSize,
-        repositoryPath: historyRepositoryPath ?? "",
-      }),
+    queryFn: ({ pageParam, signal }) =>
+      runCancellableHistoryRequest(signal, "history-page", (operationId) =>
+        logPage({
+          after: pageParam,
+          limit: historyPageSize,
+          operationId,
+          repositoryPath: historyRepositoryPath ?? "",
+        }),
+      ),
     queryKey: [
       ...repoQueryKeys.history(historyRepositoryPath ?? "__none__"),
       "pages",
@@ -325,12 +371,13 @@ export function HistoryWorkbench({
       message: null,
       messageDone: false,
     } satisfies BackendSearchCursor,
-    queryFn: ({ pageParam }) =>
+    queryFn: ({ pageParam, signal }) =>
       loadBackendSearchPage({
         cursor: pageParam,
         limit: historyPageSize,
         query: effectiveSearchTerm,
         repositoryPath: historyRepositoryPath ?? "",
+        signal,
       }),
     queryKey: [
       ...repoQueryKeys.history(historyRepositoryPath ?? "__none__"),
@@ -358,37 +405,15 @@ export function HistoryWorkbench({
       debouncedQuery !== trimmedQuery) ||
     isBackendSearching;
 
-  const backendRows = React.useMemo(() => {
-    if (!backendHistoryEnabled || !historyQuery.data) {
-      return null;
-    }
-
-    return attachGraphRows(
-      historyQuery.data.pages
-        .flatMap((page) => page.commits)
-        .map((commit) => mapCommitSummaryToHistoryCommit(commit)),
-    );
-  }, [backendHistoryEnabled, historyQuery.data]);
-
-  const backendSearchRows = React.useMemo(() => {
-    if (!backendHistoryEnabled || !backendSearchQuery.data) {
-      return null;
-    }
-
-    return attachGraphRows(
-      mergeHistoryCommits(
-        backendSearchQuery.data.pages.flatMap((page) => page.commits),
-      ),
-    );
-  }, [backendHistoryEnabled, backendSearchQuery.data]);
-
-  const effectiveRows = React.useMemo(
-    () => (backendHistoryEnabled ? (backendRows ?? []) : rows),
-    [backendHistoryEnabled, backendRows, rows],
+  const backendRows = useIncrementalLogRows(historyQuery.data?.pages);
+  const backendSearchRows = useIncrementalSearchRows(
+    backendSearchQuery.data?.pages,
   );
+  const fixtureRows = React.useMemo(() => ({ changedFrom: 0, rows }), [rows]);
+  const effectiveRows = backendHistoryEnabled ? backendRows : fixtureRows;
   const activeSearchRows = React.useMemo(() => {
     if (backendHistoryEnabled) {
-      return effectiveSearchTerm ? (backendSearchRows ?? []) : null;
+      return effectiveSearchTerm ? backendSearchRows : null;
     }
 
     if (activeSearchResults === null) {
@@ -398,12 +423,13 @@ export function HistoryWorkbench({
     const searchedIds = new Map(
       activeSearchResults.map((commit) => [commit.id, commit]),
     );
-    return rows
+    const searchedRows = rows
       .map((row) => {
         const commit = searchedIds.get(row.commit.id);
         return commit ? { ...row, commit } : null;
       })
       .filter((row): row is HistoryRow => Boolean(row));
+    return { changedFrom: 0, rows: searchedRows };
   }, [
     activeSearchResults,
     backendHistoryEnabled,
@@ -411,13 +437,11 @@ export function HistoryWorkbench({
     effectiveSearchTerm,
     rows,
   ]);
-
-  const visibleRows = React.useMemo(() => {
-    const sourceRows = activeSearchRows ?? effectiveRows;
-    return sourceRows.filter((row) =>
-      matchesBranchFilter(row.commit, branchMode, selectedBranches),
-    );
-  }, [activeSearchRows, branchMode, effectiveRows, selectedBranches]);
+  const visibleRows = useIncrementalFilteredRows(
+    activeSearchRows ?? effectiveRows,
+    branchMode,
+    selectedBranches,
+  );
 
   const virtual = useVirtualWindow({
     count: visibleRows.length,
@@ -439,26 +463,85 @@ export function HistoryWorkbench({
     (effectiveSearchTerm
       ? backendSearchQuery.isLoading
       : historyQuery.isLoading);
-  const historyLoadError =
-    backendHistoryEnabled &&
-    (effectiveSearchTerm ? backendSearchQuery.isError : historyQuery.isError);
+  const historyLoadError = backendHistoryEnabled
+    ? effectiveSearchTerm
+      ? backendSearchQuery.error
+      : historyQuery.error
+    : null;
+  const historyNextPageFailed = backendHistoryEnabled
+    ? effectiveSearchTerm
+      ? backendSearchQuery.isFetchNextPageError
+      : historyQuery.isFetchNextPageError
+    : false;
+  const historyRetrying = backendHistoryEnabled
+    ? effectiveSearchTerm
+      ? backendSearchQuery.isFetching
+      : historyQuery.isFetching
+    : false;
+  const historyLoadErrorMessage = historyNextPageFailed
+    ? t("history.loadMoreError")
+    : effectiveSearchTerm
+      ? t("history.searchLoadError")
+      : t("history.loadError");
   const fetchNextPage = effectiveSearchTerm
     ? backendSearchQuery.fetchNextPage
     : historyQuery.fetchNextPage;
   const scrollContainerRef = React.useRef<HTMLDivElement>(null);
+  const pageLoadGateRef = React.useRef({ key: "", pending: false });
+  const pageLoadKey = effectiveSearchTerm
+    ? `search:${effectiveSearchTerm}`
+    : "history";
+  const retryHistoryLoad = () => {
+    pageLoadGateRef.current = { key: pageLoadKey, pending: false };
+    if (effectiveSearchTerm) {
+      void (backendSearchQuery.isFetchNextPageError
+        ? backendSearchQuery.fetchNextPage()
+        : backendSearchQuery.refetch());
+      return;
+    }
+
+    void (historyQuery.isFetchNextPageError
+      ? historyQuery.fetchNextPage()
+      : historyQuery.refetch());
+  };
   const maybeLoadNextPage = React.useCallback(
     (element: HTMLElement) => {
-      if (!backendHistoryEnabled || !canLoadMore || isFetchingNextPage) {
+      if (
+        !backendHistoryEnabled ||
+        !canLoadMore ||
+        isFetchingNextPage ||
+        historyLoadError
+      ) {
+        return;
+      }
+
+      if (pageLoadGateRef.current.key !== pageLoadKey) {
+        pageLoadGateRef.current = { key: pageLoadKey, pending: false };
+      }
+      if (pageLoadGateRef.current.pending) {
         return;
       }
 
       const remaining =
         element.scrollHeight - element.scrollTop - element.clientHeight;
       if (remaining <= loadMoreThresholdPx) {
-        void fetchNextPage();
+        pageLoadGateRef.current.pending = true;
+        const releaseGate = () => {
+          if (pageLoadGateRef.current.key === pageLoadKey) {
+            pageLoadGateRef.current.pending = false;
+          }
+        };
+        void fetchNextPage().then(releaseGate, releaseGate);
       }
     },
-    [backendHistoryEnabled, canLoadMore, fetchNextPage, isFetchingNextPage],
+    [
+      backendHistoryEnabled,
+      canLoadMore,
+      fetchNextPage,
+      historyLoadError,
+      isFetchingNextPage,
+      pageLoadKey,
+    ],
   );
   const handleScroll = React.useCallback<React.UIEventHandler<HTMLDivElement>>(
     (event) => {
@@ -474,9 +557,14 @@ export function HistoryWorkbench({
     }
   }, [maybeLoadNextPage, visibleRows.length]);
   const selectedCommit =
-    [...(activeSearchRows ?? []), ...effectiveRows].find(
-      (row) => row.commit.id === selectedCommitId,
-    )?.commit ?? null;
+    selectedCommitId === null
+      ? null
+      : (activeSearchRows?.rows.find(
+          (row) => row.commit.id === selectedCommitId,
+        )?.commit ??
+        effectiveRows.rows.find((row) => row.commit.id === selectedCommitId)
+          ?.commit ??
+        null);
 
   return (
     <section
@@ -541,6 +629,52 @@ export function HistoryWorkbench({
         </div>
       </header>
 
+      {historyLoadError ? (
+        <div
+          className="flex flex-wrap items-center justify-between gap-3 border-b border-destructive/30 bg-destructive/10 px-4 py-3 text-sm"
+          data-testid="history-load-error"
+          role="alert"
+        >
+          <span className="flex min-w-0 flex-1 items-center gap-2">
+            <AlertTriangle
+              className="size-4 shrink-0 text-destructive"
+              aria-hidden="true"
+            />
+            <span>{historyLoadErrorMessage}</span>
+          </span>
+          <div className="flex shrink-0 items-center gap-1">
+            <Button
+              className="h-8 px-2"
+              onClick={() => {
+                window.dispatchEvent(
+                  new CustomEvent("artistic-git:error", {
+                    detail: historyLoadError,
+                  }),
+                );
+              }}
+              type="button"
+              variant="ghost"
+            >
+              {t("history.viewErrorDetails")}
+            </Button>
+            <Button
+              className="h-8 gap-1.5 px-2"
+              disabled={historyRetrying}
+              onClick={retryHistoryLoad}
+              type="button"
+              variant="secondary"
+            >
+              {historyRetrying ? (
+                <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+              ) : null}
+              {historyRetrying
+                ? t("history.retryingLoad")
+                : t("history.retryLoad")}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
       <div className="grid border-b bg-muted/35 px-4 py-2 text-xs font-medium text-muted-foreground [grid-template-columns:112px_minmax(0,1fr)_180px_140px]">
         <span>{t("history.columns.graph")}</span>
         <span>{t("history.columns.commit")}</span>
@@ -584,13 +718,11 @@ export function HistoryWorkbench({
             {t("history.loadingMore")}
           </div>
         ) : null}
-        {visibleRows.length === 0 ? (
+        {visibleRows.length === 0 && !historyLoadError ? (
           <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
-            {historyLoadError
-              ? t("history.loadError")
-              : isInitialHistoryLoading
-                ? t("history.loading")
-                : t("history.empty")}
+            {isInitialHistoryLoading
+              ? t("history.loading")
+              : t("history.empty")}
           </div>
         ) : null}
       </div>
@@ -611,6 +743,7 @@ export function HistoryWorkbench({
         onWriteBusyChange={onWriteBusyChange}
         repositoryPath={repositoryPath}
         setConflictEntered={setConflictEntered}
+        writeDisabled={writeDisabled}
       />
     </section>
   );
@@ -859,20 +992,28 @@ function HistoryGraphSvg({
   virtualItems: Array<{ index: number; start: number; size: number }>;
   width: number;
 }) {
-  const height = rows.length * rowHeight;
+  const firstItem = virtualItems.at(0);
+  const lastItem = virtualItems.at(-1);
+  if (!firstItem || !lastItem) {
+    return null;
+  }
+  const windowStart = firstItem.start;
+  const height = lastItem.start + lastItem.size - windowStart;
 
   return (
     <svg
       aria-hidden="true"
       className="pointer-events-none absolute left-4 top-0"
+      data-testid="history-graph-window"
       height={height}
+      style={{ transform: `translateY(${windowStart}px)` }}
       width={width}
     >
       {virtualItems.flatMap((item) =>
         rows[item.index].graph.segments.map((segment, segmentIndex) => (
           <GraphSegmentLine
             key={`${rows[item.index].commit.id}-${segmentIndex}`}
-            rowStart={item.start}
+            rowStart={item.start - windowStart}
             segment={segment}
           />
         )),
@@ -882,7 +1023,7 @@ function HistoryGraphSvg({
         return (
           <circle
             cx={laneX(row.graph.node.lane)}
-            cy={item.start + rowHeight / 2}
+            cy={item.start - windowStart + rowHeight / 2}
             fill={row.graph.node.color}
             key={`${row.commit.id}:node`}
             r="5"
@@ -927,6 +1068,7 @@ function CommitDetailPanel({
   onWriteBusyChange,
   repositoryPath,
   setConflictEntered,
+  writeDisabled,
 }: {
   commit: HistoryCommit | null;
   gravatarEnabled: boolean;
@@ -942,6 +1084,7 @@ function CommitDetailPanel({
   onWriteBusyChange?: (busy: boolean) => void;
   repositoryPath: string | null;
   setConflictEntered: (event: ConflictEnteredEvent) => void;
+  writeDisabled: boolean;
 }) {
   const { t } = useTranslation();
   const formatters = useLocalizedFormatters();
@@ -983,7 +1126,7 @@ function CommitDetailPanel({
   );
 
   const runRevert = React.useCallback(async () => {
-    if (!activeRevertTarget || !repositoryPath) {
+    if (!activeRevertTarget || !repositoryPath || writeDisabled) {
       return;
     }
 
@@ -1050,6 +1193,7 @@ function CommitDetailPanel({
     revertPushAfterRevert,
     setConflictEntered,
     t,
+    writeDisabled,
   ]);
 
   if (!commit) {
@@ -1068,8 +1212,11 @@ function CommitDetailPanel({
       <button
         aria-label={t("history.details.close")}
         className="absolute inset-0 cursor-default"
+        disabled={revertBusy}
         onClick={() => {
-          onOpenChange(false);
+          if (!revertBusy) {
+            onOpenChange(false);
+          }
         }}
         type="button"
       />
@@ -1106,6 +1253,7 @@ function CommitDetailPanel({
               <RevertActionButton
                 busy={revertBusy}
                 commit={commit}
+                disabled={writeDisabled}
                 onClick={() => {
                   setRevertTarget(commit);
                   setRevertError(null);
@@ -1123,9 +1271,12 @@ function CommitDetailPanel({
                 {t("history.details.copyHash")}
               </Button>
               <IconButton
+                disabled={revertBusy}
                 label={t("history.details.close")}
                 onClick={() => {
-                  onOpenChange(false);
+                  if (!revertBusy) {
+                    onOpenChange(false);
+                  }
                 }}
                 variant="ghost"
               >
@@ -1192,6 +1343,7 @@ function CommitDetailPanel({
         pushAfterRevert={revertPushAfterRevert}
         setPushAfterRevert={setRevertPushAfterRevert}
         status={activeRevertTarget ? revertStatus : null}
+        writeDisabled={writeDisabled}
       />
     </div>
   );
@@ -1200,11 +1352,13 @@ function CommitDetailPanel({
 function RevertActionButton({
   busy,
   commit,
+  disabled,
   onClick,
   repositoryPath,
 }: {
   busy: boolean;
   commit: HistoryCommit;
+  disabled: boolean;
   onClick: () => void;
   repositoryPath: string | null;
 }) {
@@ -1215,7 +1369,7 @@ function RevertActionButton({
       aria-describedby={describedBy}
       className="gap-2"
       data-testid="history-revert-open"
-      disabled={busy || reason !== null}
+      disabled={busy || disabled || reason !== null}
       onClick={onClick}
       type="button"
       variant="secondary"
@@ -1246,6 +1400,7 @@ function RevertCommitDialog({
   pushAfterRevert,
   setPushAfterRevert,
   status,
+  writeDisabled,
 }: {
   busy: boolean;
   commit: HistoryCommit | null;
@@ -1256,6 +1411,7 @@ function RevertCommitDialog({
   pushAfterRevert: boolean;
   setPushAfterRevert: (value: boolean) => void;
   status: string | null;
+  writeDisabled: boolean;
 }) {
   const { t } = useTranslation();
 
@@ -1289,7 +1445,7 @@ function RevertCommitDialog({
             <Button
               className="gap-2"
               data-testid="history-revert-confirm"
-              disabled={busy || status !== null}
+              disabled={busy || writeDisabled || status !== null}
               onClick={onConfirm}
               type="button"
             >
@@ -1324,7 +1480,7 @@ function RevertCommitDialog({
             checked={pushAfterRevert}
             className="size-4"
             data-testid="history-revert-push-immediately"
-            disabled={busy || status !== null}
+            disabled={busy || writeDisabled || status !== null}
             onChange={(event) => {
               setPushAfterRevert(event.currentTarget.checked);
             }}
@@ -1401,28 +1557,6 @@ function getErrorSummary(error: unknown): string {
   }
 
   return "Unknown error";
-}
-
-function matchesBranchFilter(
-  commit: HistoryCommit,
-  mode: BranchFilterMode,
-  selectedBranches: Set<string>,
-): boolean {
-  if (mode === "all") {
-    return true;
-  }
-
-  const branchRefs = commit.refs
-    .filter((ref) => ref.type === "branch")
-    .map((ref) => ref.name);
-
-  if (mode === "auto") {
-    return (
-      branchRefs.length === 0 || branchRefs.some((name) => name === "main")
-    );
-  }
-
-  return branchRefs.some((name) => selectedBranches.has(name));
 }
 
 function laneX(lane: number): number {

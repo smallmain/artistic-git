@@ -2,16 +2,19 @@ use artistic_git_contracts::{AppError, AppResult, GitCommandError};
 use artistic_git_git_runner::{CancelToken, GitCommandPlan, GitRunner};
 use std::{
     cell::RefCell,
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     fs,
     io::{self, Read},
     path::{Component, Path, PathBuf},
-    process::{Command, Output, Stdio},
+    process::{Child, Command, ExitStatus, Output, Stdio},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 pub(crate) const DEFAULT_LARGE_FILE_THRESHOLD_MB: u32 = 50;
+const COMMAND_OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+const COMMAND_OUTPUT_LIMIT_BYTES: usize = 16 * 1024 * 1024;
+const COMMAND_OUTPUT_DIAGNOSTIC_BYTES: usize = 64 * 1024;
 
 thread_local! {
     static AUTH_CONTEXT: RefCell<Vec<AuthCommandContext>> = const { RefCell::new(Vec::new()) };
@@ -179,6 +182,12 @@ pub(crate) fn validate_relative_paths(
     Ok(normalized)
 }
 
+pub(crate) fn literal_pathspec(path: impl AsRef<OsStr>) -> OsString {
+    let mut pathspec = OsString::from(":(literal)");
+    pathspec.push(path.as_ref());
+    pathspec
+}
+
 pub(crate) fn git_stdout<I, S>(
     runner: &GitRunner,
     root: Option<&Path>,
@@ -256,6 +265,19 @@ where
     let plan = apply_auth_context_to_plan(plan, root, operation_name)?;
     let output = command_output(plan.to_command(), &plan, operation_name)?;
     Ok((plan, output))
+}
+
+pub(crate) fn run_planned_command(
+    command: Command,
+    plan: &GitCommandPlan,
+    operation_name: &str,
+) -> AppResult<Output> {
+    let output = command_output(command, plan, operation_name)?;
+    if output.status.success() {
+        Ok(output)
+    } else {
+        Err(command_failure(plan, output, operation_name))
+    }
 }
 
 pub(crate) fn run_git_raw_authenticated<I, S>(
@@ -352,18 +374,14 @@ fn command_output(
     plan: &GitCommandPlan,
     operation_name: &str,
 ) -> AppResult<Output> {
-    let cancel_token = active_cancel_token();
-    let Some(cancel_token) = cancel_token else {
-        return command
-            .output()
-            .map_err(|source| spawn_error(plan, source, operation_name));
-    };
+    let cancel_token = active_cancel_token().unwrap_or_default();
 
     if cancel_token.is_cancelled() {
         return Err(cancelled_error(operation_name));
     }
 
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    prepare_child_process_tree(&mut command);
     let mut child = command
         .spawn()
         .map_err(|source| spawn_error(plan, source, operation_name))?;
@@ -371,19 +389,22 @@ fn command_output(
     let mut stderr_reader = child.stderr.take().map(spawn_command_output_reader);
 
     let status = loop {
-        if cancel_token.is_cancelled() {
-            let _ = child.kill();
-            let _ = child.wait();
-            discard_command_output(&mut stdout_reader);
-            discard_command_output(&mut stderr_reader);
-            return Err(cancelled_error(operation_name));
-        }
         match child.try_wait() {
             Ok(Some(status)) => break status,
+            Ok(None) if cancel_token.is_cancelled() => {
+                if let Some(status) = terminate_child_process_tree(&mut child)
+                    .ok()
+                    .filter(ExitStatus::success)
+                {
+                    break status;
+                }
+                discard_command_output(&mut stdout_reader);
+                discard_command_output(&mut stderr_reader);
+                return Err(cancelled_error(operation_name));
+            }
             Ok(None) => thread::sleep(Duration::from_millis(20)),
             Err(source) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                let _ = terminate_child_process_tree(&mut child);
                 discard_command_output(&mut stdout_reader);
                 discard_command_output(&mut stderr_reader);
                 return Err(spawn_error(plan, source, operation_name));
@@ -391,39 +412,147 @@ fn command_output(
         }
     };
 
-    let stdout = collect_command_output(stdout_reader, "stdout", operation_name)?;
-    let stderr = collect_command_output(stderr_reader, "stderr", operation_name)?;
+    let output_deadline = Instant::now() + COMMAND_OUTPUT_DRAIN_TIMEOUT;
+    let stdout = collect_command_output(
+        stdout_reader,
+        "stdout",
+        operation_name,
+        output_deadline,
+        None,
+    )?;
+    let stderr = collect_command_output(
+        stderr_reader,
+        "stderr",
+        operation_name,
+        output_deadline,
+        None,
+    )?;
+    if stdout.exceeded_limit || stderr.exceeded_limit {
+        return Err(output_limit_error(
+            plan,
+            status,
+            operation_name,
+            stdout,
+            stderr,
+        ));
+    }
     Ok(Output {
         status,
-        stdout,
-        stderr,
+        stdout: stdout.bytes,
+        stderr: stderr.bytes,
     })
 }
 
-type CommandOutputReader = thread::JoinHandle<io::Result<Vec<u8>>>;
+struct CommandOutputReader {
+    handle: thread::JoinHandle<io::Result<Vec<u8>>>,
+    limit_bytes: usize,
+}
 
-fn spawn_command_output_reader<R>(mut reader: R) -> CommandOutputReader
+#[derive(Debug)]
+struct CapturedCommandOutput {
+    bytes: Vec<u8>,
+    exceeded_limit: bool,
+    limit_bytes: usize,
+}
+
+fn spawn_command_output_reader<R>(reader: R) -> CommandOutputReader
 where
     R: Read + Send + 'static,
 {
-    thread::spawn(move || {
-        let mut output = Vec::new();
-        reader.read_to_end(&mut output)?;
-        Ok(output)
-    })
+    spawn_command_output_reader_with_limit(reader, COMMAND_OUTPUT_LIMIT_BYTES)
+}
+
+fn spawn_command_output_reader_with_limit<R>(reader: R, limit_bytes: usize) -> CommandOutputReader
+where
+    R: Read + Send + 'static,
+{
+    let handle = thread::spawn(move || read_command_output_bounded(reader, limit_bytes));
+    CommandOutputReader {
+        handle,
+        limit_bytes,
+    }
+}
+
+fn read_command_output_bounded<R>(mut reader: R, limit_bytes: usize) -> io::Result<Vec<u8>>
+where
+    R: Read,
+{
+    const READ_CHUNK_BYTES: usize = 16 * 1024;
+
+    let capture_limit = limit_bytes.saturating_add(1);
+    let mut output = Vec::with_capacity(capture_limit.min(READ_CHUNK_BYTES));
+    let mut buffer = [0_u8; READ_CHUNK_BYTES];
+
+    loop {
+        let bytes_read = match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(bytes_read) => bytes_read,
+            Err(source) if source.kind() == io::ErrorKind::Interrupted => continue,
+            Err(source) => return Err(source),
+        };
+
+        let captured_bytes = bytes_read.min(capture_limit.saturating_sub(output.len()));
+        if captured_bytes > 0 {
+            let required_capacity = output.len() + captured_bytes;
+            if required_capacity > output.capacity() {
+                let next_capacity = output
+                    .capacity()
+                    .saturating_mul(2)
+                    .max(required_capacity)
+                    .min(capture_limit);
+                output.reserve_exact(next_capacity - output.len());
+            }
+            output.extend_from_slice(&buffer[..captured_bytes]);
+        }
+    }
+
+    Ok(output)
 }
 
 fn collect_command_output(
     reader: Option<CommandOutputReader>,
     stream_name: &str,
     operation_name: &str,
-) -> AppResult<Vec<u8>> {
+    deadline: Instant,
+    cancel_token: Option<&CancelToken>,
+) -> AppResult<CapturedCommandOutput> {
     let Some(reader) = reader else {
-        return Ok(Vec::new());
+        return Ok(CapturedCommandOutput {
+            bytes: Vec::new(),
+            exceeded_limit: false,
+            limit_bytes: COMMAND_OUTPUT_LIMIT_BYTES,
+        });
     };
 
-    match reader.join() {
-        Ok(Ok(output)) => Ok(output),
+    while !reader.handle.is_finished() {
+        if cancel_token.is_some_and(CancelToken::is_cancelled) {
+            return Err(cancelled_error(operation_name));
+        }
+        if Instant::now() >= deadline {
+            return Err(logged(AppError::unexpected(
+                format!(
+                    "git {stream_name} remained open after the command exited; a child process may still be holding the output pipe"
+                ),
+                operation_name,
+            )));
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    let CommandOutputReader {
+        handle,
+        limit_bytes,
+    } = reader;
+    match handle.join() {
+        Ok(Ok(mut output)) => {
+            let exceeded_limit = output.len() > limit_bytes;
+            output.truncate(limit_bytes);
+            Ok(CapturedCommandOutput {
+                bytes: output,
+                exceeded_limit,
+                limit_bytes,
+            })
+        }
         Ok(Err(source)) => Err(logged(AppError::unexpected(
             format!("failed to read git {stream_name}: {source}"),
             operation_name,
@@ -441,7 +570,69 @@ fn discard_command_output(reader: &mut Option<CommandOutputReader>) {
     reader.take();
 }
 
-fn active_cancel_token() -> Option<CancelToken> {
+pub(crate) fn prepare_child_process_tree(command: &mut Command) {
+    prepare_child_process_tree_impl(command);
+}
+
+#[cfg(unix)]
+fn prepare_child_process_tree_impl(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+
+    command.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn prepare_child_process_tree_impl(_command: &mut Command) {}
+
+pub(crate) fn terminate_child_process_tree(child: &mut Child) -> io::Result<ExitStatus> {
+    terminate_child_process_tree_impl(child)
+}
+
+#[cfg(unix)]
+fn terminate_child_process_tree_impl(child: &mut Child) -> io::Result<ExitStatus> {
+    const SIGKILL: i32 = 9;
+
+    unsafe extern "C" {
+        fn kill(pid: i32, signal: i32) -> i32;
+    }
+
+    let process_group = i32::try_from(child.id())
+        .ok()
+        .and_then(|pid| pid.checked_neg())
+        .ok_or_else(|| io::Error::other("child process id is outside the supported range"))?;
+    // The command is placed in a new process group immediately before spawn, so
+    // a negative pid targets only that command and descendants that inherit it.
+    let killed = unsafe { kill(process_group, SIGKILL) } == 0;
+    if !killed {
+        let source = io::Error::last_os_error();
+        if source.raw_os_error() != Some(3) {
+            let _ = child.kill();
+        }
+    }
+    child.wait()
+}
+
+#[cfg(windows)]
+fn terminate_child_process_tree_impl(child: &mut Child) -> io::Result<ExitStatus> {
+    let taskkill_status = Command::new("taskkill")
+        .args(["/PID", &child.id().to_string(), "/T", "/F"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    if taskkill_status.is_err() || taskkill_status.is_ok_and(|status| !status.success()) {
+        let _ = child.kill();
+    }
+    child.wait()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn terminate_child_process_tree_impl(child: &mut Child) -> io::Result<ExitStatus> {
+    let _ = child.kill();
+    child.wait()
+}
+
+pub(crate) fn active_cancel_token() -> Option<CancelToken> {
     CANCEL_CONTEXT.with(|contexts| {
         contexts
             .borrow()
@@ -487,6 +678,50 @@ fn spawn_error(plan: &GitCommandPlan, source: io::Error, operation_name: &str) -
 
 fn cancelled_error(operation_name: &str) -> AppError {
     logged(AppError::expected("operation cancelled", operation_name))
+}
+
+fn output_limit_error(
+    plan: &GitCommandPlan,
+    status: ExitStatus,
+    operation_name: &str,
+    stdout: CapturedCommandOutput,
+    stderr: CapturedCommandOutput,
+) -> AppError {
+    let exceeded_streams = [
+        stdout.exceeded_limit.then_some("stdout"),
+        stderr.exceeded_limit.then_some("stderr"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" and ");
+    let limit_bytes = stdout.limit_bytes.max(stderr.limit_bytes);
+    logged(
+        AppError::unexpected(
+            format!(
+                "git {exceeded_streams} exceeded the {limit_bytes}-byte per-stream output limit while running {operation_name}"
+            ),
+            operation_name,
+        )
+        .with_git(GitCommandError {
+            command: plan.command_for_error(),
+            exit_code: status.code(),
+            stdout: bounded_output_diagnostic(&stdout.bytes),
+            stderr: bounded_output_diagnostic(&stderr.bytes),
+        }),
+    )
+}
+
+fn bounded_output_diagnostic(output: &[u8]) -> String {
+    if output.len() <= COMMAND_OUTPUT_DIAGNOSTIC_BYTES {
+        return String::from_utf8_lossy(output).into_owned();
+    }
+    let half = COMMAND_OUTPUT_DIAGNOSTIC_BYTES / 2;
+    format!(
+        "{}\n\n[output truncated: showing first and last {half} bytes]\n\n{}",
+        String::from_utf8_lossy(&output[..half]),
+        String::from_utf8_lossy(&output[output.len() - half..]),
+    )
 }
 
 fn auth_ipc_error(source: crate::auth_ipc::AuthIpcError, operation_name: &str) -> AppError {
@@ -661,6 +896,137 @@ mod tests {
             .expect("large command output");
         assert!(output.len() > 256 * 1024);
         assert!(output.contains("refs/heads/branch-19999"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn completed_command_wins_over_a_late_cancel_signal() {
+        let (runner, temp) = fake_runner();
+        let manifest = git_dist_manifest_fixture();
+        let finishing_marker = temp.path().join("git-finishing");
+        write_executable_script(
+            &temp.path().join(&manifest.paths.git_executable),
+            &format!(
+                "#!/bin/sh\nsleep 0.025\ntouch '{}'\nprintf 'done\\n'\n",
+                display_path(&finishing_marker)
+            ),
+            "@echo done\r\n",
+        )
+        .expect("write delayed git");
+        let cancel_token = CancelToken::new();
+        let cancelling_token = cancel_token.clone();
+        let cancel_thread = thread::spawn(move || {
+            while !finishing_marker.exists() {
+                thread::sleep(Duration::from_millis(1));
+            }
+            thread::sleep(Duration::from_millis(5));
+            cancelling_token.cancel();
+        });
+
+        let output = with_cancel_token_for_operation(&cancel_token, || {
+            git_stdout(&runner, None, ["status"], "lateCancelTest")
+        })
+        .expect("completed command should not be replaced by cancellation");
+        cancel_thread.join().expect("cancel thread");
+
+        assert_eq!(output.trim(), "done");
+    }
+
+    #[test]
+    fn command_output_reader_has_a_bounded_drain_wait() {
+        let reader = thread::spawn(|| {
+            thread::sleep(Duration::from_millis(200));
+            Ok(Vec::new())
+        });
+        let reader = CommandOutputReader {
+            handle: reader,
+            limit_bytes: COMMAND_OUTPUT_LIMIT_BYTES,
+        };
+        let error = collect_command_output(
+            Some(reader),
+            "stdout",
+            "boundedDrainTest",
+            Instant::now() + Duration::from_millis(20),
+            None,
+        )
+        .expect_err("reader wait should time out");
+
+        assert!(error.summary.contains("remained open"));
+    }
+
+    #[test]
+    fn command_output_reader_enforces_limit() {
+        let limit_bytes = 32;
+        let reader = spawn_command_output_reader_with_limit(
+            io::Cursor::new(vec![b'x'; limit_bytes + 8]),
+            limit_bytes,
+        );
+        let output = collect_command_output(
+            Some(reader),
+            "stderr",
+            "boundedOutputTest",
+            Instant::now() + Duration::from_secs(1),
+            None,
+        )
+        .expect("bounded reader result");
+
+        assert!(output.exceeded_limit);
+        assert_eq!(output.limit_bytes, limit_bytes);
+        assert_eq!(output.bytes.len(), limit_bytes);
+    }
+
+    #[test]
+    fn command_output_reader_allows_output_at_limit() {
+        let limit_bytes = 32;
+        let reader = spawn_command_output_reader_with_limit(
+            io::Cursor::new(vec![b'x'; limit_bytes]),
+            limit_bytes,
+        );
+        let output = collect_command_output(
+            Some(reader),
+            "stdout",
+            "exactOutputLimitTest",
+            Instant::now() + Duration::from_secs(1),
+            None,
+        )
+        .expect("output at the limit should be accepted");
+
+        assert!(!output.exceeded_limit);
+        assert_eq!(output.bytes.len(), limit_bytes);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn output_limit_error_keeps_bounded_command_diagnostics() {
+        let (runner, _temp) = fake_runner();
+        let plan = plan_git(&runner, None, ["status"]);
+        let status = Command::new("sh")
+            .args(["-c", "exit 7"])
+            .status()
+            .expect("fixture status");
+        let error = output_limit_error(
+            &plan,
+            status,
+            "boundedOutputTest",
+            CapturedCommandOutput {
+                bytes: b"stdout diagnostic".to_vec(),
+                exceeded_limit: false,
+                limit_bytes: 32,
+            },
+            CapturedCommandOutput {
+                bytes: b"stderr diagnostic".to_vec(),
+                exceeded_limit: true,
+                limit_bytes: 32,
+            },
+        );
+
+        assert!(error.summary.contains("stderr"));
+        assert!(error.summary.contains("32-byte per-stream output limit"));
+        let details = error.git.expect("git diagnostics");
+        assert_eq!(details.exit_code, Some(7));
+        assert_eq!(details.stdout, "stdout diagnostic");
+        assert_eq!(details.stderr, "stderr diagnostic");
+        assert!(!details.command.is_empty());
     }
 
     fn fake_runner() -> (GitRunner, TestTempDir) {

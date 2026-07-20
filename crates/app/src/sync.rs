@@ -14,6 +14,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::{OsStr, OsString},
     fs,
+    io::{self, Read},
     path::{Path, PathBuf},
     process::Output,
     thread,
@@ -33,6 +34,7 @@ const ACCEPT_REMOTE_HISTORY_STASH_RESTORE_OPERATION: &str = "acceptRemoteHistory
 const MAX_SYNC_ATTEMPTS: u8 = 3;
 const SYNC_WORKTREE_PREFIX: &str = "artistic-git-sync-";
 const SYNC_WORKTREE_MARKER: &str = "artistic-git-sync-worktree.json";
+const SYNC_WORKTREE_METADATA_LIMIT_BYTES: usize = 64 * 1024;
 
 pub fn sync_current_branch(
     runner: &GitRunner,
@@ -1994,7 +1996,7 @@ fn read_sync_worktree_marker(
         return Ok(None);
     }
     let marker_path = sync_worktree_marker_path(runner, worktree)?;
-    let Ok(bytes) = fs::read(&marker_path) else {
+    let Ok(bytes) = read_sync_worktree_metadata(&marker_path) else {
         return Ok(None);
     };
     serde_json::from_slice(&bytes).map(Some).map_err(|source| {
@@ -2109,8 +2111,9 @@ pub(crate) fn cleanup_sync_worktree_residue(runner: &GitRunner, root: &Path) {
         }
 
         let gitdir = admin_path.join("gitdir");
-        let worktree = fs::read_to_string(&gitdir)
+        let worktree = read_sync_worktree_metadata(&gitdir)
             .ok()
+            .and_then(|value| String::from_utf8(value).ok())
             .map(|value| PathBuf::from(value.trim()))
             .and_then(|path| path.parent().map(Path::to_path_buf));
         if let Some(worktree) = worktree.filter(|path| is_sync_worktree_path(path)) {
@@ -2119,6 +2122,20 @@ pub(crate) fn cleanup_sync_worktree_residue(runner: &GitRunner, root: &Path) {
             let _ = fs::remove_dir_all(admin_path);
         }
     }
+}
+
+fn read_sync_worktree_metadata(path: &Path) -> io::Result<Vec<u8>> {
+    let file = fs::File::open(path)?;
+    let mut bytes = Vec::with_capacity(SYNC_WORKTREE_METADATA_LIMIT_BYTES.min(8 * 1024));
+    file.take(SYNC_WORKTREE_METADATA_LIMIT_BYTES.saturating_add(1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > SYNC_WORKTREE_METADATA_LIMIT_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "sync worktree metadata exceeds the application safety limit",
+        ));
+    }
+    Ok(bytes)
 }
 
 fn is_sync_worktree_path(path: &Path) -> bool {

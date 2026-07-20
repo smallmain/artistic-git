@@ -112,7 +112,7 @@ describe("window store", () => {
     expect(Object.keys(store.getState().operationsById)).toEqual(["op-own"]);
   });
 
-  it("preserves cancellability when substep progress updates the same operation", () => {
+  it("uses the current phase cancellability for substep progress", () => {
     const store = createWindowStore({
       activeRepositoryPath: "/repo/art",
       windowLabel: "repo-1",
@@ -136,7 +136,7 @@ describe("window store", () => {
     });
 
     expect(store.getState().operationsById["sync-1"]).toMatchObject({
-      cancellable: true,
+      cancellable: false,
       label: "Updating submodules",
     });
   });

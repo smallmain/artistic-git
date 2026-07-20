@@ -16,14 +16,26 @@ export interface LocalChangeItem {
   submodule?: LocalChangeSubmodule | null;
 }
 
+export interface LocalChangeDetailState {
+  change: LocalChangeItem | null;
+  error: unknown;
+  loading: boolean;
+  selectedId: string;
+}
+
 export interface LocalChangesPanelProps {
   busy?: boolean;
   changes: LocalChangeItem[];
+  error?: unknown;
   initialCheckedIds?: string[];
+  loadDeferredDetails?: boolean;
+  loading?: boolean;
   onCheckedChange?: (checkedIds: string[]) => void;
   onCommit?: (checkedIds: string[]) => void;
   onOperationComplete?: () => void;
   onPreviewRenormalize?: () => void;
+  onRetry?: () => void;
+  onRetryDetail?: () => void;
   onRestore?: (checkedIds: string[]) => void;
   onSelectedChange?: (change: LocalChangeItem | null) => void;
   onStash?: (checkedIds: string[]) => void;
@@ -31,6 +43,7 @@ export interface LocalChangesPanelProps {
   renormalizePreviewBusy?: boolean;
   renormalizePreviewStatus?: string | null;
   renormalizeSuggestion?: LocalChangesRenormalizeSuggestion | null;
+  detailState?: LocalChangeDetailState;
   repositoryPath?: string;
   selectedId?: string | null;
   storageKey?: string;

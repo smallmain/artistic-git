@@ -36,7 +36,7 @@ export interface ImageDiffContent {
 }
 
 export interface FileCardDiffContent {
-  kind: "binary" | "oversizedText" | "lfsPointer" | "moved";
+  kind: "binary" | "deferred" | "oversizedText" | "lfsPointer" | "moved";
   message?: string | null;
   status?: LfsContentStatus;
 }

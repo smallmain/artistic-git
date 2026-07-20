@@ -57,6 +57,8 @@ import type {
   HttpsCredentialScope,
   IdentityValidationRequest,
   IdentityValidationResponse,
+  LocalChange,
+  LocalChangeDetailRequest,
   LocalChangesResponse,
   LogPageRequest,
   LogPageResponse,
@@ -151,6 +153,7 @@ export interface AppCommandArgs {
   delete_branch: { request: DeleteBranchRequest };
   delete_safety_backup: { request: DeleteSafetyBackupRequest };
   list_local_changes: { request: RepositoryPathRequest };
+  local_change_detail: { request: LocalChangeDetailRequest };
   preview_renormalize: { request: RenormalizePreviewRequest };
   list_stashes: { request: RepositoryPathRequest };
   create_stash: { request: CreateStashRequest };
@@ -236,6 +239,7 @@ export interface AppCommandResponses {
   delete_branch: BranchOperationResponse;
   delete_safety_backup: DeleteSafetyBackupResponse;
   list_local_changes: LocalChangesResponse;
+  local_change_detail: LocalChange;
   preview_renormalize: RenormalizePreviewResponse;
   list_stashes: StashListResponse;
   create_stash: CreateStashResponse;
@@ -586,6 +590,12 @@ export function listLocalChanges(
   request: RepositoryPathRequest,
 ): Promise<LocalChangesResponse> {
   return invokeAppCommand("list_local_changes", { request });
+}
+
+export function localChangeDetail(
+  request: LocalChangeDetailRequest,
+): Promise<LocalChange> {
+  return invokeAppCommand("local_change_detail", { request });
 }
 
 export function previewRenormalize(

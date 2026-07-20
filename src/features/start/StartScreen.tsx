@@ -4,7 +4,6 @@ import {
   FolderGit2,
   FolderOpen,
   FolderSearch,
-  GitBranch,
   GitBranchPlus,
   GraduationCap,
   LoaderCircle,
@@ -19,6 +18,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { DialogFrame } from "@/components/dialogs/DialogFrame";
 import { ErrorDetailsDialog } from "@/components/dialogs/ErrorDetailsDialog";
 import { Button } from "@/components/ui/button";
+import { BranchSelect } from "@/components/ui/branch-select";
 import { IconButton } from "@/components/ui/icon-button";
 import { TruncatedText } from "@/components/ui/truncated-text";
 import {
@@ -30,6 +30,7 @@ import {
   probeRemoteRepository,
   saveAppSettings,
 } from "@/lib/ipc/commands";
+import { isOperationCancelledError } from "@/lib/ipc/errors";
 import { listenAppEvent } from "@/lib/ipc/events";
 import type {
   AppSettings,
@@ -56,6 +57,7 @@ type CloneRemoteState =
       branches: string[];
       defaultBranch: string | null;
       isEmpty: boolean;
+      truncated: boolean;
       url: string;
     }
   | {
@@ -122,7 +124,7 @@ export function StartScreen() {
     React.useState<OperationProgressEvent | null>(null);
   const [openProgress, setOpenProgress] =
     React.useState<OperationProgressEvent | null>(null);
-  const cloneCancelRequestedRef = React.useRef(false);
+  const cloneOperationIdRef = React.useRef<string | null>(null);
   React.useEffect(() => {
     if (
       cloneProbeDetails === null &&
@@ -247,16 +249,16 @@ export function StartScreen() {
     setIsCloning(true);
     setCloneCancelling(false);
     setCloneError(null);
+    cloneOperationIdRef.current = operationId;
     setCloneOperationId(operationId);
     setCloneProgress({
-      cancellable: true,
+      cancellable: false,
       label: "Cloning repository",
       operationId,
       progress: { kind: "indeterminate" },
       repositoryPath: null,
       windowLabel: null,
     });
-    cloneCancelRequestedRef.current = false;
     try {
       const response = await cloneRepository({
         directoryName: cloneDirectoryName.trim(),
@@ -282,17 +284,25 @@ export function StartScreen() {
       setCloneDirectoryName("");
       setCloneDirectoryNameTouched(false);
     } catch (error) {
+      const cancelled = isOperationCancelledError(error);
       setCloneError(
-        cloneCancelRequestedRef.current
+        cancelled
           ? t("start.cloneCancelled")
           : errorSummary(error, t("start.cloneFailed")),
       );
+      if (!cancelled) {
+        window.dispatchEvent(
+          new CustomEvent("artistic-git:error", { detail: error }),
+        );
+      }
     } finally {
       setIsCloning(false);
       setCloneCancelling(false);
       setCloneOperationId(null);
       setCloneProgress(null);
-      cloneCancelRequestedRef.current = false;
+      if (cloneOperationIdRef.current === operationId) {
+        cloneOperationIdRef.current = null;
+      }
     }
   }, [
     appSettings,
@@ -329,7 +339,6 @@ export function StartScreen() {
       return;
     }
 
-    cloneCancelRequestedRef.current = true;
     setCloneCancelling(true);
     setCloneError(null);
     try {
@@ -350,7 +359,6 @@ export function StartScreen() {
       return;
     }
 
-    cloneCancelRequestedRef.current = true;
     setCloneCancelling(true);
     setCloneError(null);
     let response: Awaited<ReturnType<typeof cancelCloneRepository>>;
@@ -419,6 +427,7 @@ export function StartScreen() {
             defaultBranch: response.defaultBranch,
             isEmpty: response.isEmpty,
             kind: "ready",
+            truncated: response.truncated,
             url,
           });
         })
@@ -446,14 +455,13 @@ export function StartScreen() {
     };
   }, [cloneDialogOpen, cloneProbeAttempt, cloneProbeInteractive, cloneUrl, t]);
   React.useEffect(() => {
-    if (!cloneOperationId) {
-      return undefined;
-    }
-
     let disposed = false;
     let unlistenProgress: (() => void) | null = null;
     void listenAppEvent("operation-progress", (event) => {
-      if (!disposed && event.payload.operationId === cloneOperationId) {
+      if (
+        !disposed &&
+        event.payload.operationId === cloneOperationIdRef.current
+      ) {
         setCloneProgress(event.payload);
       }
     }).then((unlisten) => {
@@ -468,7 +476,7 @@ export function StartScreen() {
       disposed = true;
       unlistenProgress?.();
     };
-  }, [cloneOperationId]);
+  }, []);
 
   React.useEffect(() => {
     if (!openingPath) {
@@ -533,8 +541,8 @@ export function StartScreen() {
       className="flex min-h-screen bg-background text-foreground"
       data-testid="start-screen"
     >
-      <div className="mx-auto grid min-h-screen w-full max-w-6xl grid-cols-[320px_1fr] gap-10 px-8 py-10">
-        <section className="flex min-w-0 flex-col justify-between">
+      <div className="mx-auto grid min-h-screen w-full max-w-6xl grid-cols-1 gap-8 px-5 py-6 md:grid-cols-[minmax(0,320px)_minmax(0,1fr)] md:gap-10 md:px-8 md:py-10">
+        <section className="flex min-w-0 flex-col justify-between gap-6">
           <div>
             <div className="mb-10 flex min-w-0 items-center gap-3">
               <div className="flex size-10 shrink-0 items-center justify-center rounded-md border bg-card">
@@ -622,7 +630,7 @@ export function StartScreen() {
           </div>
         </section>
 
-        <section className="flex min-w-0 flex-col py-12">
+        <section className="flex min-w-0 flex-col pb-6 md:py-12">
           <div className="mb-4 flex items-center justify-between gap-4">
             <h2 className="text-base font-medium">{t("app.recentProjects")}</h2>
             {recentProjects.length > 0 ? (
@@ -785,7 +793,12 @@ export function StartScreen() {
       />
       <WindowCloseGuard
         active={isCloning || openingPath !== null}
-        canRecover={isCloning && cloneOperationId !== null && !cloneCancelling}
+        canRecover={
+          isCloning &&
+          cloneOperationId !== null &&
+          cloneProgress?.cancellable === true &&
+          !cloneCancelling
+        }
         onRecover={recoverCloneForWindowClose}
       />
     </main>
@@ -853,6 +866,21 @@ function CloneRepositoryDialog({
     directoryName.trim().length > 0 &&
     remoteReady &&
     !busy;
+  const branchOptions = React.useMemo(
+    () =>
+      remoteState.kind === "ready"
+        ? remoteState.branches.map((candidate) => ({
+            label:
+              candidate === remoteState.defaultBranch
+                ? t("start.cloneDefaultBranchOption", {
+                    branch: candidate,
+                  })
+                : candidate,
+            value: candidate,
+          }))
+        : [],
+    [remoteState, t],
+  );
 
   return (
     <DialogFrame
@@ -865,7 +893,7 @@ function CloneRepositoryDialog({
         <div className="flex justify-end gap-2">
           {busy ? (
             <Button
-              disabled={cancelling}
+              disabled={cancelling || progress?.cancellable !== true}
               onClick={onCancelClone}
               type="button"
               variant="ghost"
@@ -938,37 +966,16 @@ function CloneRepositoryDialog({
             state={remoteState}
           />
           {remoteState.kind === "ready" && !remoteState.isEmpty ? (
-            <label
-              className="flex flex-col gap-2 text-sm font-medium"
-              htmlFor={branchId}
-            >
-              {t("start.cloneBranch")}
-              <span className="relative">
-                <GitBranch
-                  aria-hidden="true"
-                  className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
-                />
-                <select
-                  className="h-9 w-full appearance-none rounded-md border bg-background pl-9 pr-8 text-sm font-normal outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  data-testid="clone-branch-select"
-                  id={branchId}
-                  onChange={(event) =>
-                    onBranchChange(event.currentTarget.value)
-                  }
-                  value={branch}
-                >
-                  {remoteState.branches.map((candidate) => (
-                    <option key={candidate} value={candidate}>
-                      {candidate === remoteState.defaultBranch
-                        ? t("start.cloneDefaultBranchOption", {
-                            branch: candidate,
-                          })
-                        : candidate}
-                    </option>
-                  ))}
-                </select>
-              </span>
-            </label>
+            <BranchSelect
+              data-testid="clone-branch-select"
+              id={branchId}
+              label={t("start.cloneBranch")}
+              noResultsLabel={t("repository.noSearchResults")}
+              onChange={onBranchChange}
+              options={branchOptions}
+              searchLabel={t("repository.searchBranches")}
+              value={branch}
+            />
           ) : null}
           <label
             className="flex flex-col gap-2 text-sm font-medium"
@@ -1104,9 +1111,14 @@ function CloneRemoteStatus({
       />
       {state.isEmpty
         ? t("start.cloneProbeEmpty")
-        : t("start.cloneBranchesFound", {
-            count: state.branches.length,
-          })}
+        : t(
+            state.truncated
+              ? "start.cloneBranchesFoundTruncated"
+              : "start.cloneBranchesFound",
+            {
+              count: state.branches.length,
+            },
+          )}
     </div>
   );
 }

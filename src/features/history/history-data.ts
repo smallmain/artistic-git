@@ -18,6 +18,7 @@ const palette = [
   "#ea580c",
   "#0891b2",
 ];
+const maxVisibleGraphLanes = 6;
 
 export function mapCommitSummaryToHistoryCommit(
   summary: CommitSummary,
@@ -45,11 +46,28 @@ export function mapCommitSummaryToHistoryCommit(
 }
 
 export function attachGraphRows(commits: HistoryCommit[]): HistoryRow[] {
-  const rows = layoutRows(commits);
-  return commits.map((commit, index) => ({
-    commit,
-    graph: rows[index],
-  }));
+  return createHistoryGraphBuilder().append(commits);
+}
+
+export interface HistoryGraphBuilder {
+  append: (commits: readonly HistoryCommit[]) => HistoryRow[];
+}
+
+export function createHistoryGraphBuilder(): HistoryGraphBuilder {
+  const state: HistoryGraphLayoutState = {
+    lanes: [],
+    nextColor: 0,
+  };
+
+  return {
+    append: (commits) => {
+      const graphs = layoutRows(commits, state);
+      return commits.map((commit, index) => ({
+        commit,
+        graph: graphs[index],
+      }));
+    },
+  };
 }
 
 export function mergeHistoryCommits(commits: HistoryCommit[]): HistoryCommit[] {
@@ -108,20 +126,32 @@ function normalizeBranchRef(ref: string): string {
     .replace(/^origin\//, "");
 }
 
-function layoutRows(commits: HistoryCommit[]): HistoryGraphRow[] {
-  const state: HistoryGraphLane[] = [];
-  let nextColor = 0;
+interface HistoryGraphLayoutState {
+  lanes: HistoryGraphLane[];
+  nextColor: number;
+}
 
+function layoutRows(
+  commits: readonly HistoryCommit[],
+  layoutState: HistoryGraphLayoutState,
+): HistoryGraphRow[] {
+  const state = layoutState.lanes;
   return commits.map((commit) => {
     const commitKey = graphKey(commit.id);
     let nodeLane = state.findIndex((lane) => lane.target === commitKey);
     if (nodeLane < 0) {
-      state.push({
-        color: palette[nextColor % palette.length],
+      const newLane = {
+        color: palette[layoutState.nextColor % palette.length],
         target: commitKey,
-      });
-      nextColor += 1;
-      nodeLane = state.length - 1;
+      };
+      layoutState.nextColor += 1;
+      if (state.length < maxVisibleGraphLanes) {
+        state.push(newLane);
+        nodeLane = state.length - 1;
+      } else {
+        nodeLane = maxVisibleGraphLanes - 1;
+        state[nodeLane] = newLane;
+      }
     }
 
     const duplicateLanes = state
@@ -157,10 +187,13 @@ function layoutRows(commits: HistoryCommit[]): HistoryGraphRow[] {
       state.splice(nodeLane, 1);
     } else {
       state[nodeLane].target = graphKey(commit.parents[0]);
-      for (const [index, parent] of commit.parents.slice(1).entries()) {
+      const availableParentLanes = maxVisibleGraphLanes - state.length;
+      for (const [index, parent] of commit.parents
+        .slice(1, availableParentLanes + 1)
+        .entries()) {
         const lane = nodeLane + index + 1;
-        const color = palette[nextColor % palette.length];
-        nextColor += 1;
+        const color = palette[layoutState.nextColor % palette.length];
+        layoutState.nextColor += 1;
         state.splice(lane, 0, { color, target: graphKey(parent) });
         segments.push({
           color,

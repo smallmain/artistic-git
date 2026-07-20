@@ -60,7 +60,11 @@ impl FetchStateStore {
         )
     }
 
-    fn failed_event(&self, repository_path: &str, message: impl Into<String>) -> FetchStateEvent {
+    pub(crate) fn failed_event(
+        &self,
+        repository_path: &str,
+        message: impl Into<String>,
+    ) -> FetchStateEvent {
         self.update(
             repository_path,
             FetchState::Failed,

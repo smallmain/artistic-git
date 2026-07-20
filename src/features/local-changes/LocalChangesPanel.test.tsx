@@ -1,11 +1,13 @@
 import {
   cleanup,
+  act,
   fireEvent,
   render,
   screen,
   within,
 } from "@testing-library/react";
 import type { ReactElement } from "react";
+import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AppProviders } from "@/AppProviders";
@@ -59,6 +61,56 @@ describe("local change utilities", () => {
 });
 
 describe("LocalChangesPanel", () => {
+  it("shows a retryable error without replacing it with the empty state", () => {
+    const error = {
+      operation: "git status",
+      stderr: "fatal: unable to read index",
+      summary: "Unable to list local changes",
+    };
+    const onRetry = vi.fn();
+    const receivedDetails: unknown[] = [];
+    const handleError = (event: Event) => {
+      receivedDetails.push((event as CustomEvent).detail);
+    };
+    window.addEventListener("artistic-git:error", handleError);
+
+    try {
+      renderWithProviders(
+        <LocalChangesPanel changes={[]} error={error} onRetry={onRetry} />,
+      );
+
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "Couldn't load local changes",
+      );
+      expect(screen.queryByText("No matching changes")).not.toBeInTheDocument();
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "View error details" }),
+      );
+      expect(receivedDetails).toEqual([error]);
+      expect(receivedDetails[0]).toBe(error);
+
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+      expect(onRetry).toHaveBeenCalledTimes(1);
+    } finally {
+      window.removeEventListener("artistic-git:error", handleError);
+    }
+  });
+
+  it("blocks stale file actions while local changes are loading", () => {
+    renderWithProviders(
+      <LocalChangesPanel changes={createChanges()} loading />,
+    );
+
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Loading local changes...",
+    );
+    expect(screen.getByTestId("local-changes-commit")).toBeDisabled();
+    expect(
+      screen.getAllByText("src/main.ts")[0].closest("aside"),
+    ).toHaveAttribute("inert");
+  });
+
   it("checks files, searches contents, and calls the commit placeholder", () => {
     const onCheckedChange = vi.fn();
     const onCommit = vi.fn();
@@ -115,6 +167,53 @@ describe("LocalChangesPanel", () => {
     expect(
       within(menu as HTMLElement).getByText("Check selected (1)"),
     ).toBeInTheDocument();
+  });
+
+  it("closes and blocks file action menus while busy", () => {
+    const onRestore = vi.fn();
+    const onStash = vi.fn();
+    let startBusy: () => void = () => undefined;
+
+    function BusyPanel() {
+      const [busy, setBusy] = useState(false);
+      startBusy = () => setBusy(true);
+
+      return (
+        <LocalChangesPanel
+          busy={busy}
+          changes={createChanges()}
+          onRestore={onRestore}
+          onStash={onStash}
+        />
+      );
+    }
+
+    renderWithProviders(<BusyPanel />);
+    fireEvent.contextMenu(screen.getAllByText("src/main.ts")[0]);
+
+    expect(
+      screen.getByRole("button", { name: "Stash selected (1)" }),
+    ).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "Restore selected (1)" }),
+    ).toBeEnabled();
+
+    act(() => startBusy());
+
+    expect(
+      screen.queryByRole("button", { name: "Stash selected (1)" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Restore selected (1)" }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.contextMenu(screen.getAllByText("src/main.ts")[0]);
+    fireEvent.click(screen.getAllByRole("button", { name: "More actions" })[0]);
+
+    expect(screen.queryByText("Stash selected (1)")).not.toBeInTheDocument();
+    expect(screen.queryByText("Restore selected (1)")).not.toBeInTheDocument();
+    expect(onStash).not.toHaveBeenCalled();
+    expect(onRestore).not.toHaveBeenCalled();
   });
 
   it("shows a renormalize preview prompt without checking files", () => {
@@ -180,6 +279,48 @@ describe("LocalChangesPanel", () => {
 
     expect(screen.getByText("0 selected")).toBeInTheDocument();
     expect(onCheckedChange).toHaveBeenLastCalledWith([]);
+  });
+
+  it("renders large change sets in bounded pages", () => {
+    const changes = Array.from({ length: 255 }, (_, index) => ({
+      id: `large-${index}`,
+      payload: createPayload({ newPath: `generated/file-${index}.txt` }),
+    }));
+
+    renderWithProviders(<LocalChangesPanel changes={changes} />);
+
+    expect(screen.getAllByTestId("local-change-row")).toHaveLength(250);
+    expect(screen.getByText("Page 1 of 2")).toBeInTheDocument();
+    expect(
+      screen
+        .getAllByTestId("local-change-row")
+        .some((row) => within(row).queryByText("generated/file-0.txt")),
+    ).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Next changes page" }));
+
+    expect(screen.getAllByTestId("local-change-row")).toHaveLength(5);
+    expect(screen.getByText("Page 2 of 2")).toBeInTheDocument();
+    expect(
+      screen
+        .getAllByTestId("local-change-row")
+        .some((row) => within(row).queryByText("generated/file-250.txt")),
+    ).toBe(true);
+    expect(
+      screen
+        .getAllByTestId("local-change-row")
+        .some((row) => within(row).queryByText("generated/file-0.txt")),
+    ).toBe(false);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Previous changes page" }),
+    );
+    expect(screen.getAllByTestId("local-change-row")).toHaveLength(250);
+    expect(
+      screen
+        .getAllByTestId("local-change-row")
+        .some((row) => within(row).queryByText("generated/file-0.txt")),
+    ).toBe(true);
   });
 });
 

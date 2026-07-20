@@ -5,7 +5,7 @@ use std::sync::{
 use std::time::Duration;
 
 use artistic_git_contracts::{AppError, AppResult};
-use artistic_git_git_runner::OperationBusy;
+use artistic_git_git_runner::{OperationBusy, OperationConcurrency};
 use serde::{Deserialize, Serialize};
 use tauri::{
     utils::{config::BundleType, platform::bundle_type},
@@ -364,7 +364,7 @@ pub fn update_install_gate(
 }
 
 #[tauri::command]
-pub fn install_ready_update(
+pub async fn install_ready_update(
     app_handle: AppHandle,
     state: State<'_, UpdaterRuntimeState>,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
@@ -384,37 +384,63 @@ pub fn install_ready_update(
         )));
     }
 
-    let _permit = backend
-        .runner()
-        .operation_concurrency()
+    let worker_app_handle = app_handle.clone();
+    let backend = backend.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        install_ready_update_blocking(worker_app_handle, backend, ready)
+    })
+    .await
+    .map_err(|error| {
+        let _ = set_update_install_closing_windows(&app_handle, false);
+        artistic_git_app::unexpected_command_error(
+            format!("update install worker failed: {error}"),
+            INSTALL_OPERATION,
+        )
+    })?
+}
+
+fn install_ready_update_blocking(
+    app_handle: AppHandle,
+    backend: artistic_git_app::RepositoryBackend,
+    ready: ReadyUpdate,
+) -> AppResult<()> {
+    with_update_install_permit(backend.runner().operation_concurrency(), || {
+        if let Some(blocker) = close_guard_install_gate_response(&app_handle) {
+            return Err(install_gate_error(blocker, INSTALL_OPERATION));
+        }
+
+        close_all_windows_for_update_install(&app_handle)?;
+        if let Some(blocker) = close_guard_install_gate_response(&app_handle) {
+            let _ = set_update_install_closing_windows(&app_handle, false);
+            return Err(install_gate_error(blocker, INSTALL_OPERATION));
+        }
+
+        let install_result = ready
+            .update
+            .install(ready.bytes.as_slice())
+            .map_err(|error| {
+                artistic_git_app::unexpected_command_error(
+                    format!("failed to install update: {error}"),
+                    INSTALL_OPERATION,
+                )
+            });
+        if let Err(error) = install_result {
+            let _ = set_update_install_closing_windows(&app_handle, false);
+            return Err(error);
+        }
+
+        app_handle.restart();
+    })
+}
+
+fn with_update_install_permit<T>(
+    concurrency: &OperationConcurrency,
+    action: impl FnOnce() -> AppResult<T>,
+) -> AppResult<T> {
+    let _permit = concurrency
         .try_begin_exclusive()
         .map_err(|busy| install_busy_error(busy, INSTALL_OPERATION))?;
-
-    if let Some(blocker) = close_guard_install_gate_response(&app_handle) {
-        return Err(install_gate_error(blocker, INSTALL_OPERATION));
-    }
-
-    close_all_windows_for_update_install(&app_handle)?;
-    if let Some(blocker) = close_guard_install_gate_response(&app_handle) {
-        let _ = set_update_install_closing_windows(&app_handle, false);
-        return Err(install_gate_error(blocker, INSTALL_OPERATION));
-    }
-
-    let install_result = ready
-        .update
-        .install(ready.bytes.as_slice())
-        .map_err(|error| {
-            artistic_git_app::unexpected_command_error(
-                format!("failed to install update: {error}"),
-                INSTALL_OPERATION,
-            )
-        });
-    if let Err(error) = install_result {
-        let _ = set_update_install_closing_windows(&app_handle, false);
-        return Err(error);
-    }
-
-    app_handle.restart();
+    action()
 }
 
 pub(crate) fn retarget_ready_update_prompt(
@@ -1422,6 +1448,31 @@ mod tests {
     #[test]
     fn close_guard_install_gate_allows_when_no_window_is_guarded() {
         assert_eq!(close_guard_install_gate_response_for_blocked(false), None);
+    }
+
+    #[test]
+    fn ready_update_can_move_to_the_blocking_install_worker() {
+        fn assert_send_static<T: Send + 'static>() {}
+
+        assert_send_static::<ReadyUpdate>();
+    }
+
+    #[test]
+    fn update_install_permit_remains_exclusive_for_the_worker_action() {
+        let concurrency = OperationConcurrency::default();
+        let result = with_update_install_permit(&concurrency, || {
+            assert_eq!(concurrency.busy_state(), Some(OperationBusy::WriteBusy));
+            Err::<(), _>(AppError::expected(
+                "test install stopped",
+                INSTALL_OPERATION,
+            ))
+        });
+
+        assert_eq!(
+            result.expect_err("test action should stop"),
+            AppError::expected("test install stopped", INSTALL_OPERATION)
+        );
+        assert_eq!(concurrency.busy_state(), None);
     }
 
     #[test]

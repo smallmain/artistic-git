@@ -1,4 +1,4 @@
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Loader2 } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -69,16 +69,27 @@ export function ConfirmDialog({
       onOpenChange={onOpenChange}
       title={title}
     >
-      <div className="flex gap-3 rounded-md border bg-background p-3 text-sm">
-        <AlertTriangle
-          className={
-            variant === "danger"
-              ? "mt-0.5 size-4 shrink-0 text-destructive"
-              : "mt-0.5 size-4 shrink-0 text-warning"
-          }
-          aria-hidden="true"
-        />
-        <p>{description}</p>
+      <div aria-busy={busy} className="space-y-3">
+        <div className="flex gap-3 rounded-md border bg-background p-3 text-sm">
+          <AlertTriangle
+            className={
+              variant === "danger"
+                ? "mt-0.5 size-4 shrink-0 text-destructive"
+                : "mt-0.5 size-4 shrink-0 text-warning"
+            }
+            aria-hidden="true"
+          />
+          <p>{description}</p>
+        </div>
+        {busy ? (
+          <div
+            className="flex items-center gap-2 text-sm text-muted-foreground"
+            role="status"
+          >
+            <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+            <span>{t("actions.processing")}</span>
+          </div>
+        ) : null}
       </div>
     </DialogFrame>
   );

@@ -10,6 +10,17 @@ export interface TreeNode {
 
 export type CheckState = "checked" | "unchecked" | "mixed";
 
+export function isDeferredLocalChange(
+  change: LocalChangeItem | null,
+): change is LocalChangeItem {
+  return Boolean(
+    change &&
+    (change.payload.fileKind === "deferred" ||
+      change.payload.metadata.previewDeferred === "true" ||
+      change.diff?.kind === "deferred"),
+  );
+}
+
 export function filterChanges(
   changes: LocalChangeItem[],
   searchTerm: string,

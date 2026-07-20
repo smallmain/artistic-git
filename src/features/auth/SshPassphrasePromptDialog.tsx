@@ -1,4 +1,3 @@
-import { listen } from "@tauri-apps/api/event";
 import { KeyRound } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
@@ -10,6 +9,7 @@ import type {
   SubmitSshPassphrasePromptRequest,
 } from "@/lib/ipc/commands";
 import { submitSshPassphrasePrompt } from "@/lib/ipc/commands";
+import { listenRuntimeEvent } from "@/lib/ipc/events";
 
 export function SshPassphrasePromptDialog() {
   const { t } = useTranslation();
@@ -22,7 +22,7 @@ export function SshPassphrasePromptDialog() {
 
   React.useEffect(() => {
     let unlisten: (() => void) | undefined;
-    void listen<SshPassphrasePromptEvent>(
+    void listenRuntimeEvent<SshPassphrasePromptEvent>(
       "ssh-passphrase-prompt",
       (event) => {
         const next = event.payload;

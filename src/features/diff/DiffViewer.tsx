@@ -353,7 +353,9 @@ function FileDiffCard({
 }: {
   content: Extract<
     DiffViewerContent,
-    { kind: "binary" | "oversizedText" | "lfsPointer" | "moved" }
+    {
+      kind: "binary" | "deferred" | "oversizedText" | "lfsPointer" | "moved";
+    }
   >;
   payload: DiffViewerProps["payload"];
 }) {
@@ -364,14 +366,16 @@ function FileDiffCard({
   const lfsStatus = content.kind === "lfsPointer" ? content.status : undefined;
   const isSubmodule = payload.metadata.submodule === "true";
   const title =
-    content.kind === "lfsPointer" && content.status === "loading"
-      ? t("diff.card.lfsLoading")
-      : content.kind === "lfsPointer" && content.status === "error"
-        ? (content.message ?? t("diff.card.lfsError"))
-        : (content.message ??
-          (isSubmodule
-            ? t("diff.card.submoduleUpdated", { path: payload.newPath })
-            : t(`diff.card.${content.kind}`)));
+    content.kind === "deferred" || payload.metadata.previewDeferred === "true"
+      ? t("diff.card.previewDeferred")
+      : content.kind === "lfsPointer" && content.status === "loading"
+        ? t("diff.card.lfsLoading")
+        : content.kind === "lfsPointer" && content.status === "error"
+          ? (content.message ?? t("diff.card.lfsError"))
+          : (content.message ??
+            (isSubmodule
+              ? t("diff.card.submoduleUpdated", { path: payload.newPath })
+              : t(`diff.card.${content.kind}`)));
   const role =
     lfsStatus === "loading"
       ? "status"
@@ -470,7 +474,7 @@ function FileIcon({ kind }: { kind: DiffViewerContent["kind"] | "text" }) {
     return <ArrowRight className={className} aria-hidden="true" />;
   }
 
-  if (kind === "oversizedText") {
+  if (kind === "oversizedText" || kind === "deferred") {
     return <FileQuestion className={className} aria-hidden="true" />;
   }
 

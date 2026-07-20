@@ -99,8 +99,9 @@ pub use https_auth::{
 pub use remote::{load_remote_settings, save_remote_settings};
 pub use repository::{
     clone_repository, clone_repository_with_cancel, list_branches, list_local_changes,
-    list_stashes, log_page_with_cancel, open_repository, probe_remote_repository,
-    repository_summary, search_log_with_cancel, RepositoryBackend,
+    list_stashes, local_change_detail, log_page_with_cancel, open_repository,
+    probe_remote_repository, repository_summary, search_log_with_cancel,
+    CancellableOperationReservation, RepositoryBackend,
 };
 pub use restore::restore_changes;
 pub use revert::abort_revert;

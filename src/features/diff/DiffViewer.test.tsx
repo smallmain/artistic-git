@@ -150,6 +150,48 @@ describe("DiffViewer", () => {
         queryClient={createAppQueryClient()}
       >
         <DiffViewer
+          content={{ kind: "oversizedText" }}
+          payload={createPayload({
+            fileKind: "oversizedText",
+            metadata: { previewDeferred: "true" },
+          })}
+          source="localChanges"
+        />
+      </AppProviders>,
+    );
+
+    expect(
+      screen.getByText("Preview not loaded for this item"),
+    ).toBeInTheDocument();
+
+    rerender(
+      <AppProviders
+        i18n={createI18n("en")}
+        initialLanguagePreference="en"
+        initialThemePreference="light"
+        queryClient={createAppQueryClient()}
+      >
+        <DiffViewer
+          content={{ kind: "deferred" }}
+          payload={createPayload({ fileKind: "deferred" })}
+          source="localChanges"
+        />
+      </AppProviders>,
+    );
+
+    expect(
+      screen.getByText("Preview not loaded for this item"),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText(/Preview pending/).length).toBeGreaterThan(0);
+
+    rerender(
+      <AppProviders
+        i18n={createI18n("en")}
+        initialLanguagePreference="en"
+        initialThemePreference="light"
+        queryClient={createAppQueryClient()}
+      >
+        <DiffViewer
           content={{
             kind: "image",
             newImage: {

@@ -5,8 +5,10 @@ export {
   filterChanges,
   formatChangePath,
   getCheckState,
+  isDeferredLocalChange,
 } from "./local-change-utils";
 export type {
+  LocalChangeDetailState,
   LocalChangeItem,
   LocalChangesPanelProps,
   LocalChangesViewMode,

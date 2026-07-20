@@ -4,15 +4,16 @@ use artistic_git_contracts::{
     ConflictHunk, ConflictImagePreview, ConflictListRequest, ConflictListResponse,
     ConflictOperation, ConflictOperationKind, ConflictPathRequest, ConflictResolutionStatus,
     ConflictSaveResolutionRequest, ConflictSaveResolutionResponse, ConflictSelectSideRequest,
-    ConflictSelectSideResponse, ConflictSide, ConflictSideFile, DiffFileKind, GitCommandError,
+    ConflictSelectSideResponse, ConflictSide, ConflictSideFile, DiffFileKind,
 };
-use artistic_git_git_runner::{GitCommandPlan, GitRunner};
+use artistic_git_core::diff_engine::OVERSIZED_TEXT_BYTES;
+use artistic_git_git_runner::GitRunner;
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::{OsStr, OsString},
-    fs, io,
+    fs::{self, File},
+    io::{self, Read},
     path::{Component, Path, PathBuf},
-    process::Command,
 };
 
 use crate::repository::RepositoryBackend;
@@ -24,6 +25,11 @@ const OP_SAVE_RESOLUTION: &str = "saveConflictResolution";
 const OP_COMPLETE: &str = "completeConflictResolution";
 const OP_CANCEL: &str = "cancelConflictResolution";
 const IMAGE_PREVIEW_LIMIT_BYTES: usize = 2 * 1024 * 1024;
+const CONFLICT_TEXT_LIMIT_BYTES: usize = OVERSIZED_TEXT_BYTES;
+const TEXT_KIND_PROBE_BYTES: usize = 8 * 1024;
+const CONFLICT_LIST_FILE_LIMIT: usize = 5_000;
+const CONFLICT_LIST_CLASSIFICATION_BUDGET_BYTES: usize = 8 * 1024 * 1024;
+const CONFLICT_PATH_COMMAND_CHUNK_SIZE: usize = 128;
 
 #[derive(Debug, Clone)]
 struct ConflictSubmoduleEntry {
@@ -37,6 +43,45 @@ struct ResolvedConflictPath {
     path: PathBuf,
     display_path: PathBuf,
     submodule_path: Option<PathBuf>,
+}
+
+#[derive(Debug)]
+struct ConflictListBudget {
+    file_count: usize,
+    classification_bytes_remaining: usize,
+    operation_name: &'static str,
+}
+
+impl ConflictListBudget {
+    fn new(operation_name: &'static str) -> Self {
+        Self {
+            file_count: 0,
+            classification_bytes_remaining: CONFLICT_LIST_CLASSIFICATION_BUDGET_BYTES,
+            operation_name,
+        }
+    }
+
+    fn register_file(&mut self, path: &Path) -> AppResult<()> {
+        self.file_count = self.file_count.saturating_add(1);
+        if self.file_count > CONFLICT_LIST_FILE_LIMIT {
+            return Err(logged(AppError::expected(
+                format!(
+                    "repository contains more than {CONFLICT_LIST_FILE_LIMIT} conflict files; conflict listing stopped at {} to keep memory and UI responsive",
+                    conflict_display_path(path)
+                ),
+                self.operation_name,
+            )));
+        }
+        Ok(())
+    }
+
+    fn reserve_classification_bytes(&mut self, bytes: usize) -> bool {
+        if bytes > self.classification_bytes_remaining {
+            return false;
+        }
+        self.classification_bytes_remaining -= bytes;
+        true
+    }
 }
 
 impl RepositoryBackend {
@@ -55,7 +100,10 @@ impl RepositoryBackend {
         &self,
         request: ConflictSelectSideRequest,
     ) -> AppResult<ConflictSelectSideResponse> {
-        select_conflict_side(self.runner(), request)
+        let operation_id = request.operation_id.clone();
+        self.run_cancellable_operation(operation_id, OP_SELECT_SIDE, || {
+            select_conflict_side(self.runner(), request)
+        })
     }
 
     pub fn save_conflict_resolution(
@@ -88,9 +136,16 @@ pub fn list_conflicts(
     let mut operation = detect_operation(runner, &root, OP_LIST_CONFLICTS)?;
     let entries = unmerged_entries(runner, &root, OP_LIST_CONFLICTS)?;
     let mut files = Vec::new();
+    let mut budget = ConflictListBudget::new(OP_LIST_CONFLICTS);
 
     for path in entries.keys() {
-        files.push(conflict_file_from_entries(&root, path, path, &entries));
+        files.push(conflict_file_from_entries_for_list(
+            &root,
+            path,
+            path,
+            &entries,
+            &mut budget,
+        )?);
     }
 
     for submodule in initialized_conflict_submodule_entries(runner, &root, OP_LIST_CONFLICTS)? {
@@ -101,12 +156,13 @@ pub fn list_conflicts(
         let entries = unmerged_entries(runner, &submodule.root, OP_LIST_CONFLICTS)?;
         for path in entries.keys() {
             let display_path = submodule.path.join(path);
-            files.push(conflict_file_from_entries(
+            files.push(conflict_file_from_entries_for_list(
                 &submodule.root,
                 path,
                 &display_path,
                 &entries,
-            ));
+                &mut budget,
+            )?);
         }
     }
     files.sort_by(|left, right| left.path.cmp(&right.path));
@@ -123,7 +179,7 @@ pub fn conflict_detail(
     let resolved = resolve_conflict_path(runner, &root, &path, OP_CONFLICT_DETAIL)?;
     let operation = detect_operation(runner, &resolved.repo_root, OP_CONFLICT_DETAIL)?;
     let entries = unmerged_entries(runner, &resolved.repo_root, OP_CONFLICT_DETAIL)?;
-    let file = conflict_file_from_entries(
+    let mut file = conflict_file_from_entries(
         &resolved.repo_root,
         &resolved.path,
         &resolved.display_path,
@@ -133,13 +189,37 @@ pub fn conflict_detail(
 
     let detail = match file.file_kind {
         DiffFileKind::Text | DiffFileKind::OversizedText | DiffFileKind::LfsPointer => {
-            let working_bytes =
-                fs::read(resolved.repo_root.join(&resolved.path)).map_err(|source| {
+            let largest_stage_size = largest_stage_blob_size(
+                runner,
+                &resolved.repo_root,
+                stage_map,
+                OP_CONFLICT_DETAIL,
+            )?;
+            let working_path = resolved.repo_root.join(&resolved.path);
+            let working_bytes = match read_file_with_limit(&working_path, CONFLICT_TEXT_LIMIT_BYTES)
+                .map_err(|source| {
                     logged(AppError::expected(
                         format!("failed to read conflict file: {source}"),
                         OP_CONFLICT_DETAIL,
                     ))
-                })?;
+                })? {
+                LimitedFileContents::Within(bytes) => bytes,
+                LimitedFileContents::Oversized(size_bytes) => {
+                    file.file_kind = DiffFileKind::OversizedText;
+                    return Ok(ConflictDetailResponse {
+                        file,
+                        detail: oversized_text_detail(size_bytes.max(largest_stage_size)),
+                    });
+                }
+            };
+            let largest_size = largest_stage_size.max(working_bytes.len() as u64);
+            if largest_size > CONFLICT_TEXT_LIMIT_BYTES as u64 {
+                file.file_kind = DiffFileKind::OversizedText;
+                return Ok(ConflictDetailResponse {
+                    file,
+                    detail: oversized_text_detail(largest_size),
+                });
+            }
             let working_text = String::from_utf8_lossy(&working_bytes).into_owned();
             let parsed = parse_conflict_text(&working_text);
             let own_text = stage_text(
@@ -167,26 +247,28 @@ pub fn conflict_detail(
                 language: language_for_path(&resolved.display_path),
             }
         }
-        DiffFileKind::Binary | DiffFileKind::Image => ConflictFileDetail::Binary {
-            own: stage_side_file(
-                runner,
-                &resolved.repo_root,
-                &resolved.path,
-                stage_map,
-                operation.as_ref(),
-                ConflictSide::Own,
-                OP_CONFLICT_DETAIL,
-            )?,
-            other: stage_side_file(
-                runner,
-                &resolved.repo_root,
-                &resolved.path,
-                stage_map,
-                operation.as_ref(),
-                ConflictSide::Other,
-                OP_CONFLICT_DETAIL,
-            )?,
-        },
+        DiffFileKind::Binary | DiffFileKind::Image | DiffFileKind::Deferred => {
+            ConflictFileDetail::Binary {
+                own: stage_side_file(
+                    runner,
+                    &resolved.repo_root,
+                    &resolved.path,
+                    stage_map,
+                    operation.as_ref(),
+                    ConflictSide::Own,
+                    OP_CONFLICT_DETAIL,
+                )?,
+                other: stage_side_file(
+                    runner,
+                    &resolved.repo_root,
+                    &resolved.path,
+                    stage_map,
+                    operation.as_ref(),
+                    ConflictSide::Other,
+                    OP_CONFLICT_DETAIL,
+                )?,
+            }
+        }
     };
 
     Ok(ConflictDetailResponse { file, detail })
@@ -197,33 +279,58 @@ pub fn select_conflict_side(
     request: ConflictSelectSideRequest,
 ) -> AppResult<ConflictSelectSideResponse> {
     let root = canonical_repository_path(&request.repository_path, OP_SELECT_SIDE)?;
-    let mut files = Vec::new();
-
-    for raw_path in request.paths {
-        let path = validate_conflict_path(&raw_path, OP_SELECT_SIDE)?;
-        let resolved = resolve_conflict_path(runner, &root, &path, OP_SELECT_SIDE)?;
-        let operation = require_operation(runner, &resolved.repo_root, OP_SELECT_SIDE)?;
-        let checkout_side = checkout_side_for_operation(operation.kind, request.side);
-        git_stdout(
-            runner,
-            &resolved.repo_root,
-            [
-                OsString::from("checkout"),
-                OsString::from(checkout_side),
-                OsString::from("--"),
-                resolved.path.as_os_str().to_owned(),
-            ],
-            OP_SELECT_SIDE,
-        )?;
-        git_add_paths(
-            runner,
-            &resolved.repo_root,
-            [&resolved.path],
-            OP_SELECT_SIDE,
-        )?;
-        files.push(conflict_file(runner, &resolved, OP_SELECT_SIDE)?);
+    let paths = validate_conflict_paths(&request.paths, OP_SELECT_SIDE)?;
+    let submodules = initialized_conflict_submodule_entries(runner, &root, OP_SELECT_SIDE)?;
+    let resolved_paths = paths
+        .iter()
+        .map(|path| resolve_conflict_path_from_submodules(&root, path, &submodules))
+        .collect::<Vec<_>>();
+    let mut paths_by_repository = BTreeMap::<PathBuf, Vec<&ResolvedConflictPath>>::new();
+    for resolved in &resolved_paths {
+        paths_by_repository
+            .entry(resolved.repo_root.clone())
+            .or_default()
+            .push(resolved);
     }
 
+    for (repo_root, repo_paths) in &paths_by_repository {
+        ensure_not_cancelled(OP_SELECT_SIDE)?;
+        let operation = require_operation(runner, repo_root, OP_SELECT_SIDE)?;
+        let checkout_side = checkout_side_for_operation(operation.kind, request.side);
+        for chunk in repo_paths.chunks(CONFLICT_PATH_COMMAND_CHUNK_SIZE) {
+            ensure_not_cancelled(OP_SELECT_SIDE)?;
+            git_checkout_paths(runner, repo_root, checkout_side, chunk, OP_SELECT_SIDE)?;
+            git_add_paths(
+                runner,
+                repo_root,
+                chunk.iter().map(|resolved| &resolved.path),
+                OP_SELECT_SIDE,
+            )?;
+        }
+    }
+
+    let mut budget = ConflictListBudget::new(OP_SELECT_SIDE);
+    let mut files_by_path = BTreeMap::new();
+    for (repo_root, repo_paths) in &paths_by_repository {
+        ensure_not_cancelled(OP_SELECT_SIDE)?;
+        let entries = unmerged_entries(runner, repo_root, OP_SELECT_SIDE)?;
+        for resolved in repo_paths {
+            ensure_not_cancelled(OP_SELECT_SIDE)?;
+            let file = conflict_file_from_entries_for_list(
+                repo_root,
+                &resolved.path,
+                &resolved.display_path,
+                &entries,
+                &mut budget,
+            )?;
+            files_by_path.insert(resolved.display_path.clone(), file);
+        }
+    }
+
+    let files = resolved_paths
+        .iter()
+        .filter_map(|resolved| files_by_path.remove(&resolved.display_path))
+        .collect();
     Ok(ConflictSelectSideResponse { files })
 }
 
@@ -450,25 +557,38 @@ fn resolve_conflict_path(
     path: &Path,
     operation_name: &str,
 ) -> AppResult<ResolvedConflictPath> {
-    for submodule in initialized_conflict_submodule_entries(runner, root, operation_name)? {
+    let submodules = initialized_conflict_submodule_entries(runner, root, operation_name)?;
+    Ok(resolve_conflict_path_from_submodules(
+        root,
+        path,
+        &submodules,
+    ))
+}
+
+fn resolve_conflict_path_from_submodules(
+    root: &Path,
+    path: &Path,
+    submodules: &[ConflictSubmoduleEntry],
+) -> ResolvedConflictPath {
+    for submodule in submodules {
         if let Ok(inner_path) = path.strip_prefix(&submodule.path) {
             if !inner_path.as_os_str().is_empty() {
-                return Ok(ResolvedConflictPath {
-                    repo_root: submodule.root,
+                return ResolvedConflictPath {
+                    repo_root: submodule.root.clone(),
                     path: inner_path.to_path_buf(),
                     display_path: path.to_path_buf(),
-                    submodule_path: Some(submodule.path),
-                });
+                    submodule_path: Some(submodule.path.clone()),
+                };
             }
         }
     }
 
-    Ok(ResolvedConflictPath {
+    ResolvedConflictPath {
         repo_root: root.to_path_buf(),
         path: path.to_path_buf(),
         display_path: path.to_path_buf(),
         submodule_path: None,
-    })
+    }
 }
 
 fn single_conflict_repository(
@@ -574,13 +694,98 @@ fn conflict_file_from_entries(
     }
 }
 
+fn conflict_file_from_entries_for_list(
+    root: &Path,
+    path: &Path,
+    display: &Path,
+    entries: &BTreeMap<PathBuf, BTreeMap<u8, StageEntry>>,
+    budget: &mut ConflictListBudget,
+) -> AppResult<ConflictFile> {
+    budget.register_file(display)?;
+    let path_string = conflict_display_path(display);
+    let has_unmerged_stages = entries.contains_key(path);
+    let file_kind = file_kind_for_list_path(root, path, budget);
+    let status = if has_unmerged_stages || worktree_has_markers(root, path) {
+        ConflictResolutionStatus::Unresolved
+    } else {
+        ConflictResolutionStatus::Resolved
+    };
+
+    Ok(ConflictFile {
+        path: path_string,
+        status,
+        file_kind,
+    })
+}
+
+fn file_kind_for_list_path(
+    root: &Path,
+    path: &Path,
+    budget: &mut ConflictListBudget,
+) -> DiffFileKind {
+    if image_mime_for_path(path).is_some() {
+        return DiffFileKind::Image;
+    }
+
+    let absolute_path = root.join(path);
+    let Ok(metadata) = fs::metadata(&absolute_path) else {
+        return DiffFileKind::Binary;
+    };
+    let oversized = metadata.len() > CONFLICT_TEXT_LIMIT_BYTES as u64;
+    let probe_bytes = if oversized {
+        TEXT_KIND_PROBE_BYTES
+    } else {
+        usize::try_from(metadata.len()).unwrap_or(usize::MAX)
+    };
+    if !budget.reserve_classification_bytes(probe_bytes) {
+        return DiffFileKind::Binary;
+    }
+
+    let Ok(bytes) = read_file_prefix(&absolute_path, probe_bytes) else {
+        return DiffFileKind::Binary;
+    };
+    if bytes.contains(&0) {
+        return DiffFileKind::Binary;
+    }
+    if oversized {
+        return DiffFileKind::OversizedText;
+    }
+    if std::str::from_utf8(&bytes).is_err() {
+        return DiffFileKind::Binary;
+    }
+    if looks_like_lfs_pointer(&bytes) {
+        DiffFileKind::LfsPointer
+    } else {
+        DiffFileKind::Text
+    }
+}
+
 fn file_kind_for_path(root: &Path, path: &Path) -> DiffFileKind {
     if image_mime_for_path(path).is_some() {
         return DiffFileKind::Image;
     }
 
-    let Ok(bytes) = fs::read(root.join(path)) else {
+    let absolute_path = root.join(path);
+    let Ok(metadata) = fs::metadata(&absolute_path) else {
         return DiffFileKind::Binary;
+    };
+    if metadata.len() > CONFLICT_TEXT_LIMIT_BYTES as u64 {
+        return read_file_prefix(&absolute_path, TEXT_KIND_PROBE_BYTES)
+            .map(|bytes| {
+                if bytes.contains(&0) {
+                    DiffFileKind::Binary
+                } else {
+                    DiffFileKind::OversizedText
+                }
+            })
+            .unwrap_or(DiffFileKind::Binary);
+    }
+
+    let Ok(contents) = read_file_with_limit(&absolute_path, CONFLICT_TEXT_LIMIT_BYTES) else {
+        return DiffFileKind::Binary;
+    };
+    let LimitedFileContents::Within(bytes) = contents else {
+        return DiffFileKind::OversizedText;
     };
     if bytes.contains(&0) || std::str::from_utf8(&bytes).is_err() {
         DiffFileKind::Binary
@@ -589,6 +794,73 @@ fn file_kind_for_path(root: &Path, path: &Path) -> DiffFileKind {
     } else {
         DiffFileKind::Text
     }
+}
+
+fn oversized_text_detail(size_bytes: u64) -> ConflictFileDetail {
+    ConflictFileDetail::OversizedText {
+        size_bytes: size_bytes.to_string(),
+        max_preview_bytes: CONFLICT_TEXT_LIMIT_BYTES as u32,
+    }
+}
+
+fn largest_stage_blob_size(
+    runner: &GitRunner,
+    root: &Path,
+    stage_map: Option<&BTreeMap<u8, StageEntry>>,
+    operation_name: &str,
+) -> AppResult<u64> {
+    let mut largest_size = 0;
+    for entry in stage_map.into_iter().flat_map(BTreeMap::values) {
+        let output = git_stdout(
+            runner,
+            root,
+            [
+                OsString::from("cat-file"),
+                OsString::from("-s"),
+                OsString::from(&entry.oid),
+            ],
+            operation_name,
+        )?;
+        let size = output.trim().parse::<u64>().map_err(|source| {
+            logged(AppError::expected(
+                format!("failed to read conflict blob size: {source}"),
+                operation_name,
+            ))
+        })?;
+        largest_size = largest_size.max(size);
+    }
+    Ok(largest_size)
+}
+
+enum LimitedFileContents {
+    Within(Vec<u8>),
+    Oversized(u64),
+}
+
+fn read_file_with_limit(path: &Path, limit: usize) -> io::Result<LimitedFileContents> {
+    let file = File::open(path)?;
+    let metadata_size = file.metadata()?.len();
+    if metadata_size > limit as u64 {
+        return Ok(LimitedFileContents::Oversized(metadata_size));
+    }
+
+    let mut bytes = Vec::with_capacity(metadata_size.min(limit as u64) as usize);
+    file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        Ok(LimitedFileContents::Oversized(
+            metadata_size.max(bytes.len() as u64),
+        ))
+    } else {
+        Ok(LimitedFileContents::Within(bytes))
+    }
+}
+
+fn read_file_prefix(path: &Path, limit: usize) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::with_capacity(limit);
+    File::open(path)?
+        .take(limit as u64)
+        .read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 
 fn looks_like_lfs_pointer(bytes: &[u8]) -> bool {
@@ -707,7 +979,7 @@ fn side_modified_unix_seconds(
             OsString::from("--format=%ct"),
             OsString::from(revision),
             OsString::from("--"),
-            path.as_os_str().to_owned(),
+            crate::git_ops::literal_pathspec(path),
         ],
         operation_name,
     )
@@ -774,7 +1046,27 @@ fn run_continuation(
         .config("core.editor", "true")
         .config("sequence.editor", "true")
         .build();
-    command_to_output(plan.to_command(), &plan, operation_name).map(|_| ())
+    crate::git_ops::run_planned_command(plan.to_command(), &plan, operation_name).map(|_| ())
+}
+
+fn git_checkout_paths(
+    runner: &GitRunner,
+    root: &Path,
+    checkout_side: &str,
+    paths: &[&ResolvedConflictPath],
+    operation_name: &str,
+) -> AppResult<()> {
+    let mut args = vec![
+        OsString::from("checkout"),
+        OsString::from(checkout_side),
+        OsString::from("--"),
+    ];
+    args.extend(
+        paths
+            .iter()
+            .map(|resolved| crate::git_ops::literal_pathspec(&resolved.path)),
+    );
+    git_stdout(runner, root, args, operation_name).map(|_| ())
 }
 
 fn git_add_paths<'a, I>(
@@ -791,7 +1083,7 @@ where
         OsString::from("-A"),
         OsString::from("--"),
     ];
-    args.extend(paths.into_iter().map(|path| path.as_os_str().to_owned()));
+    args.extend(paths.into_iter().map(crate::git_ops::literal_pathspec));
     git_stdout(runner, root, args, operation_name).map(|_| ())
 }
 
@@ -802,7 +1094,9 @@ fn assert_no_worktree_markers(
     operation_name: &str,
 ) -> AppResult<()> {
     let absolute_path = root.join(path);
-    let Ok(bytes) = fs::read(&absolute_path) else {
+    let Ok(LimitedFileContents::Within(bytes)) =
+        read_file_with_limit(&absolute_path, CONFLICT_TEXT_LIMIT_BYTES)
+    else {
         return Ok(());
     };
     if bytes.contains(&0) {
@@ -877,11 +1171,12 @@ fn unresolved_paths_from_resolved_entries(
 }
 
 fn worktree_has_markers(root: &Path, path: &Path) -> bool {
-    fs::read(root.join(path))
-        .ok()
-        .filter(|bytes| !bytes.contains(&0))
-        .map(|bytes| contains_conflict_markers(&String::from_utf8_lossy(&bytes)))
-        .unwrap_or(false)
+    let Ok(LimitedFileContents::Within(bytes)) =
+        read_file_with_limit(&root.join(path), CONFLICT_TEXT_LIMIT_BYTES)
+    else {
+        return false;
+    };
+    !bytes.contains(&0) && contains_conflict_markers(&String::from_utf8_lossy(&bytes))
 }
 
 fn contains_conflict_markers(text: &str) -> bool {
@@ -1113,30 +1408,8 @@ where
     S: Into<OsString>,
 {
     let plan = plan_git(runner, root, args).build();
-    let output = plan
-        .to_command()
-        .output()
-        .map_err(|source| spawn_error(&plan, source, operation_name))?;
-    if output.status.success() {
-        Ok(output.stdout)
-    } else {
-        Err(command_failure(&plan, output, operation_name))
-    }
-}
-
-fn command_to_output(
-    mut command: Command,
-    plan: &GitCommandPlan,
-    operation_name: &str,
-) -> AppResult<Vec<u8>> {
-    let output = command
-        .output()
-        .map_err(|source| spawn_error(plan, source, operation_name))?;
-    if output.status.success() {
-        Ok(output.stdout)
-    } else {
-        Err(command_failure(plan, output, operation_name))
-    }
+    crate::git_ops::run_planned_command(plan.to_command(), &plan, operation_name)
+        .map(|output| output.stdout)
 }
 
 fn plan_git<'a, I, S>(
@@ -1157,43 +1430,15 @@ where
         .args(planned_args)
 }
 
-fn command_failure(
-    plan: &GitCommandPlan,
-    output: std::process::Output,
-    operation_name: &str,
-) -> AppError {
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let summary = stderr
-        .lines()
-        .next()
-        .filter(|line| !line.trim().is_empty())
-        .map(str::to_owned)
-        .unwrap_or_else(|| format!("git command failed during {operation_name}"));
-
-    logged(
-        AppError::expected(summary, operation_name).with_git(GitCommandError {
-            command: plan.command_for_error(),
-            exit_code: output.status.code(),
-            stdout,
-            stderr,
-        }),
-    )
-}
-
-fn spawn_error(plan: &GitCommandPlan, source: io::Error, operation_name: &str) -> AppError {
-    logged(
-        AppError::fatal(
-            format!("embedded git command could not be executed: {source}"),
+fn ensure_not_cancelled(operation_name: &str) -> AppResult<()> {
+    if crate::git_ops::active_cancel_token().is_some_and(|token| token.is_cancelled()) {
+        Err(logged(AppError::expected(
+            "operation cancelled",
             operation_name,
-        )
-        .with_git(GitCommandError {
-            command: plan.command_for_error(),
-            exit_code: None,
-            stdout: String::new(),
-            stderr: source.to_string(),
-        }),
-    )
+        )))
+    } else {
+        Ok(())
+    }
 }
 
 fn display_path(path: &Path) -> String {
@@ -1260,7 +1505,7 @@ enum ParseState {
 mod tests {
     use super::*;
     use artistic_git_contracts::OperationId;
-    use artistic_git_git_runner::{GitDistribution, GitRunner};
+    use artistic_git_git_runner::{CancelToken, GitDistribution, GitRunner};
     use artistic_git_test_support::{require_git_dist, TestTempDir};
     use std::process::Output;
 
@@ -1387,6 +1632,48 @@ mod tests {
     }
 
     #[test]
+    fn conflict_list_rejects_more_than_the_global_file_limit() {
+        let mut budget = ConflictListBudget::new(OP_LIST_CONFLICTS);
+        for index in 0..CONFLICT_LIST_FILE_LIMIT {
+            budget
+                .register_file(Path::new(&format!("conflict-{index}.txt")))
+                .expect("file within conflict list limit");
+        }
+
+        let error = budget
+            .register_file(Path::new("one-too-many.txt"))
+            .expect_err("conflict list limit should be enforced");
+
+        assert!(error
+            .summary
+            .contains(&CONFLICT_LIST_FILE_LIMIT.to_string()));
+        assert!(error.summary.contains("one-too-many.txt"));
+    }
+
+    #[test]
+    fn conflict_list_classification_respects_its_total_read_budget() {
+        let temp = TestTempDir::new("ag-conflict-list-budget").expect("temp dir");
+        fs::write(temp.path().join("first.txt"), "text\n").expect("first file");
+        fs::write(temp.path().join("second.txt"), "text\n").expect("second file");
+        let mut budget = ConflictListBudget {
+            file_count: 0,
+            classification_bytes_remaining: 5,
+            operation_name: OP_LIST_CONFLICTS,
+        };
+
+        assert_eq!(
+            file_kind_for_list_path(temp.path(), Path::new("first.txt"), &mut budget),
+            DiffFileKind::Text
+        );
+        assert_eq!(budget.classification_bytes_remaining, 0);
+        assert_eq!(
+            file_kind_for_list_path(temp.path(), Path::new("second.txt"), &mut budget),
+            DiffFileKind::Binary
+        );
+        assert_eq!(budget.classification_bytes_remaining, 0);
+    }
+
+    #[test]
     fn rejects_absolute_or_parent_conflict_paths() {
         let absolute_path = if cfg!(windows) {
             "C:/tmp/file"
@@ -1397,6 +1684,40 @@ mod tests {
         assert!(validate_conflict_path(absolute_path, "test").is_err());
         assert!(validate_conflict_path("../file", "test").is_err());
         assert!(validate_conflict_path("src/file.txt", "test").is_ok());
+    }
+
+    #[test]
+    fn selecting_one_thousand_paths_has_a_bounded_write_command_count() {
+        let paths = (0..1_000).collect::<Vec<_>>();
+        let write_command_count = paths.chunks(CONFLICT_PATH_COMMAND_CHUNK_SIZE).count() * 2;
+
+        assert_eq!(write_command_count, 16);
+    }
+
+    #[test]
+    fn select_side_honors_a_pre_cancelled_operation() {
+        let (runner, _home) = real_runner();
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        repo.start_text_merge_conflict();
+        let token = CancelToken::new();
+        token.cancel();
+
+        let error = crate::git_ops::with_cancel_token_for_operation(&token, || {
+            select_conflict_side(
+                &runner,
+                ConflictSelectSideRequest {
+                    operation_id: None,
+                    paths: vec!["tracked.txt".to_owned()],
+                    repository_path: display_path(&repo.path),
+                    side: ConflictSide::Own,
+                },
+            )
+        })
+        .expect_err("cancelled selection should stop before checkout");
+
+        assert_eq!(error.summary, "operation cancelled");
+        assert!(repo.git_output(["ls-files", "-u"]).contains("tracked.txt"));
     }
 
     #[test]
@@ -1475,6 +1796,96 @@ mod tests {
         assert_eq!(other.mime_type.as_deref(), Some("image/png"));
         assert_eq!(other.size_bytes, Some(4));
         assert!(other.modified_unix_seconds.is_some());
+    }
+
+    #[test]
+    fn oversized_text_conflicts_return_metadata_without_file_contents() {
+        let (runner, _home) = real_runner();
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        repo.start_oversized_text_merge_conflict();
+
+        let response = conflict_detail(
+            &runner,
+            ConflictPathRequest {
+                path: "tracked.txt".to_owned(),
+                repository_path: display_path(&repo.path),
+            },
+        )
+        .expect("oversized conflict detail");
+
+        assert_eq!(response.file.file_kind, DiffFileKind::OversizedText);
+        let ConflictFileDetail::OversizedText {
+            size_bytes,
+            max_preview_bytes,
+        } = response.detail
+        else {
+            panic!("expected oversized conflict metadata");
+        };
+        assert!(size_bytes.parse::<u64>().expect("size") > OVERSIZED_TEXT_BYTES as u64);
+        assert_eq!(max_preview_bytes, OVERSIZED_TEXT_BYTES as u32);
+
+        let selected = select_conflict_side(
+            &runner,
+            ConflictSelectSideRequest {
+                operation_id: None,
+                paths: vec!["tracked.txt".to_owned()],
+                repository_path: display_path(&repo.path),
+                side: ConflictSide::Own,
+            },
+        )
+        .expect("select one complete version");
+        assert_eq!(selected.files[0].status, ConflictResolutionStatus::Resolved);
+
+        complete_conflict_resolution(
+            &runner,
+            ConflictCompleteRequest {
+                operation_id: OperationId("oversized-conflict-test".to_owned()),
+                paths: vec!["tracked.txt".to_owned()],
+                repository_path: display_path(&repo.path),
+            },
+        )
+        .expect("complete oversized conflict");
+    }
+
+    #[test]
+    fn select_side_treats_pathspec_magic_as_a_literal_filename() {
+        let (runner, _home) = real_runner();
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        repo.write(":(glob)**", "base magic\n");
+        repo.write("victim.txt", "base victim\n");
+        repo.git(["add", "."]);
+        repo.git(["commit", "-m", "add conflict fixtures"]);
+
+        repo.git(["checkout", "-b", "other"]);
+        repo.write(":(glob)**", "other magic\n");
+        repo.write("victim.txt", "other victim\n");
+        repo.git(["commit", "-am", "other changes"]);
+        repo.git(["checkout", "main"]);
+        repo.write(":(glob)**", "own magic\n");
+        repo.write("victim.txt", "own victim\n");
+        repo.git(["commit", "-am", "own changes"]);
+        assert!(!repo.git_output_result(["merge", "other"]).status.success());
+
+        select_conflict_side(
+            &runner,
+            ConflictSelectSideRequest {
+                operation_id: None,
+                paths: vec![":(glob)**".to_owned()],
+                repository_path: display_path(&repo.path),
+                side: ConflictSide::Own,
+            },
+        )
+        .expect("select literal conflict path");
+
+        let unmerged = repo.git_output(["ls-files", "-u"]);
+        assert!(!unmerged.contains(":(glob)**"));
+        assert!(unmerged.contains("victim.txt"));
+        assert_eq!(
+            fs::read_to_string(repo.path.join(":(glob)**")).expect("selected file"),
+            "own magic\n"
+        );
     }
 
     #[test]
@@ -1688,6 +2099,22 @@ mod tests {
             assert!(
                 !output.status.success(),
                 "merge should conflict instead of succeeding"
+            );
+        }
+
+        fn start_oversized_text_merge_conflict(&self) {
+            let payload = "x".repeat(CONFLICT_TEXT_LIMIT_BYTES + 1);
+            self.git(["checkout", "-b", "other"]);
+            self.write("tracked.txt", &format!("other\n{payload}"));
+            self.git(["commit", "-am", "other oversized text"]);
+            self.git(["checkout", "main"]);
+            self.write("tracked.txt", &format!("own\n{payload}"));
+            self.git(["commit", "-am", "own oversized text"]);
+
+            let output = self.git_output_result(["merge", "other"]);
+            assert!(
+                !output.status.success(),
+                "oversized text merge should conflict instead of succeeding"
             );
         }
 

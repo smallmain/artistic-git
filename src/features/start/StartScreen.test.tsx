@@ -49,11 +49,13 @@ const eventMocks = vi.hoisted(() => ({
       };
     },
   ),
+  listenRuntimeEvent: vi.fn(),
 }));
 
 vi.mock("@/lib/ipc/commands", () => commandMocks);
 vi.mock("@/lib/ipc/events", () => ({
   listenAppEvent: eventMocks.listenAppEvent,
+  listenRuntimeEvent: eventMocks.listenRuntimeEvent,
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => dialogMocks);
 
@@ -88,6 +90,28 @@ async function emitWindowCloseBlocked(payload: unknown) {
   });
 }
 
+async function emitCloneCancellableProgress() {
+  await waitFor(() => {
+    expect(commandMocks.cloneRepository).toHaveBeenCalled();
+    expect(eventMocks.listeners.length).toBeGreaterThan(0);
+  });
+  const operationId = commandMocks.cloneRepository.mock.calls[0][0].operationId;
+  await act(async () => {
+    for (const listener of eventMocks.listeners) {
+      listener({
+        payload: {
+          cancellable: true,
+          label: "Cloning repository",
+          operationId,
+          progress: { kind: "indeterminate" },
+          repositoryPath: null,
+          windowLabel: null,
+        },
+      });
+    }
+  });
+}
+
 beforeEach(() => {
   window.localStorage.clear();
   vi.clearAllMocks();
@@ -98,6 +122,15 @@ beforeEach(() => {
       handler as (event: { payload: unknown }) => void,
     );
     return () => undefined;
+  });
+  eventMocks.listenRuntimeEvent.mockImplementation(async (event, handler) => {
+    tauriEventListeners.set(
+      event,
+      handler as (event: { payload: unknown }) => void,
+    );
+    return () => {
+      tauriEventListeners.delete(event);
+    };
   });
   eventMocks.listeners = [];
   commandMocks.cancelPendingWindowExit.mockResolvedValue(undefined);
@@ -119,6 +152,7 @@ beforeEach(() => {
     branches: ["develop", "main"],
     defaultBranch: "main",
     isEmpty: false,
+    truncated: false,
   });
 });
 
@@ -307,6 +341,12 @@ describe("StartScreen clone flow", () => {
   });
 
   it("infers the directory name and opens the cloned repository", async () => {
+    commandMocks.probeRemoteRepository.mockResolvedValue({
+      branches: ["develop", "main"],
+      defaultBranch: "main",
+      isEmpty: false,
+      truncated: true,
+    });
     commandMocks.cloneRepository.mockResolvedValue({
       repository: openRepositoryResponse("/projects/art-project"),
     });
@@ -325,9 +365,8 @@ describe("StartScreen clone flow", () => {
     expect(within(dialog).getByLabelText("Branch to clone")).toHaveValue(
       "main",
     );
-    fireEvent.change(within(dialog).getByLabelText("Branch to clone"), {
-      target: { value: "develop" },
-    });
+    expect(dialog).toHaveTextContent("Showing the first 2 available branches.");
+    chooseBranch("Branch to clone", "develop");
 
     fireEvent.click(
       within(dialog).getByRole("button", { name: "Clone Project" }),
@@ -361,18 +400,20 @@ describe("StartScreen clone flow", () => {
   });
 
   it("shows clone errors inside the dialog", async () => {
-    commandMocks.cloneRepository.mockRejectedValue({
+    const cloneError = {
+      operation: "clone repository",
       summary: "target directory already exists",
-    });
+      stderr: "fatal: destination path already exists and is not empty",
+    };
+    const dispatchEvent = vi.spyOn(window, "dispatchEvent");
+    commandMocks.cloneRepository.mockRejectedValue(cloneError);
     const store = renderWithStore(<StartScreen />);
 
     fireEvent.click(screen.getByRole("button", { name: "Clone Project" }));
 
     const dialog = screen.getByRole("dialog", { name: "Clone Project" });
     await enterCloneUrl(dialog, "git@github.com:studio/art.git");
-    fireEvent.change(within(dialog).getByLabelText("Branch to clone"), {
-      target: { value: "develop" },
-    });
+    chooseBranch("Branch to clone", "develop");
     fireEvent.click(within(dialog).getByRole("button", { name: "Choose" }));
     await waitFor(() => {
       expect(within(dialog).getByLabelText("Save in")).toHaveValue("/projects");
@@ -389,6 +430,10 @@ describe("StartScreen clone flow", () => {
     );
     expect(commandMocks.probeRemoteRepository).toHaveBeenCalledTimes(1);
     expect(store.getState().activeRepositoryPath).toBeNull();
+    const errorEvent = dispatchEvent.mock.calls
+      .map(([event]) => event)
+      .find((event) => event.type === "artistic-git:error") as CustomEvent;
+    expect(errorEvent.detail).toBe(cloneError);
   });
 
   it("retries repository detection interactively after an access error", async () => {
@@ -399,6 +444,7 @@ describe("StartScreen clone flow", () => {
         branches: ["main"],
         defaultBranch: "main",
         isEmpty: false,
+        truncated: false,
       });
     renderWithStore(<StartScreen />, {
       appSettings: { paths: { lastCloneParentDir: "/projects" } },
@@ -471,9 +517,7 @@ describe("StartScreen clone flow", () => {
     fireEvent.click(screen.getByRole("button", { name: "Clone Project" }));
     const dialog = screen.getByRole("dialog", { name: "Clone Project" });
     await enterCloneUrl(dialog, "https://github.com/studio/art-project.git");
-    fireEvent.change(within(dialog).getByLabelText("Branch to clone"), {
-      target: { value: "develop" },
-    });
+    chooseBranch("Branch to clone", "develop");
 
     act(() => {
       window.dispatchEvent(new Event("artistic-git:clone-project"));
@@ -490,6 +534,7 @@ describe("StartScreen clone flow", () => {
       branches: [],
       defaultBranch: null,
       isEmpty: true,
+      truncated: false,
     });
     commandMocks.cloneRepository.mockResolvedValue({
       repository: openRepositoryResponse("/projects/empty"),
@@ -536,6 +581,7 @@ describe("StartScreen clone flow", () => {
         branches: ["release"],
         defaultBranch: "release",
         isEmpty: false,
+        truncated: false,
       });
     renderWithStore(<StartScreen />, {
       appSettings: { paths: { lastCloneParentDir: "/projects" } },
@@ -569,6 +615,7 @@ describe("StartScreen clone flow", () => {
         branches: ["old"],
         defaultBranch: "old",
         isEmpty: false,
+        truncated: false,
       });
     });
     expect(within(dialog).getByLabelText("Branch to clone")).toHaveValue(
@@ -636,9 +683,13 @@ describe("StartScreen clone flow", () => {
       expect(commandMocks.cloneRepository).toHaveBeenCalled();
     });
 
-    fireEvent.click(
-      await within(dialog).findByRole("button", { name: "Cancel clone" }),
-    );
+    const cancelButton = await within(dialog).findByRole("button", {
+      name: "Cancel clone",
+    });
+    expect(cancelButton).toBeDisabled();
+    await emitCloneCancellableProgress();
+    expect(cancelButton).toBeEnabled();
+    fireEvent.click(cancelButton);
 
     await waitFor(() => {
       expect(commandMocks.cancelCloneRepository).toHaveBeenCalledWith({
@@ -647,10 +698,62 @@ describe("StartScreen clone flow", () => {
     });
   });
 
-  it("cancels an in-flight clone before closing a guarded window", async () => {
-    commandMocks.cancelCloneRepository.mockResolvedValue({ cancelled: true });
+  it("keeps a real clone failure visible after cancellation was requested", async () => {
+    let rejectClone: (reason: unknown) => void = () => undefined;
+    const cloneError = structuredAppError("clone cleanup failed");
     commandMocks.cloneRepository.mockImplementation(
-      () => new Promise(() => undefined),
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectClone = reject;
+        }),
+    );
+    commandMocks.cancelCloneRepository.mockResolvedValue({ cancelled: true });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const dispatchEvent = vi.spyOn(window, "dispatchEvent");
+    renderWithStore(<StartScreen />, {
+      appSettings: { paths: { lastCloneParentDir: "/projects" } },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Clone Project" }));
+    const dialog = screen.getByRole("dialog", { name: "Clone Project" });
+    await enterCloneUrl(dialog, "https://github.com/studio/art-project.git");
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Clone Project" }),
+    );
+    await emitCloneCancellableProgress();
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Cancel clone" }),
+    );
+    await waitFor(() =>
+      expect(commandMocks.cancelCloneRepository).toHaveBeenCalledTimes(1),
+    );
+
+    await act(async () => rejectClone(cloneError));
+
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+      "clone cleanup failed",
+    );
+    const errorEvent = dispatchEvent.mock.calls
+      .map(([event]) => event)
+      .find((event) => event.type === "artistic-git:error") as CustomEvent;
+    expect(errorEvent.detail).toBe(cloneError);
+  });
+
+  it("cancels an in-flight clone before closing a guarded window", async () => {
+    let rejectClone: (reason: unknown) => void = () => undefined;
+    let resolveCancellation: (value: { cancelled: boolean }) => void = () =>
+      undefined;
+    commandMocks.cancelCloneRepository.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveCancellation = resolve;
+        }),
+    );
+    commandMocks.cloneRepository.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectClone = reject;
+        }),
     );
     const confirmSpy = vi.spyOn(window, "confirm");
     renderWithStore(<StartScreen />, {
@@ -671,6 +774,7 @@ describe("StartScreen clone flow", () => {
         active: true,
       }),
     );
+    await emitCloneCancellableProgress();
 
     await emitWindowCloseBlocked({ reason: "closeWindow" });
     const closeDialog = await screen.findByRole("dialog", {
@@ -688,7 +792,15 @@ describe("StartScreen clone flow", () => {
         operationId: commandMocks.cloneRepository.mock.calls[0][0].operationId,
       }),
     );
-    expect(commandMocks.closeCurrentWindow).toHaveBeenCalledTimes(1);
+    expect(commandMocks.closeCurrentWindow).not.toHaveBeenCalled();
+
+    await act(async () => {
+      rejectClone(cancelledAppError());
+      resolveCancellation({ cancelled: true });
+    });
+    await waitFor(() =>
+      expect(commandMocks.closeCurrentWindow).toHaveBeenCalledTimes(1),
+    );
     expect(confirmSpy).not.toHaveBeenCalled();
   });
 
@@ -714,7 +826,7 @@ describe("StartScreen clone flow", () => {
     fireEvent.click(
       within(
         await screen.findByRole("dialog", { name: "Close window?" }),
-      ).getByRole("button", { name: "Cancel" }),
+      ).getByRole("button", { name: "Keep waiting" }),
     );
 
     expect(commandMocks.cancelPendingWindowExit).toHaveBeenCalledTimes(1);
@@ -773,6 +885,20 @@ function structuredAppError(summary: string) {
   };
 }
 
+function cancelledAppError() {
+  return {
+    category: "expected",
+    context: {
+      operationId: "clone-cancel-test",
+      operationName: "cloneRepository",
+      repositoryPath: null,
+      windowLabel: "main",
+    },
+    git: null,
+    summary: "operation cancelled",
+  };
+}
+
 async function enterCloneUrl(dialog: HTMLElement, url: string) {
   fireEvent.change(within(dialog).getByLabelText("Repository URL"), {
     target: { value: url },
@@ -788,6 +914,14 @@ async function enterCloneUrl(dialog: HTMLElement, url: string) {
     });
   });
   await within(dialog).findByLabelText("Branch to clone");
+}
+
+function chooseBranch(label: string, branch: string) {
+  fireEvent.click(screen.getByRole("combobox", { name: label }));
+  fireEvent.change(screen.getByRole("searchbox", { name: "Search branches" }), {
+    target: { value: branch },
+  });
+  fireEvent.click(screen.getByRole("option", { name: branch }));
 }
 
 function chooseRepositoryDirectory(path = "/selected/art-project") {

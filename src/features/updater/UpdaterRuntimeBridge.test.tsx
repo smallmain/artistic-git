@@ -223,6 +223,52 @@ describe("UpdaterRuntimeBridge", () => {
     );
   });
 
+  it("ignores repeated install events while this window is already installing", async () => {
+    let finishInstall: (() => void) | undefined;
+    bridgeMocks.installReadyUpdate.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finishInstall = resolve;
+        }),
+    );
+
+    render(
+      <TestProviders
+        initialWindowState={{
+          updateStatus: {
+            requestId: "manual-install-1",
+            source: "manual",
+            targetWindowLabel: "main",
+            status: {
+              notes: null,
+              state: "ready",
+              version: "0.2.0",
+            },
+          },
+        }}
+      >
+        <UpdaterRuntimeBridge />
+        <UpdateProbe />
+      </TestProviders>,
+    );
+
+    window.dispatchEvent(new CustomEvent("artistic-git:install-update"));
+    window.dispatchEvent(new CustomEvent("artistic-git:install-update"));
+
+    await waitFor(() =>
+      expect(bridgeMocks.installReadyUpdate).toHaveBeenCalledTimes(1),
+    );
+    expect(screen.getByText("installing")).toBeInTheDocument();
+
+    window.dispatchEvent(new CustomEvent("artistic-git:install-update"));
+    expect(bridgeMocks.installReadyUpdate).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      finishInstall?.();
+    });
+    await waitFor(() => expect(screen.getByText("idle")).toBeInTheDocument());
+  });
+
   it("opens a manual update prompt with download progress", async () => {
     render(
       <TestProviders>
@@ -738,10 +784,14 @@ function mockRemoteWindowInstallGate(gate: UpdateInstallGateResponse) {
 function UpdateProbe() {
   const updateStatus = useWindowStore((state) => state.updateStatus);
   const updateInstallGate = useWindowStore((state) => state.updateInstallGate);
+  const updateInstallInProgress = useWindowStore(
+    (state) => state.updateInstallInProgress,
+  );
   return (
     <div>
       <div>{updateStatus?.status.state ?? "none"}</div>
       <div>{updateInstallGate.reason ?? "allowed"}</div>
+      <div>{updateInstallInProgress ? "installing" : "idle"}</div>
     </div>
   );
 }

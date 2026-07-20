@@ -94,6 +94,7 @@ export type BranchExistence = "localOnly" | "remoteOnly" | "localAndRemote";
 
 export type BranchListResponse = {
   branches: BranchSummary[];
+  truncated: boolean;
 };
 
 export type BranchNameValidationRequest = {
@@ -274,6 +275,7 @@ export type ConflictFileDetail =
       hunks: ConflictHunk[];
       language: string | null;
     }
+  | { kind: "oversizedText"; sizeBytes: string; maxPreviewBytes: number }
   | {
       kind: "binary";
       own: ConflictSideFile | null;
@@ -333,6 +335,7 @@ export type ConflictSelectSideRequest = {
   repositoryPath: string;
   paths: string[];
   side: ConflictSide;
+  operationId?: OperationId | null;
 };
 
 export type ConflictSelectSideResponse = {
@@ -441,11 +444,12 @@ export type DiffContent =
   | { kind: "image"; oldImage: DiffAsset | null; newImage: DiffAsset | null }
   | { kind: "binary"; message: string | null }
   | { kind: "oversizedText"; message: string | null }
+  | { kind: "deferred"; message: string | null }
   | { kind: "lfsPointer"; status: LfsContentStatus; message: string | null }
   | { kind: "moved"; message: string | null };
 
 export type DiffFileKind =
-  "text" | "binary" | "image" | "lfsPointer" | "oversizedText";
+  "text" | "binary" | "image" | "lfsPointer" | "oversizedText" | "deferred";
 
 export type DiffPayload = {
   oldPath: string | null;
@@ -635,6 +639,14 @@ export type LocalChange = {
   diff: DiffContent;
 };
 
+export type LocalChangeDetailRequest = {
+  repositoryPath: string;
+  path: string;
+  oldPath?: string | null;
+  submodule?: LocalChangeSubmodule | null;
+  operationId?: OperationId | null;
+};
+
 export type LocalChangeSubmodule = {
   path: string;
   name: string;
@@ -660,6 +672,7 @@ export type LogPageRequest = {
   repositoryPath: string;
   after: string | null;
   limit: number | null;
+  operationId: OperationId | null;
 };
 
 export type LogPageResponse = {
@@ -674,6 +687,7 @@ export type LogSearchRequest = {
   pickaxe: string | null;
   after: string | null;
   limit: number | null;
+  operationId: OperationId | null;
 };
 
 export type LoggingSettings = {
@@ -775,6 +789,7 @@ export type RemoteRepositoryProbeResponse = {
   defaultBranch: string | null;
   branches: string[];
   isEmpty: boolean;
+  truncated: boolean;
 };
 
 export type RemoteSettingsResponse = {
@@ -872,6 +887,7 @@ export type ResolvedGitIdentity = {
 export type RestoreChangesRequest = {
   repositoryPath: string;
   paths: string[];
+  operationId?: OperationId | null;
 };
 
 export type RestoreChangesResponse = {
@@ -964,6 +980,7 @@ export type ReviewModeState = {
 
 export type SafetyBackupListResponse = {
   backups: SafetyBackupSummary[];
+  truncated: boolean;
 };
 
 export type SafetyBackupSummary = {
@@ -1076,6 +1093,7 @@ export type StashEntry = {
 
 export type StashListResponse = {
   stashes: StashEntry[];
+  truncated: boolean;
 };
 
 export type StashRecoveryPoint = {

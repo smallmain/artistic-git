@@ -2,22 +2,31 @@ use artistic_git_contracts::{
     AppError, AppResult, CancelStashRestoreRequest, CancelStashRestoreResponse,
     ConflictEnteredEvent, ConflictFile, ConflictResolutionStatus, CreateAutoStashRequest,
     CreateStashRequest, CreateStashResponse, DeleteStashRequest, DeleteStashResponse,
-    DiffChangeKind, DiffFileKind, GitCommandError, OperationId, RestoreStashRequest,
-    RestoreStashResponse, StashDetailsRequest, StashDetailsResponse, StashDiffFile, StashEntry,
-    StashListResponse, StashRecoveryPoint, StashRestoreOutcome,
+    DiffChangeKind, DiffFileKind, GitCommandError, OperationContext, OperationId,
+    RestoreStashRequest, RestoreStashResponse, StashDetailsRequest, StashDetailsResponse,
+    StashDiffFile, StashEntry, StashListResponse, StashRecoveryPoint, StashRestoreOutcome,
 };
+use artistic_git_core::diff_engine::OVERSIZED_TEXT_BYTES;
 use artistic_git_git_runner::{GitCommandPlan, GitRunner};
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsString,
-    fs, io,
+    fs,
+    io::{self, Read},
     path::{Path, PathBuf},
-    process::Command,
-    time::{SystemTime, UNIX_EPOCH},
+    process::{Command, Output, Stdio},
+    sync::mpsc::{self, Receiver, TryRecvError},
+    thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 const AUTO_STASH_PREFIX: &str = "Auto Stash:";
 const RECOVERY_STASH_REASON: &str = "stash apply recovery";
+const STASH_DETAILS_OUTPUT_LIMIT_BYTES: usize = OVERSIZED_TEXT_BYTES;
+const STASH_DETAILS_FILE_LIMIT: usize = 5_000;
+const STASH_LIST_ENTRY_LIMIT: usize = 5_000;
+const GIT_ERROR_OUTPUT_LIMIT_BYTES: usize = 64 * 1024;
+const OUTPUT_READER_GRACE_PERIOD: Duration = Duration::from_secs(2);
 
 pub fn list_stashes(
     runner: &GitRunner,
@@ -95,7 +104,7 @@ pub fn stash_details(
     }
 
     let entry = stash_entry_for_selector(runner, &root, selector, "stashDetails")?;
-    let name_status = git_output_bytes(
+    let name_status = git_output_bytes_bounded(
         runner,
         Some(&root),
         [
@@ -108,8 +117,10 @@ pub fn stash_details(
             selector,
         ],
         "stashDetails",
+        STASH_DETAILS_OUTPUT_LIMIT_BYTES,
+        "Stash contains too many files to preview.",
     )?;
-    let raw_diff = git_stdout(
+    let raw_diff = git_stdout_bounded(
         runner,
         Some(&root),
         [
@@ -122,9 +133,21 @@ pub fn stash_details(
             selector,
         ],
         "stashDetails",
+        STASH_DETAILS_OUTPUT_LIMIT_BYTES,
+        "Stash content is too large to preview.",
     )?;
     let patch_chunks = parse_patch_chunks(&raw_diff);
     let files = parse_stash_name_status(&name_status, &patch_chunks);
+    if files.len() > STASH_DETAILS_FILE_LIMIT {
+        return Err(stash_details_limit_error(
+            &root,
+            format!(
+                "Stash contains too many files to preview (limit: {STASH_DETAILS_FILE_LIMIT} files; detected: {}).",
+                files.len()
+            ),
+            None,
+        ));
+    }
 
     Ok(StashDetailsResponse {
         entry,
@@ -349,7 +372,7 @@ fn create_stash_with_message(
     let paths = normalize_paths(paths);
     if !paths.is_empty() {
         args.push(OsString::from("--"));
-        args.extend(paths.into_iter().map(OsString::from));
+        args.extend(paths.into_iter().map(crate::git_ops::literal_pathspec));
     }
 
     let output = run_git(runner, Some(&root), args, operation_name)?;
@@ -438,7 +461,12 @@ fn list_stashes_for_root(
     let output = match git_stdout(
         runner,
         Some(root),
-        ["stash", "list", "--format=%gd%x00%H%x00%ct%x00%gs%x1e"],
+        [
+            "stash",
+            "list",
+            "--max-count=5001",
+            "--format=%gd%x00%H%x00%ct%x00%gs%x1e",
+        ],
         operation_name,
     ) {
         Ok(output) => output,
@@ -446,13 +474,19 @@ fn list_stashes_for_root(
         Err(error) => return Err(error),
     };
 
-    let stashes = output
+    Ok(parse_stash_list_response(&output))
+}
+
+pub(crate) fn parse_stash_list_response(output: &str) -> StashListResponse {
+    let mut stashes: Vec<_> = output
         .split('\x1e')
         .filter(|record| !record.trim().is_empty())
         .filter_map(parse_stash_record)
         .collect();
+    let truncated = stashes.len() > STASH_LIST_ENTRY_LIMIT;
+    stashes.truncate(STASH_LIST_ENTRY_LIMIT);
 
-    Ok(StashListResponse { stashes })
+    StashListResponse { stashes, truncated }
 }
 
 fn stash_entry_for_selector(
@@ -908,16 +942,8 @@ where
     I: IntoIterator<Item = S>,
     S: Into<OsString>,
 {
-    let plan = plan_git(runner, root, args);
-    let output = plan
-        .to_command()
-        .output()
-        .map_err(|source| spawn_error(&plan, source, operation_name))?;
-    if output.status.success() {
-        Ok(output.stdout)
-    } else {
-        Err(command_failure(&plan, output, operation_name))
-    }
+    crate::git_ops::run_git(runner, root, args, operation_name)
+        .map(|output| output.stdout.into_bytes())
 }
 
 fn run_git<I, S>(
@@ -925,29 +951,366 @@ fn run_git<I, S>(
     root: Option<&Path>,
     args: I,
     operation_name: &str,
-) -> AppResult<CommandOutput>
+) -> AppResult<crate::git_ops::CommandOutput>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<OsString>,
+{
+    crate::git_ops::run_git(runner, root, args, operation_name)
+}
+
+fn git_output_bytes_bounded<I, S>(
+    runner: &GitRunner,
+    root: Option<&Path>,
+    args: I,
+    operation_name: &str,
+    limit_bytes: usize,
+    limit_summary: &str,
+) -> AppResult<Vec<u8>>
 where
     I: IntoIterator<Item = S>,
     S: Into<OsString>,
 {
     let plan = plan_git(runner, root, args);
-    let command = plan.to_command();
-    command_to_output(command, &plan, operation_name)
+    bounded_command_output(
+        plan.to_command(),
+        &plan,
+        root,
+        operation_name,
+        limit_bytes,
+        limit_summary,
+    )
 }
 
-fn command_to_output(
+fn git_stdout_bounded<I, S>(
+    runner: &GitRunner,
+    root: Option<&Path>,
+    args: I,
+    operation_name: &str,
+    limit_bytes: usize,
+    limit_summary: &str,
+) -> AppResult<String>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<OsString>,
+{
+    git_output_bytes_bounded(
+        runner,
+        root,
+        args,
+        operation_name,
+        limit_bytes,
+        limit_summary,
+    )
+    .map(|output| String::from_utf8_lossy(&output).into_owned())
+}
+
+fn bounded_command_output(
     mut command: Command,
     plan: &GitCommandPlan,
+    root: Option<&Path>,
     operation_name: &str,
-) -> AppResult<CommandOutput> {
-    let output = command
-        .output()
-        .map_err(|source| spawn_error(plan, source, operation_name))?;
-    if output.status.success() {
-        Ok(CommandOutput::from_output(output))
-    } else {
-        Err(command_failure(plan, output, operation_name))
+    limit_bytes: usize,
+    limit_summary: &str,
+) -> AppResult<Vec<u8>> {
+    if crate::git_ops::active_cancel_token().is_some_and(|token| token.is_cancelled()) {
+        return Err(logged(AppError::expected(
+            "operation cancelled",
+            operation_name,
+        )));
     }
+
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    crate::git_ops::prepare_child_process_tree(&mut command);
+    let mut child = command
+        .spawn()
+        .map_err(|source| spawn_error(plan, source, operation_name))?;
+    let Some(stdout) = child.stdout.take() else {
+        let _ = crate::git_ops::terminate_child_process_tree(&mut child);
+        return Err(logged(AppError::unexpected(
+            "failed to capture git stdout",
+            operation_name,
+        )));
+    };
+    let Some(stderr) = child.stderr.take() else {
+        let _ = crate::git_ops::terminate_child_process_tree(&mut child);
+        return Err(logged(AppError::unexpected(
+            "failed to capture git stderr",
+            operation_name,
+        )));
+    };
+    let stdout_rx = spawn_bounded_output_reader(stdout, limit_bytes, true);
+    let stderr_rx = spawn_bounded_output_reader(stderr, GIT_ERROR_OUTPUT_LIMIT_BYTES, false);
+    let cancel_token = crate::git_ops::active_cancel_token();
+    let mut stdout_result = None;
+    let mut stderr_result = None;
+
+    let status = loop {
+        if let Err(error) =
+            receive_reader_result(&stdout_rx, &mut stdout_result, "stdout", operation_name)
+        {
+            let _ = crate::git_ops::terminate_child_process_tree(&mut child);
+            return Err(error);
+        }
+        if let Err(error) =
+            receive_reader_result(&stderr_rx, &mut stderr_result, "stderr", operation_name)
+        {
+            let _ = crate::git_ops::terminate_child_process_tree(&mut child);
+            return Err(error);
+        }
+        if matches!(stdout_result, Some(BoundedOutput::LimitExceeded { .. })) {
+            let Some(BoundedOutput::LimitExceeded {
+                prefix,
+                observed_bytes,
+            }) = stdout_result.take()
+            else {
+                unreachable!("matched output limit")
+            };
+            let status = crate::git_ops::terminate_child_process_tree(&mut child).ok();
+            let stderr = finish_stderr_for_error(stderr_result, &stderr_rx);
+            return Err(stash_details_limit_error(
+                root.unwrap_or_else(|| Path::new("")),
+                format!(
+                    "{limit_summary} Preview limit: {limit_bytes} bytes; detected at least {observed_bytes} bytes."
+                ),
+                Some(GitCommandError {
+                    command: plan.command_for_error(),
+                    exit_code: status.and_then(|value| value.code()),
+                    stdout: preview_limit_error_output(prefix),
+                    stderr,
+                }),
+            ));
+        }
+
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None)
+                if cancel_token
+                    .as_ref()
+                    .is_some_and(|token| token.is_cancelled()) =>
+            {
+                if let Some(status) = crate::git_ops::terminate_child_process_tree(&mut child)
+                    .ok()
+                    .filter(|status| status.success())
+                {
+                    break status;
+                }
+                return Err(logged(AppError::expected(
+                    "operation cancelled",
+                    operation_name,
+                )));
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(20)),
+            Err(source) => {
+                let _ = crate::git_ops::terminate_child_process_tree(&mut child);
+                return Err(spawn_error(plan, source, operation_name));
+            }
+        }
+    };
+
+    let stdout = finish_reader_result(stdout_result, &stdout_rx, "stdout", operation_name)?;
+    let stderr = finish_reader_result(stderr_result, &stderr_rx, "stderr", operation_name)?;
+    let stdout = match stdout {
+        BoundedOutput::Complete(output) => output,
+        BoundedOutput::LimitExceeded {
+            prefix,
+            observed_bytes,
+        } => {
+            return Err(stash_details_limit_error(
+                root.unwrap_or_else(|| Path::new("")),
+                format!(
+                    "{limit_summary} Preview limit: {limit_bytes} bytes; detected at least {observed_bytes} bytes."
+                ),
+                Some(GitCommandError {
+                    command: plan.command_for_error(),
+                    exit_code: status.code(),
+                    stdout: preview_limit_error_output(prefix),
+                    stderr: bounded_output_text(stderr),
+                }),
+            ));
+        }
+    };
+    let stderr = bounded_output_bytes(stderr);
+
+    if status.success() {
+        Ok(stdout)
+    } else {
+        Err(crate::git_ops::command_failure(
+            plan,
+            Output {
+                status,
+                stdout,
+                stderr,
+            },
+            operation_name,
+        ))
+    }
+}
+
+#[derive(Debug)]
+enum BoundedOutput {
+    Complete(Vec<u8>),
+    LimitExceeded {
+        prefix: Vec<u8>,
+        observed_bytes: usize,
+    },
+}
+
+fn spawn_bounded_output_reader<R>(
+    mut reader: R,
+    limit_bytes: usize,
+    stop_on_limit: bool,
+) -> Receiver<io::Result<BoundedOutput>>
+where
+    R: Read + Send + 'static,
+{
+    let (sender, receiver) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        let result = (|| {
+            let mut prefix = Vec::with_capacity(limit_bytes.min(64 * 1024));
+            let mut observed_bytes = 0usize;
+            let mut buffer = [0u8; 16 * 1024];
+            loop {
+                let read = reader.read(&mut buffer)?;
+                if read == 0 {
+                    break;
+                }
+                observed_bytes = observed_bytes.saturating_add(read);
+                let remaining = limit_bytes.saturating_sub(prefix.len());
+                prefix.extend_from_slice(&buffer[..read.min(remaining)]);
+                if observed_bytes > limit_bytes && stop_on_limit {
+                    return Ok(BoundedOutput::LimitExceeded {
+                        prefix,
+                        observed_bytes,
+                    });
+                }
+            }
+
+            if observed_bytes > limit_bytes {
+                Ok(BoundedOutput::LimitExceeded {
+                    prefix,
+                    observed_bytes,
+                })
+            } else {
+                Ok(BoundedOutput::Complete(prefix))
+            }
+        })();
+        let _ = sender.send(result);
+    });
+    receiver
+}
+
+fn receive_reader_result(
+    receiver: &Receiver<io::Result<BoundedOutput>>,
+    slot: &mut Option<BoundedOutput>,
+    stream_name: &str,
+    operation_name: &str,
+) -> AppResult<()> {
+    if slot.is_some() {
+        return Ok(());
+    }
+    match receiver.try_recv() {
+        Ok(Ok(output)) => {
+            *slot = Some(output);
+            Ok(())
+        }
+        Ok(Err(source)) => Err(output_reader_error(source, stream_name, operation_name)),
+        Err(TryRecvError::Empty) => Ok(()),
+        Err(TryRecvError::Disconnected) => Err(logged(AppError::unexpected(
+            format!("git {stream_name} reader stopped without returning output"),
+            operation_name,
+        ))),
+    }
+}
+
+fn finish_reader_result(
+    ready: Option<BoundedOutput>,
+    receiver: &Receiver<io::Result<BoundedOutput>>,
+    stream_name: &str,
+    operation_name: &str,
+) -> AppResult<BoundedOutput> {
+    if let Some(output) = ready {
+        return Ok(output);
+    }
+    match receiver.recv_timeout(OUTPUT_READER_GRACE_PERIOD) {
+        Ok(Ok(output)) => Ok(output),
+        Ok(Err(source)) => Err(output_reader_error(source, stream_name, operation_name)),
+        Err(source) => Err(logged(AppError::unexpected(
+            format!("git {stream_name} did not close after the command exited: {source}"),
+            operation_name,
+        ))),
+    }
+}
+
+fn finish_stderr_for_error(
+    ready: Option<BoundedOutput>,
+    receiver: &Receiver<io::Result<BoundedOutput>>,
+) -> String {
+    let output = ready.map(Ok).unwrap_or_else(|| {
+        receiver
+            .recv_timeout(Duration::from_millis(200))
+            .unwrap_or_else(|source| {
+                Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("stderr was not available after stopping the command: {source}"),
+                ))
+            })
+    });
+    match output {
+        Ok(output) => bounded_output_text(output),
+        Err(source) => source.to_string(),
+    }
+}
+
+fn bounded_output_bytes(output: BoundedOutput) -> Vec<u8> {
+    match output {
+        BoundedOutput::Complete(output) => output,
+        BoundedOutput::LimitExceeded { prefix, .. } => {
+            annotated_truncated_output(prefix, GIT_ERROR_OUTPUT_LIMIT_BYTES).into_bytes()
+        }
+    }
+}
+
+fn bounded_output_text(output: BoundedOutput) -> String {
+    match output {
+        BoundedOutput::Complete(output) => String::from_utf8_lossy(&output).into_owned(),
+        BoundedOutput::LimitExceeded { prefix, .. } => {
+            annotated_truncated_output(prefix, GIT_ERROR_OUTPUT_LIMIT_BYTES)
+        }
+    }
+}
+
+fn annotated_truncated_output(prefix: Vec<u8>, limit_bytes: usize) -> String {
+    format!(
+        "{}\n[output truncated after {limit_bytes} bytes]",
+        String::from_utf8_lossy(&prefix)
+    )
+}
+
+fn preview_limit_error_output(mut prefix: Vec<u8>) -> String {
+    prefix.truncate(GIT_ERROR_OUTPUT_LIMIT_BYTES);
+    annotated_truncated_output(prefix, GIT_ERROR_OUTPUT_LIMIT_BYTES)
+}
+
+fn output_reader_error(source: io::Error, stream_name: &str, operation_name: &str) -> AppError {
+    logged(AppError::unexpected(
+        format!("failed to read git {stream_name}: {source}"),
+        operation_name,
+    ))
+}
+
+fn stash_details_limit_error(
+    root: &Path,
+    summary: String,
+    git: Option<GitCommandError>,
+) -> AppError {
+    let mut error = AppError::expected(summary, "stashDetails").with_context(
+        OperationContext::new("stashDetails").with_repository_path(display_path(root)),
+    );
+    if let Some(git) = git {
+        error = error.with_git(git);
+    }
+    logged(error)
 }
 
 fn plan_git<I, S>(runner: &GitRunner, root: Option<&Path>, args: I) -> GitCommandPlan
@@ -968,33 +1331,6 @@ where
         .enable_windows_longpaths()
         .args(planned_args)
         .build()
-}
-
-fn command_failure(
-    plan: &GitCommandPlan,
-    output: std::process::Output,
-    operation_name: &str,
-) -> AppError {
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let summary = if stderr.trim().is_empty() {
-        format!("git command failed during {operation_name}")
-    } else {
-        stderr
-            .lines()
-            .next()
-            .unwrap_or("git command failed")
-            .to_owned()
-    };
-
-    logged(
-        AppError::expected(summary, operation_name).with_git(GitCommandError {
-            command: plan.command_for_error(),
-            exit_code: output.status.code(),
-            stdout,
-            stderr,
-        }),
-    )
 }
 
 fn spawn_error(plan: &GitCommandPlan, source: io::Error, operation_name: &str) -> AppError {
@@ -1049,19 +1385,6 @@ fn logged(error: AppError) -> AppError {
 }
 
 #[derive(Debug)]
-struct CommandOutput {
-    stdout: String,
-}
-
-impl CommandOutput {
-    fn from_output(output: std::process::Output) -> Self {
-        Self {
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        }
-    }
-}
-
-#[derive(Debug)]
 struct PatchChunk {
     old_path: Option<String>,
     path: String,
@@ -1072,9 +1395,9 @@ struct PatchChunk {
 mod tests {
     use super::*;
     use artistic_git_contracts::RepositoryPathRequest;
-    use artistic_git_git_runner::{GitDistribution, GitRunner};
+    use artistic_git_git_runner::{CancelToken, GitDistribution, GitRunner};
     use artistic_git_test_support::{require_git_dist, TestTempDir};
-    use std::io::Write;
+    use std::{io::Cursor, io::Write};
 
     #[test]
     fn parses_auto_stash_reason_from_git_subject() {
@@ -1116,6 +1439,24 @@ mod tests {
     }
 
     #[test]
+    fn stash_list_response_caps_entries_and_reports_truncation() {
+        let output = (0..=STASH_LIST_ENTRY_LIMIT)
+            .map(|index| {
+                format!("stash@{{{index}}}\0oid-{index}\01700000000\0On main: stash {index}\x1e")
+            })
+            .collect::<String>();
+
+        let response = parse_stash_list_response(&output);
+
+        assert_eq!(response.stashes.len(), STASH_LIST_ENTRY_LIMIT);
+        assert!(response.truncated);
+        assert_eq!(
+            response.stashes.last().map(|stash| stash.selector.as_str()),
+            Some("stash@{4999}")
+        );
+    }
+
+    #[test]
     fn parses_name_status_and_patch_chunks() {
         let raw = concat!(
             "diff --git a/src/a.txt b/src/a.txt\n",
@@ -1133,6 +1474,87 @@ mod tests {
         assert_eq!(files[0].path, "src/a.txt");
         assert_eq!(files[0].change_kind, DiffChangeKind::Modified);
         assert!(files[0].patch.contains("+new"));
+    }
+
+    #[test]
+    fn bounded_reader_stops_after_the_configured_prefix() {
+        let receiver = spawn_bounded_output_reader(Cursor::new(vec![b'x'; 64]), 16, true);
+        let output = receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("reader result")
+            .expect("read output");
+
+        match output {
+            BoundedOutput::LimitExceeded {
+                prefix,
+                observed_bytes,
+            } => {
+                assert_eq!(prefix.len(), 16);
+                assert!(observed_bytes > 16);
+            }
+            BoundedOutput::Complete(_) => panic!("expected output limit"),
+        }
+    }
+
+    #[test]
+    fn stash_git_commands_honor_the_active_cancel_token() {
+        let (runner, _dist_temp) = real_runner();
+        let token = CancelToken::new();
+        token.cancel();
+
+        let error = crate::git_ops::with_cancel_token_for_operation(&token, || {
+            run_git(&runner, None, ["--version"], "cancelledStashCommand")
+        })
+        .expect_err("cancelled command");
+
+        assert_eq!(error.summary, "operation cancelled");
+        assert_eq!(error.context.operation_name, "cancelledStashCommand");
+    }
+
+    #[test]
+    fn oversized_stash_patch_returns_a_bounded_detailed_error() {
+        let (runner, _dist_temp) = real_runner();
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        repo.write(
+            "tracked.txt",
+            &format!("{}\n", "x".repeat(STASH_DETAILS_OUTPUT_LIMIT_BYTES + 1024)),
+        );
+        let stash = create_stash(
+            &runner,
+            CreateStashRequest {
+                repository_path: display_path(&repo.path),
+                message: "oversized preview".to_owned(),
+                include_untracked: true,
+                paths: Vec::new(),
+                operation_id: None,
+            },
+        )
+        .expect("create stash")
+        .stash
+        .expect("created stash");
+
+        let error = stash_details(
+            &runner,
+            StashDetailsRequest {
+                repository_path: display_path(&repo.path),
+                selector: stash.selector,
+            },
+        )
+        .expect_err("oversized stash details");
+
+        assert!(error
+            .summary
+            .contains("Stash content is too large to preview"));
+        let canonical_repo = fs::canonicalize(&repo.path).expect("canonical repo");
+        assert_eq!(
+            error.context.repository_path.as_deref(),
+            Some(display_path(&canonical_repo).as_str())
+        );
+        let git = error.git.expect("git diagnostics");
+        assert!(git.command.iter().any(|argument| argument == "show"));
+        assert!(git.stdout.len() <= GIT_ERROR_OUTPUT_LIMIT_BYTES + 128);
+        assert!(git.stdout.contains("output truncated"));
     }
 
     #[test]

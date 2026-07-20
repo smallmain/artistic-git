@@ -1,5 +1,5 @@
 use crate::git_ops::{
-    canonical_repository_path, git_stdout, run_git, run_git_lfs, run_git_raw,
+    canonical_repository_path, git_stdout, literal_pathspec, run_git, run_git_lfs, run_git_raw,
     validate_relative_paths, DEFAULT_LARGE_FILE_THRESHOLD_MB,
 };
 use artistic_git_contracts::{
@@ -1044,7 +1044,7 @@ fn git_add_paths(runner: &GitRunner, root: &Path, paths: &[String]) -> AppResult
         OsString::from("-A"),
         OsString::from("--"),
     ];
-    args.extend(paths.iter().map(OsString::from));
+    args.extend(paths.iter().map(literal_pathspec));
     run_git(runner, Some(root), args, OPERATION).map(|_| ())
 }
 
@@ -1146,6 +1146,38 @@ mod tests {
         assert_eq!(
             repo.git_output(["log", "-1", "--format=%s"]).trim(),
             "commit selected"
+        );
+    }
+
+    #[test]
+    fn commit_treats_pathspec_magic_as_a_literal_filename() {
+        let (runner, _dist_temp) = real_runner();
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        repo.write(":(glob)**", "selected\n");
+        repo.write("victim.txt", "must remain untracked\n");
+
+        commit_changes(
+            &runner,
+            CommitRequest {
+                repository_path: display_path(&repo.path),
+                paths: vec![":(glob)**".to_owned()],
+                message: "commit literal path".to_owned(),
+                large_file_threshold_mb: None,
+                large_file_decision: LargeFileDecision::Prompt,
+                disable_repository_gpgsign: false,
+                push_immediately: false,
+                operation_id: None,
+            },
+        )
+        .expect("commit literal path");
+
+        let committed_paths = repo.git_output(["ls-tree", "-r", "--name-only", "HEAD"]);
+        assert!(committed_paths.lines().any(|path| path == ":(glob)**"));
+        assert!(!committed_paths.lines().any(|path| path == "victim.txt"));
+        assert_eq!(
+            repo.git_output(["status", "--short"]).trim(),
+            "?? victim.txt"
         );
     }
 

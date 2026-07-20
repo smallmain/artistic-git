@@ -173,10 +173,231 @@ describe("RepositorySidebar", () => {
       screen.queryByRole("menuitem", { name: "Sync" }),
     ).not.toBeInTheDocument();
   });
+
+  it("keeps large branch lists windowed while retaining every branch", () => {
+    const largeBranchList = Array.from({ length: 1_000 }, (_, index) => ({
+      ahead: 0,
+      behind: 0,
+      latestCommitId: `commit-${index}`,
+      name: `branch-${index.toString().padStart(4, "0")}`,
+    }));
+    const onBranchFocus = vi.fn();
+    renderSidebar({
+      branchItems: largeBranchList,
+      branchesTruncated: true,
+      onBranchFocus,
+    });
+
+    const branchesButton = screen.getByRole("button", {
+      name: "Branches (latest 1000)",
+    });
+    expect(branchesButton).toBeInTheDocument();
+    expect(screen.getAllByTestId("branch-row").length).toBeGreaterThan(0);
+    expect(screen.getAllByTestId("branch-row").length).toBeLessThanOrEqual(40);
+    expect(screen.getByText("branch-0000")).toBeInTheDocument();
+    expect(screen.queryByText("branch-0999")).not.toBeInTheDocument();
+
+    const viewport = screen.getByTestId("sidebar-branches-scroll");
+    Object.defineProperty(viewport, "clientHeight", {
+      configurable: true,
+      value: 440,
+    });
+    Object.defineProperty(viewport, "scrollTop", {
+      configurable: true,
+      value: 44_000,
+      writable: true,
+    });
+    fireEvent.scroll(viewport);
+
+    expect(screen.getAllByTestId("branch-row").length).toBeLessThanOrEqual(22);
+    expect(screen.getByText("branch-0999")).toBeInTheDocument();
+    expect(screen.getByText("branch-0999").closest("li")).toHaveAttribute(
+      "aria-setsize",
+      "1000",
+    );
+
+    fireEvent.click(screen.getByText("branch-0999"));
+    expect(onBranchFocus).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "branch-0999" }),
+    );
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Search branches" }), {
+      target: { value: "branch-0000" },
+    });
+    expect(screen.getByText("branch-0000")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Search branches" }), {
+      target: { value: "" },
+    });
+    expect(screen.getByText("branch-0000")).toBeInTheDocument();
+
+    Object.defineProperty(viewport, "scrollTop", {
+      configurable: true,
+      value: 44_000,
+      writable: true,
+    });
+    fireEvent.scroll(viewport);
+    fireEvent.click(branchesButton);
+    fireEvent.click(branchesButton);
+
+    expect(screen.getByText("branch-0000")).toBeInTheDocument();
+    expect(screen.queryByText("branch-0999")).not.toBeInTheDocument();
+  });
+
+  it("keeps large stash lists windowed and searchable", () => {
+    const largeStashList = Array.from({ length: 1_000 }, (_, index) => ({
+      id: `stash@{${index}}`,
+      name: `stash-${index.toString().padStart(4, "0")}`,
+      timeLabel: `${index}m`,
+    }));
+    renderSidebar({ stashItems: largeStashList, stashesTruncated: true });
+
+    expect(
+      screen.getByRole("button", { name: "Stashes (latest 1000)" }),
+    ).toBeInTheDocument();
+    expect(screen.getAllByTestId("stash-row").length).toBeGreaterThan(0);
+    expect(screen.getAllByTestId("stash-row").length).toBeLessThanOrEqual(40);
+    expect(screen.getByText("stash-0000")).toBeInTheDocument();
+    expect(screen.queryByText("stash-0999")).not.toBeInTheDocument();
+
+    const viewport = screen.getByTestId("sidebar-stashes-scroll");
+    Object.defineProperty(viewport, "clientHeight", {
+      configurable: true,
+      value: 440,
+    });
+    Object.defineProperty(viewport, "scrollTop", {
+      configurable: true,
+      value: 44_000,
+      writable: true,
+    });
+    fireEvent.scroll(viewport);
+
+    expect(screen.getAllByTestId("stash-row").length).toBeLessThanOrEqual(22);
+    expect(screen.getByText("stash-0999")).toBeInTheDocument();
+    expect(screen.getByText("stash-0999").closest("li")).toHaveAttribute(
+      "aria-setsize",
+      "1000",
+    );
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Search stashes" }), {
+      target: { value: "stash-0000" },
+    });
+    expect(screen.getByText("stash-0000")).toBeInTheDocument();
+  });
+
+  it("persists sidebar width once after dragging ends", () => {
+    const onSidebarLayoutChange = vi.fn();
+    renderSidebar({ onSidebarLayoutChange });
+    const resizeHandle = screen.getByLabelText("Resize sidebar");
+    const sidebar = resizeHandle.closest("aside");
+
+    fireEvent.pointerDown(resizeHandle, { clientX: 320, pointerId: 1 });
+    fireEvent.pointerMove(window, { clientX: 350 });
+    fireEvent.pointerMove(window, { clientX: 390 });
+
+    expect(sidebar).toHaveStyle({ width: "390px" });
+    expect(onSidebarLayoutChange).not.toHaveBeenCalled();
+
+    fireEvent.pointerUp(window);
+
+    expect(onSidebarLayoutChange).toHaveBeenCalledTimes(1);
+    expect(onSidebarLayoutChange).toHaveBeenCalledWith(
+      expect.objectContaining({ widthPx: 390 }),
+    );
+  });
+
+  it("finishes and cleans up an interrupted sidebar drag", () => {
+    const onSidebarLayoutChange = vi.fn();
+    renderSidebar({ onSidebarLayoutChange });
+    const resizeHandle = screen.getByLabelText("Resize sidebar");
+    const sidebar = resizeHandle.closest("aside");
+
+    fireEvent.pointerDown(resizeHandle, { clientX: 320, pointerId: 3 });
+    fireEvent.pointerMove(window, { clientX: 380 });
+    fireEvent.pointerCancel(window);
+
+    expect(onSidebarLayoutChange).toHaveBeenCalledTimes(1);
+    expect(onSidebarLayoutChange).toHaveBeenCalledWith(
+      expect.objectContaining({ widthPx: 380 }),
+    );
+
+    fireEvent.pointerMove(window, { clientX: 450 });
+    expect(sidebar).toHaveStyle({ width: "380px" });
+    expect(onSidebarLayoutChange).toHaveBeenCalledTimes(1);
+  });
+
+  it("persists the section ratio once after dragging ends", () => {
+    const onSidebarLayoutChange = vi.fn();
+    renderSidebar({ onSidebarLayoutChange });
+    const resizeHandle = screen.getByLabelText(
+      "Resize branch and stash sections",
+    );
+    vi.spyOn(
+      resizeHandle.parentElement as HTMLElement,
+      "getBoundingClientRect",
+    ).mockReturnValue({
+      bottom: 500,
+      height: 400,
+      left: 0,
+      right: 320,
+      toJSON: () => ({}),
+      top: 100,
+      width: 320,
+      x: 0,
+      y: 100,
+    });
+
+    fireEvent.pointerDown(resizeHandle, { clientY: 356, pointerId: 2 });
+    fireEvent.pointerMove(window, { clientY: 300 });
+    fireEvent.pointerMove(window, { clientY: 340 });
+
+    expect(onSidebarLayoutChange).not.toHaveBeenCalled();
+
+    fireEvent.pointerUp(window);
+
+    expect(onSidebarLayoutChange).toHaveBeenCalledTimes(1);
+    expect(onSidebarLayoutChange).toHaveBeenCalledWith(
+      expect.objectContaining({ branchSectionRatioPercent: 60 }),
+    );
+  });
+
+  it("finishes an active section drag when the window loses focus", () => {
+    const onSidebarLayoutChange = vi.fn();
+    renderSidebar({ onSidebarLayoutChange });
+    const resizeHandle = screen.getByLabelText(
+      "Resize branch and stash sections",
+    );
+    vi.spyOn(
+      resizeHandle.parentElement as HTMLElement,
+      "getBoundingClientRect",
+    ).mockReturnValue({
+      bottom: 500,
+      height: 400,
+      left: 0,
+      right: 320,
+      toJSON: () => ({}),
+      top: 100,
+      width: 320,
+      x: 0,
+      y: 100,
+    });
+
+    fireEvent.pointerDown(resizeHandle, { clientY: 300, pointerId: 4 });
+    fireEvent.pointerMove(window, { clientY: 360 });
+    fireEvent.blur(window);
+
+    expect(onSidebarLayoutChange).toHaveBeenCalledTimes(1);
+    expect(onSidebarLayoutChange).toHaveBeenCalledWith(
+      expect.objectContaining({ branchSectionRatioPercent: 65 }),
+    );
+  });
 });
 
 function renderSidebar({
   branchActionsDisabledReason,
+  branchItems = branches,
+  branchesTruncated = false,
+  busy = false,
   fetchState,
   hasRemote = true,
   onApplyStash,
@@ -184,9 +405,16 @@ function renderSidebar({
   onCreateBranchFromBase,
   onDeleteBranch,
   onDeleteStash,
+  onBranchFocus = vi.fn(),
   onShowStashDetails,
+  onSidebarLayoutChange,
+  stashItems = stashes,
+  stashesTruncated = false,
 }: {
   branchActionsDisabledReason?: string;
+  branchItems?: BranchListItem[];
+  branchesTruncated?: boolean;
+  busy?: boolean;
   fetchState?: ComponentProps<typeof RepositorySidebar>["fetchState"];
   hasRemote?: boolean;
   onApplyStash?: (stash: StashListItem) => void;
@@ -194,28 +422,37 @@ function renderSidebar({
   onCreateBranchFromBase?: (branch: BranchListItem) => void;
   onDeleteBranch?: (branch: BranchListItem) => void;
   onDeleteStash?: (stash: StashListItem) => void;
+  onBranchFocus?: (branch: BranchListItem) => void;
   onShowStashDetails?: (stash: StashListItem) => void;
+  onSidebarLayoutChange?: ComponentProps<
+    typeof RepositorySidebar
+  >["onSidebarLayoutChange"];
+  stashItems?: StashListItem[];
+  stashesTruncated?: boolean;
 }) {
   return renderWithProviders(
     <RepositorySidebar
       branchActionsDisabledReason={branchActionsDisabledReason}
-      branches={branches}
-      busy={false}
+      branches={branchItems}
+      branchesTruncated={branchesTruncated}
+      busy={busy}
       fetchState={fetchState}
       onApplyStash={onApplyStash}
-      onBranchFocus={vi.fn()}
+      onBranchFocus={onBranchFocus}
       onCheckoutBranch={onCheckoutBranch}
       onCreateBranchFromBase={onCreateBranchFromBase}
       onDeleteBranch={onDeleteBranch}
       onDeleteStash={onDeleteStash}
       onShowStashDetails={onShowStashDetails}
+      onSidebarLayoutChange={onSidebarLayoutChange}
       repository={{
         branchName: "main",
         hasRemote,
         path: "/repo/art",
         projectName: "art",
       }}
-      stashes={stashes}
+      stashes={stashItems}
+      stashesTruncated={stashesTruncated}
     />,
   );
 }

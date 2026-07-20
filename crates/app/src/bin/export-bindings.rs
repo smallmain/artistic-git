@@ -22,16 +22,17 @@ use artistic_git_contracts::{
     DeleteBranchRequest, DeleteSafetyBackupRequest, DeleteSafetyBackupResponse, DeleteStashRequest,
     DeleteStashResponse, DiffAsset, DiffContent, DiffPayload, ExitReviewModeResponse,
     FetchRepositoryRequest, FetchRepositoryResponse, GitDistManifest, LargeFileWarning,
-    LfsContentStatus, LocalChangesResponse, LogPageRequest, LogPageResponse, LogSearchRequest,
-    OpenRepositoryRequest, OpenRepositoryResponse, RemoteRepositoryProbeRequest,
-    RemoteRepositoryProbeResponse, RemoteSettingsResponse, RenormalizePreviewRequest,
-    RenormalizePreviewResponse, RepositoryPathRequest, RepositorySummary, RestoreChangesRequest,
-    RestoreChangesResponse, RestoreStashRequest, RestoreStashResponse, RevertCommitRequest,
-    RevertCommitResponse, ReviewModeRecoveryRequest, ReviewModeRecoveryResponse, ReviewModeRequest,
-    SafetyBackupListResponse, SaveRemoteSettingsRequest, StartReviewModeRequest,
-    StartReviewModeResponse, StashDetailsRequest, StashDetailsResponse, StashListResponse,
-    SyncAllBranchesRequest, SyncAllBranchesResponse, SyncBranchRequest, SyncBranchResponse,
-    SyncCurrentBranchRequest, SyncCurrentBranchResponse, SyncReviewModeResponse,
+    LfsContentStatus, LocalChangeDetailRequest, LocalChangesResponse, LogPageRequest,
+    LogPageResponse, LogSearchRequest, OpenRepositoryRequest, OpenRepositoryResponse,
+    RemoteRepositoryProbeRequest, RemoteRepositoryProbeResponse, RemoteSettingsResponse,
+    RenormalizePreviewRequest, RenormalizePreviewResponse, RepositoryPathRequest,
+    RepositorySummary, RestoreChangesRequest, RestoreChangesResponse, RestoreStashRequest,
+    RestoreStashResponse, RevertCommitRequest, RevertCommitResponse, ReviewModeRecoveryRequest,
+    ReviewModeRecoveryResponse, ReviewModeRequest, SafetyBackupListResponse,
+    SaveRemoteSettingsRequest, StartReviewModeRequest, StartReviewModeResponse,
+    StashDetailsRequest, StashDetailsResponse, StashListResponse, SyncAllBranchesRequest,
+    SyncAllBranchesResponse, SyncBranchRequest, SyncBranchResponse, SyncCurrentBranchRequest,
+    SyncCurrentBranchResponse, SyncReviewModeResponse,
 };
 use artistic_git_core::config::{
     AppSettings, ConfigChangeEvent, ProjectSettings, ProjectsDocument,
@@ -85,6 +86,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register::<DeleteSafetyBackupResponse>()
         .register::<BranchOperationResponse>()
         .register::<LocalChangesResponse>()
+        .register::<LocalChangeDetailRequest>()
         .register::<RenormalizePreviewRequest>()
         .register::<RenormalizePreviewResponse>()
         .register::<StashListResponse>()

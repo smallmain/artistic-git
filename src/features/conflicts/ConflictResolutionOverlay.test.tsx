@@ -1,4 +1,5 @@
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -280,7 +281,56 @@ describe("ConflictResolutionOverlay", () => {
 
     await waitFor(() => {
       expect(api.selectConflictSide).toHaveBeenCalledWith({
+        operationId: expect.stringMatching(/^conflict-select-/),
         paths: ["assets/conflict.png"],
+        repositoryPath: "/repo/art",
+        side: "own",
+      });
+    });
+  });
+
+  it("keeps oversized conflict text out of the diff and editor", async () => {
+    const file = createFile({
+      fileKind: "oversizedText",
+      path: "data/large-conflict.txt",
+      status: "unresolved",
+    });
+    const api = createApi({
+      conflictDetail: vi.fn(async () => createOversizedTextDetail(file)),
+      listConflicts: vi.fn(async () => ({
+        files: [file],
+        operation: mergeOperation,
+      })),
+      selectConflictSide: vi.fn(async () => ({
+        files: [resolvedFile(file)],
+      })),
+    });
+
+    renderWithProviders(
+      <ConflictResolutionOverlay
+        api={api}
+        event={createEvent([file])}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "This conflict file is too large to preview",
+      }),
+    ).toBeVisible();
+    expect(screen.getByText(/2 MB.*1 MB preview limit/)).toBeVisible();
+    expect(
+      screen.queryByLabelText("Resolved file content"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("File comparison")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("conflict-oversized-use-own"));
+
+    await waitFor(() => {
+      expect(api.selectConflictSide).toHaveBeenCalledWith({
+        operationId: expect.stringMatching(/^conflict-select-/),
+        paths: ["data/large-conflict.txt"],
         repositoryPath: "/repo/art",
         side: "own",
       });
@@ -354,6 +404,7 @@ describe("ConflictResolutionOverlay", () => {
 
     await waitFor(() => {
       expect(api.selectConflictSide).toHaveBeenCalledWith({
+        operationId: expect.stringMatching(/^conflict-select-/),
         paths: ["deps/lib/src/conflict.ts"],
         repositoryPath: "/repo/art",
         side: "own",
@@ -370,6 +421,286 @@ describe("ConflictResolutionOverlay", () => {
       });
       expect(onClose).toHaveBeenCalledWith("/repo/art");
     });
+  });
+
+  it("hides stale details and ignores a slow response after selecting another file", async () => {
+    const files = [
+      createFile({ path: "src/first.txt" }),
+      createFile({ path: "src/slow.txt" }),
+      createFile({ path: "src/latest.txt" }),
+    ];
+    let resolveSlowDetail!: (detail: ConflictDetailResponse) => void;
+    const api = createApi({
+      conflictDetail: vi.fn(({ path }) => {
+        const file = files.find((candidate) => candidate.path === path)!;
+        if (path === "src/slow.txt") {
+          return new Promise<ConflictDetailResponse>((resolve) => {
+            resolveSlowDetail = resolve;
+          });
+        }
+        return Promise.resolve(createResolvedTextDetail(file));
+      }),
+      listConflicts: vi.fn(async () => ({
+        files,
+        operation: mergeOperation,
+      })),
+    });
+
+    renderWithProviders(
+      <ConflictResolutionOverlay
+        api={api}
+        event={createEvent(files)}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const conflictList = screen.getByTestId("conflict-file-list");
+    await screen.findByLabelText("Resolved file content");
+    fireEvent.click(
+      within(conflictList).getByText("src/slow.txt").closest("button")!,
+    );
+
+    expect(await screen.findByText("Loading conflict details")).toBeVisible();
+    expect(screen.queryByLabelText("Resolved file content")).toBeNull();
+
+    fireEvent.click(
+      within(conflictList).getByText("src/latest.txt").closest("button")!,
+    );
+    const comparison = await screen.findByLabelText("File comparison");
+    expect(within(comparison).getByText("src/latest.txt")).toBeVisible();
+
+    await act(async () => {
+      resolveSlowDetail(createResolvedTextDetail(files[1]!));
+    });
+
+    expect(within(comparison).getByText("src/latest.txt")).toBeVisible();
+    expect(within(comparison).queryByText("src/slow.txt")).toBeNull();
+  });
+
+  it("freezes conflict selection and pagination while a write is running", async () => {
+    const files = Array.from({ length: 201 }, (_, index) =>
+      createFile({ path: `src/write-${String(index).padStart(3, "0")}.txt` }),
+    );
+    let resolveSelection!: (value: { files: ConflictFile[] }) => void;
+    const api = createApi({
+      conflictDetail: vi.fn(async ({ path }) =>
+        createResolvedTextDetail(
+          files.find((file) => file.path === path) ?? files[0]!,
+        ),
+      ),
+      listConflicts: vi.fn(async () => ({
+        files,
+        operation: mergeOperation,
+      })),
+      selectConflictSide: vi.fn(
+        () =>
+          new Promise<{ files: ConflictFile[] }>((resolve) => {
+            resolveSelection = resolve;
+          }),
+      ),
+    });
+
+    renderWithProviders(
+      <ConflictResolutionOverlay
+        api={api}
+        event={createEvent(files)}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await screen.findByLabelText("Resolved file content");
+    fireEvent.click(screen.getByTestId("conflict-use-own"));
+    await waitFor(() =>
+      expect(api.selectConflictSide).toHaveBeenCalledTimes(1),
+    );
+    const selectionRequest = vi.mocked(api.selectConflictSide).mock
+      .calls[0]![0];
+    expect(selectionRequest.paths).toEqual([files[0]!.path]);
+    expect(selectionRequest.operationId).toMatch(/^conflict-select-/);
+
+    const conflictList = screen.getByTestId("conflict-file-list");
+    const rows = within(conflictList).getAllByTestId("conflict-file-row");
+    expect(rows[0]).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Select all" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Invert selection" }),
+    ).toBeDisabled();
+    expect(screen.getByTestId("conflict-next-page")).toBeDisabled();
+
+    fireEvent.click(rows[1]);
+    expect(api.conflictDetail).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByTestId("conflict-cancel-active-operation"));
+    await waitFor(() => {
+      expect(api.cancelOperation).toHaveBeenCalledWith({
+        operationId: selectionRequest.operationId,
+      });
+    });
+
+    await act(async () => {
+      resolveSelection({ files: [] });
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("conflict-next-page")).toBeEnabled(),
+    );
+  });
+
+  it("paginates large conflict lists instead of rendering every row", async () => {
+    const files = Array.from({ length: 1_000 }, (_, index) =>
+      createFile({
+        path: `src/conflict-${String(index).padStart(4, "0")}.txt`,
+      }),
+    );
+    const api = createApi({
+      conflictDetail: vi.fn(async ({ path }) =>
+        createTextDetail(files.find((file) => file.path === path) ?? files[0]!),
+      ),
+      listConflicts: vi.fn(async () => ({
+        files,
+        operation: mergeOperation,
+      })),
+    });
+
+    renderWithProviders(
+      <ConflictResolutionOverlay
+        api={api}
+        event={createEvent(files)}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await screen.findByLabelText("Resolved file content");
+    const conflictList = screen.getByTestId("conflict-file-list");
+    expect(
+      within(conflictList).getAllByTestId("conflict-file-row"),
+    ).toHaveLength(200);
+    expect(
+      within(conflictList).queryByText("src/conflict-0200.txt"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("Page 1 of 5")).toBeVisible();
+    expect(screen.getByTestId("conflict-previous-page")).toBeDisabled();
+
+    fireEvent.click(screen.getByTestId("conflict-next-page"));
+
+    expect(
+      within(conflictList).getAllByTestId("conflict-file-row"),
+    ).toHaveLength(200);
+    expect(
+      within(conflictList).queryByText("src/conflict-0000.txt"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(conflictList).getByText("src/conflict-0200.txt"),
+    ).toBeVisible();
+    expect(screen.getByText("Page 2 of 5")).toBeVisible();
+    expect(screen.getByTestId("conflict-previous-page")).toBeEnabled();
+  });
+
+  it("forwards the complete conflict error to the detailed error dialog", async () => {
+    const file = createFile();
+    const source = {
+      category: "expected",
+      git: {
+        command: "git checkout --ours -- src/conflict.txt",
+        exitCode: 1,
+        stderr: "checkout failed with detailed diagnostics",
+        stdout: "",
+      },
+      operation: "selectConflictSide",
+      summary: "checkout failed",
+    };
+    const api = createApi({
+      conflictDetail: vi.fn(async () => createTextDetail(file)),
+      listConflicts: vi.fn(async () => ({
+        files: [file],
+        operation: mergeOperation,
+      })),
+      selectConflictSide: vi.fn(async () => Promise.reject(source)),
+    });
+    const handleError = vi.fn();
+    window.addEventListener("artistic-git:error", handleError);
+
+    renderWithProviders(
+      <ConflictResolutionOverlay
+        api={api}
+        event={createEvent([file])}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await screen.findByLabelText("Resolved file content");
+    fireEvent.click(screen.getByTestId("conflict-use-own"));
+
+    await waitFor(() => {
+      expect(screen.getByText("checkout failed")).toBeVisible();
+      expect(handleError).toHaveBeenCalledTimes(1);
+    });
+    expect((handleError.mock.calls[0]![0] as CustomEvent).detail).toBe(source);
+    window.removeEventListener("artistic-git:error", handleError);
+  });
+
+  it("reports a real selection failure received after cancellation", async () => {
+    const file = createFile();
+    const source = {
+      category: "unexpected",
+      context: {
+        operationId: "conflict-select-test",
+        operationName: "selectConflictSide",
+        repositoryPath: "/repo/art",
+        windowLabel: "main",
+      },
+      git: {
+        command: ["git", "checkout", "--ours", "--", file.path],
+        exitCode: 1,
+        stderr: "cleanup failed after cancellation",
+        stdout: "",
+      },
+      summary: "conflict cleanup failed",
+    };
+    let rejectSelection: (reason: unknown) => void = () => undefined;
+    const api = createApi({
+      conflictDetail: vi.fn(async () => createTextDetail(file)),
+      listConflicts: vi.fn(async () => ({
+        files: [file],
+        operation: mergeOperation,
+      })),
+      selectConflictSide: vi.fn(
+        () =>
+          new Promise<{ files: ConflictFile[] }>((_resolve, reject) => {
+            rejectSelection = reject;
+          }),
+      ),
+    });
+    const handleError = vi.fn();
+    window.addEventListener("artistic-git:error", handleError);
+
+    try {
+      renderWithProviders(
+        <ConflictResolutionOverlay
+          api={api}
+          event={createEvent([file])}
+          onClose={vi.fn()}
+        />,
+      );
+
+      await screen.findByLabelText("Resolved file content");
+      fireEvent.click(screen.getByTestId("conflict-use-own"));
+      await waitFor(() =>
+        expect(api.selectConflictSide).toHaveBeenCalledTimes(1),
+      );
+      fireEvent.click(screen.getByTestId("conflict-cancel-active-operation"));
+      await waitFor(() => expect(api.cancelOperation).toHaveBeenCalledTimes(1));
+      await act(async () => rejectSelection(source));
+
+      await waitFor(() => {
+        expect(screen.getByText("conflict cleanup failed")).toBeVisible();
+        expect(handleError).toHaveBeenCalledTimes(1);
+      });
+      expect((handleError.mock.calls[0]![0] as CustomEvent).detail).toBe(
+        source,
+      );
+    } finally {
+      window.removeEventListener("artistic-git:error", handleError);
+    }
   });
 
   it("calls complete only after all files are resolved and cancel after confirmation", async () => {
@@ -408,11 +739,15 @@ describe("ConflictResolutionOverlay", () => {
 
     cleanup();
 
+    let resolveCancel!: (value: { aborted: "merge" }) => void;
     const cancelApi = createApi({
       conflictDetail: vi.fn(async () => createResolvedTextDetail(file)),
-      cancelConflictResolution: vi.fn(async () => ({
-        aborted: "merge" as const,
-      })),
+      cancelConflictResolution: vi.fn(
+        () =>
+          new Promise<{ aborted: "merge" }>((resolve) => {
+            resolveCancel = resolve;
+          }),
+      ),
       listConflicts: vi.fn(async () => ({
         files: [file],
         operation: mergeOperation,
@@ -429,16 +764,36 @@ describe("ConflictResolutionOverlay", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(
-      await screen.findByText("Cancel conflict resolution"),
-    ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Abort operation" }));
+    const cancelDialog = await screen.findByRole("dialog", {
+      name: "Cancel conflict resolution",
+    });
+    fireEvent.click(
+      within(cancelDialog).getByRole("button", { name: "Abort operation" }),
+    );
 
     await waitFor(() => {
       expect(cancelApi.cancelConflictResolution).toHaveBeenCalledWith({
         operationId: "op-conflict",
         repositoryPath: "/repo/art",
       });
+    });
+    expect(
+      within(cancelDialog).getByRole("button", { name: "Abort operation" }),
+    ).toBeDisabled();
+    expect(
+      within(cancelDialog).getByRole("button", { name: "Cancel" }),
+    ).toBeDisabled();
+    expect(
+      within(cancelDialog).queryByRole("button", { name: "Close" }),
+    ).not.toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(cancelDialog).toBeInTheDocument();
+    expect(onCancelClose).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveCancel({ aborted: "merge" });
+    });
+    await waitFor(() => {
       expect(onCancelClose).toHaveBeenCalledWith("/repo/art");
     });
   });
@@ -463,6 +818,7 @@ function createApi(
     cancelConflictResolution: vi.fn(async () => ({
       aborted: "merge" as const,
     })),
+    cancelOperation: vi.fn(async () => ({ cancelled: true })),
     completeConflictResolution: vi.fn(async () => ({
       continuation: "merge" as const,
     })),
@@ -549,6 +905,17 @@ function createResolvedTextDetail(file: ConflictFile): ConflictDetailResponse {
       language: "ts",
       otherText: "other\n",
       ownText: "own\n",
+    },
+    file,
+  };
+}
+
+function createOversizedTextDetail(file: ConflictFile): ConflictDetailResponse {
+  return {
+    detail: {
+      kind: "oversizedText",
+      maxPreviewBytes: 1024 * 1024,
+      sizeBytes: String(2 * 1024 * 1024),
     },
     file,
   };

@@ -1,4 +1,3 @@
-import { listen } from "@tauri-apps/api/event";
 import { KeyRound, Save } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
@@ -11,6 +10,7 @@ import type {
 } from "@/lib/ipc/commands";
 import { submitHttpsCredentialPrompt } from "@/lib/ipc/commands";
 import type { HttpsCredentialScope } from "@/lib/ipc/generated";
+import { listenRuntimeEvent } from "@/lib/ipc/events";
 import { cn } from "@/lib/utils";
 
 export function HttpsCredentialPromptDialog() {
@@ -25,7 +25,7 @@ export function HttpsCredentialPromptDialog() {
 
   React.useEffect(() => {
     let unlisten: (() => void) | undefined;
-    void listen<HttpsCredentialPromptEvent>(
+    void listenRuntimeEvent<HttpsCredentialPromptEvent>(
       "https-credential-prompt",
       (event) => {
         const next = event.payload;

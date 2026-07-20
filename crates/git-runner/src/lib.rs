@@ -6,15 +6,25 @@ use serde::Serialize;
 use std::{
     collections::BTreeMap,
     ffi::{OsStr, OsString},
-    fs, io,
+    fs,
+    io::{self, Read},
     path::{Component, Path, PathBuf},
-    process::{Child, Command},
+    process::{Child, Command, ExitStatus, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        mpsc::{self, RecvTimeoutError},
+        Arc, Mutex,
     },
+    thread,
+    time::{Duration, Instant},
 };
 use thiserror::Error;
+
+const RUNTIME_SELF_CHECK_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+const RUNTIME_SELF_CHECK_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const RUNTIME_SELF_CHECK_OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_millis(250);
+const RUNTIME_SELF_CHECK_OUTPUT_LIMIT: usize = 1024 * 1024;
+const GIT_DIST_MANIFEST_LIMIT_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Error)]
 pub enum GitDistributionError {
@@ -78,12 +88,26 @@ impl GitDistribution {
             return Err(GitDistributionError::MissingManifest(manifest_path));
         }
 
-        let manifest_json = fs::read_to_string(&manifest_path).map_err(|source| {
-            GitDistributionError::ReadManifest {
+        let mut manifest_json = String::new();
+        fs::File::open(&manifest_path)
+            .and_then(|file| {
+                file.take(GIT_DIST_MANIFEST_LIMIT_BYTES.saturating_add(1) as u64)
+                    .read_to_string(&mut manifest_json)
+            })
+            .and_then(|_| {
+                if manifest_json.len() > GIT_DIST_MANIFEST_LIMIT_BYTES {
+                    Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "git distribution manifest exceeds the application safety limit",
+                    ))
+                } else {
+                    Ok(())
+                }
+            })
+            .map_err(|source| GitDistributionError::ReadManifest {
                 path: manifest_path.clone(),
                 source,
-            }
-        })?;
+            })?;
         let manifest = serde_json::from_str(&manifest_json).map_err(|source| {
             GitDistributionError::ParseManifest {
                 path: manifest_path,
@@ -610,14 +634,17 @@ pub struct RuntimeSelfCheckPlan {
 
 impl RuntimeSelfCheckPlan {
     pub fn execute(&self) -> Result<RuntimeSelfCheckResult, AppError> {
+        self.execute_with_timeout(RUNTIME_SELF_CHECK_COMMAND_TIMEOUT)
+    }
+
+    fn execute_with_timeout(
+        &self,
+        command_timeout: Duration,
+    ) -> Result<RuntimeSelfCheckResult, AppError> {
         let mut commands = Vec::with_capacity(self.commands.len());
 
         for command in &self.commands {
-            let output = command
-                .command
-                .to_command()
-                .output()
-                .map_err(|source| self_check_spawn_error(command, source))?;
+            let output = execute_self_check_command(command, command_timeout)?;
             let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
             let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
             let exit_code = output.status.code();
@@ -669,6 +696,275 @@ impl RuntimeSelfCheckPlan {
         }
 
         Ok(RuntimeSelfCheckResult { commands })
+    }
+}
+
+struct SelfCheckCommandOutput {
+    status: ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+fn execute_self_check_command(
+    command: &SelfCheckCommandPlan,
+    timeout: Duration,
+) -> Result<SelfCheckCommandOutput, AppError> {
+    let mut process = command.command.to_command();
+    process.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = process
+        .spawn()
+        .map_err(|source| self_check_spawn_error(command, source))?;
+    let stdout_reader = child.stdout.take().map(spawn_self_check_output_reader);
+    let stderr_reader = child.stderr.take().map(spawn_self_check_output_reader);
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let (stdout, stderr, diagnostics) =
+                    collect_self_check_output(stdout_reader, stderr_reader);
+                if diagnostics.is_empty() {
+                    return Ok(SelfCheckCommandOutput {
+                        status,
+                        stdout,
+                        stderr,
+                    });
+                }
+
+                return Err(self_check_command_error(
+                    command,
+                    format!(
+                        "embedded {} self-check command output could not be read completely",
+                        command.kind.display_name()
+                    ),
+                    status.code(),
+                    String::from_utf8_lossy(&stdout).into_owned(),
+                    append_self_check_diagnostics(
+                        String::from_utf8_lossy(&stderr).into_owned(),
+                        &diagnostics,
+                    ),
+                ));
+            }
+            Ok(None) if Instant::now() < deadline => {
+                thread::sleep(
+                    RUNTIME_SELF_CHECK_POLL_INTERVAL
+                        .min(deadline.saturating_duration_since(Instant::now())),
+                );
+            }
+            Ok(None) => {
+                let (status, mut diagnostics) = terminate_and_reap_self_check_child(&mut child);
+                let (stdout, stderr, output_diagnostics) =
+                    collect_self_check_output(stdout_reader, stderr_reader);
+                diagnostics.extend(output_diagnostics);
+
+                return Err(self_check_command_error(
+                    command,
+                    format!(
+                        "embedded {} self-check command timed out after {}",
+                        command.kind.display_name(),
+                        display_self_check_timeout(timeout)
+                    ),
+                    status.and_then(|status| status.code()),
+                    String::from_utf8_lossy(&stdout).into_owned(),
+                    append_self_check_diagnostics(
+                        String::from_utf8_lossy(&stderr).into_owned(),
+                        &diagnostics,
+                    ),
+                ));
+            }
+            Err(source) => {
+                let (status, mut diagnostics) = terminate_and_reap_self_check_child(&mut child);
+                diagnostics.insert(
+                    0,
+                    format!("failed to inspect self-check child process: {source}"),
+                );
+                let (stdout, stderr, output_diagnostics) =
+                    collect_self_check_output(stdout_reader, stderr_reader);
+                diagnostics.extend(output_diagnostics);
+
+                return Err(self_check_command_error(
+                    command,
+                    format!(
+                        "embedded {} self-check command could not be monitored",
+                        command.kind.display_name()
+                    ),
+                    status.and_then(|status| status.code()),
+                    String::from_utf8_lossy(&stdout).into_owned(),
+                    append_self_check_diagnostics(
+                        String::from_utf8_lossy(&stderr).into_owned(),
+                        &diagnostics,
+                    ),
+                ));
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+struct SelfCheckCapturedStream {
+    bytes: Vec<u8>,
+    truncated: bool,
+}
+
+struct SelfCheckOutputReader {
+    captured: Arc<Mutex<SelfCheckCapturedStream>>,
+    completion: mpsc::Receiver<io::Result<()>>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+fn spawn_self_check_output_reader<R>(mut reader: R) -> SelfCheckOutputReader
+where
+    R: Read + Send + 'static,
+{
+    let captured = Arc::new(Mutex::new(SelfCheckCapturedStream::default()));
+    let worker_capture = Arc::clone(&captured);
+    let (completion_tx, completion) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        let result = (|| {
+            let mut buffer = [0_u8; 8192];
+            loop {
+                let read = reader.read(&mut buffer)?;
+                if read == 0 {
+                    return Ok(());
+                }
+
+                let mut captured = worker_capture
+                    .lock()
+                    .map_err(|_| io::Error::other("self-check output lock was poisoned"))?;
+                let remaining =
+                    RUNTIME_SELF_CHECK_OUTPUT_LIMIT.saturating_sub(captured.bytes.len());
+                let retained = remaining.min(read);
+                captured.bytes.extend_from_slice(&buffer[..retained]);
+                captured.truncated |= retained < read;
+            }
+        })();
+        let _ = completion_tx.send(result);
+    });
+
+    SelfCheckOutputReader {
+        captured,
+        completion,
+        worker: Some(worker),
+    }
+}
+
+fn collect_self_check_output(
+    stdout_reader: Option<SelfCheckOutputReader>,
+    stderr_reader: Option<SelfCheckOutputReader>,
+) -> (Vec<u8>, Vec<u8>, Vec<String>) {
+    let (stdout, mut diagnostics) = finish_self_check_output_reader(stdout_reader, "stdout");
+    let (stderr, stderr_diagnostics) = finish_self_check_output_reader(stderr_reader, "stderr");
+    diagnostics.extend(stderr_diagnostics);
+    (stdout, stderr, diagnostics)
+}
+
+fn finish_self_check_output_reader(
+    reader: Option<SelfCheckOutputReader>,
+    stream_name: &str,
+) -> (Vec<u8>, Vec<String>) {
+    let Some(mut reader) = reader else {
+        return (
+            Vec::new(),
+            vec![format!("self-check {stream_name} pipe was unavailable")],
+        );
+    };
+    let mut diagnostics = Vec::new();
+    let completed = match reader
+        .completion
+        .recv_timeout(RUNTIME_SELF_CHECK_OUTPUT_DRAIN_TIMEOUT)
+    {
+        Ok(Ok(())) => true,
+        Ok(Err(source)) => {
+            diagnostics.push(format!("failed to read self-check {stream_name}: {source}"));
+            true
+        }
+        Err(RecvTimeoutError::Timeout) => {
+            diagnostics.push(format!(
+                "self-check {stream_name} did not close within {} ms after the command stopped",
+                RUNTIME_SELF_CHECK_OUTPUT_DRAIN_TIMEOUT.as_millis()
+            ));
+            false
+        }
+        Err(RecvTimeoutError::Disconnected) => {
+            diagnostics.push(format!(
+                "self-check {stream_name} reader stopped unexpectedly"
+            ));
+            true
+        }
+    };
+
+    if completed
+        && reader
+            .worker
+            .take()
+            .is_some_and(|worker| worker.join().is_err())
+    {
+        diagnostics.push(format!("self-check {stream_name} reader thread panicked"));
+    }
+
+    let captured = match reader.captured.lock() {
+        Ok(captured) => captured,
+        Err(poisoned) => {
+            diagnostics.push(format!("self-check {stream_name} output lock was poisoned"));
+            poisoned.into_inner()
+        }
+    };
+    if captured.truncated {
+        diagnostics.push(format!(
+            "self-check {stream_name} exceeded {} bytes and was truncated",
+            RUNTIME_SELF_CHECK_OUTPUT_LIMIT
+        ));
+    }
+
+    (captured.bytes.clone(), diagnostics)
+}
+
+fn terminate_and_reap_self_check_child(child: &mut Child) -> (Option<ExitStatus>, Vec<String>) {
+    let mut diagnostics = Vec::new();
+    let mut status = None;
+    let should_wait = match child.kill() {
+        Ok(()) => true,
+        Err(source) => {
+            match child.try_wait() {
+                Ok(Some(observed_status)) => status = Some(observed_status),
+                Ok(None) => {
+                    diagnostics.push(format!("failed to terminate self-check command: {source}"))
+                }
+                Err(wait_source) => diagnostics.push(format!(
+                    "failed to terminate self-check command: {source}; status check also failed: {wait_source}"
+                )),
+            }
+            false
+        }
+    };
+
+    if should_wait {
+        match child.wait() {
+            Ok(observed_status) => status = Some(observed_status),
+            Err(source) => diagnostics.push(format!("failed to reap self-check command: {source}")),
+        }
+    }
+
+    (status, diagnostics)
+}
+
+fn append_self_check_diagnostics(mut stderr: String, diagnostics: &[String]) -> String {
+    for diagnostic in diagnostics {
+        if !stderr.is_empty() && !stderr.ends_with('\n') {
+            stderr.push('\n');
+        }
+        stderr.push_str("[artistic-git self-check] ");
+        stderr.push_str(diagnostic);
+        stderr.push('\n');
+    }
+    stderr
+}
+
+fn display_self_check_timeout(timeout: Duration) -> String {
+    if timeout.subsec_nanos() == 0 {
+        format!("{} seconds", timeout.as_secs())
+    } else {
+        format!("{} ms", timeout.as_millis())
     }
 }
 
@@ -1435,6 +1731,22 @@ mod tests {
     }
 
     #[test]
+    fn oversized_manifest_is_rejected_before_parsing() {
+        let temp = TestTempDir::new("ag-oversized-manifest").expect("temp dir");
+        fs::write(
+            temp.path().join("manifest.json"),
+            vec![b' '; GIT_DIST_MANIFEST_LIMIT_BYTES + 1],
+        )
+        .expect("write oversized manifest");
+
+        let error =
+            GitDistribution::from_root(temp.path()).expect_err("oversized manifest should fail");
+
+        assert!(matches!(error, GitDistributionError::ReadManifest { .. }));
+        assert!(error.to_string().contains("safety limit"));
+    }
+
+    #[test]
     fn rejects_unsupported_manifest_schema() {
         let temp = TestTempDir::new("ag-unsupported-manifest").expect("temp dir");
         let mut manifest = git_dist_manifest_fixture();
@@ -1821,6 +2133,98 @@ mod tests {
             .commands
             .iter()
             .all(|command| command.version_matches));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_self_check_times_out_git_and_lfs_with_bounded_cleanup() {
+        for kind in [
+            SelfCheckCommandKind::GitVersion,
+            SelfCheckCommandKind::GitLfsVersion,
+        ] {
+            let temp = fake_distribution_with_versions(
+                "git version 2.50.0\n",
+                "git-lfs/3.6.0 (GitHub; test)\n",
+            )
+            .expect("create fake distribution");
+            let distribution =
+                GitDistribution::from_root(temp.path()).expect("distribution should load");
+            let executable = match kind {
+                SelfCheckCommandKind::GitVersion => distribution.git_executable.clone(),
+                SelfCheckCommandKind::GitLfsVersion => distribution.git_lfs_executable.clone(),
+            };
+            write_executable_script(
+                &executable,
+                "#!/bin/sh\nexec /bin/sleep 30\n",
+                "@echo off\r\nexit /b 0\r\n",
+            )
+            .expect("write hanging self-check command");
+            let runner = GitRunner::from_distribution(distribution, temp.path().join("home"));
+            let mut plan = runner.runtime_self_check_plan();
+            plan.commands.retain(|command| command.kind == kind);
+            let started = Instant::now();
+
+            let error = plan
+                .execute_with_timeout(Duration::from_millis(500))
+                .expect_err("hanging self-check command should time out");
+
+            assert!(started.elapsed() < Duration::from_secs(2));
+            assert!(error.category.terminates_app());
+            assert!(
+                error.summary.contains(kind.display_name()),
+                "unexpected summary for {kind:?}: {}",
+                error.summary
+            );
+            assert!(
+                error.summary.contains("timed out"),
+                "unexpected summary for {kind:?}: {}",
+                error.summary
+            );
+            let git_error = error
+                .git
+                .expect("timeout should retain command diagnostics");
+            assert_eq!(git_error.command[0], executable.to_string_lossy());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_self_check_failures_retain_git_and_lfs_output() {
+        for kind in [
+            SelfCheckCommandKind::GitVersion,
+            SelfCheckCommandKind::GitLfsVersion,
+        ] {
+            let temp = fake_distribution_with_versions(
+                "git version 2.50.0\n",
+                "git-lfs/3.6.0 (GitHub; test)\n",
+            )
+            .expect("create fake distribution");
+            let distribution =
+                GitDistribution::from_root(temp.path()).expect("distribution should load");
+            let executable = match kind {
+                SelfCheckCommandKind::GitVersion => distribution.git_executable.clone(),
+                SelfCheckCommandKind::GitLfsVersion => distribution.git_lfs_executable.clone(),
+            };
+            write_executable_script(
+                &executable,
+                "#!/bin/sh\nprintf 'failure stdout\\n'\nprintf 'failure stderr\\n' >&2\nexit 23\n",
+                "@echo off\r\nexit /b 23\r\n",
+            )
+            .expect("write failing self-check command");
+            let runner = GitRunner::from_distribution(distribution, temp.path().join("home"));
+            let mut plan = runner.runtime_self_check_plan();
+            plan.commands.retain(|command| command.kind == kind);
+
+            let error = plan
+                .execute()
+                .expect_err("failing self-check command should be reported");
+
+            let git_error = error.git.expect("failure should retain command output");
+            assert_eq!(git_error.command[0], executable.to_string_lossy());
+            assert_eq!(git_error.exit_code, Some(23));
+            assert!(git_error.stdout.contains("failure stdout"));
+            assert!(git_error.stderr.contains("failure stderr"));
+        }
     }
 
     #[test]

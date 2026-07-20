@@ -8,8 +8,11 @@ import { EditorView, lineNumbers } from "@codemirror/view";
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   FileCode2,
   FileQuestion,
+  FileWarning,
   Image as ImageIcon,
   RotateCcw,
   Save,
@@ -25,12 +28,14 @@ import { DiffViewer } from "@/features/diff";
 import { useLocalizedFormatters } from "@/i18n/format";
 import {
   cancelConflictResolution,
+  cancelOperation,
   completeConflictResolution,
   conflictDetail,
   listConflicts,
   saveConflictResolution,
   selectConflictSide,
 } from "@/lib/ipc/commands";
+import { isOperationCancelledError } from "@/lib/ipc/errors";
 import type {
   ConflictDetailResponse,
   ConflictEnteredEvent,
@@ -46,6 +51,7 @@ import { cn } from "@/lib/utils";
 
 export interface ConflictResolutionApi {
   cancelConflictResolution: typeof cancelConflictResolution;
+  cancelOperation: typeof cancelOperation;
   completeConflictResolution: typeof completeConflictResolution;
   conflictDetail: typeof conflictDetail;
   listConflicts: typeof listConflicts;
@@ -61,12 +67,28 @@ interface ConflictResolutionOverlayProps {
 
 const defaultApi: ConflictResolutionApi = {
   cancelConflictResolution,
+  cancelOperation,
   completeConflictResolution,
   conflictDetail,
   listConflicts,
   saveConflictResolution,
   selectConflictSide,
 };
+
+const CONFLICT_FILE_PAGE_SIZE = 200;
+let conflictOperationSequence = 0;
+
+interface ConflictDetailRequestState {
+  path: string;
+  status: "error" | "loading" | "ready";
+}
+
+function createConflictOperationId(): string {
+  conflictOperationSequence += 1;
+  const seed =
+    globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}`;
+  return `conflict-select-${seed}-${conflictOperationSequence.toString(36)}`;
+}
 
 export function ConflictResolutionOverlay({
   api = defaultApi,
@@ -76,7 +98,7 @@ export function ConflictResolutionOverlay({
   const { t } = useTranslation();
   const [files, setFiles] = React.useState<ConflictFile[]>(event.files);
   const [checkedPaths, setCheckedPaths] = React.useState<Set<string>>(
-    () => new Set(event.files.map((file) => file.path)),
+    () => new Set(),
   );
   const [selectedPathPreference, setSelectedPathPreference] = React.useState<
     string | null
@@ -84,9 +106,30 @@ export function ConflictResolutionOverlay({
   const [detail, setDetail] = React.useState<ConflictDetailResponse | null>(
     null,
   );
+  const [detailRequest, setDetailRequest] =
+    React.useState<ConflictDetailRequestState | null>(null);
   const [busyLabel, setBusyLabel] = React.useState<string | null>(null);
+  const busyRef = React.useRef(false);
+  const [activeOperationId, setActiveOperationId] = React.useState<
+    string | null
+  >(null);
+  const activeOperationIdRef = React.useRef<string | null>(null);
+  const [cancelling, setCancelling] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [confirmCancel, setConfirmCancel] = React.useState(false);
+  const conflictListKey = `${event.repositoryPath}\0${event.operationId}`;
+  const [conflictListPage, setConflictListPage] = React.useState({
+    key: conflictListKey,
+    pageIndex: 0,
+  });
+  const requestedPageIndex =
+    conflictListPage.key === conflictListKey ? conflictListPage.pageIndex : 0;
+  const reportError = React.useCallback((source: unknown) => {
+    setError(errorSummary(source));
+    window.dispatchEvent(
+      new CustomEvent("artistic-git:error", { detail: source }),
+    );
+  }, []);
 
   React.useEffect(() => {
     let active = true;
@@ -100,14 +143,14 @@ export function ConflictResolutionOverlay({
       })
       .catch((source: unknown) => {
         if (active) {
-          setError(errorSummary(source));
+          reportError(source);
         }
       });
 
     return () => {
       active = false;
     };
-  }, [api, event.files, event.repositoryPath]);
+  }, [api, event.files, event.repositoryPath, reportError]);
 
   const selectedPath = React.useMemo(() => {
     if (
@@ -123,39 +166,85 @@ export function ConflictResolutionOverlay({
       null
     );
   }, [files, selectedPathPreference]);
+  const selectedPathRef = React.useRef(selectedPath);
+  React.useEffect(() => {
+    selectedPathRef.current = selectedPath;
+  }, [selectedPath]);
 
   React.useEffect(() => {
+    let active = true;
+    void Promise.resolve().then(() => {
+      if (!active) {
+        return;
+      }
+      setDetail(null);
+      setDetailRequest(
+        selectedPath ? { path: selectedPath, status: "loading" } : null,
+      );
+      if (selectedPath) {
+        setError(null);
+      }
+    });
+
     if (!selectedPath) {
-      return;
+      return () => {
+        active = false;
+      };
     }
 
-    let active = true;
     void api
       .conflictDetail({
         path: selectedPath,
         repositoryPath: event.repositoryPath,
       })
       .then((response) => {
-        if (active) {
-          setDetail(response);
+        if (!active || selectedPathRef.current !== selectedPath) {
+          return;
         }
+        if (response.file.path !== selectedPath) {
+          throw new Error(
+            `Conflict detail path mismatch: requested ${selectedPath}, received ${response.file.path}.`,
+          );
+        }
+        setDetail(response);
+        setDetailRequest({ path: selectedPath, status: "ready" });
       })
       .catch((source: unknown) => {
-        if (active) {
-          setError(errorSummary(source));
+        if (!active || selectedPathRef.current !== selectedPath) {
+          return;
         }
+        setDetail(null);
+        setDetailRequest({ path: selectedPath, status: "error" });
+        reportError(source);
       });
 
     return () => {
       active = false;
     };
-  }, [api, event.repositoryPath, selectedPath]);
+  }, [api, event.repositoryPath, reportError, selectedPath]);
 
   const unresolvedCount = files.filter(
     (file) => file.status === "unresolved",
   ).length;
   const allResolved = files.length > 0 && unresolvedCount === 0;
   const selectedFiles = files.filter((file) => checkedPaths.has(file.path));
+  const conflictPageCount = Math.max(
+    1,
+    Math.ceil(files.length / CONFLICT_FILE_PAGE_SIZE),
+  );
+  const conflictPageIndex = Math.min(requestedPageIndex, conflictPageCount - 1);
+  const visibleFiles = files.slice(
+    conflictPageIndex * CONFLICT_FILE_PAGE_SIZE,
+    (conflictPageIndex + 1) * CONFLICT_FILE_PAGE_SIZE,
+  );
+  const visibleDetail =
+    detail?.file.path === selectedPath &&
+    detailRequest?.path === selectedPath &&
+    detailRequest.status === "ready"
+      ? detail
+      : null;
+  const selectedDetailFailed =
+    detailRequest?.path === selectedPath && detailRequest.status === "error";
   const selectedOrCurrentPaths =
     selectedFiles.length > 0
       ? selectedFiles.map((file) => file.path)
@@ -166,6 +255,26 @@ export function ConflictResolutionOverlay({
     () => conflictSideLabels(t, event.operationName),
     [event.operationName, t],
   );
+
+  const beginBusy = (label: string, operationId: string | null = null) => {
+    if (busyRef.current) {
+      return false;
+    }
+    busyRef.current = true;
+    activeOperationIdRef.current = operationId;
+    setBusyLabel(label);
+    setActiveOperationId(operationId);
+    setCancelling(false);
+    return true;
+  };
+
+  const finishBusy = () => {
+    busyRef.current = false;
+    activeOperationIdRef.current = null;
+    setBusyLabel(null);
+    setActiveOperationId(null);
+    setCancelling(false);
+  };
 
   const mergeUpdatedFiles = React.useCallback(
     (updatedFiles: ConflictFile[]) => {
@@ -184,64 +293,113 @@ export function ConflictResolutionOverlay({
     side: ConflictSide,
     paths = selectedOrCurrentPaths,
   ) => {
-    if (paths.length === 0) {
+    const operationId = createConflictOperationId();
+    if (
+      paths.length === 0 ||
+      !beginBusy(t(`conflicts.side.${side}`), operationId)
+    ) {
       return;
     }
-    setBusyLabel(t(`conflicts.side.${side}`));
+    const detailPath = selectedPath;
+    let refreshingDetail = false;
     setError(null);
     try {
       const response: ConflictSelectSideResponse = await api.selectConflictSide(
         {
+          operationId,
           paths,
           repositoryPath: event.repositoryPath,
           side,
         },
       );
       mergeUpdatedFiles(response.files);
-      if (selectedPath) {
+      if (detailPath && selectedPathRef.current === detailPath) {
+        refreshingDetail = true;
+        setDetail(null);
+        setDetailRequest({ path: detailPath, status: "loading" });
         const nextDetail = await api.conflictDetail({
-          path: selectedPath,
+          path: detailPath,
           repositoryPath: event.repositoryPath,
         });
-        setDetail(nextDetail);
+        if (nextDetail.file.path !== detailPath) {
+          throw new Error(
+            `Conflict detail path mismatch: requested ${detailPath}, received ${nextDetail.file.path}.`,
+          );
+        }
+        if (selectedPathRef.current === detailPath) {
+          setDetail(nextDetail);
+          setDetailRequest({ path: detailPath, status: "ready" });
+        }
       }
     } catch (source) {
-      setError(errorSummary(source));
+      if (
+        refreshingDetail &&
+        detailPath &&
+        selectedPathRef.current === detailPath
+      ) {
+        setDetail(null);
+        setDetailRequest({ path: detailPath, status: "error" });
+      }
+      if (!isOperationCancelledError(source)) {
+        reportError(source);
+      }
     } finally {
-      setBusyLabel(null);
+      finishBusy();
+    }
+  };
+
+  const cancelActiveOperation = async () => {
+    const operationId = activeOperationIdRef.current;
+    if (!operationId || cancelling) {
+      return;
+    }
+    setCancelling(true);
+    try {
+      const response = await api.cancelOperation({ operationId });
+      if (!response.cancelled && activeOperationIdRef.current === operationId) {
+        throw new Error("The conflict operation could not be cancelled.");
+      }
+    } catch (source) {
+      if (activeOperationIdRef.current === operationId) {
+        setCancelling(false);
+        reportError(source);
+      }
     }
   };
 
   const runSave = async (content: string, pendingHunks: number) => {
-    if (!selectedPath) {
+    if (!selectedPath || !beginBusy(t("conflicts.save"))) {
       return;
     }
-    setBusyLabel(t("conflicts.save"));
+    const detailPath = selectedPath;
     setError(null);
     try {
       const response: ConflictSaveResolutionResponse =
         await api.saveConflictResolution({
           content,
-          path: selectedPath,
+          path: detailPath,
           pendingHunks,
           repositoryPath: event.repositoryPath,
         });
       mergeUpdatedFiles([response.file]);
-      setDetail((current) =>
-        current ? { ...current, file: response.file } : current,
-      );
+      if (selectedPathRef.current === detailPath) {
+        setDetail((current) =>
+          current?.file.path === detailPath
+            ? { ...current, file: response.file }
+            : current,
+        );
+      }
     } catch (source) {
-      setError(errorSummary(source));
+      reportError(source);
     } finally {
-      setBusyLabel(null);
+      finishBusy();
     }
   };
 
   const runComplete = async () => {
-    if (!allResolved) {
+    if (!allResolved || !beginBusy(t("conflicts.complete"))) {
       return;
     }
-    setBusyLabel(t("conflicts.complete"));
     setError(null);
     try {
       await api.completeConflictResolution({
@@ -251,14 +409,16 @@ export function ConflictResolutionOverlay({
       });
       onClose(event.repositoryPath);
     } catch (source) {
-      setError(errorSummary(source));
+      reportError(source);
     } finally {
-      setBusyLabel(null);
+      finishBusy();
     }
   };
 
   const runCancel = async () => {
-    setBusyLabel(t("actions.cancel"));
+    if (!beginBusy(t("actions.cancel"))) {
+      return;
+    }
     setError(null);
     try {
       await api.cancelConflictResolution({
@@ -267,10 +427,10 @@ export function ConflictResolutionOverlay({
       });
       onClose(event.repositoryPath);
     } catch (source) {
-      setError(errorSummary(source));
+      reportError(source);
       setConfirmCancel(false);
     } finally {
-      setBusyLabel(null);
+      finishBusy();
     }
   };
 
@@ -297,6 +457,20 @@ export function ConflictResolutionOverlay({
         <div className="flex shrink-0 items-center gap-2">
           {busyLabel ? (
             <span className="text-sm text-muted-foreground">{busyLabel}</span>
+          ) : null}
+          {activeOperationId ? (
+            <Button
+              data-testid="conflict-cancel-active-operation"
+              disabled={cancelling}
+              onClick={() => {
+                void cancelActiveOperation();
+              }}
+              type="button"
+              variant="secondary"
+            >
+              <X className="mr-2 size-4" aria-hidden="true" />
+              {t("actions.cancel")}
+            </Button>
           ) : null}
           <Button
             data-testid="conflict-complete"
@@ -329,9 +503,14 @@ export function ConflictResolutionOverlay({
       ) : null}
 
       <div className="flex min-h-0 flex-1">
-        <aside className="flex w-80 shrink-0 flex-col border-r bg-card">
+        <aside
+          aria-busy={busyLabel !== null}
+          className="flex w-80 shrink-0 flex-col border-r bg-card"
+          inert={busyLabel !== null}
+        >
           <div className="grid grid-cols-2 gap-2 border-b p-3">
             <Button
+              disabled={busyLabel !== null}
               onClick={() =>
                 setCheckedPaths(new Set(files.map((file) => file.path)))
               }
@@ -342,6 +521,7 @@ export function ConflictResolutionOverlay({
               {t("conflicts.selectAll")}
             </Button>
             <Button
+              disabled={busyLabel !== null}
               onClick={() => {
                 setCheckedPaths(
                   new Set(
@@ -385,10 +565,14 @@ export function ConflictResolutionOverlay({
             </Button>
           </div>
 
-          <div className="min-h-0 flex-1 overflow-auto">
-            {files.map((file) => (
+          <div
+            className="min-h-0 flex-1 overflow-auto"
+            data-testid="conflict-file-list"
+          >
+            {visibleFiles.map((file) => (
               <ConflictFileRow
                 checked={checkedPaths.has(file.path)}
+                disabled={busyLabel !== null}
                 file={file}
                 key={file.path}
                 onCheckedChange={(checked) => {
@@ -406,38 +590,101 @@ export function ConflictResolutionOverlay({
                 selected={file.path === selectedPath}
               />
             ))}
+            {conflictPageCount > 1 ? (
+              <div className="flex items-center justify-between gap-2 border-b p-2">
+                <Button
+                  aria-label={t("conflicts.previousPage")}
+                  data-testid="conflict-previous-page"
+                  disabled={busyLabel !== null || conflictPageIndex === 0}
+                  onClick={() => {
+                    setConflictListPage({
+                      key: conflictListKey,
+                      pageIndex: Math.max(0, conflictPageIndex - 1),
+                    });
+                  }}
+                  size="icon"
+                  title={t("conflicts.previousPage")}
+                  type="button"
+                  variant="ghost"
+                >
+                  <ChevronLeft aria-hidden="true" className="size-4" />
+                </Button>
+                <span className="text-xs text-muted-foreground">
+                  {t("conflicts.page", {
+                    page: conflictPageIndex + 1,
+                    total: conflictPageCount,
+                  })}
+                </span>
+                <Button
+                  aria-label={t("conflicts.nextPage")}
+                  data-testid="conflict-next-page"
+                  disabled={
+                    busyLabel !== null ||
+                    conflictPageIndex >= conflictPageCount - 1
+                  }
+                  onClick={() => {
+                    setConflictListPage({
+                      key: conflictListKey,
+                      pageIndex: Math.min(
+                        conflictPageCount - 1,
+                        conflictPageIndex + 1,
+                      ),
+                    });
+                  }}
+                  size="icon"
+                  title={t("conflicts.nextPage")}
+                  type="button"
+                  variant="ghost"
+                >
+                  <ChevronRight aria-hidden="true" className="size-4" />
+                </Button>
+              </div>
+            ) : null}
           </div>
         </aside>
 
         <div className="min-w-0 flex-1 bg-background">
-          {detail ? (
+          {visibleDetail ? (
             <ConflictDetailPanel
-              detail={detail.detail}
-              file={detail.file}
+              detail={visibleDetail.detail}
+              file={visibleDetail.file}
               onSave={(content, pendingHunks) => {
                 void runSave(content, pendingHunks);
               }}
               onSelectSide={(side) => {
-                void runSelectSide(side, [detail.file.path]);
+                void runSelectSide(side, [visibleDetail.file.path]);
               }}
               saving={busyLabel !== null}
               sideLabels={sideLabels}
             />
           ) : (
-            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-              {t("conflicts.loading")}
+            <div
+              className="flex h-full items-center justify-center text-sm text-muted-foreground"
+              role={selectedDetailFailed ? "alert" : "status"}
+            >
+              {t(
+                selectedDetailFailed
+                  ? "conflicts.detailUnavailable"
+                  : "conflicts.loading",
+              )}
             </div>
           )}
         </div>
       </div>
 
       <ConfirmDialog
+        busy={busyLabel !== null}
         confirmLabel={t("conflicts.abort")}
         description={t("conflicts.cancelDescription")}
         onConfirm={() => {
           void runCancel();
         }}
-        onOpenChange={setConfirmCancel}
+        onOpenChange={(open) => {
+          if (!open && busyLabel !== null) {
+            return;
+          }
+          setConfirmCancel(open);
+        }}
         open={confirmCancel}
         title={t("conflicts.cancelTitle")}
         variant="danger"
@@ -448,12 +695,14 @@ export function ConflictResolutionOverlay({
 
 function ConflictFileRow({
   checked,
+  disabled,
   file,
   onCheckedChange,
   onSelect,
   selected,
 }: {
   checked: boolean;
+  disabled: boolean;
   file: ConflictFile;
   onCheckedChange: (checked: boolean) => void;
   onSelect: () => void;
@@ -475,12 +724,14 @@ function ConflictFileRow({
       )}
       data-conflict-path={file.path}
       data-testid="conflict-file-row"
+      disabled={disabled}
       onClick={onSelect}
       type="button"
     >
       <input
         aria-label={t("conflicts.toggleFile", { path: file.path })}
         checked={checked}
+        disabled={disabled}
         className="size-4 accent-primary"
         onChange={(event) => onCheckedChange(event.currentTarget.checked)}
         onClick={(event) => event.stopPropagation()}
@@ -520,6 +771,18 @@ function ConflictDetailPanel({
   saving: boolean;
   sideLabels: ConflictSideLabels;
 }) {
+  if (detail.kind === "oversizedText") {
+    return (
+      <OversizedTextConflictDetail
+        detail={detail}
+        file={file}
+        onSelectSide={onSelectSide}
+        saving={saving}
+        sideLabels={sideLabels}
+      />
+    );
+  }
+
   if (detail.kind === "binary") {
     return (
       <BinaryConflictDetail
@@ -542,6 +805,76 @@ function ConflictDetailPanel({
       saving={saving}
       sideLabels={sideLabels}
     />
+  );
+}
+
+function OversizedTextConflictDetail({
+  detail,
+  file,
+  onSelectSide,
+  saving,
+  sideLabels,
+}: {
+  detail: Extract<ConflictFileDetail, { kind: "oversizedText" }>;
+  file: ConflictFile;
+  onSelectSide: (side: ConflictSide) => void;
+  saving: boolean;
+  sideLabels: ConflictSideLabels;
+}) {
+  const { t } = useTranslation();
+  const formatters = useLocalizedFormatters();
+  const sizeBytes = Number(detail.sizeBytes);
+  const formattedSize = Number.isFinite(sizeBytes)
+    ? formatters.formatFileSize(sizeBytes)
+    : detail.sizeBytes;
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex min-h-12 shrink-0 items-center border-b bg-card px-3">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-medium">{file.path}</p>
+          <p className="truncate text-xs text-muted-foreground">
+            {t("conflicts.oversizedTitle")}
+          </p>
+        </div>
+      </div>
+      <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-6">
+        <section className="flex max-w-xl flex-col items-center gap-4 text-center">
+          <FileWarning aria-hidden="true" className="size-10 text-warning" />
+          <div className="space-y-2">
+            <h2 className="text-base font-semibold">
+              {t("conflicts.oversizedTitle")}
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              {t("conflicts.oversizedDescription", {
+                limit: formatters.formatFileSize(detail.maxPreviewBytes),
+                size: formattedSize,
+              })}
+            </p>
+          </div>
+          <div className="flex flex-wrap justify-center gap-2">
+            <Button
+              data-testid="conflict-oversized-use-own"
+              disabled={saving}
+              onClick={() => onSelectSide("own")}
+              type="button"
+              variant="secondary"
+            >
+              {sideLabels.useOwn}
+            </Button>
+            <Button
+              data-testid="conflict-oversized-use-other"
+              disabled={saving}
+              onClick={() => onSelectSide("other")}
+              type="button"
+              variant="secondary"
+            >
+              {sideLabels.useOther}
+            </Button>
+          </div>
+        </section>
+      </div>
+    </div>
   );
 }
 

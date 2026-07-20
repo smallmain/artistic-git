@@ -2,13 +2,15 @@ use artistic_git_contracts::{
     AppError, AppResult, BranchNameValidationRequest, BranchNameValidationResponse,
     BranchOperationResponse, CheckoutBranchRequest, CheckoutLocalChangesMode,
     CreateAutoStashRequest, CreateBranchRequest, DeleteBranchRequest, DeleteSafetyBackupRequest,
-    DeleteSafetyBackupResponse, GitCommandError, OperationContext, OperationId,
-    RepositoryPathRequest, SafetyBackupListResponse, SafetyBackupSummary, StashRestoreOutcome,
+    DeleteSafetyBackupResponse, OperationContext, OperationId, RepositoryPathRequest,
+    SafetyBackupListResponse, SafetyBackupSummary, StashRestoreOutcome,
 };
 use artistic_git_git_runner::GitRunner;
 use std::{
+    collections::HashSet,
     ffi::OsString,
-    fs,
+    fs::{self, File, OpenOptions},
+    io::{self, Read, Write},
     path::{Component, Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -19,6 +21,12 @@ const CHECKOUT_BRANCH_OPERATION: &str = "checkoutBranch";
 const DELETE_BRANCH_OPERATION: &str = "deleteBranch";
 const LIST_SAFETY_BACKUPS_OPERATION: &str = "listSafetyBackups";
 const DELETE_SAFETY_BACKUP_OPERATION: &str = "deleteSafetyBackup";
+const SAFETY_BACKUP_LIST_LIMIT: usize = 5_000;
+const DISCARD_BACKUP_OPERATION: &str = "backupChanges";
+const DISCARD_BACKUP_MAX_ENTRIES: usize = 50_000;
+const DISCARD_BACKUP_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const DISCARD_BACKUP_MAX_DEPTH: usize = 128;
+const DISCARD_BACKUP_COPY_BUFFER_BYTES: usize = 64 * 1024;
 
 pub fn validate_branch_name(
     runner: &GitRunner,
@@ -276,6 +284,8 @@ pub fn list_safety_backups(
         Some(&root),
         [
             "for-each-ref",
+            "--sort=-committerdate",
+            "--count=5001",
             "--format=%(refname)%00%(objectname)%00%(committerdate:unix)",
             "refs/heads/backup",
         ],
@@ -292,8 +302,10 @@ pub fn list_safety_backups(
             .cmp(&left.created_at_unix_millis)
             .then_with(|| left.name.cmp(&right.name))
     });
+    let truncated = backups.len() > SAFETY_BACKUP_LIST_LIMIT;
+    backups.truncate(SAFETY_BACKUP_LIST_LIMIT);
 
-    Ok(SafetyBackupListResponse { backups })
+    Ok(SafetyBackupListResponse { backups, truncated })
 }
 
 pub fn delete_safety_backup(
@@ -566,24 +578,55 @@ fn backup_and_discard_local_changes(
     )?;
 
     if !changes.changes.is_empty() {
+        ensure_discard_backup_not_cancelled(root, operation_name)?;
+        let backup_base = trash_base_dir();
+        fs::create_dir_all(&backup_base).map_err(|source| {
+            unexpected_repo_error(
+                format!("failed to create local changes backup directory: {source}"),
+                operation_name,
+                root,
+            )
+        })?;
         let backup_root = trash_backup_root(root);
-        fs::create_dir_all(&backup_root).map_err(|source| {
+        fs::create_dir(&backup_root).map_err(|source| {
             unexpected_repo_error(
                 format!("failed to create local changes backup: {source}"),
                 operation_name,
                 root,
             )
         })?;
+        let backup_content_root = backup_root.join("contents");
+        fs::create_dir(&backup_content_root).map_err(|source| {
+            unexpected_repo_error(
+                format!("failed to create local changes backup content directory: {source}"),
+                operation_name,
+                root,
+            )
+        })?;
 
+        let mut backup_state = DiscardBackupState::default();
         let mut manifest = String::new();
         for change in &changes.changes {
             manifest.push_str(&change.path);
             manifest.push('\n');
-            backup_change_path(root, &backup_root, &change.path)?;
+            backup_change_path(
+                root,
+                &backup_content_root,
+                &change.path,
+                &mut backup_state,
+                operation_name,
+            )?;
             if let Some(old_path) = &change.old_path {
-                backup_change_path(root, &backup_root, old_path)?;
+                backup_change_path(
+                    root,
+                    &backup_content_root,
+                    old_path,
+                    &mut backup_state,
+                    operation_name,
+                )?;
             }
         }
+        ensure_discard_backup_not_cancelled(root, operation_name)?;
         fs::write(backup_root.join("manifest.txt"), manifest).map_err(|source| {
             unexpected_repo_error(
                 format!("failed to write local changes backup manifest: {source}"),
@@ -593,36 +636,566 @@ fn backup_and_discard_local_changes(
         })?;
     }
 
+    ensure_discard_backup_not_cancelled(root, operation_name)?;
     crate::repository::git_stdout(runner, Some(root), ["reset", "--hard"], operation_name)?;
     crate::repository::git_stdout(runner, Some(root), ["clean", "-fd"], operation_name)?;
     Ok(())
 }
 
-fn backup_change_path(root: &Path, backup_root: &Path, relative: &str) -> AppResult<()> {
+#[derive(Default)]
+struct DiscardBackupState {
+    entries: usize,
+    bytes: u64,
+    destinations: HashSet<PathBuf>,
+}
+
+impl DiscardBackupState {
+    fn schedule(
+        &mut self,
+        destination: &Path,
+        root: &Path,
+        operation_name: &str,
+    ) -> AppResult<bool> {
+        if !self.destinations.insert(destination.to_path_buf()) {
+            return Ok(false);
+        }
+        self.entries = self.entries.checked_add(1).ok_or_else(|| {
+            discard_backup_limit_error("entry count overflowed", root, operation_name)
+        })?;
+        if self.entries > DISCARD_BACKUP_MAX_ENTRIES {
+            return Err(discard_backup_limit_error(
+                format!(
+                    "contains more than {DISCARD_BACKUP_MAX_ENTRIES} files, directories, and links"
+                ),
+                root,
+                operation_name,
+            ));
+        }
+        Ok(true)
+    }
+
+    fn ensure_file_fits(
+        &self,
+        file_bytes: u64,
+        root: &Path,
+        operation_name: &str,
+    ) -> AppResult<()> {
+        if self
+            .bytes
+            .checked_add(file_bytes)
+            .is_none_or(|total| total > DISCARD_BACKUP_MAX_BYTES)
+        {
+            return Err(discard_backup_limit_error(
+                format!("contains more than {DISCARD_BACKUP_MAX_BYTES} bytes of file content"),
+                root,
+                operation_name,
+            ));
+        }
+        Ok(())
+    }
+
+    fn record_bytes(
+        &mut self,
+        copied_bytes: usize,
+        root: &Path,
+        operation_name: &str,
+    ) -> AppResult<()> {
+        self.bytes = self.bytes.checked_add(copied_bytes as u64).ok_or_else(|| {
+            discard_backup_limit_error("content size overflowed", root, operation_name)
+        })?;
+        if self.bytes > DISCARD_BACKUP_MAX_BYTES {
+            return Err(discard_backup_limit_error(
+                format!("contains more than {DISCARD_BACKUP_MAX_BYTES} bytes of file content"),
+                root,
+                operation_name,
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn backup_change_path(
+    root: &Path,
+    backup_root: &Path,
+    relative: &str,
+    state: &mut DiscardBackupState,
+    operation_name: &str,
+) -> AppResult<()> {
     let Some(source) = safe_join(root, relative) else {
-        return Ok(());
+        return Err(unexpected_repo_error(
+            format!("refusing to back up a path outside the repository: {relative}"),
+            DISCARD_BACKUP_OPERATION,
+            root,
+        ));
     };
-    if !source.is_file() {
+    validate_backup_source_parents(root, &source, operation_name)?;
+    if fs::symlink_metadata(&source).is_err_and(|error| error.kind() == io::ErrorKind::NotFound) {
         return Ok(());
     }
     let Some(destination) = safe_join(backup_root, relative) else {
-        return Ok(());
+        return Err(unexpected_repo_error(
+            format!("refusing to create a backup path outside the backup directory: {relative}"),
+            DISCARD_BACKUP_OPERATION,
+            root,
+        ));
     };
-    if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent).map_err(|source| {
-            unexpected_error(
-                format!("failed to create backup parent: {source}"),
-                "backupChanges",
-            )
-        })?;
+
+    let mut pending = Vec::new();
+    if state.schedule(&destination, root, operation_name)? {
+        pending.push((source, destination, 0_usize));
     }
-    fs::copy(source, destination).map_err(|source| {
-        unexpected_error(
-            format!("failed to back up changed file: {source}"),
-            "backupChanges",
+
+    while let Some((source, destination, depth)) = pending.pop() {
+        ensure_discard_backup_not_cancelled(root, operation_name)?;
+        if depth > DISCARD_BACKUP_MAX_DEPTH {
+            return Err(discard_backup_limit_error(
+                format!("contains a directory deeper than {DISCARD_BACKUP_MAX_DEPTH} levels"),
+                root,
+                operation_name,
+            ));
+        }
+
+        let metadata = match fs::symlink_metadata(&source) {
+            Ok(metadata) => metadata,
+            Err(source_error) if source_error.kind() == io::ErrorKind::NotFound => continue,
+            Err(source_error) => {
+                return Err(discard_backup_io_error(
+                    "inspect changed path",
+                    &source,
+                    source_error,
+                    root,
+                    operation_name,
+                ));
+            }
+        };
+        let file_type = metadata.file_type();
+
+        if file_type.is_symlink() {
+            create_backup_parent_directories(backup_root, &destination, root, operation_name)?;
+            copy_backup_symlink(&source, &destination, &metadata, root, operation_name)?;
+        } else if file_type.is_file() {
+            ensure_resolved_backup_source_stays_inside(root, &source, operation_name)?;
+            create_backup_parent_directories(backup_root, &destination, root, operation_name)?;
+            copy_backup_file(
+                &source,
+                &destination,
+                &metadata,
+                state,
+                root,
+                operation_name,
+            )?;
+        } else if file_type.is_dir() {
+            ensure_resolved_backup_source_stays_inside(root, &source, operation_name)?;
+            create_backup_directory(backup_root, &destination, root, operation_name)?;
+            let entries = fs::read_dir(&source).map_err(|source_error| {
+                discard_backup_io_error(
+                    "read changed directory",
+                    &source,
+                    source_error,
+                    root,
+                    operation_name,
+                )
+            })?;
+            for entry in entries {
+                ensure_discard_backup_not_cancelled(root, operation_name)?;
+                let entry = entry.map_err(|source_error| {
+                    discard_backup_io_error(
+                        "read changed directory entry",
+                        &source,
+                        source_error,
+                        root,
+                        operation_name,
+                    )
+                })?;
+                let child_source = entry.path();
+                let child_destination = destination.join(entry.file_name());
+                if state.schedule(&child_destination, root, operation_name)? {
+                    pending.push((child_source, child_destination, depth + 1));
+                }
+            }
+        } else {
+            return Err(unexpected_repo_error(
+                format!(
+                    "cannot safely back up special file before discarding changes: {}",
+                    crate::repository::display_path(&source)
+                ),
+                DISCARD_BACKUP_OPERATION,
+                root,
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_backup_source_parents(
+    root: &Path,
+    source: &Path,
+    operation_name: &str,
+) -> AppResult<()> {
+    let relative = source.strip_prefix(root).map_err(|_| {
+        unexpected_repo_error(
+            "refusing to back up a path outside the repository",
+            DISCARD_BACKUP_OPERATION,
+            root,
         )
     })?;
+    let mut current = root.to_path_buf();
+    let mut components = relative.components().peekable();
+    while let Some(component) = components.next() {
+        let Component::Normal(name) = component else {
+            return Err(unexpected_repo_error(
+                "refusing to back up an invalid repository path",
+                DISCARD_BACKUP_OPERATION,
+                root,
+            ));
+        };
+        current.push(name);
+        if components.peek().is_none() {
+            break;
+        }
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(unexpected_repo_error(
+                    format!(
+                        "refusing to follow a symbolic link while backing up changes: {}",
+                        crate::repository::display_path(&current)
+                    ),
+                    DISCARD_BACKUP_OPERATION,
+                    root,
+                ));
+            }
+            Ok(metadata) if !metadata.is_dir() => {
+                return Err(unexpected_repo_error(
+                    format!(
+                        "backup path parent is not a directory: {}",
+                        crate::repository::display_path(&current)
+                    ),
+                    DISCARD_BACKUP_OPERATION,
+                    root,
+                ));
+            }
+            Ok(_) => {}
+            Err(source_error) if source_error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(source_error) => {
+                return Err(discard_backup_io_error(
+                    "inspect changed path parent",
+                    &current,
+                    source_error,
+                    root,
+                    operation_name,
+                ));
+            }
+        }
+    }
     Ok(())
+}
+
+fn ensure_resolved_backup_source_stays_inside(
+    root: &Path,
+    source: &Path,
+    operation_name: &str,
+) -> AppResult<()> {
+    let resolved = fs::canonicalize(source).map_err(|source_error| {
+        discard_backup_io_error(
+            "resolve changed path",
+            source,
+            source_error,
+            root,
+            operation_name,
+        )
+    })?;
+    if resolved.starts_with(root) {
+        Ok(())
+    } else {
+        Err(unexpected_repo_error(
+            format!(
+                "refusing to follow a path outside the repository while backing up changes: {}",
+                crate::repository::display_path(source)
+            ),
+            DISCARD_BACKUP_OPERATION,
+            root,
+        ))
+    }
+}
+
+fn create_backup_parent_directories(
+    backup_root: &Path,
+    destination: &Path,
+    root: &Path,
+    operation_name: &str,
+) -> AppResult<()> {
+    let Some(parent) = destination.parent() else {
+        return Err(unexpected_repo_error(
+            "backup destination has no parent directory",
+            DISCARD_BACKUP_OPERATION,
+            root,
+        ));
+    };
+    let relative_parent = parent.strip_prefix(backup_root).map_err(|_| {
+        unexpected_repo_error(
+            "refusing to create a directory outside the local changes backup",
+            DISCARD_BACKUP_OPERATION,
+            root,
+        )
+    })?;
+    let mut current = backup_root.to_path_buf();
+    for component in relative_parent.components() {
+        let Component::Normal(name) = component else {
+            return Err(unexpected_repo_error(
+                "refusing to create an invalid backup directory",
+                DISCARD_BACKUP_OPERATION,
+                root,
+            ));
+        };
+        current.push(name);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+            Ok(_) => {
+                return Err(unexpected_repo_error(
+                    format!(
+                        "backup parent is not a safe directory: {}",
+                        crate::repository::display_path(&current)
+                    ),
+                    DISCARD_BACKUP_OPERATION,
+                    root,
+                ));
+            }
+            Err(source_error) if source_error.kind() == io::ErrorKind::NotFound => {
+                fs::create_dir(&current).map_err(|create_error| {
+                    discard_backup_io_error(
+                        "create backup parent",
+                        &current,
+                        create_error,
+                        root,
+                        operation_name,
+                    )
+                })?;
+            }
+            Err(source_error) => {
+                return Err(discard_backup_io_error(
+                    "inspect backup parent",
+                    &current,
+                    source_error,
+                    root,
+                    operation_name,
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn create_backup_directory(
+    backup_root: &Path,
+    destination: &Path,
+    root: &Path,
+    operation_name: &str,
+) -> AppResult<()> {
+    create_backup_parent_directories(backup_root, destination, root, operation_name)?;
+    match fs::symlink_metadata(destination) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => Ok(()),
+        Ok(_) => Err(unexpected_repo_error(
+            format!(
+                "backup destination is not a safe directory: {}",
+                crate::repository::display_path(destination)
+            ),
+            DISCARD_BACKUP_OPERATION,
+            root,
+        )),
+        Err(source_error) if source_error.kind() == io::ErrorKind::NotFound => {
+            fs::create_dir(destination).map_err(|create_error| {
+                discard_backup_io_error(
+                    "create backup directory",
+                    destination,
+                    create_error,
+                    root,
+                    operation_name,
+                )
+            })
+        }
+        Err(source_error) => Err(discard_backup_io_error(
+            "inspect backup directory",
+            destination,
+            source_error,
+            root,
+            operation_name,
+        )),
+    }
+}
+
+fn copy_backup_file(
+    source: &Path,
+    destination: &Path,
+    metadata: &fs::Metadata,
+    state: &mut DiscardBackupState,
+    root: &Path,
+    operation_name: &str,
+) -> AppResult<()> {
+    state.ensure_file_fits(metadata.len(), root, operation_name)?;
+    let mut input = File::open(source).map_err(|source_error| {
+        discard_backup_io_error(
+            "open changed file",
+            source,
+            source_error,
+            root,
+            operation_name,
+        )
+    })?;
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .map_err(|source_error| {
+            discard_backup_io_error(
+                "create backup file",
+                destination,
+                source_error,
+                root,
+                operation_name,
+            )
+        })?;
+    let mut buffer = [0_u8; DISCARD_BACKUP_COPY_BUFFER_BYTES];
+    loop {
+        ensure_discard_backup_not_cancelled(root, operation_name)?;
+        let bytes_read = input.read(&mut buffer).map_err(|source_error| {
+            discard_backup_io_error(
+                "read changed file",
+                source,
+                source_error,
+                root,
+                operation_name,
+            )
+        })?;
+        if bytes_read == 0 {
+            break;
+        }
+        state.record_bytes(bytes_read, root, operation_name)?;
+        output
+            .write_all(&buffer[..bytes_read])
+            .map_err(|source_error| {
+                discard_backup_io_error(
+                    "write backup file",
+                    destination,
+                    source_error,
+                    root,
+                    operation_name,
+                )
+            })?;
+    }
+    output.sync_all().map_err(|source_error| {
+        discard_backup_io_error(
+            "flush backup file",
+            destination,
+            source_error,
+            root,
+            operation_name,
+        )
+    })?;
+    fs::set_permissions(destination, metadata.permissions()).map_err(|source_error| {
+        discard_backup_io_error(
+            "preserve backup file permissions",
+            destination,
+            source_error,
+            root,
+            operation_name,
+        )
+    })
+}
+
+fn copy_backup_symlink(
+    source: &Path,
+    destination: &Path,
+    metadata: &fs::Metadata,
+    root: &Path,
+    operation_name: &str,
+) -> AppResult<()> {
+    let target = fs::read_link(source).map_err(|source_error| {
+        discard_backup_io_error(
+            "read changed symbolic link",
+            source,
+            source_error,
+            root,
+            operation_name,
+        )
+    })?;
+    create_symbolic_link(&target, destination, metadata).map_err(|source_error| {
+        discard_backup_io_error(
+            "create backup symbolic link",
+            destination,
+            source_error,
+            root,
+            operation_name,
+        )
+    })
+}
+
+#[cfg(unix)]
+fn create_symbolic_link(
+    target: &Path,
+    destination: &Path,
+    _metadata: &fs::Metadata,
+) -> io::Result<()> {
+    std::os::unix::fs::symlink(target, destination)
+}
+
+#[cfg(windows)]
+fn create_symbolic_link(
+    target: &Path,
+    destination: &Path,
+    metadata: &fs::Metadata,
+) -> io::Result<()> {
+    use std::os::windows::fs::{symlink_dir, symlink_file, FileTypeExt};
+
+    if metadata.file_type().is_symlink_dir() {
+        symlink_dir(target, destination)
+    } else {
+        symlink_file(target, destination)
+    }
+}
+
+fn ensure_discard_backup_not_cancelled(root: &Path, operation_name: &str) -> AppResult<()> {
+    if crate::git_ops::active_cancel_token().is_some_and(|token| token.is_cancelled()) {
+        Err(expected_repo_error(
+            "operation cancelled",
+            operation_name,
+            root,
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn discard_backup_limit_error(
+    detail: impl Into<String>,
+    root: &Path,
+    operation_name: &str,
+) -> AppError {
+    unexpected_repo_error(
+        format!(
+            "local changes backup was stopped before discard because it {}",
+            detail.into()
+        ),
+        operation_name,
+        root,
+    )
+}
+
+fn discard_backup_io_error(
+    action: &str,
+    path: &Path,
+    source: io::Error,
+    root: &Path,
+    operation_name: &str,
+) -> AppError {
+    unexpected_repo_error(
+        format!(
+            "failed to {action} at {}: {source}",
+            crate::repository::display_path(path)
+        ),
+        operation_name,
+        root,
+    )
 }
 
 fn trash_backup_root(root: &Path) -> PathBuf {
@@ -633,7 +1206,7 @@ fn trash_backup_root(root: &Path) -> PathBuf {
 
     trash_base_dir().join(format!(
         "Artistic Git Discarded Changes {repo_name}-{}-{}",
-        crate::repository::unix_now_seconds(),
+        unix_now_millis(),
         std::process::id()
     ))
 }
@@ -798,29 +1371,8 @@ where
     I: IntoIterator<Item = S>,
     S: Into<OsString>,
 {
-    let mut planned_args = vec![OsString::from("-C"), root.as_os_str().to_owned()];
-    planned_args.extend(args.into_iter().map(Into::into));
-    let plan = runner
-        .git_command_builder()
-        .enable_rename_detection()
-        .enable_windows_longpaths()
-        .args(planned_args)
-        .build();
-
-    plan.to_command().output().map_err(|source| {
-        crate::logged_app_error(
-            AppError::fatal(
-                format!("embedded git command could not be executed: {source}"),
-                operation_name,
-            )
-            .with_git(GitCommandError {
-                command: plan.command_for_error(),
-                exit_code: None,
-                stdout: String::new(),
-                stderr: source.to_string(),
-            }),
-        )
-    })
+    crate::git_ops::run_git_raw(runner, Some(root), args, operation_name)
+        .map(|(_plan, output)| output)
 }
 
 fn completed_response(root: &Path, branch_name: String) -> BranchOperationResponse {
@@ -868,10 +1420,6 @@ fn unexpected_repo_error(
                 .with_repository_path(crate::repository::display_path(root)),
         ),
     )
-}
-
-fn unexpected_error(summary: impl Into<String>, operation_name: impl Into<String>) -> AppError {
-    crate::logged_app_error(AppError::unexpected(summary, operation_name))
 }
 
 fn git_error_indicates_unborn(error: &AppError) -> bool {
@@ -1161,7 +1709,7 @@ mod tests {
     }
 
     #[test]
-    fn checkout_with_discard_backs_up_and_removes_local_changes() {
+    fn checkout_with_discard_backs_up_files_and_untracked_directories() {
         let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         let trash = TestTempDir::new("ag-branch-trash").expect("trash");
@@ -1170,6 +1718,17 @@ mod tests {
         repo.git(["branch", "feature/clean"]);
         repo.write("tracked.txt", "discard me\n");
         repo.write("untracked.txt", "backup me\n");
+        repo.write("manifest.txt", "user file named manifest\n");
+        repo.write("untracked-dir/nested/data.txt", "nested backup\n");
+        #[cfg(unix)]
+        let linked_target = {
+            let target = TestTempDir::new("ag-branch-linked-target").expect("linked target");
+            fs::write(target.path().join("outside.txt"), "outside remains\n")
+                .expect("linked target file");
+            std::os::unix::fs::symlink(target.path(), repo.path.join("linked-dir"))
+                .expect("untracked directory symlink");
+            target
+        };
 
         checkout_branch(
             &runner,
@@ -1187,22 +1746,129 @@ mod tests {
             "one\n"
         );
         assert!(!repo.path.join("untracked.txt").exists());
+        assert!(!repo.path.join("manifest.txt").exists());
+        assert!(!repo.path.join("untracked-dir").exists());
+        #[cfg(unix)]
+        assert!(fs::symlink_metadata(repo.path.join("linked-dir")).is_err());
         let backup_roots = fs::read_dir(trash.path())
             .expect("trash entries")
             .collect::<Result<Vec<_>, _>>()
             .expect("read trash entries");
         assert_eq!(backup_roots.len(), 1);
         let backup_root = backup_roots[0].path();
+        let backup_contents = backup_root.join("contents");
         assert_eq!(
-            fs::read_to_string(backup_root.join("tracked.txt")).expect("tracked backup"),
+            fs::read_to_string(backup_contents.join("tracked.txt")).expect("tracked backup"),
             "discard me\n"
         );
         assert_eq!(
-            fs::read_to_string(backup_root.join("untracked.txt")).expect("untracked backup"),
+            fs::read_to_string(backup_contents.join("untracked.txt")).expect("untracked backup"),
             "backup me\n"
         );
+        assert_eq!(
+            fs::read_to_string(backup_contents.join("manifest.txt")).expect("user manifest backup"),
+            "user file named manifest\n"
+        );
+        assert!(fs::read_to_string(backup_root.join("manifest.txt"))
+            .expect("backup manifest")
+            .lines()
+            .any(|line| line == "manifest.txt"));
+        assert_eq!(
+            fs::read_to_string(backup_contents.join("untracked-dir/nested/data.txt"))
+                .expect("nested untracked backup"),
+            "nested backup\n"
+        );
+        #[cfg(unix)]
+        {
+            let linked_backup = backup_contents.join("linked-dir");
+            assert!(fs::symlink_metadata(&linked_backup)
+                .expect("linked directory backup")
+                .file_type()
+                .is_symlink());
+            assert_eq!(
+                fs::read_link(linked_backup).expect("linked directory backup target"),
+                linked_target.path()
+            );
+            assert_eq!(
+                fs::read_to_string(linked_target.path().join("outside.txt"))
+                    .expect("linked target remains"),
+                "outside remains\n"
+            );
+        }
 
         std::env::remove_var("ARTISTIC_GIT_TRASH_DIR");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discard_backup_copies_directory_symlink_without_following_it() {
+        let repository = TestTempDir::new("ag-branch-symlink-repo").expect("repository");
+        let backup_parent = TestTempDir::new("ag-branch-symlink-backup").expect("backup parent");
+        let backup_root = backup_parent.path().join("backup");
+        fs::create_dir(&backup_root).expect("backup root");
+        let external = TestTempDir::new("ag-branch-symlink-external").expect("external");
+        fs::write(external.path().join("outside.txt"), "outside\n").expect("external file");
+        std::os::unix::fs::symlink(external.path(), repository.path().join("linked-dir"))
+            .expect("directory symlink");
+
+        let mut state = DiscardBackupState::default();
+        backup_change_path(
+            repository.path(),
+            &backup_root,
+            "linked-dir",
+            &mut state,
+            CHECKOUT_BRANCH_OPERATION,
+        )
+        .expect("back up directory symlink");
+
+        let copied_link = backup_root.join("linked-dir");
+        assert!(fs::symlink_metadata(&copied_link)
+            .expect("backup symlink metadata")
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            fs::read_link(copied_link).expect("backup link target"),
+            external.path()
+        );
+        assert_eq!(
+            state.entries, 1,
+            "the linked directory must not be traversed"
+        );
+        assert_eq!(state.bytes, 0, "the linked target must not be copied");
+        assert_eq!(
+            fs::read_to_string(external.path().join("outside.txt")).expect("external file intact"),
+            "outside\n"
+        );
+    }
+
+    #[test]
+    fn discard_backup_honors_cancellation_before_copying() {
+        let repository = TestTempDir::new("ag-branch-cancel-repo").expect("repository");
+        let backup_parent = TestTempDir::new("ag-branch-cancel-backup").expect("backup parent");
+        let backup_root = backup_parent.path().join("backup");
+        fs::create_dir(&backup_root).expect("backup root");
+        fs::write(repository.path().join("draft.txt"), "keep me\n").expect("draft file");
+        let token = artistic_git_git_runner::CancelToken::new();
+        token.cancel();
+        let mut state = DiscardBackupState::default();
+
+        let error = crate::git_ops::with_cancel_token_for_operation(&token, || {
+            backup_change_path(
+                repository.path(),
+                &backup_root,
+                "draft.txt",
+                &mut state,
+                CHECKOUT_BRANCH_OPERATION,
+            )
+        })
+        .expect_err("cancelled backup");
+
+        assert_eq!(error.summary, "operation cancelled");
+        assert!(!backup_root.join("draft.txt").exists());
+        assert_eq!(
+            fs::read_to_string(repository.path().join("draft.txt")).expect("draft remains"),
+            "keep me\n"
+        );
     }
 
     #[test]
@@ -1309,6 +1975,7 @@ mod tests {
             },
         )
         .expect("list safety backups");
+        assert!(!listed.truncated);
 
         let parsed = listed
             .backups

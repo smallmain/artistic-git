@@ -391,6 +391,15 @@ struct SecondInstanceForward {
     repository_path: Option<String>,
 }
 
+struct SecondInstanceDispatch {
+    args: Vec<String>,
+    cwd: String,
+}
+
+struct SecondInstanceDispatchState {
+    sender: mpsc::Sender<SecondInstanceDispatch>,
+}
+
 #[tauri::command]
 fn health() -> artistic_git_contracts::AppResult<artistic_git_app::HealthResponse> {
     artistic_git_app::health()
@@ -427,19 +436,23 @@ fn new_project_window(
 }
 
 #[tauri::command]
-fn open_repository_window(
+async fn open_repository_window(
     app_handle: tauri::AppHandle,
     window: tauri::Window,
     registry: State<'_, WindowRegistry>,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: OpenRepositoryWindowRequest,
 ) -> artistic_git_contracts::AppResult<OpenRepositoryWindowResponse> {
-    let project_settings =
+    let current_label = window.label().to_owned();
+    let backend = backend.inner().clone();
+    let project_settings = run_blocking_command("openRepositoryWindow", move || {
         backend.load_project_settings(artistic_git_app::ProjectSettingsRequest {
             repository_path: request.repository_path,
-        })?;
+        })
+    })
+    .await?;
+    ensure_webview_window_exists(&app_handle, &current_label, "openRepositoryWindow")?;
     let repository_path = project_settings.path;
-    let current_label = window.label().to_owned();
 
     let decision = {
         let mut inner = registry.inner.lock().map_err(|_| {
@@ -502,17 +515,22 @@ fn open_repository_window(
 }
 
 #[tauri::command]
-fn register_window_repository(
+async fn register_window_repository(
     window: tauri::Window,
     registry: State<'_, WindowRegistry>,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: OpenRepositoryWindowRequest,
 ) -> artistic_git_contracts::AppResult<WindowContextResponse> {
-    let project_settings =
+    let app_handle = window.app_handle().clone();
+    let label = window.label().to_owned();
+    let backend = backend.inner().clone();
+    let project_settings = run_blocking_command("registerWindowRepository", move || {
         backend.load_project_settings(artistic_git_app::ProjectSettingsRequest {
             repository_path: request.repository_path,
-        })?;
-    let label = window.label().to_owned();
+        })
+    })
+    .await?;
+    ensure_webview_window_exists(&app_handle, &label, "registerWindowRepository")?;
     registry_register(&registry, label.clone(), project_settings.path.clone())?;
 
     Ok(WindowContextResponse {
@@ -523,13 +541,17 @@ fn register_window_repository(
 }
 
 #[tauri::command]
-fn save_window_geometry(
+async fn save_window_geometry(
     window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: OpenRepositoryWindowRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_core::config::ProjectSettings> {
     let geometry = current_window_geometry(&window)?;
-    backend.save_project_window_geometry(request.repository_path, geometry)
+    let backend = backend.inner().clone();
+    run_blocking_command("saveWindowGeometry", move || {
+        backend.save_project_window_geometry(request.repository_path, geometry)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -604,7 +626,7 @@ fn open_update_release_page() -> artistic_git_contracts::AppResult<()> {
 }
 
 #[tauri::command]
-fn open_repository(
+async fn open_repository(
     app_handle: tauri::AppHandle,
     window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
@@ -612,14 +634,18 @@ fn open_repository(
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::OpenRepositoryResponse> {
     let repository_path = request.path.clone();
     let window_label = window.label().to_owned();
-    backend.open_repository_with_progress(request, |event| {
-        emit_operation_progress(
-            &app_handle,
-            event,
-            Some(repository_path.as_str()),
-            window_label.as_str(),
-        );
+    let backend = backend.inner().clone();
+    run_blocking_command("openRepository", move || {
+        backend.open_repository_with_progress(request, |event| {
+            emit_operation_progress(
+                &app_handle,
+                event,
+                Some(repository_path.as_str()),
+                window_label.as_str(),
+            );
+        })
     })
+    .await
 }
 
 #[tauri::command]
@@ -627,19 +653,19 @@ async fn probe_remote_repository(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::RemoteRepositoryProbeRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::RemoteRepositoryProbeResponse> {
+    let operation_reservation = backend
+        .inner()
+        .reserve_cancellable_operation(request.operation_id.as_ref(), "probeRemoteRepository")?;
     let backend = backend.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || backend.probe_remote_repository(request))
-        .await
-        .map_err(|error| {
-            artistic_git_app::unexpected_command_error(
-                format!("remote repository probe worker failed: {error}"),
-                "probeRemoteRepository",
-            )
-        })?
+    run_blocking_command("probeRemoteRepository", move || {
+        let _operation_reservation = operation_reservation;
+        backend.probe_remote_repository(request)
+    })
+    .await
 }
 
 #[tauri::command]
-fn clone_repository(
+async fn clone_repository(
     app_handle: tauri::AppHandle,
     window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
@@ -647,51 +673,95 @@ fn clone_repository(
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::CloneRepositoryResponse> {
     let repository_path = clone_repository_target_path(&request);
     let window_label = window.label().to_owned();
-    backend.clone_repository_with_progress(request, |event| {
-        emit_operation_progress(
-            &app_handle,
-            event,
-            Some(repository_path.as_str()),
-            window_label.as_str(),
-        );
+    let operation_id = request.operation_id.clone();
+    let operation_reservation = reserve_and_emit_operation_started(
+        &app_handle,
+        backend.inner(),
+        operation_id.as_ref(),
+        repository_path.as_str(),
+        window_label.as_str(),
+        "cloneRepository",
+        "Cloning repository",
+    )?;
+    let worker_backend = backend.inner().clone();
+    let progress_app_handle = app_handle.clone();
+    let progress_repository_path = repository_path.clone();
+    let progress_window_label = window_label.clone();
+    let result = run_blocking_command("cloneRepository", move || {
+        let _operation_reservation = operation_reservation;
+        worker_backend.clone_repository_with_progress(request, |event| {
+            emit_operation_progress(
+                &progress_app_handle,
+                event,
+                Some(progress_repository_path.as_str()),
+                progress_window_label.as_str(),
+            );
+        })
     })
+    .await;
+    emit_operation_finished(
+        &app_handle,
+        operation_id.as_ref(),
+        repository_path.as_str(),
+        window_label.as_str(),
+        "Clone complete",
+    );
+    result
 }
 
 #[tauri::command]
-fn cancel_clone_repository(
+async fn cancel_clone_repository(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::CancelCloneRepositoryRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::CancelCloneRepositoryResponse> {
-    backend.cancel_clone_repository(request)
+    let backend = backend.inner().clone();
+    run_blocking_command("cancelCloneRepository", move || {
+        backend.cancel_clone_repository_and_wait(request)
+    })
+    .await
 }
 
 #[tauri::command]
-fn cancel_operation(
+async fn cancel_operation(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::CancelOperationRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::CancelOperationResponse> {
-    backend.cancel_operation(request)
+    let backend = backend.inner().clone();
+    run_blocking_command("cancelOperation", move || {
+        backend.cancel_operation_and_wait(request)
+    })
+    .await
 }
 
 #[tauri::command]
-fn repository_summary(
+async fn repository_summary(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::RepositoryPathRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::RepositorySummary> {
-    backend.repository_summary(request)
+    let backend = backend.inner().clone();
+    run_blocking_command("repositorySummary", move || {
+        backend.repository_summary(request)
+    })
+    .await
 }
 
 #[tauri::command]
-fn fetch_repository(
+async fn fetch_repository(
     app_handle: tauri::AppHandle,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::FetchRepositoryRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::FetchRepositoryResponse> {
     let repository_path = request.repository_path.clone();
+    let backend = backend.inner().clone();
     let started = backend.fetch_started_event(&repository_path);
     emit_fetch_state(&app_handle, &started);
+    let worker_backend = backend.clone();
 
-    match backend.fetch_repository(request) {
+    match run_blocking_command("fetchRepository", move || {
+        worker_backend.fetch_repository(request)
+    })
+    .await
+    {
         Ok(response) => {
             emit_fetch_state(&app_handle, &response.event);
             let changed_queries = artistic_git_app::fetch_changed_queries(&response);
@@ -705,7 +775,7 @@ fn fetch_repository(
             Ok(response)
         }
         Err(error) => {
-            let failed = backend.fetch_state_event(&repository_path);
+            let failed = backend.fetch_failed_event(&repository_path, error.summary.clone());
             emit_fetch_state(&app_handle, &failed);
             Err(error)
         }
@@ -713,7 +783,7 @@ fn fetch_repository(
 }
 
 #[tauri::command]
-fn sync_current_branch(
+async fn sync_current_branch(
     app_handle: tauri::AppHandle,
     window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
@@ -722,21 +792,31 @@ fn sync_current_branch(
     let repository_path = request.repository_path.clone();
     let window_label = window.label().to_owned();
     let operation_id = request.operation_id.clone();
-    emit_operation_started(
+    let operation_reservation = reserve_and_emit_operation_started(
         &app_handle,
+        backend.inner(),
         operation_id.as_ref(),
         repository_path.as_str(),
         window_label.as_str(),
+        "syncCurrentBranch",
         "Syncing",
-    );
-    let result = backend.sync_current_branch_with_progress(request, |event| {
-        emit_operation_progress(
-            &app_handle,
-            event,
-            Some(repository_path.as_str()),
-            window_label.as_str(),
-        );
-    });
+    )?;
+    let worker_backend = backend.inner().clone();
+    let progress_app_handle = app_handle.clone();
+    let progress_repository_path = repository_path.clone();
+    let progress_window_label = window_label.clone();
+    let result = run_blocking_command("syncCurrentBranch", move || {
+        let _operation_reservation = operation_reservation;
+        worker_backend.sync_current_branch_with_progress(request, |event| {
+            emit_operation_progress(
+                &progress_app_handle,
+                event,
+                Some(progress_repository_path.as_str()),
+                progress_window_label.as_str(),
+            );
+        })
+    })
+    .await;
     emit_operation_finished(
         &app_handle,
         operation_id.as_ref(),
@@ -762,7 +842,7 @@ fn sync_current_branch(
 }
 
 #[tauri::command]
-fn sync_branch(
+async fn sync_branch(
     app_handle: tauri::AppHandle,
     window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
@@ -771,21 +851,31 @@ fn sync_branch(
     let repository_path = request.repository_path.clone();
     let window_label = window.label().to_owned();
     let operation_id = request.operation_id.clone();
-    emit_operation_started(
+    let operation_reservation = reserve_and_emit_operation_started(
         &app_handle,
+        backend.inner(),
         operation_id.as_ref(),
         repository_path.as_str(),
         window_label.as_str(),
+        "syncBranch",
         "Syncing",
-    );
-    let result = backend.sync_branch_with_progress(request, |event| {
-        emit_operation_progress(
-            &app_handle,
-            event,
-            Some(repository_path.as_str()),
-            window_label.as_str(),
-        );
-    });
+    )?;
+    let worker_backend = backend.inner().clone();
+    let progress_app_handle = app_handle.clone();
+    let progress_repository_path = repository_path.clone();
+    let progress_window_label = window_label.clone();
+    let result = run_blocking_command("syncBranch", move || {
+        let _operation_reservation = operation_reservation;
+        worker_backend.sync_branch_with_progress(request, |event| {
+            emit_operation_progress(
+                &progress_app_handle,
+                event,
+                Some(progress_repository_path.as_str()),
+                progress_window_label.as_str(),
+            );
+        })
+    })
+    .await;
     emit_operation_finished(
         &app_handle,
         operation_id.as_ref(),
@@ -810,7 +900,7 @@ fn sync_branch(
 }
 
 #[tauri::command]
-fn sync_all_branches(
+async fn sync_all_branches(
     app_handle: tauri::AppHandle,
     window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
@@ -819,21 +909,31 @@ fn sync_all_branches(
     let repository_path = request.repository_path.clone();
     let window_label = window.label().to_owned();
     let operation_id = request.operation_id.clone();
-    emit_operation_started(
+    let operation_reservation = reserve_and_emit_operation_started(
         &app_handle,
+        backend.inner(),
         operation_id.as_ref(),
         repository_path.as_str(),
         window_label.as_str(),
+        "syncAllBranches",
         "Syncing",
-    );
-    let result = backend.sync_all_branches_with_progress(request, |event| {
-        emit_operation_progress(
-            &app_handle,
-            event,
-            Some(repository_path.as_str()),
-            window_label.as_str(),
-        );
-    });
+    )?;
+    let worker_backend = backend.inner().clone();
+    let progress_app_handle = app_handle.clone();
+    let progress_repository_path = repository_path.clone();
+    let progress_window_label = window_label.clone();
+    let result = run_blocking_command("syncAllBranches", move || {
+        let _operation_reservation = operation_reservation;
+        worker_backend.sync_all_branches_with_progress(request, |event| {
+            emit_operation_progress(
+                &progress_app_handle,
+                event,
+                Some(progress_repository_path.as_str()),
+                progress_window_label.as_str(),
+            );
+        })
+    })
+    .await;
     emit_operation_finished(
         &app_handle,
         operation_id.as_ref(),
@@ -859,7 +959,7 @@ fn sync_all_branches(
 }
 
 #[tauri::command]
-fn accept_remote_history(
+async fn accept_remote_history(
     app_handle: tauri::AppHandle,
     window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
@@ -868,14 +968,21 @@ fn accept_remote_history(
     let repository_path = request.repository_path.clone();
     let window_label = window.label().to_owned();
     let operation_id = request.operation_id.clone();
-    emit_operation_started(
+    let operation_reservation = reserve_and_emit_operation_started(
         &app_handle,
+        backend.inner(),
         operation_id.as_ref(),
         repository_path.as_str(),
         window_label.as_str(),
+        "acceptRemoteHistory",
         "Accepting remote history",
-    );
-    let result = backend.accept_remote_history(request);
+    )?;
+    let backend = backend.inner().clone();
+    let result = run_blocking_command("acceptRemoteHistory", move || {
+        let _operation_reservation = operation_reservation;
+        backend.accept_remote_history(request)
+    })
+    .await;
     emit_operation_finished(
         &app_handle,
         operation_id.as_ref(),
@@ -901,7 +1008,7 @@ fn accept_remote_history(
 }
 
 #[tauri::command]
-fn start_review_mode(
+async fn start_review_mode(
     app_handle: tauri::AppHandle,
     window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
@@ -910,14 +1017,21 @@ fn start_review_mode(
     let repository_path = request.repository_path.clone();
     let window_label = window.label().to_owned();
     let operation_id = request.operation_id.clone();
-    emit_operation_started(
+    let operation_reservation = reserve_and_emit_operation_started(
         &app_handle,
+        backend.inner(),
         operation_id.as_ref(),
         repository_path.as_str(),
         window_label.as_str(),
+        "startReviewMode",
         "Starting review mode",
-    );
-    let result = backend.start_review_mode(request);
+    )?;
+    let backend = backend.inner().clone();
+    let result = run_blocking_command("startReviewMode", move || {
+        let _operation_reservation = operation_reservation;
+        backend.start_review_mode(request)
+    })
+    .await;
     emit_operation_finished(
         &app_handle,
         operation_id.as_ref(),
@@ -941,7 +1055,7 @@ fn start_review_mode(
 }
 
 #[tauri::command]
-fn sync_review_mode(
+async fn sync_review_mode(
     app_handle: tauri::AppHandle,
     window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
@@ -950,14 +1064,21 @@ fn sync_review_mode(
     let repository_path = request.repository_path.clone();
     let window_label = window.label().to_owned();
     let operation_id = request.operation_id.clone();
-    emit_operation_started(
+    let operation_reservation = reserve_and_emit_operation_started(
         &app_handle,
+        backend.inner(),
         operation_id.as_ref(),
         repository_path.as_str(),
         window_label.as_str(),
+        "syncReviewMode",
         "Syncing review mode",
-    );
-    let result = backend.sync_review_mode(request);
+    )?;
+    let backend = backend.inner().clone();
+    let result = run_blocking_command("syncReviewMode", move || {
+        let _operation_reservation = operation_reservation;
+        backend.sync_review_mode(request)
+    })
+    .await;
     emit_operation_finished(
         &app_handle,
         operation_id.as_ref(),
@@ -979,7 +1100,7 @@ fn sync_review_mode(
 }
 
 #[tauri::command]
-fn exit_review_mode(
+async fn exit_review_mode(
     app_handle: tauri::AppHandle,
     window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
@@ -988,14 +1109,21 @@ fn exit_review_mode(
     let repository_path = request.repository_path.clone();
     let window_label = window.label().to_owned();
     let operation_id = request.operation_id.clone();
-    emit_operation_started(
+    let operation_reservation = reserve_and_emit_operation_started(
         &app_handle,
+        backend.inner(),
         operation_id.as_ref(),
         repository_path.as_str(),
         window_label.as_str(),
+        "exitReviewMode",
         "Exiting review mode",
-    );
-    let result = backend.exit_review_mode(request);
+    )?;
+    let backend = backend.inner().clone();
+    let result = run_blocking_command("exitReviewMode", move || {
+        let _operation_reservation = operation_reservation;
+        backend.exit_review_mode(request)
+    })
+    .await;
     emit_operation_finished(
         &app_handle,
         operation_id.as_ref(),
@@ -1009,15 +1137,19 @@ fn exit_review_mode(
 }
 
 #[tauri::command]
-fn review_mode_recovery(
+async fn review_mode_recovery(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::ReviewModeRecoveryRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::ReviewModeRecoveryResponse> {
-    backend.review_mode_recovery(request)
+    let backend = backend.inner().clone();
+    run_blocking_command("reviewModeRecovery", move || {
+        backend.review_mode_recovery(request)
+    })
+    .await
 }
 
 #[tauri::command]
-fn recover_review_mode_stash(
+async fn recover_review_mode_stash(
     app_handle: tauri::AppHandle,
     window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
@@ -1026,14 +1158,21 @@ fn recover_review_mode_stash(
     let repository_path = request.repository_path.clone();
     let window_label = window.label().to_owned();
     let operation_id = request.operation_id.clone();
-    emit_operation_started(
+    let operation_reservation = reserve_and_emit_operation_started(
         &app_handle,
+        backend.inner(),
         operation_id.as_ref(),
         repository_path.as_str(),
         window_label.as_str(),
+        "recoverReviewModeStash",
         "Recovering review mode",
-    );
-    let result = backend.recover_review_mode_stash(request);
+    )?;
+    let backend = backend.inner().clone();
+    let result = run_blocking_command("recoverReviewModeStash", move || {
+        let _operation_reservation = operation_reservation;
+        backend.recover_review_mode_stash(request)
+    })
+    .await;
     emit_operation_finished(
         &app_handle,
         operation_id.as_ref(),
@@ -1047,28 +1186,40 @@ fn recover_review_mode_stash(
 }
 
 #[tauri::command]
-fn dismiss_review_mode_recovery(
+async fn dismiss_review_mode_recovery(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::ReviewModeRecoveryRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::ReviewModeRecoveryResponse> {
-    backend.dismiss_review_mode_recovery(request)
+    let backend = backend.inner().clone();
+    run_blocking_command("dismissReviewModeRecovery", move || {
+        backend.dismiss_review_mode_recovery(request)
+    })
+    .await
 }
 
 #[tauri::command]
-fn load_remote_settings(
+async fn load_remote_settings(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::RepositoryPathRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::RemoteSettingsResponse> {
-    backend.load_remote_settings(request)
+    let backend = backend.inner().clone();
+    run_blocking_command("loadRemoteSettings", move || {
+        backend.load_remote_settings(request)
+    })
+    .await
 }
 
 #[tauri::command]
-fn save_remote_settings(
+async fn save_remote_settings(
     app_handle: tauri::AppHandle,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::SaveRemoteSettingsRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::RemoteSettingsResponse> {
-    let response = backend.save_remote_settings(request)?;
+    let backend = backend.inner().clone();
+    let response = run_blocking_command("saveRemoteSettings", move || {
+        backend.save_remote_settings(request)
+    })
+    .await?;
     emit_repo_changed(
         &app_handle,
         response.repository_path.clone(),
@@ -1082,31 +1233,40 @@ fn save_remote_settings(
 }
 
 #[tauri::command]
-fn list_branches(
+async fn list_branches(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::RepositoryPathRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::BranchListResponse> {
-    backend.list_branches(request)
+    let backend = backend.inner().clone();
+    run_blocking_command("listBranches", move || backend.list_branches(request)).await
 }
 
 #[tauri::command]
-fn list_safety_backups(
+async fn list_safety_backups(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::RepositoryPathRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::SafetyBackupListResponse> {
-    backend.list_safety_backups(request)
+    let backend = backend.inner().clone();
+    run_blocking_command("listSafetyBackups", move || {
+        backend.list_safety_backups(request)
+    })
+    .await
 }
 
 #[tauri::command]
-fn validate_branch_name(
+async fn validate_branch_name(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::BranchNameValidationRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::BranchNameValidationResponse> {
-    backend.validate_branch_name(request)
+    let backend = backend.inner().clone();
+    run_blocking_command("validateBranchName", move || {
+        backend.validate_branch_name(request)
+    })
+    .await
 }
 
 #[tauri::command]
-fn create_branch(
+async fn create_branch(
     app_handle: tauri::AppHandle,
     window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
@@ -1115,14 +1275,21 @@ fn create_branch(
     let repository_path = request.repository_path.clone();
     let window_label = window.label().to_owned();
     let operation_id = request.operation_id.clone();
-    emit_operation_started(
+    let operation_reservation = reserve_and_emit_operation_started(
         &app_handle,
+        backend.inner(),
         operation_id.as_ref(),
         repository_path.as_str(),
         window_label.as_str(),
+        "createBranch",
         "Updating branch",
-    );
-    let result = backend.create_branch(request);
+    )?;
+    let backend = backend.inner().clone();
+    let result = run_blocking_command("createBranch", move || {
+        let _operation_reservation = operation_reservation;
+        backend.create_branch(request)
+    })
+    .await;
     emit_operation_finished(
         &app_handle,
         operation_id.as_ref(),
@@ -1136,7 +1303,7 @@ fn create_branch(
 }
 
 #[tauri::command]
-fn checkout_branch(
+async fn checkout_branch(
     app_handle: tauri::AppHandle,
     window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
@@ -1145,14 +1312,21 @@ fn checkout_branch(
     let repository_path = request.repository_path.clone();
     let window_label = window.label().to_owned();
     let operation_id = request.operation_id.clone();
-    emit_operation_started(
+    let operation_reservation = reserve_and_emit_operation_started(
         &app_handle,
+        backend.inner(),
         operation_id.as_ref(),
         repository_path.as_str(),
         window_label.as_str(),
+        "checkoutBranch",
         "Updating branch",
-    );
-    let result = backend.checkout_branch(request);
+    )?;
+    let backend = backend.inner().clone();
+    let result = run_blocking_command("checkoutBranch", move || {
+        let _operation_reservation = operation_reservation;
+        backend.checkout_branch(request)
+    })
+    .await;
     emit_operation_finished(
         &app_handle,
         operation_id.as_ref(),
@@ -1166,7 +1340,7 @@ fn checkout_branch(
 }
 
 #[tauri::command]
-fn delete_branch(
+async fn delete_branch(
     app_handle: tauri::AppHandle,
     window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
@@ -1175,14 +1349,21 @@ fn delete_branch(
     let repository_path = request.repository_path.clone();
     let window_label = window.label().to_owned();
     let operation_id = request.operation_id.clone();
-    emit_operation_started(
+    let operation_reservation = reserve_and_emit_operation_started(
         &app_handle,
+        backend.inner(),
         operation_id.as_ref(),
         repository_path.as_str(),
         window_label.as_str(),
+        "deleteBranch",
         "Updating branch",
-    );
-    let result = backend.delete_branch(request);
+    )?;
+    let backend = backend.inner().clone();
+    let result = run_blocking_command("deleteBranch", move || {
+        let _operation_reservation = operation_reservation;
+        backend.delete_branch(request)
+    })
+    .await;
     emit_operation_finished(
         &app_handle,
         operation_id.as_ref(),
@@ -1196,7 +1377,7 @@ fn delete_branch(
 }
 
 #[tauri::command]
-fn delete_safety_backup(
+async fn delete_safety_backup(
     app_handle: tauri::AppHandle,
     window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
@@ -1205,14 +1386,21 @@ fn delete_safety_backup(
     let repository_path = request.repository_path.clone();
     let window_label = window.label().to_owned();
     let operation_id = request.operation_id.clone();
-    emit_operation_started(
+    let operation_reservation = reserve_and_emit_operation_started(
         &app_handle,
+        backend.inner(),
         operation_id.as_ref(),
         repository_path.as_str(),
         window_label.as_str(),
+        "deleteSafetyBackup",
         "Deleting backup branch",
-    );
-    let result = backend.delete_safety_backup(request);
+    )?;
+    let backend = backend.inner().clone();
+    let result = run_blocking_command("deleteSafetyBackup", move || {
+        let _operation_reservation = operation_reservation;
+        backend.delete_safety_backup(request)
+    })
+    .await;
     emit_operation_finished(
         &app_handle,
         operation_id.as_ref(),
@@ -1230,31 +1418,56 @@ fn delete_safety_backup(
 }
 
 #[tauri::command]
-fn list_local_changes(
+async fn list_local_changes(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::RepositoryPathRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::LocalChangesResponse> {
-    backend.list_local_changes(request)
+    let backend = backend.inner().clone();
+    run_blocking_command("listLocalChanges", move || {
+        backend.list_local_changes(request)
+    })
+    .await
 }
 
 #[tauri::command]
-fn preview_renormalize(
+async fn local_change_detail(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::LocalChangeDetailRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::LocalChange> {
+    let operation_reservation = backend
+        .inner()
+        .reserve_cancellable_operation(request.operation_id.as_ref(), "localChangeDetail")?;
+    let backend = backend.inner().clone();
+    run_blocking_command("localChangeDetail", move || {
+        let _operation_reservation = operation_reservation;
+        backend.local_change_detail(request)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn preview_renormalize(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::RenormalizePreviewRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::RenormalizePreviewResponse> {
-    backend.preview_renormalize(request)
+    let backend = backend.inner().clone();
+    run_blocking_command("previewRenormalize", move || {
+        backend.preview_renormalize(request)
+    })
+    .await
 }
 
 #[tauri::command]
-fn list_stashes(
+async fn list_stashes(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::RepositoryPathRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::StashListResponse> {
-    backend.list_stashes(request)
+    let backend = backend.inner().clone();
+    run_blocking_command("listStashes", move || backend.list_stashes(request)).await
 }
 
 #[tauri::command]
-fn create_stash(
+async fn create_stash(
     app_handle: tauri::AppHandle,
     window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
@@ -1263,14 +1476,21 @@ fn create_stash(
     let repository_path = request.repository_path.clone();
     let window_label = window.label().to_owned();
     let operation_id = request.operation_id.clone();
-    emit_operation_started(
+    let operation_reservation = reserve_and_emit_operation_started(
         &app_handle,
+        backend.inner(),
         operation_id.as_ref(),
         repository_path.as_str(),
         window_label.as_str(),
+        "createStash",
         "Updating stash",
-    );
-    let result = backend.create_stash(request);
+    )?;
+    let backend = backend.inner().clone();
+    let result = run_blocking_command("createStash", move || {
+        let _operation_reservation = operation_reservation;
+        backend.create_stash(request)
+    })
+    .await;
     emit_operation_finished(
         &app_handle,
         operation_id.as_ref(),
@@ -1291,7 +1511,7 @@ fn create_stash(
 }
 
 #[tauri::command]
-fn create_auto_stash(
+async fn create_auto_stash(
     app_handle: tauri::AppHandle,
     window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
@@ -1300,14 +1520,21 @@ fn create_auto_stash(
     let repository_path = request.repository_path.clone();
     let window_label = window.label().to_owned();
     let operation_id = request.operation_id.clone();
-    emit_operation_started(
+    let operation_reservation = reserve_and_emit_operation_started(
         &app_handle,
+        backend.inner(),
         operation_id.as_ref(),
         repository_path.as_str(),
         window_label.as_str(),
+        "createAutoStash",
         "Updating stash",
-    );
-    let result = backend.create_auto_stash(request);
+    )?;
+    let backend = backend.inner().clone();
+    let result = run_blocking_command("createAutoStash", move || {
+        let _operation_reservation = operation_reservation;
+        backend.create_auto_stash(request)
+    })
+    .await;
     emit_operation_finished(
         &app_handle,
         operation_id.as_ref(),
@@ -1328,15 +1555,16 @@ fn create_auto_stash(
 }
 
 #[tauri::command]
-fn stash_details(
+async fn stash_details(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::StashDetailsRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::StashDetailsResponse> {
-    backend.stash_details(request)
+    let backend = backend.inner().clone();
+    run_blocking_command("stashDetails", move || backend.stash_details(request)).await
 }
 
 #[tauri::command]
-fn restore_stash(
+async fn restore_stash(
     app_handle: tauri::AppHandle,
     window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
@@ -1345,14 +1573,21 @@ fn restore_stash(
     let repository_path = request.repository_path.clone();
     let window_label = window.label().to_owned();
     let operation_id = request.operation_id.clone();
-    emit_operation_started(
+    let operation_reservation = reserve_and_emit_operation_started(
         &app_handle,
+        backend.inner(),
         operation_id.as_ref(),
         repository_path.as_str(),
         window_label.as_str(),
+        "restoreStash",
         "Updating stash",
-    );
-    let result = backend.restore_stash(request);
+    )?;
+    let backend = backend.inner().clone();
+    let result = run_blocking_command("restoreStash", move || {
+        let _operation_reservation = operation_reservation;
+        backend.restore_stash(request)
+    })
+    .await;
     emit_operation_finished(
         &app_handle,
         operation_id.as_ref(),
@@ -1376,13 +1611,17 @@ fn restore_stash(
 }
 
 #[tauri::command]
-fn cancel_stash_restore(
+async fn cancel_stash_restore(
     app_handle: tauri::AppHandle,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::CancelStashRestoreRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::CancelStashRestoreResponse> {
     let repository_path = request.repository_path.clone();
-    let response = backend.cancel_stash_restore(request)?;
+    let backend = backend.inner().clone();
+    let response = run_blocking_command("cancelStashRestore", move || {
+        backend.cancel_stash_restore(request)
+    })
+    .await?;
     emit_repo_changed(
         &app_handle,
         repository_path,
@@ -1395,7 +1634,7 @@ fn cancel_stash_restore(
 }
 
 #[tauri::command]
-fn delete_stash(
+async fn delete_stash(
     app_handle: tauri::AppHandle,
     window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
@@ -1404,14 +1643,21 @@ fn delete_stash(
     let repository_path = request.repository_path.clone();
     let window_label = window.label().to_owned();
     let operation_id = request.operation_id.clone();
-    emit_operation_started(
+    let operation_reservation = reserve_and_emit_operation_started(
         &app_handle,
+        backend.inner(),
         operation_id.as_ref(),
         repository_path.as_str(),
         window_label.as_str(),
+        "deleteStash",
         "Updating stash",
-    );
-    let result = backend.delete_stash(request);
+    )?;
+    let backend = backend.inner().clone();
+    let result = run_blocking_command("deleteStash", move || {
+        let _operation_reservation = operation_reservation;
+        backend.delete_stash(request)
+    })
+    .await;
     emit_operation_finished(
         &app_handle,
         operation_id.as_ref(),
@@ -1429,61 +1675,120 @@ fn delete_stash(
 }
 
 #[tauri::command]
-fn log_page(
+async fn log_page(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::LogPageRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::LogPageResponse> {
-    backend.log_page(request)
+    let operation_id = request.operation_id.clone();
+    let operation_reservation =
+        backend.reserve_cancellable_operation(operation_id.as_ref(), "logPage")?;
+    let backend = backend.inner().clone();
+    run_blocking_command("logPage", move || {
+        let _operation_reservation = operation_reservation;
+        backend.log_page(request)
+    })
+    .await
 }
 
 #[tauri::command]
-fn search_log(
+async fn search_log(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::LogSearchRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::LogPageResponse> {
-    backend.search_log(request)
+    let operation_id = request.operation_id.clone();
+    let operation_reservation =
+        backend.reserve_cancellable_operation(operation_id.as_ref(), "searchLog")?;
+    let backend = backend.inner().clone();
+    run_blocking_command("searchLog", move || {
+        let _operation_reservation = operation_reservation;
+        backend.search_log(request)
+    })
+    .await
 }
 
 #[tauri::command]
-fn list_conflicts(
+async fn list_conflicts(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::ConflictListRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::ConflictListResponse> {
-    backend.list_conflicts(request)
+    let backend = backend.inner().clone();
+    run_blocking_command("listConflicts", move || backend.list_conflicts(request)).await
 }
 
 #[tauri::command]
-fn conflict_detail(
+async fn conflict_detail(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::ConflictPathRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::ConflictDetailResponse> {
-    backend.conflict_detail(request)
+    let backend = backend.inner().clone();
+    run_blocking_command("conflictDetail", move || backend.conflict_detail(request)).await
 }
 
 #[tauri::command]
-fn select_conflict_side(
+async fn select_conflict_side(
+    app_handle: tauri::AppHandle,
+    window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::ConflictSelectSideRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::ConflictSelectSideResponse> {
-    backend.select_conflict_side(request)
+    let repository_path = request.repository_path.clone();
+    let operation_id = request.operation_id.clone();
+    let window_label = window.label().to_owned();
+    let operation_reservation = reserve_and_emit_operation_started(
+        &app_handle,
+        backend.inner(),
+        operation_id.as_ref(),
+        repository_path.as_str(),
+        window_label.as_str(),
+        "selectConflictSide",
+        "Resolving conflicts",
+    )?;
+    let worker_backend = backend.inner().clone();
+    let result = run_blocking_command("selectConflictSide", move || {
+        let _operation_reservation = operation_reservation;
+        worker_backend.select_conflict_side(request)
+    })
+    .await;
+    emit_operation_finished(
+        &app_handle,
+        operation_id.as_ref(),
+        repository_path.as_str(),
+        window_label.as_str(),
+        "Conflict selection complete",
+    );
+    let response = result?;
+    emit_repo_changed(
+        &app_handle,
+        repository_path,
+        vec![artistic_git_contracts::RepoQueryKind::LocalChanges],
+    );
+    Ok(response)
 }
 
 #[tauri::command]
-fn save_conflict_resolution(
+async fn save_conflict_resolution(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::ConflictSaveResolutionRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::ConflictSaveResolutionResponse> {
-    backend.save_conflict_resolution(request)
+    let backend = backend.inner().clone();
+    run_blocking_command("saveConflictResolution", move || {
+        backend.save_conflict_resolution(request)
+    })
+    .await
 }
 
 #[tauri::command]
-fn complete_conflict_resolution(
+async fn complete_conflict_resolution(
     app_handle: tauri::AppHandle,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::ConflictCompleteRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::ConflictCompleteResponse> {
     let repository_path = request.repository_path.clone();
-    let response = backend.complete_conflict_resolution(request)?;
+    let backend = backend.inner().clone();
+    let response = run_blocking_command("completeConflictResolution", move || {
+        backend.complete_conflict_resolution(request)
+    })
+    .await?;
     emit_repo_changed(
         &app_handle,
         repository_path,
@@ -1493,13 +1798,17 @@ fn complete_conflict_resolution(
 }
 
 #[tauri::command]
-fn cancel_conflict_resolution(
+async fn cancel_conflict_resolution(
     app_handle: tauri::AppHandle,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::ConflictCancelRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::ConflictCancelResponse> {
     let repository_path = request.repository_path.clone();
-    let response = backend.cancel_conflict_resolution(request)?;
+    let backend = backend.inner().clone();
+    let response = run_blocking_command("cancelConflictResolution", move || {
+        backend.cancel_conflict_resolution(request)
+    })
+    .await?;
     emit_repo_changed(
         &app_handle,
         repository_path,
@@ -1509,7 +1818,7 @@ fn cancel_conflict_resolution(
 }
 
 #[tauri::command]
-fn commit_changes(
+async fn commit_changes(
     app_handle: tauri::AppHandle,
     window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
@@ -1518,14 +1827,21 @@ fn commit_changes(
     let repository_path = request.repository_path.clone();
     let window_label = window.label().to_owned();
     let operation_id = request.operation_id.clone();
-    emit_operation_started(
+    let operation_reservation = reserve_and_emit_operation_started(
         &app_handle,
+        backend.inner(),
         operation_id.as_ref(),
         repository_path.as_str(),
         window_label.as_str(),
+        "commitChanges",
         "Committing changes",
-    );
-    let result = backend.commit_changes(request);
+    )?;
+    let backend = backend.inner().clone();
+    let result = run_blocking_command("commitChanges", move || {
+        let _operation_reservation = operation_reservation;
+        backend.commit_changes(request)
+    })
+    .await;
     emit_operation_finished(
         &app_handle,
         operation_id.as_ref(),
@@ -1556,13 +1872,38 @@ fn commit_changes(
 }
 
 #[tauri::command]
-fn restore_changes(
+async fn restore_changes(
     app_handle: tauri::AppHandle,
+    window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::RestoreChangesRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::RestoreChangesResponse> {
     let repository_path = request.repository_path.clone();
-    let response = backend.restore_changes(request)?;
+    let window_label = window.label().to_owned();
+    let operation_id = request.operation_id.clone();
+    let operation_reservation = reserve_and_emit_operation_started(
+        &app_handle,
+        backend.inner(),
+        operation_id.as_ref(),
+        repository_path.as_str(),
+        window_label.as_str(),
+        "restoreChanges",
+        "Restoring changes",
+    )?;
+    let backend = backend.inner().clone();
+    let result = run_blocking_command("restoreChanges", move || {
+        let _operation_reservation = operation_reservation;
+        backend.restore_changes(request)
+    })
+    .await;
+    emit_operation_finished(
+        &app_handle,
+        operation_id.as_ref(),
+        repository_path.as_str(),
+        window_label.as_str(),
+        "Changes restored",
+    );
+    let response = result?;
     emit_repo_changed(
         &app_handle,
         repository_path,
@@ -1572,7 +1913,7 @@ fn restore_changes(
 }
 
 #[tauri::command]
-fn revert_commit(
+async fn revert_commit(
     app_handle: tauri::AppHandle,
     window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
@@ -1581,14 +1922,21 @@ fn revert_commit(
     let repository_path = request.repository_path.clone();
     let window_label = window.label().to_owned();
     let operation_id = request.operation_id.clone();
-    emit_operation_started(
+    let operation_reservation = reserve_and_emit_operation_started(
         &app_handle,
+        backend.inner(),
         operation_id.as_ref(),
         repository_path.as_str(),
         window_label.as_str(),
+        "revertCommit",
         "Reverting commit",
-    );
-    let result = backend.revert_commit(request);
+    )?;
+    let backend = backend.inner().clone();
+    let result = run_blocking_command("revertCommit", move || {
+        let _operation_reservation = operation_reservation;
+        backend.revert_commit(request)
+    })
+    .await;
     emit_operation_finished(
         &app_handle,
         operation_id.as_ref(),
@@ -1623,13 +1971,15 @@ fn revert_commit(
 }
 
 #[tauri::command]
-fn abort_revert(
+async fn abort_revert(
     app_handle: tauri::AppHandle,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::AbortRevertRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::AbortRevertResponse> {
     let repository_path = request.repository_path.clone();
-    let response = backend.abort_revert(request)?;
+    let backend = backend.inner().clone();
+    let response =
+        run_blocking_command("abortRevert", move || backend.abort_revert(request)).await?;
     if response.aborted {
         emit_repo_changed(
             &app_handle,
@@ -1641,98 +1991,137 @@ fn abort_revert(
 }
 
 #[tauri::command]
-fn settings_snapshot(
+async fn settings_snapshot(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
 ) -> artistic_git_contracts::AppResult<artistic_git_app::SettingsSnapshot> {
-    backend.settings_snapshot()
+    let backend = backend.inner().clone();
+    run_blocking_command("settingsSnapshot", move || backend.settings_snapshot()).await
 }
 
 #[tauri::command]
-fn load_app_settings(
+async fn load_app_settings(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
 ) -> artistic_git_contracts::AppResult<artistic_git_core::config::AppSettings> {
-    backend.load_app_settings()
+    let backend = backend.inner().clone();
+    run_blocking_command("loadAppSettings", move || backend.load_app_settings()).await
 }
 
 #[tauri::command]
-fn save_app_settings(
+async fn save_app_settings(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_app::SaveAppSettingsRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_core::config::AppSettings> {
-    backend.save_app_settings(request)
+    let backend = backend.inner().clone();
+    run_blocking_command("saveAppSettings", move || {
+        backend.save_app_settings(request)
+    })
+    .await
 }
 
 #[tauri::command]
-fn load_project_settings(
+async fn load_project_settings(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_app::ProjectSettingsRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_core::config::ProjectSettings> {
-    backend.load_project_settings(request)
+    let backend = backend.inner().clone();
+    run_blocking_command("loadProjectSettings", move || {
+        backend.load_project_settings(request)
+    })
+    .await
 }
 
 #[tauri::command]
-fn save_project_settings(
+async fn save_project_settings(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_app::SaveProjectSettingsRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_core::config::ProjectSettings> {
-    backend.save_project_settings(request)
+    let backend = backend.inner().clone();
+    run_blocking_command("saveProjectSettings", move || {
+        backend.save_project_settings(request)
+    })
+    .await
 }
 
 #[tauri::command]
-fn load_gitignore(
+async fn load_gitignore(
     request: artistic_git_app::GitignoreRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_app::GitignoreFileResponse> {
-    artistic_git_app::load_gitignore(request)
+    run_blocking_command("loadGitignore", move || {
+        artistic_git_app::load_gitignore(request)
+    })
+    .await
 }
 
 #[tauri::command]
-fn save_gitignore(
+async fn save_gitignore(
     request: artistic_git_app::SaveGitignoreRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_app::GitignoreFileResponse> {
-    artistic_git_app::save_gitignore(request)
+    run_blocking_command("saveGitignore", move || {
+        artistic_git_app::save_gitignore(request)
+    })
+    .await
 }
 
 #[tauri::command]
-fn ssh_key_status() -> artistic_git_contracts::AppResult<artistic_git_app::SshKeyStatus> {
-    artistic_git_app::ssh_key_status()
+async fn ssh_key_status() -> artistic_git_contracts::AppResult<artistic_git_app::SshKeyStatus> {
+    run_blocking_command("sshKeyStatus", artistic_git_app::ssh_key_status).await
 }
 
 #[tauri::command]
-fn generate_ssh_key(
+async fn generate_ssh_key(
     request: artistic_git_app::GenerateSshKeyRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_app::SshKeyStatus> {
-    artistic_git_app::generate_ssh_key(request)
+    run_blocking_command("generateSshKey", move || {
+        artistic_git_app::generate_ssh_key(request)
+    })
+    .await
 }
 
 #[tauri::command]
-fn validate_identity_for_write(
+async fn validate_identity_for_write(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_app::IdentityValidationRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_app::IdentityValidationResponse> {
-    backend.validate_identity_for_write(request)
+    let backend = backend.inner().clone();
+    run_blocking_command("validateIdentityForWrite", move || {
+        backend.validate_identity_for_write(request)
+    })
+    .await
 }
 
 #[tauri::command]
-fn list_https_credentials(
+async fn list_https_credentials(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
 ) -> artistic_git_contracts::AppResult<artistic_git_app::HttpsCredentialListResponse> {
-    backend.list_https_credentials()
+    let backend = backend.inner().clone();
+    run_blocking_command("listHttpsCredentials", move || {
+        backend.list_https_credentials()
+    })
+    .await
 }
 
 #[tauri::command]
-fn save_https_credential(
+async fn save_https_credential(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_app::SaveHttpsCredentialRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_app::HttpsCredentialEntry> {
-    backend.save_https_credential(request)
+    let backend = backend.inner().clone();
+    run_blocking_command("saveHttpsCredential", move || {
+        backend.save_https_credential(request)
+    })
+    .await
 }
 
 #[tauri::command]
-fn delete_https_credential(
+async fn delete_https_credential(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_app::DeleteHttpsCredentialRequest,
 ) -> artistic_git_contracts::AppResult<()> {
-    backend.delete_https_credential(request)
+    let backend = backend.inner().clone();
+    run_blocking_command("deleteHttpsCredential", move || {
+        backend.delete_https_credential(request)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1805,11 +2194,9 @@ pub fn run() {
             app.manage(SshPassphrasePromptState {
                 registry: Arc::clone(&ssh_passphrase_prompts),
             });
-            app.manage(repository_backend(
-                app,
-                credential_prompts,
-                ssh_passphrase_prompts,
-            )?);
+            let backend = repository_backend(app, credential_prompts, ssh_passphrase_prompts)?;
+            app.manage(backend);
+            app.manage(second_instance_dispatch_state(app.handle())?);
 
             Ok(())
         })
@@ -1854,6 +2241,7 @@ pub fn run() {
             delete_branch,
             delete_safety_backup,
             list_local_changes,
+            local_change_detail,
             preview_renormalize,
             list_stashes,
             create_stash,
@@ -2289,6 +2677,14 @@ fn registry_close_guard_labels(registry: &WindowRegistry) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn registry_exit_guard_labels(registry: &WindowRegistry) -> Vec<String> {
+    if registry_update_install_closing_windows(registry) {
+        Vec::new()
+    } else {
+        registry_close_guard_labels(registry)
+    }
+}
+
 fn registry_set_pending_exit_after_close_guards(
     registry: &WindowRegistry,
     pending: bool,
@@ -2438,11 +2834,36 @@ fn registry_label_for_repository(
     Ok(inner.repository_to_label.get(repository_path).cloned())
 }
 
+fn registry_repository_for_label(registry: &WindowRegistry, label: &str) -> Option<String> {
+    registry
+        .inner
+        .lock()
+        .ok()
+        .and_then(|inner| inner.label_to_repository.get(label).cloned())
+}
+
 fn focus_window(app: &tauri::AppHandle, label: &str) {
     if let Some(window) = app.get_webview_window(label) {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
+    }
+}
+
+fn ensure_webview_window_exists(
+    app: &tauri::AppHandle,
+    label: &str,
+    operation: &'static str,
+) -> artistic_git_contracts::AppResult<()> {
+    if app.get_webview_window(label).is_some() {
+        Ok(())
+    } else {
+        Err(artistic_git_app::logged_app_error(
+            artistic_git_contracts::AppError::expected(
+                "the requesting window was closed before the operation completed",
+                operation,
+            ),
+        ))
     }
 }
 
@@ -2467,7 +2888,60 @@ fn current_window_geometry(
     })
 }
 
+fn persist_window_geometry_before_close(window: &tauri::Window) {
+    let app = window.app_handle();
+    let Some(registry) = app.try_state::<WindowRegistry>() else {
+        return;
+    };
+    let Some(repository_path) = registry_repository_for_label(&registry, window.label()) else {
+        return;
+    };
+    let Ok(geometry) = current_window_geometry(window) else {
+        return;
+    };
+    let Some(backend) = app.try_state::<artistic_git_app::RepositoryBackend>() else {
+        return;
+    };
+    let backend = backend.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _ = backend.save_project_window_geometry(repository_path, geometry);
+    });
+}
+
 fn handle_second_instance(app: &tauri::AppHandle, args: Vec<String>, cwd: String) {
+    let dispatch = SecondInstanceDispatch { args, cwd };
+    let Some(state) = app.try_state::<SecondInstanceDispatchState>() else {
+        focus_or_create_start_window(app);
+        return;
+    };
+    if state.sender.send(dispatch).is_err() {
+        focus_or_create_start_window(app);
+    }
+}
+
+fn second_instance_dispatch_state(
+    app: &tauri::AppHandle,
+) -> std::io::Result<SecondInstanceDispatchState> {
+    let (sender, receiver) = mpsc::channel();
+    let app = app.clone();
+    std::thread::Builder::new()
+        .name("second-instance-dispatch".to_owned())
+        .spawn(move || {
+            run_serial_dispatch(receiver, |dispatch| {
+                process_second_instance(&app, dispatch);
+            });
+        })?;
+    Ok(SecondInstanceDispatchState { sender })
+}
+
+fn run_serial_dispatch<T>(receiver: mpsc::Receiver<T>, mut dispatch: impl FnMut(T)) {
+    while let Ok(request) = receiver.recv() {
+        dispatch(request);
+    }
+}
+
+fn process_second_instance(app: &tauri::AppHandle, dispatch: SecondInstanceDispatch) {
+    let SecondInstanceDispatch { args, cwd } = dispatch;
     let repository_path = repository_path_from_args(&args, Some(&cwd));
     if let Some(repository_path) = repository_path.clone() {
         if open_second_instance_repository(app, repository_path).is_err() {
@@ -2491,14 +2965,16 @@ fn open_second_instance_repository(
     app: &tauri::AppHandle,
     repository_path: String,
 ) -> artistic_git_contracts::AppResult<()> {
+    let backend = app
+        .try_state::<artistic_git_app::RepositoryBackend>()
+        .ok_or_else(|| window_command_error("repository backend unavailable", "secondInstance"))?
+        .inner()
+        .clone();
+    let project_settings = backend
+        .load_project_settings(artistic_git_app::ProjectSettingsRequest { repository_path })?;
     let registry = app
         .try_state::<WindowRegistry>()
         .ok_or_else(|| window_command_error("window registry unavailable", "secondInstance"))?;
-    let backend = app
-        .try_state::<artistic_git_app::RepositoryBackend>()
-        .ok_or_else(|| window_command_error("repository backend unavailable", "secondInstance"))?;
-    let project_settings = backend
-        .load_project_settings(artistic_git_app::ProjectSettingsRequest { repository_path })?;
     open_or_focus_repository_from_settings(app, &registry, project_settings).map(|_| ())
 }
 
@@ -2560,6 +3036,7 @@ fn handle_window_event(window: &tauri::Window, event: &WindowEvent) {
             updater_runtime::route_unassigned_ready_update_prompt(app, &label);
         }
         WindowEvent::CloseRequested { api, .. } => {
+            persist_window_geometry_before_close(window);
             if let Some(registry) = app.try_state::<WindowRegistry>() {
                 if let Some(event) = close_guard_block_event(
                     &registry,
@@ -2599,7 +3076,7 @@ fn handle_window_event(window: &tauri::Window, event: &WindowEvent) {
 fn handle_run_event(app: &tauri::AppHandle, event: RunEvent) {
     if let RunEvent::ExitRequested { api, .. } = event {
         if let Some(registry) = app.try_state::<WindowRegistry>() {
-            let guarded_labels = registry_close_guard_labels(&registry);
+            let guarded_labels = registry_exit_guard_labels(&registry);
             if guarded_labels.is_empty() {
                 return;
             }
@@ -2702,6 +3179,24 @@ fn window_command_error(
     artistic_git_app::unexpected_command_error(message.into(), operation)
 }
 
+async fn run_blocking_command<T, F>(
+    operation: &'static str,
+    action: F,
+) -> artistic_git_contracts::AppResult<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> artistic_git_contracts::AppResult<T> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(action)
+        .await
+        .map_err(|error| {
+            artistic_git_app::unexpected_command_error(
+                format!("{operation} blocking worker failed: {error}"),
+                operation,
+            )
+        })?
+}
+
 fn repository_backend(
     app: &tauri::App,
     credential_prompts: Arc<HttpsCredentialPromptRegistry>,
@@ -2720,7 +3215,7 @@ fn repository_backend(
     )?;
     runner
         .run_runtime_self_check()
-        .map_err(|error| boxed_setup_error(error.summary))?;
+        .map_err(boxed_app_setup_error)?;
 
     let config =
         artistic_git_core::config::ConfigActor::load(artistic_git_core::config::ConfigPaths::new(
@@ -2843,6 +3338,11 @@ fn boxed_setup_error(message: String) -> Box<dyn std::error::Error> {
     Box::new(std::io::Error::other(message))
 }
 
+fn boxed_app_setup_error(error: artistic_git_contracts::AppError) -> Box<dyn std::error::Error> {
+    let details = serde_json::to_string_pretty(&error).unwrap_or_else(|_| error.summary.clone());
+    boxed_setup_error(details)
+}
+
 fn emit_branch_operation_events(
     app_handle: &tauri::AppHandle,
     response: &artistic_git_contracts::BranchOperationResponse,
@@ -2948,6 +3448,26 @@ fn emit_operation_started(
     );
 }
 
+fn reserve_and_emit_operation_started(
+    app_handle: &tauri::AppHandle,
+    backend: &artistic_git_app::RepositoryBackend,
+    operation_id: Option<&artistic_git_contracts::OperationId>,
+    repository_path: &str,
+    window_label: &str,
+    operation_name: &'static str,
+    label: &'static str,
+) -> artistic_git_contracts::AppResult<Option<artistic_git_app::CancellableOperationReservation>> {
+    let reservation = backend.reserve_cancellable_operation(operation_id, operation_name)?;
+    emit_operation_started(
+        app_handle,
+        operation_id,
+        repository_path,
+        window_label,
+        label,
+    );
+    Ok(reservation)
+}
+
 fn emit_operation_finished(
     app_handle: &tauri::AppHandle,
     operation_id: Option<&artistic_git_contracts::OperationId>,
@@ -2993,6 +3513,133 @@ fn emit_fetch_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blocking_commands_run_outside_the_calling_thread() {
+        let caller_thread = std::thread::current().id();
+        let worker_thread = tauri::async_runtime::block_on(run_blocking_command(
+            "blockingCommandThreadTest",
+            || Ok(std::thread::current().id()),
+        ))
+        .expect("blocking command");
+
+        assert_ne!(worker_thread, caller_thread);
+    }
+
+    #[test]
+    fn blocking_commands_preserve_application_errors() {
+        let expected =
+            artistic_git_contracts::AppError::expected("expected worker failure", "innerOperation");
+        let returned = tauri::async_runtime::block_on(run_blocking_command("outerOperation", {
+            let expected = expected.clone();
+            move || Err::<(), _>(expected)
+        }))
+        .expect_err("worker error");
+
+        assert_eq!(returned, expected);
+    }
+
+    #[test]
+    fn setup_errors_preserve_structured_git_diagnostics() {
+        let error = artistic_git_contracts::AppError::fatal(
+            "embedded Git self-check failed",
+            "gitRuntimeSelfCheck",
+        )
+        .with_git(artistic_git_contracts::GitCommandError {
+            command: vec!["git".to_owned(), "--version".to_owned()],
+            exit_code: Some(1),
+            stdout: "git version fixture".to_owned(),
+            stderr: "fixture stderr".to_owned(),
+        });
+
+        let rendered = boxed_app_setup_error(error).to_string();
+
+        assert!(rendered.contains("gitRuntimeSelfCheck"));
+        assert!(rendered.contains("fixture stderr"));
+        assert!(rendered.contains("git version fixture"));
+    }
+
+    #[test]
+    fn tauri_commands_only_stay_synchronous_when_explicitly_allowlisted() {
+        assert_only_allowlisted_commands_are_synchronous(
+            include_str!("lib.rs"),
+            &[
+                "health",
+                "window_context",
+                "new_project_window",
+                "close_current_window",
+                "set_window_close_guard",
+                "cancel_pending_window_exit",
+                "inject_renderer_crash",
+                "acknowledge_renderer_crash",
+                "open_log_dir",
+                "open_update_release_page",
+                "submit_https_credential_prompt",
+                "submit_ssh_passphrase_prompt",
+            ],
+        );
+        assert_only_allowlisted_commands_are_synchronous(
+            include_str!("updater_runtime.rs"),
+            &["update_install_gate"],
+        );
+    }
+
+    fn assert_only_allowlisted_commands_are_synchronous(source: &str, allowlist: &[&str]) {
+        let declarations = tauri_command_declarations(source);
+
+        for (name, asynchronous) in &declarations {
+            assert!(
+                *asynchronous || allowlist.contains(&name.as_str()),
+                "Tauri command `{name}` must use an async blocking worker or be explicitly allowlisted"
+            );
+        }
+
+        for allowed in allowlist {
+            assert!(
+                declarations
+                    .iter()
+                    .any(|(name, asynchronous)| name == allowed && !asynchronous),
+                "synchronous Tauri command allowlist entry `{allowed}` is stale"
+            );
+        }
+    }
+
+    fn tauri_command_declarations(source: &str) -> Vec<(String, bool)> {
+        let mut declarations = Vec::new();
+        let mut awaiting_declaration = false;
+
+        for line in source.lines() {
+            let line = line.trim();
+            if line == "#[tauri::command]" {
+                awaiting_declaration = true;
+                continue;
+            }
+            if !awaiting_declaration {
+                continue;
+            }
+
+            let (prefix, asynchronous) = if line.starts_with("pub async fn ") {
+                ("pub async fn ", true)
+            } else if line.starts_with("async fn ") {
+                ("async fn ", true)
+            } else if line.starts_with("pub fn ") {
+                ("pub fn ", false)
+            } else if line.starts_with("fn ") {
+                ("fn ", false)
+            } else {
+                continue;
+            };
+            let name = line[prefix.len()..]
+                .split('(')
+                .next()
+                .expect("command name")
+                .to_owned();
+            declarations.push((name, asynchronous));
+            awaiting_declaration = false;
+        }
+
+        declarations
+    }
 
     #[test]
     fn e2e_storage_override_accepts_exact_paired_directories() {
@@ -3099,6 +3746,19 @@ mod tests {
     }
 
     #[test]
+    fn second_instance_dispatch_preserves_request_order() {
+        let (sender, receiver) = mpsc::channel();
+        sender.send("first").expect("first request");
+        sender.send("second").expect("second request");
+        drop(sender);
+        let mut observed = Vec::new();
+
+        run_serial_dispatch(receiver, |request| observed.push(request));
+
+        assert_eq!(observed, vec!["first", "second"]);
+    }
+
+    #[test]
     fn window_menu_registry_labels_are_monotonic() {
         let registry = WindowRegistry::default();
 
@@ -3121,6 +3781,10 @@ mod tests {
         assert_eq!(
             registry_label_for_repository(&registry, "/tmp/project").expect("lookup"),
             Some("repo-1".to_owned())
+        );
+        assert_eq!(
+            registry_repository_for_label(&registry, "repo-1"),
+            Some("/tmp/project".to_owned())
         );
         registry_unregister(&registry, "repo-1");
         assert_eq!(
@@ -3192,6 +3856,16 @@ mod tests {
 
         registry_set_update_install_closing_windows(&registry, false).expect("clear install close");
         assert!(!registry_update_install_closing_windows(&registry));
+    }
+
+    #[test]
+    fn updater_install_exit_ignores_late_close_guards() {
+        let registry = WindowRegistry::default();
+        registry_set_close_guard(&registry, "repo-1", true).expect("set close guard");
+        assert_eq!(registry_exit_guard_labels(&registry), vec!["repo-1"]);
+
+        registry_set_update_install_closing_windows(&registry, true).expect("start install close");
+        assert!(registry_exit_guard_labels(&registry).is_empty());
     }
 
     #[test]

@@ -45,6 +45,9 @@ export function UpdaterRuntimeBridge() {
   const setUpdateInstallGate = useWindowStore(
     (state) => state.setUpdateInstallGate,
   );
+  const setUpdateInstallInProgress = useWindowStore(
+    (state) => state.setUpdateInstallInProgress,
+  );
   const setUpdatePromptDismissedRequestId = useWindowStore(
     (state) => state.setUpdatePromptDismissedRequestId,
   );
@@ -59,6 +62,7 @@ export function UpdaterRuntimeBridge() {
   const dismissedPromptRequestIdRef = React.useRef(
     updatePromptDismissedRequestId,
   );
+  const installInFlightRef = React.useRef(false);
   const updateStatusRef = React.useRef(updateStatus);
   const windowLabelRef = React.useRef(windowLabel);
 
@@ -227,10 +231,15 @@ export function UpdaterRuntimeBridge() {
       });
     };
     const handleInstall = () => {
-      if (updateStatusRef.current?.status.state !== "ready") {
+      if (
+        updateStatusRef.current?.status.state !== "ready" ||
+        installInFlightRef.current
+      ) {
         return;
       }
 
+      installInFlightRef.current = true;
+      setUpdateInstallInProgress(true);
       void Promise.resolve()
         .then(refreshInstallGate)
         .then((gate) => {
@@ -248,6 +257,10 @@ export function UpdaterRuntimeBridge() {
           setUpdateStatus(status);
           setUpdatePromptDismissedRequestId(null);
           setUpdatePromptOpen(true);
+        })
+        .finally(() => {
+          installInFlightRef.current = false;
+          setUpdateInstallInProgress(false);
         });
     };
 
@@ -262,6 +275,7 @@ export function UpdaterRuntimeBridge() {
     };
   }, [
     refreshInstallGate,
+    setUpdateInstallInProgress,
     setUpdatePromptDismissedRequestId,
     setUpdatePromptOpen,
     setUpdateStatus,

@@ -395,6 +395,7 @@ pub struct AcceptRemoteHistoryResponse {
 #[serde(rename_all = "camelCase")]
 pub struct SafetyBackupListResponse {
     pub backups: Vec<SafetyBackupSummary>,
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -594,6 +595,10 @@ pub enum ConflictFileDetail {
         hunks: Vec<ConflictHunk>,
         language: Option<String>,
     },
+    OversizedText {
+        size_bytes: String,
+        max_preview_bytes: u32,
+    },
     Binary {
         own: Option<ConflictSideFile>,
         other: Option<ConflictSideFile>,
@@ -642,6 +647,8 @@ pub struct ConflictSelectSideRequest {
     pub repository_path: String,
     pub paths: Vec<String>,
     pub side: ConflictSide,
+    #[serde(default)]
+    pub operation_id: Option<OperationId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -721,6 +728,7 @@ pub enum DiffFileKind {
     Image,
     LfsPointer,
     OversizedText,
+    Deferred,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -758,6 +766,7 @@ pub struct RemoteRepositoryProbeResponse {
     pub default_branch: Option<String>,
     pub branches: Vec<String>,
     pub is_empty: bool,
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -930,6 +939,7 @@ pub struct SaveRemoteSettingsRequest {
 #[serde(rename_all = "camelCase")]
 pub struct BranchListResponse {
     pub branches: Vec<BranchSummary>,
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -1038,6 +1048,19 @@ pub struct LocalChangesResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
+pub struct LocalChangeDetailRequest {
+    pub repository_path: String,
+    pub path: String,
+    #[serde(default)]
+    pub old_path: Option<String>,
+    #[serde(default)]
+    pub submodule: Option<LocalChangeSubmodule>,
+    #[serde(default)]
+    pub operation_id: Option<OperationId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
 pub struct LocalChangesRenormalizeSuggestion {
     pub total_changes: u32,
     pub modified_changes: u32,
@@ -1120,6 +1143,8 @@ pub struct LargeFileWarning {
 pub struct RestoreChangesRequest {
     pub repository_path: String,
     pub paths: Vec<String>,
+    #[serde(default)]
+    pub operation_id: Option<OperationId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -1227,6 +1252,9 @@ pub enum DiffContent {
     OversizedText {
         message: Option<String>,
     },
+    Deferred {
+        message: Option<String>,
+    },
     LfsPointer {
         status: LfsContentStatus,
         message: Option<String>,
@@ -1259,6 +1287,7 @@ pub enum LfsContentStatus {
 #[serde(rename_all = "camelCase")]
 pub struct StashListResponse {
     pub stashes: Vec<StashEntry>,
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -1413,6 +1442,7 @@ pub struct LogPageRequest {
     pub repository_path: String,
     pub after: Option<String>,
     pub limit: Option<u16>,
+    pub operation_id: Option<OperationId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -1424,6 +1454,7 @@ pub struct LogSearchRequest {
     pub pickaxe: Option<String>,
     pub after: Option<String>,
     pub limit: Option<u16>,
+    pub operation_id: Option<OperationId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]

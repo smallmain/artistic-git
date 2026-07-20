@@ -1,4 +1,4 @@
-import { Download, ExternalLink, RefreshCw } from "lucide-react";
+import { Download, ExternalLink, Loader2, RefreshCw } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -14,6 +14,7 @@ import { useWindowStore } from "@/store/window-store";
 export function UpdaterPromptDialog() {
   const { t } = useTranslation();
   const installGate = useWindowStore((state) => state.updateInstallGate);
+  const installing = useWindowStore((state) => state.updateInstallInProgress);
   const open = useWindowStore((state) => state.updatePromptOpen);
   const setDismissedRequestId = useWindowStore(
     (state) => state.setUpdatePromptDismissedRequestId,
@@ -38,6 +39,9 @@ export function UpdaterPromptDialog() {
       : null;
 
   const closePrompt = () => {
+    if (installing) {
+      return;
+    }
     setDismissedRequestId(updateStatus.requestId);
     setOpen(false);
   };
@@ -62,10 +66,16 @@ export function UpdaterPromptDialog() {
   return (
     <DialogFrame
       className="max-w-xl"
+      closeOnEscape={!installing}
       description={description}
       footer={
         <div className="flex flex-wrap justify-end gap-2">
-          <Button onClick={closePrompt} type="button" variant="ghost">
+          <Button
+            disabled={installing}
+            onClick={closePrompt}
+            type="button"
+            variant="ghost"
+          >
             {failed ? t("actions.close") : t("updaterPrompt.later")}
           </Button>
           {failed ? null : (
@@ -90,7 +100,7 @@ export function UpdaterPromptDialog() {
               ) : (
                 <Button
                   className="gap-2"
-                  disabled={!ready || installGate.blocked}
+                  disabled={!ready || installGate.blocked || installing}
                   onClick={() => {
                     window.dispatchEvent(
                       new CustomEvent("artistic-git:install-update"),
@@ -98,21 +108,36 @@ export function UpdaterPromptDialog() {
                   }}
                   type="button"
                 >
-                  <Download className="size-4" aria-hidden="true" />
-                  {t("updaterPrompt.restartNow")}
+                  {installing ? (
+                    <Loader2
+                      className="size-4 animate-spin"
+                      aria-hidden="true"
+                    />
+                  ) : (
+                    <Download className="size-4" aria-hidden="true" />
+                  )}
+                  {installing
+                    ? t("updaterPrompt.installing")
+                    : t("updaterPrompt.restartNow")}
                 </Button>
               )}
             </>
           )}
         </div>
       }
+      hideCloseButton={installing}
       onOpenChange={(nextOpen) => {
-        if (!nextOpen) {
+        if (!nextOpen && !installing) {
           closePrompt();
         }
       }}
       title={title}
     >
+      {installing ? (
+        <p className="text-sm text-muted-foreground" role="status">
+          {t("updaterPrompt.installing")}
+        </p>
+      ) : null}
       {failed ? (
         <p className="text-sm text-destructive">
           {t("updaterPrompt.failedMessage", { message: status.message })}

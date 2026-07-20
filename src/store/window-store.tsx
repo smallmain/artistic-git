@@ -42,6 +42,7 @@ export interface WindowStoreState {
   settingsSection: SettingsSection;
   sidebarLayout: Required<SidebarLayoutSettings>;
   updateInstallGate: UpdateInstallGateResponse;
+  updateInstallInProgress: boolean;
   updatePromptDismissedRequestId: string | null;
   updatePromptOpen: boolean;
   updateStatus: UpdateStatusEvent | null;
@@ -70,6 +71,7 @@ export interface WindowStoreActions {
   setSettingsSection: (section: SettingsSection) => void;
   setSidebarLayout: (sidebarLayout: Partial<SidebarLayoutSettings>) => void;
   setUpdateInstallGate: (gate: UpdateInstallGateResponse) => void;
+  setUpdateInstallInProgress: (inProgress: boolean) => void;
   setUpdatePromptDismissedRequestId: (requestId: string | null) => void;
   setUpdatePromptOpen: (open: boolean) => void;
   setUpdateStatus: (event: UpdateStatusEvent | null) => void;
@@ -105,6 +107,7 @@ const initialWindowStoreState: WindowStoreState = {
     message: "no downloaded update is ready to install",
     reason: "noReadyUpdate",
   },
+  updateInstallInProgress: false,
   updatePromptDismissedRequestId: null,
   updatePromptOpen: false,
   updateStatus: null,
@@ -195,11 +198,7 @@ export function createWindowStore(
         ) {
           delete operationsById[event.operationId];
         } else {
-          const previous = operationsById[event.operationId];
-          operationsById[event.operationId] = {
-            ...event,
-            cancellable: previous?.cancellable === true || event.cancellable,
-          };
+          operationsById[event.operationId] = event;
         }
         return { operationsById };
       });
@@ -242,6 +241,9 @@ export function createWindowStore(
     },
     setUpdateInstallGate: (gate) => {
       set({ updateInstallGate: gate });
+    },
+    setUpdateInstallInProgress: (inProgress) => {
+      set({ updateInstallInProgress: inProgress });
     },
     setUpdatePromptDismissedRequestId: (requestId) => {
       set({ updatePromptDismissedRequestId: requestId });

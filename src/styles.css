@@ -123,7 +123,7 @@ html {
 }
 
 body {
-  min-width: 960px;
+  min-width: 320px;
   min-height: 600px;
   margin: 0;
 }
