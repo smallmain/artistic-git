@@ -2,11 +2,12 @@ import { RotateCcw } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { DetailsDialog } from "@/components/dialogs/DetailsDialog";
+import { formatErrorDetails, getErrorSummary } from "@/lib/error-details";
 import { Button } from "@/components/ui/button";
 import type { CrashDialogPayload } from "@/lib/ipc/commands";
 
 interface CrashDetailsDialogProps {
-  crash: CrashDialogPayload | Error | string;
+  crash: unknown;
   onCopyDetails?: (details: string) => Promise<void> | void;
   onOpenChange: (open: boolean) => void;
   onRestart?: () => Promise<void> | void;
@@ -29,17 +30,19 @@ export function CrashDetailsDialog({
       description={t("dialogs.crash.description")}
       details={details}
       extraActions={
-        <Button
-          className="gap-2"
-          onClick={() => {
-            void onRestart?.();
-          }}
-          type="button"
-          variant="secondary"
-        >
-          <RotateCcw className="size-4" aria-hidden="true" />
-          {t("actions.restartApp")}
-        </Button>
+        onRestart ? (
+          <Button
+            className="gap-2"
+            onClick={() => {
+              void onRestart();
+            }}
+            type="button"
+            variant="secondary"
+          >
+            <RotateCcw className="size-4" aria-hidden="true" />
+            {t("actions.reloadWindow")}
+          </Button>
+        ) : null
       }
       onCopyDetails={onCopyDetails}
       onOpenChange={onOpenChange}
@@ -50,36 +53,24 @@ export function CrashDetailsDialog({
   );
 }
 
-function crashSummary(crash: CrashDialogPayload | Error | string): string {
-  if (typeof crash === "string") {
-    return crash;
-  }
-
-  if (crash instanceof Error) {
-    return crash.message;
-  }
-
-  return crash.summary;
+function crashSummary(crash: unknown): string {
+  return getErrorSummary(crash);
 }
 
-function formatCrashDetails(
-  crash: CrashDialogPayload | Error | string,
-): string {
-  if (typeof crash === "string") {
-    return crash;
-  }
-
-  if (!(crash instanceof Error)) {
+function formatCrashDetails(crash: unknown): string {
+  if (isCrashDialogPayload(crash)) {
     return crash.details;
   }
+  return formatErrorDetails(crash);
+}
 
-  return JSON.stringify(
-    {
-      message: crash.message,
-      name: crash.name,
-      stack: crash.stack ?? null,
-    },
-    null,
-    2,
+function isCrashDialogPayload(value: unknown): value is CrashDialogPayload {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "summary" in value &&
+    typeof value.summary === "string" &&
+    "details" in value &&
+    typeof value.details === "string"
   );
 }

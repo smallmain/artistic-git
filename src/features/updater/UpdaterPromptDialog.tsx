@@ -32,6 +32,7 @@ export function UpdaterPromptDialog() {
   const notes = "notes" in status ? status.notes : null;
   const ready = status.state === "ready";
   const failed = status.state === "failed";
+  const installFailed = failed && status.failureStage === "install";
   const releaseAvailable = status.state === "releaseAvailable";
   const installBlockedMessage =
     ready && installGate.blocked
@@ -48,7 +49,11 @@ export function UpdaterPromptDialog() {
 
   const title =
     status.state === "failed"
-      ? t("updaterPrompt.failedTitle")
+      ? t(
+          installFailed
+            ? "updaterPrompt.installFailedTitle"
+            : "updaterPrompt.failedTitle",
+        )
       : releaseAvailable
         ? t("updaterPrompt.releasePageTitle")
         : ready
@@ -56,7 +61,11 @@ export function UpdaterPromptDialog() {
           : t("updaterPrompt.availableTitle");
   const description =
     status.state === "failed"
-      ? t("updaterPrompt.failedDescription")
+      ? t(
+          installFailed
+            ? "updaterPrompt.installFailedDescription"
+            : "updaterPrompt.failedDescription",
+        )
       : releaseAvailable
         ? t("updaterPrompt.releasePageDescription", { version })
         : ready
@@ -140,7 +149,12 @@ export function UpdaterPromptDialog() {
       ) : null}
       {failed ? (
         <p className="text-sm text-destructive">
-          {t("updaterPrompt.failedMessage", { message: status.message })}
+          {t(
+            installFailed
+              ? "updaterPrompt.installFailedMessage"
+              : "updaterPrompt.failedMessage",
+            { message: status.message },
+          )}
         </p>
       ) : (
         <>
@@ -263,9 +277,13 @@ function updateInstallGateMessage(
       return t("settings.about.installBlockedConflict");
     case "reviewMode":
       return t("settings.about.installBlockedReviewMode");
+    case "gateUnavailable":
+      return t("settings.about.installBlockedGateUnavailable");
+    case "noReadyUpdate":
+      return t("settings.about.installBlockedNoReadyUpdate");
     case "unsupportedInstallFormat":
       return t("settings.about.installBlockedUnsupportedFormat");
     default:
-      return gate.message ?? t("settings.about.installBlocked");
+      return t("settings.about.installBlocked");
   }
 }

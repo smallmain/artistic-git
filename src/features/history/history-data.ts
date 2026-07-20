@@ -1,7 +1,8 @@
-import type { CommitSummary } from "@/lib/ipc/generated";
+import type { CommitChangedFile, CommitSummary } from "@/lib/ipc/generated";
 
 import type {
   HistoryCommit,
+  HistoryChangedFile,
   HistoryCommitRef,
   HistoryGraphLane,
   HistoryGraphRow,
@@ -42,6 +43,34 @@ export function mapCommitSummaryToHistoryCommit(
     refs: parseCommitRefs(summary.refs),
     searchMatches: searchMatches.length > 0 ? searchMatches : undefined,
     shortId: shortOid(summary.oid),
+  };
+}
+
+export function mapCommitChangedFile(
+  file: CommitChangedFile,
+): HistoryChangedFile {
+  return {
+    additions: file.additions,
+    changeKind: file.changeKind,
+    deletions: file.deletions,
+    newMode: file.newMode ?? undefined,
+    oldMode: file.oldMode ?? undefined,
+    oldPath: file.oldPath ?? undefined,
+    path: file.path,
+  };
+}
+
+export function toCommitChangedFile(
+  file: HistoryChangedFile,
+): CommitChangedFile {
+  return {
+    additions: file.additions,
+    changeKind: file.changeKind,
+    deletions: file.deletions,
+    newMode: file.newMode ?? null,
+    oldMode: file.oldMode ?? null,
+    oldPath: file.oldPath ?? null,
+    path: file.path,
   };
 }
 

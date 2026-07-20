@@ -21,12 +21,18 @@ interface WindowCloseBlockedEvent {
 interface WindowCloseGuardProps {
   active: boolean;
   canRecover: boolean;
+  confirmLabel?: string;
+  description?: string;
+  recoveryBusyLabel?: string;
   onRecover: () => Promise<void>;
 }
 
 export function WindowCloseGuard({
   active,
   canRecover,
+  confirmLabel,
+  description,
+  recoveryBusyLabel,
   onRecover,
 }: WindowCloseGuardProps) {
   const { t } = useTranslation();
@@ -34,9 +40,17 @@ export function WindowCloseGuard({
     reason: WindowCloseBlockedReason;
   } | null>(null);
   const [recoveryBusy, setRecoveryBusy] = React.useState(false);
+  const [listenerState, setListenerState] = React.useState<
+    "failed" | "loading" | "ready"
+  >("loading");
+  const activeRef = React.useRef(active);
 
   React.useEffect(() => {
-    if (!active) {
+    activeRef.current = active;
+  }, [active]);
+
+  React.useEffect(() => {
+    if (!active || listenerState !== "ready") {
       void setWindowCloseGuard({ active: false }).catch(() => undefined);
       return;
     }
@@ -57,7 +71,7 @@ export function WindowCloseGuard({
       void setWindowCloseGuard({ active: false }).catch(() => undefined);
       window.removeEventListener("beforeunload", blockClose);
     };
-  }, [active]);
+  }, [active, listenerState]);
 
   const cancelPendingQuit = React.useCallback(() => {
     void cancelPendingWindowExit().catch((error) => {
@@ -117,7 +131,7 @@ export function WindowCloseGuard({
         }
 
         const reason = closeBlockedReasonFromPayload(event.payload);
-        if (!active) {
+        if (!activeRef.current) {
           void setWindowCloseGuard({ active: false })
             .then(() => closeCurrentWindow())
             .catch((error) => {
@@ -130,21 +144,39 @@ export function WindowCloseGuard({
 
         setCloseRequest({ reason });
       },
-    ).then((resolvedUnlisten) => {
-      if (mounted) {
-        unlisten = resolvedUnlisten;
-      } else {
-        resolvedUnlisten();
-      }
-    });
+    )
+      .then((resolvedUnlisten) => {
+        if (mounted) {
+          unlisten = resolvedUnlisten;
+          setListenerState("ready");
+        } else {
+          resolvedUnlisten();
+        }
+      })
+      .catch((error) => {
+        if (!mounted) {
+          return;
+        }
+        setListenerState("failed");
+        window.dispatchEvent(
+          new CustomEvent("artistic-git:error", { detail: error }),
+        );
+        void setWindowCloseGuard({ active: false }).catch((disableError) => {
+          window.dispatchEvent(
+            new CustomEvent("artistic-git:error", { detail: disableError }),
+          );
+        });
+      });
 
     return () => {
       mounted = false;
       unlisten?.();
     };
-  }, [active]);
+  }, []);
 
-  if (closeRequest !== null && active && !canRecover) {
+  const recoveryAvailable = canRecover || recoveryBusy;
+
+  if (closeRequest !== null && active && !recoveryAvailable) {
     return (
       <DialogFrame
         description={t("repository.closeGuardBusyBlocked")}
@@ -178,13 +210,20 @@ export function WindowCloseGuard({
   return (
     <ConfirmDialog
       busy={recoveryBusy}
+      busyLabel={recoveryBusyLabel ?? t("repository.closeGuardRecovering")}
       confirmLabel={
-        canRecover ? t("repository.closeGuardConfirm") : t("actions.close")
+        recoveryAvailable && confirmLabel
+          ? confirmLabel
+          : recoveryAvailable
+            ? t("repository.closeGuardConfirm")
+            : t("actions.close")
       }
       description={
-        canRecover
-          ? t("repository.closeGuardDescription")
-          : t("repository.closeGuardReadyDescription")
+        recoveryAvailable && description
+          ? description
+          : recoveryAvailable
+            ? t("repository.closeGuardDescription")
+            : t("repository.closeGuardReadyDescription")
       }
       onConfirm={() => {
         if (closeRequest) {

@@ -1,4 +1,5 @@
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -8,6 +9,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { BranchSelect } from "./branch-select";
+import { dialogOpenedEventName } from "@/lib/dialog-layer";
 
 afterEach(cleanup);
 
@@ -82,5 +84,34 @@ describe("BranchSelect", () => {
     fireEvent.keyDown(search, { key: "Enter" });
 
     expect(onChange).toHaveBeenCalledWith("develop");
+  });
+
+  it("closes an open list when another modal dialog opens", () => {
+    render(
+      <BranchSelect
+        label="Branch to clone"
+        noResultsLabel="No matching items"
+        onChange={vi.fn()}
+        options={[{ label: "main", value: "main" }]}
+        searchLabel="Search branches"
+        value="main"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("combobox", { name: "Branch to clone" }));
+    expect(screen.getByRole("listbox")).toBeInTheDocument();
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(dialogOpenedEventName, {
+          detail: { dialogId: "error-dialog" },
+        }),
+      );
+    });
+
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("combobox", { name: "Branch to clone" }),
+    ).toHaveFocus();
   });
 });

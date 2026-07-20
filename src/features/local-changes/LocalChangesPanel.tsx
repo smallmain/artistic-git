@@ -17,6 +17,7 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
+import { FloatingPanel } from "@/components/ui/floating-panel";
 import { IconButton } from "@/components/ui/icon-button";
 import { DiffViewer } from "@/features/diff";
 import { cn } from "@/lib/utils";
@@ -80,6 +81,7 @@ export function LocalChangesPanel({
   const [contextMenu, setContextMenu] = React.useState<{
     busyEpoch: object;
     ids: string[];
+    returnFocusTo: HTMLElement;
     x: number;
     y: number;
   } | null>(null);
@@ -180,6 +182,10 @@ export function LocalChangesPanel({
     setContextMenu({
       busyEpoch: contextMenuBusyEpoch,
       ids: selectedIds.length > 0 ? selectedIds : fallbackIds,
+      returnFocusTo:
+        event.currentTarget instanceof HTMLElement
+          ? event.currentTarget
+          : document.body,
       x: event.clientX,
       y: event.clientY,
     });
@@ -472,6 +478,7 @@ export function LocalChangesPanel({
           onRestore={onRestore}
           onStash={onStash}
           onToggle={(checked) => toggleIds(contextMenu.ids, checked)}
+          returnFocusTo={contextMenu.returnFocusTo}
           x={contextMenu.x}
           y={contextMenu.y}
         />
@@ -868,6 +875,7 @@ function ContextMenu({
   onRestore,
   onStash,
   onToggle,
+  returnFocusTo,
   x,
   y,
 }: {
@@ -877,20 +885,23 @@ function ContextMenu({
   onRestore?: (ids: string[]) => void;
   onStash?: (ids: string[]) => void;
   onToggle: (checked: boolean) => void;
+  returnFocusTo: HTMLElement;
   x: number;
   y: number;
 }) {
   const { t } = useTranslation();
-
-  React.useEffect(() => {
-    window.addEventListener("click", onClose);
-    return () => window.removeEventListener("click", onClose);
-  }, [onClose]);
+  const anchor = React.useMemo(
+    () => ({ returnFocusTo, x, y }),
+    [returnFocusTo, x, y],
+  );
 
   return (
-    <div
-      className="fixed z-50 w-56 rounded-md border bg-card p-1 text-sm shadow-floating"
-      style={{ left: x, top: y }}
+    <FloatingPanel
+      anchor={anchor}
+      aria-label={t("localChanges.moreActions")}
+      className="w-56 p-1 text-sm"
+      onClose={onClose}
+      role="menu"
     >
       <button
         className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left hover:bg-accent"
@@ -898,6 +909,7 @@ function ContextMenu({
           onToggle(true);
           onClose();
         }}
+        role="menuitem"
         type="button"
       >
         <CheckSquare className="size-4" aria-hidden="true" />
@@ -909,6 +921,7 @@ function ContextMenu({
           onToggle(false);
           onClose();
         }}
+        role="menuitem"
         type="button"
       >
         <Square className="size-4" aria-hidden="true" />
@@ -926,6 +939,7 @@ function ContextMenu({
           }
           onClose();
         }}
+        role="menuitem"
         type="button"
       >
         <GitCommit className="size-4" aria-hidden="true" />
@@ -945,6 +959,7 @@ function ContextMenu({
           }
           onClose();
         }}
+        role="menuitem"
         type="button"
       >
         <Undo2 className="size-4" aria-hidden="true" />
@@ -952,7 +967,7 @@ function ContextMenu({
           ? t("localChanges.restoreSelected", { count: ids.length })
           : t("localChanges.restoreUnavailable")}
       </button>
-    </div>
+    </FloatingPanel>
   );
 }
 

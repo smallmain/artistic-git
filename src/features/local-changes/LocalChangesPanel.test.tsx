@@ -192,19 +192,19 @@ describe("LocalChangesPanel", () => {
     fireEvent.contextMenu(screen.getAllByText("src/main.ts")[0]);
 
     expect(
-      screen.getByRole("button", { name: "Stash selected (1)" }),
+      screen.getByRole("menuitem", { name: "Stash selected (1)" }),
     ).toBeEnabled();
     expect(
-      screen.getByRole("button", { name: "Restore selected (1)" }),
+      screen.getByRole("menuitem", { name: "Restore selected (1)" }),
     ).toBeEnabled();
 
     act(() => startBusy());
 
     expect(
-      screen.queryByRole("button", { name: "Stash selected (1)" }),
+      screen.queryByRole("menuitem", { name: "Stash selected (1)" }),
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "Restore selected (1)" }),
+      screen.queryByRole("menuitem", { name: "Restore selected (1)" }),
     ).not.toBeInTheDocument();
 
     fireEvent.contextMenu(screen.getAllByText("src/main.ts")[0]);

@@ -8,6 +8,7 @@ import {
   GitCommitHorizontal,
   GitPullRequest,
   Loader2,
+  RefreshCw,
   Search,
   Tag,
   X,
@@ -18,20 +19,27 @@ import { useInfiniteQuery, type InfiniteData } from "@tanstack/react-query";
 
 import { DialogFrame } from "@/components/dialogs/DialogFrame";
 import { Button } from "@/components/ui/button";
+import { FloatingPanel } from "@/components/ui/floating-panel";
 import { IconButton } from "@/components/ui/icon-button";
 import { Tooltip } from "@/components/ui/tooltip";
 import { TruncatedText } from "@/components/ui/truncated-text";
 import { DiffViewer } from "@/features/diff";
 import { useLocalizedFormatters } from "@/i18n/format";
+import { DialogLayerContext, useModalLayer } from "@/lib/dialog-layer";
 import {
   cancelOperation,
+  commitDetails,
+  commitFileDetail,
   logPage,
   revertCommit,
   searchLog,
 } from "@/lib/ipc/commands";
+import { isOperationCancelledError } from "@/lib/ipc/errors";
 import type {
+  CommitDetailsResponse,
   ConflictEnteredEvent,
   CommitSummary,
+  DiffContent,
   DiffPayload,
   LogPageResponse,
   RevertDisabledReason,
@@ -41,9 +49,14 @@ import type {
 import { repoQueryKeys } from "@/lib/realtime/query-keys";
 import { cn } from "@/lib/utils";
 import { useWindowStore } from "@/store/window-store";
+import { showToast } from "@/lib/toast";
 
 import { resolveAvatarPresentation } from "./avatar";
-import { mapCommitSummaryToHistoryCommit } from "./history-data";
+import {
+  mapCommitChangedFile,
+  mapCommitSummaryToHistoryCommit,
+  toCommitChangedFile,
+} from "./history-data";
 import {
   createMockHistorySearchSource,
   type HistorySearchSource,
@@ -65,10 +78,12 @@ import {
 import { useVirtualWindow } from "./useVirtualWindow";
 
 const rowHeight = 72;
-const viewportHeight = 504;
+const fallbackViewportHeight = 504;
 const graphLaneWidth = 18;
 const graphLeftPadding = 14;
 const historyPageSize = 200;
+const maxHistoryCommits = 2_000;
+const maxCustomBranchSelections = 20;
 const loadMoreThresholdPx = rowHeight * 4;
 const loadMoreFooterHeight = 48;
 const branchFilterRowHeight = 36;
@@ -76,15 +91,20 @@ const branchFilterViewportHeight = 216;
 const commitRefRowHeight = 32;
 const commitRefViewportHeight = 224;
 const maxVisibleCommitRefs = 6;
+const changedFileRowHeight = 60;
+const fallbackChangedFileViewportHeight = 504;
+const commitDetailFileLimit = 5_000;
 type RevertUnavailableReason = RevertDisabledReason | "missingRepository";
 
 interface HistoryWorkbenchProps {
+  activeBranchName?: string | null;
   branches?: HistoryBranch[];
   gravatarEnabled?: boolean;
   hasRemote?: boolean;
   historyRepositoryPath?: string | null;
   now?: string;
   onBeforeRevert?: () => Promise<void> | void;
+  onInitialLoadingChange?: (loading: boolean) => void;
   onRevertAutoStash?: (operationId: string, stash: StashEntry) => void;
   onRevertStashRecovery?: (
     operationId: string,
@@ -120,12 +140,14 @@ async function loadBackendSearchPage({
   limit,
   query,
   repositoryPath,
+  revisions,
   signal,
 }: {
   cursor: BackendSearchCursor;
   limit: number;
   query: string;
   repositoryPath: string;
+  revisions: string[];
   signal: AbortSignal;
 }): Promise<BackendSearchPage> {
   const specs = [
@@ -164,6 +186,7 @@ async function loadBackendSearchPage({
             limit,
             operationId,
             repositoryPath,
+            revisions,
           }),
       );
     }),
@@ -255,12 +278,14 @@ function compareCommitSummaryTime(
 }
 
 export function HistoryWorkbench({
+  activeBranchName,
   branches = [],
   gravatarEnabled = false,
   hasRemote = true,
   historyRepositoryPath = null,
   now,
   onBeforeRevert,
+  onInitialLoadingChange,
   onRevertAutoStash,
   onRevertStashRecovery,
   onWriteBusyChange,
@@ -285,6 +310,10 @@ export function HistoryWorkbench({
   const [selectedCommitId, setSelectedCommitId] = React.useState<string | null>(
     null,
   );
+  const commitDetailReturnFocusRef = React.useRef<HTMLElement | null>(null);
+  const historyViewportRef = React.useRef<HTMLDivElement>(null);
+  const [historyViewportHeight, measureHistoryViewport] =
+    useObservedViewportHeight(historyViewportRef, fallbackViewportHeight);
   const repositoryPath = useWindowStore((state) => state.activeRepositoryPath);
   const setConflictEntered = useWindowStore(
     (state) => state.setConflictEntered,
@@ -296,6 +325,30 @@ export function HistoryWorkbench({
     [rows, searchSource],
   );
   const backendHistoryEnabled = Boolean(historyRepositoryPath);
+  const activeHistoryBranchName =
+    activeBranchName ??
+    branches.find((branch) => branch.current)?.name ??
+    rows
+      .flatMap((row) => row.commit.refs)
+      .find((reference) => reference.type === "branch" && reference.current)
+      ?.name ??
+    null;
+  const historyRevisions = React.useMemo(() => {
+    if (branchMode === "all") {
+      return [];
+    }
+
+    const names =
+      branchMode === "auto"
+        ? activeHistoryBranchName
+          ? new Set([activeHistoryBranchName])
+          : new Set<string>()
+        : selectedBranches;
+    return branches
+      .filter((branch) => names.has(branch.name))
+      .map((branch) => branch.revision ?? `refs/heads/${branch.name}`)
+      .toSorted();
+  }, [activeHistoryBranchName, branchMode, branches, selectedBranches]);
 
   React.useEffect(() => {
     if (!trimmedQuery) {
@@ -342,7 +395,10 @@ export function HistoryWorkbench({
     string | null
   >({
     enabled: backendHistoryEnabled && !effectiveSearchTerm,
-    getNextPageParam: (lastPage) => lastPage.nextAfter ?? undefined,
+    getNextPageParam: (lastPage, pages) =>
+      countLoadedCommits(pages) >= maxHistoryCommits
+        ? undefined
+        : (lastPage.nextAfter ?? undefined),
     initialPageParam: null as string | null,
     queryFn: ({ pageParam, signal }) =>
       runCancellableHistoryRequest(signal, "history-page", (operationId) =>
@@ -351,11 +407,13 @@ export function HistoryWorkbench({
           limit: historyPageSize,
           operationId,
           repositoryPath: historyRepositoryPath ?? "",
+          revisions: historyRevisions,
         }),
       ),
     queryKey: [
       ...repoQueryKeys.history(historyRepositoryPath ?? "__none__"),
       "pages",
+      historyRevisions,
     ] as const,
     retry: false,
   });
@@ -367,8 +425,10 @@ export function HistoryWorkbench({
     BackendSearchCursor
   >({
     enabled: backendHistoryEnabled && Boolean(effectiveSearchTerm),
-    getNextPageParam: (lastPage: BackendSearchPage) =>
-      lastPage.nextCursor ?? undefined,
+    getNextPageParam: (lastPage: BackendSearchPage, pages) =>
+      countLoadedCommits(pages) >= maxHistoryCommits
+        ? undefined
+        : (lastPage.nextCursor ?? undefined),
     initialPageParam: {
       author: null,
       authorDone: false,
@@ -383,12 +443,14 @@ export function HistoryWorkbench({
         limit: historyPageSize,
         query: effectiveSearchTerm,
         repositoryPath: historyRepositoryPath ?? "",
+        revisions: historyRevisions,
         signal,
       }),
     queryKey: [
       ...repoQueryKeys.history(historyRepositoryPath ?? "__none__"),
       "search",
       effectiveSearchTerm,
+      historyRevisions,
     ] as const,
     retry: false,
   });
@@ -443,32 +505,69 @@ export function HistoryWorkbench({
     effectiveSearchTerm,
     rows,
   ]);
-  const visibleRows = useIncrementalFilteredRows(
-    activeSearchRows ?? effectiveRows,
+  const fixtureFilteredRows = useIncrementalFilteredRows(
+    effectiveRows,
     branchMode,
     selectedBranches,
+    activeHistoryBranchName,
   );
+  const visibleRows = React.useMemo(() => {
+    const sourceRows = activeSearchRows?.rows ?? effectiveRows.rows;
+    if (backendHistoryEnabled) {
+      return sourceRows.length > maxHistoryCommits
+        ? sourceRows.slice(0, maxHistoryCommits)
+        : sourceRows;
+    }
+    if (activeSearchRows === null) {
+      return fixtureFilteredRows;
+    }
+
+    const visibleIds = new Set(fixtureFilteredRows.map((row) => row.commit.id));
+    return sourceRows.filter((row) => visibleIds.has(row.commit.id));
+  }, [
+    activeSearchRows,
+    backendHistoryEnabled,
+    effectiveRows.rows,
+    fixtureFilteredRows,
+  ]);
 
   const virtual = useVirtualWindow({
     count: visibleRows.length,
     estimateSize: rowHeight,
-    viewportHeight,
+    viewportHeight: historyViewportHeight,
   });
   const canLoadMore = backendHistoryEnabled
     ? effectiveSearchTerm
       ? backendSearchQuery.hasNextPage
       : historyQuery.hasNextPage
     : false;
+  const historyLimitReached = effectiveSearchTerm
+    ? countLoadedCommits(backendSearchQuery.data?.pages ?? []) >=
+        maxHistoryCommits &&
+      backendSearchQuery.data?.pages.at(-1)?.nextCursor !== null
+    : countLoadedCommits(historyQuery.data?.pages ?? []) >= maxHistoryCommits &&
+      historyQuery.data?.pages.at(-1)?.nextAfter !== null;
   const isFetchingNextPage = backendHistoryEnabled
     ? effectiveSearchTerm
       ? backendSearchQuery.isFetchingNextPage
       : historyQuery.isFetchingNextPage
     : false;
-  const isInitialHistoryLoading =
+  const isHistoryContentLoading =
     backendHistoryEnabled &&
     (effectiveSearchTerm
       ? backendSearchQuery.isLoading
       : historyQuery.isLoading);
+  const isInitialHistoryLoading =
+    backendHistoryEnabled &&
+    !effectiveSearchTerm &&
+    historyQuery.isLoading &&
+    historyQuery.data === undefined;
+  React.useEffect(() => {
+    onInitialLoadingChange?.(isInitialHistoryLoading);
+    return () => {
+      onInitialLoadingChange?.(false);
+    };
+  }, [isInitialHistoryLoading, onInitialLoadingChange]);
   const historyLoadError = backendHistoryEnabled
     ? effectiveSearchTerm
       ? backendSearchQuery.error
@@ -553,14 +652,15 @@ export function HistoryWorkbench({
   );
   const handleScroll = React.useCallback<React.UIEventHandler<HTMLDivElement>>(
     (event) => {
+      measureHistoryViewport(event.currentTarget);
       virtual.onScroll(event);
       maybeLoadNextPage(event.currentTarget);
     },
-    [maybeLoadNextPage, virtual],
+    [maybeLoadNextPage, measureHistoryViewport, virtual],
   );
   const historyContentHeight = Math.max(
     virtual.totalSize,
-    canLoadMore ? viewportHeight - loadMoreFooterHeight : 0,
+    canLoadMore ? historyViewportHeight - loadMoreFooterHeight : 0,
   );
   const selectedCommit =
     selectedCommitId === null
@@ -575,7 +675,7 @@ export function HistoryWorkbench({
   return (
     <section
       aria-label={t("history.title")}
-      className="flex min-h-[660px] min-w-0 flex-col overflow-hidden rounded-lg border bg-card text-card-foreground"
+      className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border bg-card text-card-foreground"
     >
       <header className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
         <div className="flex min-w-0 items-center gap-2">
@@ -591,6 +691,7 @@ export function HistoryWorkbench({
         </div>
         <div className="flex min-w-0 flex-1 items-center justify-end gap-2">
           <BranchFilter
+            activeBranchName={activeHistoryBranchName}
             branches={branches}
             mode={branchMode}
             onModeChange={setBranchMode}
@@ -681,6 +782,21 @@ export function HistoryWorkbench({
         </div>
       ) : null}
 
+      {backendHistoryEnabled && historyLimitReached ? (
+        <div
+          className="border-b bg-muted/35 px-4 py-2 text-sm text-muted-foreground"
+          data-testid="history-limit-reached"
+          role="status"
+        >
+          {t(
+            effectiveSearchTerm
+              ? "history.searchLimitReached"
+              : "history.limitReached",
+            { count: maxHistoryCommits },
+          )}
+        </div>
+      ) : null}
+
       <div className="grid border-b bg-muted/35 px-4 py-2 text-xs font-medium text-muted-foreground [grid-template-columns:112px_minmax(0,1fr)_180px_140px]">
         <span>{t("history.columns.graph")}</span>
         <span>{t("history.columns.commit")}</span>
@@ -689,10 +805,10 @@ export function HistoryWorkbench({
       </div>
 
       <div
-        className="relative flex-1 overflow-auto"
+        className="relative min-h-0 flex-1 overflow-auto"
         data-testid="history-scroll-viewport"
         onScroll={handleScroll}
-        style={{ height: viewportHeight }}
+        ref={historyViewportRef}
       >
         <div className="relative" style={{ height: historyContentHeight }}>
           {virtual.items.map((item) => {
@@ -702,7 +818,10 @@ export function HistoryWorkbench({
                 gravatarEnabled={gravatarEnabled}
                 key={row.commit.id}
                 now={effectiveNow}
-                onSelect={setSelectedCommitId}
+                onSelect={(commitId, trigger) => {
+                  commitDetailReturnFocusRef.current = trigger;
+                  setSelectedCommitId(commitId);
+                }}
                 row={row}
                 style={{
                   height: item.size,
@@ -725,7 +844,7 @@ export function HistoryWorkbench({
         ) : null}
         {visibleRows.length === 0 && !historyLoadError ? (
           <div className="absolute inset-0 flex items-center justify-center px-4 pb-14 text-center text-sm text-muted-foreground">
-            {isInitialHistoryLoading
+            {isHistoryContentLoading
               ? t("history.loading")
               : t("history.empty")}
           </div>
@@ -744,35 +863,47 @@ export function HistoryWorkbench({
         ) : null}
       </div>
 
-      <CommitDetailPanel
-        commit={selectedCommit}
-        gravatarEnabled={gravatarEnabled}
-        hasRemote={hasRemote}
-        now={effectiveNow}
-        onBeforeRevert={onBeforeRevert}
-        onOpenChange={(open) => {
-          if (!open) {
-            setSelectedCommitId(null);
-          }
-        }}
-        onRevertAutoStash={onRevertAutoStash}
-        onRevertStashRecovery={onRevertStashRecovery}
-        onWriteBusyChange={onWriteBusyChange}
-        repositoryPath={repositoryPath}
-        setConflictEntered={setConflictEntered}
-        writeDisabled={writeDisabled}
-      />
+      {selectedCommit ? (
+        <CommitDetailPanel
+          commit={selectedCommit}
+          detailsRepositoryPath={historyRepositoryPath}
+          gravatarEnabled={gravatarEnabled}
+          hasRemote={hasRemote}
+          now={effectiveNow}
+          onBeforeRevert={onBeforeRevert}
+          onOpenChange={(open) => {
+            if (!open) {
+              setSelectedCommitId(null);
+            }
+          }}
+          onRevertAutoStash={onRevertAutoStash}
+          onRevertStashRecovery={onRevertStashRecovery}
+          onWriteBusyChange={onWriteBusyChange}
+          repositoryPath={repositoryPath}
+          returnFocusRef={commitDetailReturnFocusRef}
+          setConflictEntered={setConflictEntered}
+          writeDisabled={writeDisabled}
+        />
+      ) : null}
     </section>
   );
 }
 
+function countLoadedCommits(
+  pages: readonly { commits: readonly unknown[] }[],
+): number {
+  return pages.reduce((count, page) => count + page.commits.length, 0);
+}
+
 function BranchFilter({
+  activeBranchName,
   branches,
   mode,
   onModeChange,
   onSelectedBranchesChange,
   selectedBranches,
 }: {
+  activeBranchName: string | null;
   branches: HistoryBranch[];
   mode: BranchFilterMode;
   onModeChange: (mode: BranchFilterMode) => void;
@@ -780,7 +911,8 @@ function BranchFilter({
   selectedBranches: Set<string>;
 }) {
   const { t } = useTranslation();
-  const [open, setOpen] = React.useState(false);
+  const [anchor, setAnchor] = React.useState<HTMLButtonElement | null>(null);
+  const open = anchor !== null;
   const [query, setQuery] = React.useState("");
   const deferredQuery = React.useDeferredValue(query);
   const filteredBranches = React.useMemo(() => {
@@ -795,31 +927,57 @@ function BranchFilter({
     mode === "all"
       ? t("history.filters.all")
       : mode === "auto"
-        ? t("history.filters.auto")
+        ? activeBranchName
+          ? t("history.filters.currentBranch", { branch: activeBranchName })
+          : t("history.filters.all")
         : t("history.filters.custom", { count: selectedBranches.size });
+  const autoLabel = activeBranchName
+    ? t("history.filters.currentBranch", { branch: activeBranchName })
+    : t("history.filters.all");
+  const customSelectionLimitReached =
+    selectedBranches.size >= maxCustomBranchSelections;
 
   return (
-    <div className="relative">
-      <Button
-        className="gap-2"
-        onClick={() => {
-          if (open) {
-            setQuery("");
-          }
-          setOpen(!open);
-        }}
-        type="button"
-        variant="secondary"
-      >
-        <GitBranch className="size-4" />
-        {label}
-        <ChevronDown className="size-4" />
-      </Button>
+    <div className="relative min-w-0 max-w-64">
+      <Tooltip content={label}>
+        {({ describedBy }) => (
+          <Button
+            aria-expanded={open}
+            aria-haspopup="dialog"
+            aria-describedby={describedBy}
+            className="max-w-full min-w-0 gap-2"
+            onClick={(event) => {
+              if (open) {
+                setQuery("");
+                setAnchor(null);
+              } else {
+                setAnchor(event.currentTarget);
+              }
+            }}
+            type="button"
+            variant="secondary"
+          >
+            <GitBranch className="size-4 shrink-0" />
+            <span className="min-w-0 truncate">{label}</span>
+            <ChevronDown className="size-4 shrink-0" />
+          </Button>
+        )}
+      </Tooltip>
       {open ? (
-        <div className="absolute left-0 top-11 z-20 w-72 rounded-md border bg-card p-2 shadow-floating">
+        <FloatingPanel
+          anchor={anchor}
+          aria-label={t("history.filters.branches")}
+          aria-modal={false}
+          className="w-72 p-2"
+          onClose={() => {
+            setAnchor(null);
+            setQuery("");
+          }}
+          role="dialog"
+        >
           <FilterOption
             checked={mode === "auto"}
-            label={t("history.filters.auto")}
+            label={autoLabel}
             onSelect={() => {
               onModeChange("auto");
               onSelectedBranchesChange(new Set());
@@ -842,6 +1000,7 @@ function BranchFilter({
             <input
               aria-label={t("history.filters.search")}
               className="h-9 w-full rounded-md border bg-background pl-8 pr-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              data-autofocus
               onChange={(event) => setQuery(event.target.value)}
               placeholder={t("history.filters.searchPlaceholder")}
               value={query}
@@ -853,6 +1012,7 @@ function BranchFilter({
                 branches={filteredBranches}
                 onModeChange={onModeChange}
                 onSelectedBranchesChange={onSelectedBranchesChange}
+                selectionLimitReached={customSelectionLimitReached}
                 selectedBranches={selectedBranches}
               />
             ) : (
@@ -861,7 +1021,14 @@ function BranchFilter({
               </p>
             )}
           </div>
-        </div>
+          {customSelectionLimitReached ? (
+            <p className="px-2 pt-2 text-xs text-warning" role="status">
+              {t("history.filters.selectionLimitReached", {
+                count: maxCustomBranchSelections,
+              })}
+            </p>
+          ) : null}
+        </FloatingPanel>
       ) : null}
     </div>
   );
@@ -871,11 +1038,13 @@ function VirtualBranchFilterOptions({
   branches,
   onModeChange,
   onSelectedBranchesChange,
+  selectionLimitReached,
   selectedBranches,
 }: {
   branches: HistoryBranch[];
   onModeChange: (mode: BranchFilterMode) => void;
   onSelectedBranchesChange: (selected: Set<string>) => void;
+  selectionLimitReached: boolean;
   selectedBranches: Set<string>;
 }) {
   const { t } = useTranslation();
@@ -911,6 +1080,9 @@ function VirtualBranchFilterOptions({
             >
               <FilterOption
                 checked={selectedBranches.has(branch.name)}
+                disabled={
+                  selectionLimitReached && !selectedBranches.has(branch.name)
+                }
                 label={
                   branch.current
                     ? `${branch.name} • ${t("history.filters.current")}`
@@ -920,7 +1092,7 @@ function VirtualBranchFilterOptions({
                   const next = new Set(selectedBranches);
                   if (next.has(branch.name)) {
                     next.delete(branch.name);
-                  } else {
+                  } else if (next.size < maxCustomBranchSelections) {
                     next.add(branch.name);
                   }
                   onSelectedBranchesChange(next);
@@ -940,6 +1112,7 @@ function VirtualBranchFilterOptions({
 
 function FilterOption({
   checked,
+  disabled = false,
   label,
   onSelect,
   optionCount,
@@ -947,6 +1120,7 @@ function FilterOption({
   testId,
 }: {
   checked: boolean;
+  disabled?: boolean;
   label: string;
   onSelect: () => void;
   optionCount?: number;
@@ -961,6 +1135,7 @@ function FilterOption({
       aria-setsize={isOption ? optionCount : undefined}
       className="flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-sm hover:bg-accent"
       data-testid={testId}
+      disabled={disabled}
       onClick={onSelect}
       role={isOption ? "option" : undefined}
       type="button"
@@ -982,7 +1157,7 @@ function HistoryCommitRow({
 }: {
   gravatarEnabled: boolean;
   now: string;
-  onSelect: (commitId: string) => void;
+  onSelect: (commitId: string, trigger: HTMLButtonElement) => void;
   row: HistoryRow;
   style: React.CSSProperties;
 }) {
@@ -999,8 +1174,8 @@ function HistoryCommitRow({
       data-commit-message={commit.message}
       data-commit-short-id={commit.shortId}
       data-testid="history-commit-row"
-      onClick={() => {
-        onSelect(commit.id);
+      onClick={(event) => {
+        onSelect(commit.id, event.currentTarget);
       }}
       style={style}
       type="button"
@@ -1125,7 +1300,8 @@ function RefBadge({ refItem }: { refItem: HistoryCommit["refs"][number] }) {
 
 function CommitRefsBrowser({ refs }: { refs: HistoryCommit["refs"] }) {
   const { t } = useTranslation();
-  const [open, setOpen] = React.useState(false);
+  const [anchor, setAnchor] = React.useState<HTMLButtonElement | null>(null);
+  const open = anchor !== null;
   const [query, setQuery] = React.useState("");
   const deferredQuery = React.useDeferredValue(query);
   const filteredRefs = React.useMemo(() => {
@@ -1145,12 +1321,15 @@ function CommitRefsBrowser({ refs }: { refs: HistoryCommit["refs"] }) {
     <div className="relative mt-2 w-fit">
       <Button
         aria-expanded={open}
+        aria-haspopup="dialog"
         className="h-7 gap-1.5 px-2 text-xs"
-        onClick={() => {
+        onClick={(event) => {
           if (open) {
             setQuery("");
+            setAnchor(null);
+          } else {
+            setAnchor(event.currentTarget);
           }
-          setOpen(!open);
         }}
         type="button"
         variant="ghost"
@@ -1160,7 +1339,17 @@ function CommitRefsBrowser({ refs }: { refs: HistoryCommit["refs"] }) {
         <ChevronDown aria-hidden="true" className="size-3.5" />
       </Button>
       {open ? (
-        <div className="absolute left-0 top-8 z-30 w-80 rounded-md border bg-card p-2 shadow-floating">
+        <FloatingPanel
+          anchor={anchor}
+          aria-label={t("history.refs.list")}
+          aria-modal={false}
+          className="w-80 p-2"
+          onClose={() => {
+            setAnchor(null);
+            setQuery("");
+          }}
+          role="dialog"
+        >
           <label className="relative flex items-center">
             <Search
               aria-hidden="true"
@@ -1169,6 +1358,7 @@ function CommitRefsBrowser({ refs }: { refs: HistoryCommit["refs"] }) {
             <input
               aria-label={t("history.refs.search")}
               className="h-9 w-full rounded-md border bg-background pl-8 pr-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              data-autofocus
               onChange={(event) => setQuery(event.target.value)}
               placeholder={t("history.refs.searchPlaceholder")}
               value={query}
@@ -1183,7 +1373,7 @@ function CommitRefsBrowser({ refs }: { refs: HistoryCommit["refs"] }) {
               </p>
             )}
           </div>
-        </div>
+        </FloatingPanel>
       ) : null}
     </div>
   );
@@ -1313,8 +1503,32 @@ function GraphSegmentLine({
   );
 }
 
+interface LoadedCommitDetails {
+  body: string | null;
+  bodyTruncated: boolean;
+  files: HistoryCommit["changedFiles"];
+  truncated: boolean;
+}
+
+type CommitDetailsLoadState =
+  | { status: "loading" }
+  | { status: "loaded"; value: LoadedCommitDetails }
+  | { status: "error"; error: unknown };
+
+type CommitFileLoadState =
+  | { status: "idle" }
+  | { status: "loading"; key: string }
+  | {
+      status: "loaded";
+      key: string;
+      content: DiffContent;
+      payload: DiffPayload;
+    }
+  | { status: "error"; key: string; error: unknown };
+
 function CommitDetailPanel({
   commit,
+  detailsRepositoryPath,
   gravatarEnabled,
   hasRemote,
   now,
@@ -1324,10 +1538,12 @@ function CommitDetailPanel({
   onRevertStashRecovery,
   onWriteBusyChange,
   repositoryPath,
+  returnFocusRef,
   setConflictEntered,
   writeDisabled,
 }: {
-  commit: HistoryCommit | null;
+  commit: HistoryCommit;
+  detailsRepositoryPath: string | null;
   gravatarEnabled: boolean;
   hasRemote: boolean;
   now: string;
@@ -1340,11 +1556,27 @@ function CommitDetailPanel({
   ) => void;
   onWriteBusyChange?: (busy: boolean) => void;
   repositoryPath: string | null;
+  returnFocusRef: React.RefObject<HTMLElement | null>;
   setConflictEntered: (event: ConflictEnteredEvent) => void;
   writeDisabled: boolean;
 }) {
   const { t } = useTranslation();
   const formatters = useLocalizedFormatters();
+  const fixtureDetails = React.useMemo<LoadedCommitDetails>(
+    () => ({
+      body: commit.body ?? null,
+      bodyTruncated: false,
+      files: commit.changedFiles,
+      truncated: false,
+    }),
+    [commit.body, commit.changedFiles],
+  );
+  const [detailsAttempt, setDetailsAttempt] = React.useState(0);
+  const [remoteDetailsState, setDetailsState] =
+    React.useState<CommitDetailsLoadState>({ status: "loading" });
+  const detailsState: CommitDetailsLoadState = detailsRepositoryPath
+    ? remoteDetailsState
+    : { status: "loaded", value: fixtureDetails };
   const [selectedFile, setSelectedFile] = React.useState<{
     commitId: string;
     path: string | null;
@@ -1356,9 +1588,66 @@ function CommitDetailPanel({
   const [revertError, setRevertError] = React.useState<string | null>(null);
   const [revertPushAfterRevert, setRevertPushAfterRevert] =
     React.useState(true);
-  const [revertStatus, setRevertStatus] = React.useState<string | null>(null);
+  const [fileAttempt, setFileAttempt] = React.useState(0);
+  const [fileState, setFileState] = React.useState<CommitFileLoadState>({
+    status: "idle",
+  });
+  const panelRef = React.useRef<HTMLDivElement>(null);
+  const titleId = React.useId();
+  const dialogId = useModalLayer(panelRef, {
+    onEscape: revertBusy ? undefined : () => onOpenChange(false),
+    restoreFocusRef: returnFocusRef,
+  });
   const activeRevertTarget =
-    revertTarget && revertTarget.id === commit?.id ? revertTarget : null;
+    revertTarget && revertTarget.id === commit.id ? revertTarget : null;
+
+  React.useEffect(() => {
+    if (!detailsRepositoryPath) {
+      return;
+    }
+
+    let disposed = false;
+    let settled = false;
+    const operationId = createHistoryOperationId("commit-details");
+
+    void commitDetails({
+      limit: commitDetailFileLimit,
+      oid: commit.id,
+      operationId,
+      repositoryPath: detailsRepositoryPath,
+    })
+      .then((response) => {
+        if (response.oid !== commit.id) {
+          throw new Error(
+            "Commit details response did not match the requested commit.",
+          );
+        }
+        settled = true;
+        if (!disposed) {
+          setDetailsState({
+            status: "loaded",
+            value: mapLoadedCommitDetails(response),
+          });
+        }
+      })
+      .catch((error: unknown) => {
+        settled = true;
+        if (!disposed && !isOperationCancelledError(error)) {
+          setDetailsState({ error, status: "error" });
+        }
+      });
+
+    return () => {
+      disposed = true;
+      if (!settled) {
+        cancelHistoryReadOperation(
+          operationId,
+          "cancelCommitDetails",
+          t("history.details.cancelFailed"),
+        );
+      }
+    };
+  }, [commit.id, detailsAttempt, detailsRepositoryPath, t]);
 
   React.useEffect(() => {
     onWriteBusyChange?.(revertBusy);
@@ -1376,7 +1665,6 @@ function CommitDetailPanel({
       if (!open && !revertBusy) {
         setRevertTarget(null);
         setRevertError(null);
-        setRevertStatus(null);
       }
     },
     [revertBusy],
@@ -1389,7 +1677,6 @@ function CommitDetailPanel({
 
     setRevertBusy(true);
     setRevertError(null);
-    setRevertStatus(null);
 
     try {
       await onBeforeRevert?.();
@@ -1403,8 +1690,9 @@ function CommitDetailPanel({
       });
 
       if (response.status === "reverted") {
-        setRevertStatus(
-          t(
+        showToast({
+          key: "history-revert-result",
+          message: t(
             response.pushed
               ? "history.revert.revertedAndPushed"
               : "history.revert.reverted",
@@ -1413,7 +1701,9 @@ function CommitDetailPanel({
               shortId: response.oid.slice(0, 7),
             },
           ),
-        );
+          tone: "success",
+        });
+        setRevertTarget(null);
         return;
       }
 
@@ -1435,7 +1725,10 @@ function CommitDetailPanel({
       setRevertTarget(null);
       onOpenChange(false);
     } catch (error) {
-      setRevertError(getErrorSummary(error));
+      setRevertError(t("history.revert.failed"));
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:error", { detail: error }),
+      );
     } finally {
       setRevertBusy(false);
     }
@@ -1453,158 +1746,514 @@ function CommitDetailPanel({
     writeDisabled,
   ]);
 
-  if (!commit) {
-    return null;
-  }
-
+  const loadedDetails =
+    detailsState.status === "loaded" ? detailsState.value : null;
   const selectedPath =
     selectedFile?.commitId === commit.id ? selectedFile.path : null;
   const activeFile =
-    commit.changedFiles.find((file) => file.path === selectedPath) ??
-    commit.changedFiles[0] ??
+    loadedDetails?.files.find((file) => file.path === selectedPath) ??
+    loadedDetails?.files[0] ??
     null;
+  const activeFileKey = activeFile ? `${commit.id}\0${activeFile.path}` : null;
+
+  React.useEffect(() => {
+    if (!detailsRepositoryPath || !activeFile || !activeFileKey) {
+      return;
+    }
+
+    let disposed = false;
+    let settled = false;
+    const operationId = createHistoryOperationId("commit-file-detail");
+    const requestedPath = activeFile.path;
+
+    void commitFileDetail({
+      file: toCommitChangedFile(activeFile),
+      oid: commit.id,
+      operationId,
+      repositoryPath: detailsRepositoryPath,
+    })
+      .then((response) => {
+        if (
+          response.oid !== commit.id ||
+          response.file.path !== requestedPath
+        ) {
+          throw new Error(
+            "File comparison response did not match the requested file.",
+          );
+        }
+        settled = true;
+        if (!disposed) {
+          setFileState({
+            content: response.diff,
+            key: activeFileKey,
+            payload: response.payload,
+            status: "loaded",
+          });
+        }
+      })
+      .catch((error: unknown) => {
+        settled = true;
+        if (!disposed && !isOperationCancelledError(error)) {
+          setFileState({ error, key: activeFileKey, status: "error" });
+        }
+      });
+
+    return () => {
+      disposed = true;
+      if (!settled) {
+        cancelHistoryReadOperation(
+          operationId,
+          "cancelCommitFileDetail",
+          t("history.details.fileCancelFailed"),
+        );
+      }
+    };
+  }, [
+    activeFile,
+    activeFileKey,
+    commit.id,
+    detailsRepositoryPath,
+    fileAttempt,
+    t,
+  ]);
+
+  const copyCommitHash = async () => {
+    try {
+      if (!navigator.clipboard) {
+        throw new Error("Clipboard API is unavailable.");
+      }
+      await navigator.clipboard.writeText(commit.id);
+      showToast({
+        key: "history-copy-result",
+        message: t("history.details.hashCopied"),
+        tone: "success",
+      });
+    } catch (error) {
+      const summary = t("history.details.hashCopyFailed");
+      showToast({
+        key: "history-copy-result",
+        message: summary,
+        tone: "error",
+      });
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:error", {
+          detail: {
+            cause: error,
+            operationName: "copyCommitHash",
+            summary,
+          },
+        }),
+      );
+    }
+  };
 
   return (
-    <div className="fixed inset-0 z-40 flex items-end bg-black/35">
-      <button
-        aria-label={t("history.details.close")}
-        className="absolute inset-0 cursor-default"
-        disabled={revertBusy}
-        onClick={() => {
-          if (!revertBusy) {
-            onOpenChange(false);
+    <DialogLayerContext.Provider value={dialogId}>
+      <div
+        ref={panelRef}
+        aria-labelledby={titleId}
+        aria-modal="true"
+        className="fixed inset-0 z-50 flex items-end bg-black/35 focus-visible:outline-none"
+        role="dialog"
+        tabIndex={-1}
+      >
+        <button
+          aria-hidden="true"
+          aria-label={t("history.details.close")}
+          className="absolute inset-0 cursor-default"
+          disabled={revertBusy}
+          onClick={() => {
+            if (!revertBusy) {
+              onOpenChange(false);
+            }
+          }}
+          tabIndex={-1}
+          type="button"
+        />
+        <aside
+          aria-busy={
+            detailsState.status === "loading" ||
+            Boolean(
+              detailsRepositoryPath &&
+              activeFileKey !== null &&
+              (fileState.status === "idle" ||
+                fileState.key !== activeFileKey ||
+                fileState.status === "loading"),
+            )
           }
-        }}
-        type="button"
-      />
-      <aside className="relative z-10 h-[68vh] w-full border-t bg-card shadow-floating">
-        <div className="flex h-full flex-col">
-          <header className="flex items-start justify-between gap-4 border-b px-5 py-4">
-            <div className="flex min-w-0 items-start gap-3">
-              <Avatar
-                author={commit.author}
-                gravatarEnabled={gravatarEnabled}
-              />
-              <div className="min-w-0">
-                <h3 className="truncate text-base font-semibold">
-                  {commit.message}
-                </h3>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  {commit.author.name} ·{" "}
-                  <time dateTime={commit.authoredAt}>
-                    {formatters.formatDate(commit.authoredAt, {
-                      dateStyle: "full",
-                      timeStyle: "long",
-                    })}
-                  </time>{" "}
-                  · {formatters.formatRelativeTime(commit.authoredAt, now)}
-                </p>
-                {commit.body ? (
-                  <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
-                    {commit.body}
+          className="relative z-10 h-[68vh] w-full border-t bg-card shadow-floating"
+        >
+          <div className="flex h-full flex-col">
+            <header className="flex items-start justify-between gap-4 border-b px-5 py-4">
+              <div className="flex min-w-0 items-start gap-3">
+                <Avatar
+                  author={commit.author}
+                  gravatarEnabled={gravatarEnabled}
+                />
+                <div className="min-w-0">
+                  <h3 className="truncate text-base font-semibold" id={titleId}>
+                    {commit.message}
+                  </h3>
+                  <p
+                    className="mt-1 truncate text-sm text-muted-foreground"
+                    data-testid="history-commit-byline"
+                    title={commit.author.name}
+                  >
+                    {commit.author.name} ·{" "}
+                    <time dateTime={commit.authoredAt}>
+                      {formatters.formatDate(commit.authoredAt, {
+                        dateStyle: "full",
+                        timeStyle: "long",
+                      })}
+                    </time>{" "}
+                    · {formatters.formatRelativeTime(commit.authoredAt, now)}
                   </p>
-                ) : null}
-                <CommitRefsBrowser refs={commit.refs} />
+                  {loadedDetails?.body ? (
+                    <p
+                      className="mt-2 max-h-24 max-w-3xl overflow-auto whitespace-pre-wrap pr-2 text-sm text-muted-foreground"
+                      data-testid="history-commit-body"
+                    >
+                      {loadedDetails.body}
+                      {loadedDetails.bodyTruncated ? (
+                        <span className="mt-1 block text-xs">
+                          {t("history.details.bodyTruncated")}
+                        </span>
+                      ) : null}
+                    </p>
+                  ) : null}
+                  <CommitRefsBrowser refs={commit.refs} />
+                </div>
               </div>
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
-              <RevertActionButton
-                busy={revertBusy}
-                commit={commit}
-                disabled={writeDisabled}
-                onClick={() => {
-                  setRevertTarget(commit);
-                  setRevertError(null);
-                  setRevertPushAfterRevert(true);
-                  setRevertStatus(null);
-                }}
-                repositoryPath={repositoryPath}
-              />
-              <Button
-                className="gap-2"
-                onClick={() => void navigator.clipboard?.writeText(commit.id)}
-                variant="secondary"
-              >
-                <Copy className="size-4" />
-                {t("history.details.copyHash")}
-              </Button>
-              <IconButton
-                disabled={revertBusy}
-                label={t("history.details.close")}
-                onClick={() => {
-                  if (!revertBusy) {
-                    onOpenChange(false);
-                  }
-                }}
-                variant="ghost"
-              >
-                <X className="size-5" />
-              </IconButton>
-            </div>
-          </header>
-          <div className="grid min-h-0 flex-1 grid-cols-[320px_minmax(0,1fr)]">
-            <div className="min-h-0 overflow-auto border-r">
-              {commit.changedFiles.map((file) => (
-                <button
-                  className={cn(
-                    "flex w-full items-center gap-2 border-b px-4 py-3 text-left text-sm hover:bg-accent",
-                    activeFile?.path === file.path && "bg-accent",
-                  )}
-                  key={file.path}
+              <div className="flex shrink-0 items-center gap-2">
+                <RevertActionButton
+                  busy={revertBusy}
+                  commit={commit}
+                  disabled={writeDisabled}
                   onClick={() => {
-                    setSelectedFile({ commitId: commit.id, path: file.path });
+                    setRevertTarget(commit);
+                    setRevertError(null);
+                    setRevertPushAfterRevert(true);
                   }}
-                  type="button"
+                  repositoryPath={repositoryPath}
+                />
+                <Button
+                  className="gap-2"
+                  onClick={() => void copyCommitHash()}
+                  variant="secondary"
                 >
-                  <FileText className="size-4 shrink-0 text-muted-foreground" />
-                  <span className="min-w-0 flex-1">
-                    <TruncatedText text={file.path} />
-                    <span className="mt-0.5 block text-xs text-muted-foreground">
-                      +{file.additions} -{file.deletions}
-                    </span>
-                  </span>
-                </button>
-              ))}
-            </div>
-            <div className="min-w-0 p-4">
-              {activeFile ? (
-                <DiffViewer
-                  content={{
-                    kind:
-                      activeFile.changeKind === "renamed" &&
-                      activeFile.additions === 0 &&
-                      activeFile.deletions === 0
-                        ? "moved"
-                        : "text",
-                    newText: activeFile.preview ?? activeFile.path,
-                    oldText: activeFile.oldPath ?? activeFile.preview ?? "",
+                  <Copy className="size-4" />
+                  {t("history.details.copyHash")}
+                </Button>
+                <IconButton
+                  disabled={revertBusy}
+                  label={t("history.details.close")}
+                  onClick={() => {
+                    if (!revertBusy) {
+                      onOpenChange(false);
+                    }
                   }}
-                  payload={createCommitDiffPayload(activeFile)}
-                  source="commitDetails"
+                  variant="ghost"
+                >
+                  <X className="size-5" />
+                </IconButton>
+              </div>
+            </header>
+            <div className="grid min-h-0 flex-1 grid-cols-[320px_minmax(0,1fr)]">
+              {detailsState.status === "loading" ? (
+                <CommitDetailStatus
+                  message={t("history.details.loading")}
+                  testId="history-details-loading"
+                />
+              ) : detailsState.status === "error" ? (
+                <CommitDetailError
+                  error={detailsState.error}
+                  message={t("history.details.loadFailed")}
+                  onRetry={() => {
+                    setDetailsState({ status: "loading" });
+                    setDetailsAttempt((value) => value + 1);
+                  }}
+                />
+              ) : detailsState.value.files.length === 0 ? (
+                <CommitDetailStatus
+                  loading={false}
+                  message={t("history.details.noChanges")}
+                  testId="history-details-empty"
                 />
               ) : (
-                <div className="flex h-full items-center justify-center rounded-md border bg-background p-6 text-center text-sm text-muted-foreground">
-                  {t("history.details.noFile")}
-                </div>
+                <>
+                  <CommitChangedFilesList
+                    activePath={activeFile?.path ?? null}
+                    files={detailsState.value.files}
+                    key={commit.id}
+                    onSelect={(path) => {
+                      setSelectedFile({ commitId: commit.id, path });
+                    }}
+                    truncated={detailsState.value.truncated}
+                  />
+                  <div className="flex min-w-0 p-4">
+                    {activeFile && activeFileKey ? (
+                      detailsRepositoryPath ? (
+                        fileState.status === "loaded" &&
+                        fileState.key === activeFileKey ? (
+                          <DiffViewer
+                            content={fileState.content}
+                            payload={fileState.payload}
+                            source="commitDetails"
+                          />
+                        ) : fileState.status === "error" &&
+                          fileState.key === activeFileKey ? (
+                          <CommitDetailError
+                            compact
+                            error={fileState.error}
+                            message={t("history.details.fileLoadFailed")}
+                            onRetry={() => {
+                              setFileState({ status: "idle" });
+                              setFileAttempt((value) => value + 1);
+                            }}
+                          />
+                        ) : (
+                          <CommitDetailStatus
+                            compact
+                            message={t("history.details.fileLoading")}
+                            testId="history-file-detail-loading"
+                          />
+                        )
+                      ) : (
+                        <DiffViewer
+                          content={createFixtureCommitDiffContent(activeFile)}
+                          payload={createCommitDiffPayload(activeFile)}
+                          source="commitDetails"
+                        />
+                      )
+                    ) : (
+                      <div className="flex h-full items-center justify-center rounded-md border bg-background p-6 text-center text-sm text-muted-foreground">
+                        {t("history.details.noFile")}
+                      </div>
+                    )}
+                  </div>
+                </>
               )}
             </div>
           </div>
-        </div>
-      </aside>
-      <RevertCommitDialog
-        busy={revertBusy}
-        commit={activeRevertTarget}
-        error={activeRevertTarget ? revertError : null}
-        hasRemote={hasRemote}
-        onConfirm={() => void runRevert()}
-        onOpenChange={closeRevertDialog}
-        pushAfterRevert={revertPushAfterRevert}
-        setPushAfterRevert={setRevertPushAfterRevert}
-        status={activeRevertTarget ? revertStatus : null}
-        writeDisabled={writeDisabled}
-      />
+        </aside>
+        <RevertCommitDialog
+          busy={revertBusy}
+          commit={activeRevertTarget}
+          error={activeRevertTarget ? revertError : null}
+          hasRemote={hasRemote}
+          onConfirm={() => void runRevert()}
+          onOpenChange={closeRevertDialog}
+          pushAfterRevert={revertPushAfterRevert}
+          setPushAfterRevert={setRevertPushAfterRevert}
+          writeDisabled={writeDisabled}
+        />
+      </div>
+    </DialogLayerContext.Provider>
+  );
+}
+
+function CommitDetailStatus({
+  compact = false,
+  loading = true,
+  message,
+  testId,
+}: {
+  compact?: boolean;
+  loading?: boolean;
+  message: string;
+  testId: string;
+}) {
+  return (
+    <div
+      className={cn(
+        "flex min-h-0 items-center justify-center p-6 text-center text-sm text-muted-foreground",
+        !compact && "col-span-2",
+      )}
+      data-testid={testId}
+      role="status"
+    >
+      <span className="inline-flex items-center gap-2">
+        {loading ? (
+          <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+        ) : null}
+        {message}
+      </span>
     </div>
   );
+}
+
+function CommitDetailError({
+  compact = false,
+  error,
+  message,
+  onRetry,
+}: {
+  compact?: boolean;
+  error: unknown;
+  message: string;
+  onRetry: () => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div
+      className={cn(
+        "flex min-h-0 items-center justify-center p-6",
+        compact && "h-full w-full",
+        !compact && "col-span-2",
+      )}
+      role="alert"
+    >
+      <div className="w-full max-w-md space-y-4 rounded-md border bg-background p-5">
+        <div className="flex items-start gap-3">
+          <AlertTriangle
+            className="mt-0.5 size-5 shrink-0 text-destructive"
+            aria-hidden="true"
+          />
+          <p className="text-sm text-muted-foreground">{message}</p>
+        </div>
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button
+            onClick={() => {
+              window.dispatchEvent(
+                new CustomEvent("artistic-git:error", { detail: error }),
+              );
+            }}
+            type="button"
+            variant="ghost"
+          >
+            {t("history.viewErrorDetails")}
+          </Button>
+          <Button className="gap-2" onClick={onRetry} type="button">
+            <RefreshCw className="size-4" aria-hidden="true" />
+            {t("history.retryLoad")}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CommitChangedFilesList({
+  activePath,
+  files,
+  onSelect,
+  truncated,
+}: {
+  activePath: string | null;
+  files: HistoryCommit["changedFiles"];
+  onSelect: (path: string) => void;
+  truncated: boolean;
+}) {
+  const { t } = useTranslation();
+  const viewportRef = React.useRef<HTMLDivElement>(null);
+  const [viewportHeight, measureViewport] = useObservedViewportHeight(
+    viewportRef,
+    fallbackChangedFileViewportHeight,
+  );
+  const virtual = useVirtualWindow({
+    count: files.length,
+    estimateSize: changedFileRowHeight,
+    viewportHeight,
+  });
+
+  return (
+    <div className="flex min-h-0 flex-col border-r">
+      {truncated ? (
+        <p className="border-b bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+          {t("history.details.filesTruncated", { count: files.length })}
+        </p>
+      ) : null}
+      <div
+        className="min-h-0 flex-1 overflow-auto"
+        data-testid="history-detail-changed-files"
+        onScroll={(event) => {
+          measureViewport(event.currentTarget);
+          virtual.onScroll(event);
+        }}
+        ref={viewportRef}
+      >
+        <div className="relative" style={{ height: virtual.totalSize }}>
+          {virtual.items.map((item) => {
+            const file = files[item.index];
+            const modeChanged =
+              file.oldMode !== undefined &&
+              file.newMode !== undefined &&
+              file.oldMode !== file.newMode;
+            const changeSummary = modeChanged
+              ? t("history.details.linesAndPermissionsChanged", {
+                  additions: file.additions,
+                  deletions: file.deletions,
+                  newMode: file.newMode,
+                  oldMode: file.oldMode,
+                })
+              : `+${file.additions} -${file.deletions}`;
+            return (
+              <button
+                aria-current={activePath === file.path ? "true" : undefined}
+                className={cn(
+                  "absolute inset-x-0 flex w-full items-center gap-2 border-b px-4 text-left text-sm hover:bg-accent",
+                  activePath === file.path && "bg-accent",
+                )}
+                data-testid="history-detail-changed-file"
+                key={file.path}
+                onClick={() => onSelect(file.path)}
+                style={{
+                  height: item.size,
+                  transform: `translateY(${item.start}px)`,
+                }}
+                type="button"
+              >
+                <FileText className="size-4 shrink-0 text-muted-foreground" />
+                <span className="min-w-0 flex-1">
+                  <TruncatedText text={file.path} />
+                  <TruncatedText
+                    className="mt-0.5 text-xs text-muted-foreground"
+                    text={changeSummary}
+                  />
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function useObservedViewportHeight<T extends HTMLElement>(
+  ref: React.RefObject<T | null>,
+  fallbackHeight: number,
+): [number, (element: T) => void] {
+  const [height, setHeight] = React.useState(fallbackHeight);
+  const measure = React.useCallback((element: T) => {
+    const nextHeight = element.clientHeight;
+    if (nextHeight > 0) {
+      setHeight((current) => (current === nextHeight ? current : nextHeight));
+    }
+  }, []);
+
+  React.useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element) {
+      return;
+    }
+
+    measure(element);
+    if (typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    const observer = new ResizeObserver(([entry]) => {
+      const nextHeight = entry?.contentRect.height ?? 0;
+      if (nextHeight > 0) {
+        setHeight((current) => (current === nextHeight ? current : nextHeight));
+      }
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [measure, ref]);
+
+  return [height, measure];
 }
 
 function RevertActionButton({
@@ -1633,7 +2282,7 @@ function RevertActionButton({
       variant="secondary"
     >
       {busy ? <Loader2 className="size-4 animate-spin" /> : null}
-      {t("history.details.revert")}
+      {busy ? t("history.revert.busy") : t("history.details.revert")}
     </Button>
   );
 
@@ -1657,7 +2306,6 @@ function RevertCommitDialog({
   onOpenChange,
   pushAfterRevert,
   setPushAfterRevert,
-  status,
   writeDisabled,
 }: {
   busy: boolean;
@@ -1668,7 +2316,6 @@ function RevertCommitDialog({
   onOpenChange: (open: boolean) => void;
   pushAfterRevert: boolean;
   setPushAfterRevert: (value: boolean) => void;
-  status: string | null;
   writeDisabled: boolean;
 }) {
   const { t } = useTranslation();
@@ -1683,13 +2330,15 @@ function RevertCommitDialog({
         message: commit.message,
         shortId: commit.shortId,
       })}
+      dismissible={!busy}
       footer={
         <div className="flex flex-wrap items-center justify-between gap-3">
           <span
             className="min-w-0 text-sm text-muted-foreground"
             data-testid="history-revert-status"
+            role={busy ? "status" : undefined}
           >
-            {busy ? t("history.revert.busy") : status}
+            {busy ? t("history.revert.busy") : null}
           </span>
           <div className="flex items-center gap-2">
             <Button
@@ -1698,17 +2347,17 @@ function RevertCommitDialog({
               type="button"
               variant="ghost"
             >
-              {status ? t("actions.close") : t("actions.cancel")}
+              {t("actions.cancel")}
             </Button>
             <Button
               className="gap-2"
               data-testid="history-revert-confirm"
-              disabled={busy || writeDisabled || status !== null}
+              disabled={busy || writeDisabled}
               onClick={onConfirm}
               type="button"
             >
               {busy ? <Loader2 className="size-4 animate-spin" /> : null}
-              {t("history.revert.confirm")}
+              {busy ? t("history.revert.busy") : t("history.revert.confirm")}
             </Button>
           </div>
         </div>
@@ -1738,7 +2387,7 @@ function RevertCommitDialog({
             checked={pushAfterRevert}
             className="size-4"
             data-testid="history-revert-push-immediately"
-            disabled={busy || writeDisabled || status !== null}
+            disabled={busy || writeDisabled}
             onChange={(event) => {
               setPushAfterRevert(event.currentTarget.checked);
             }}
@@ -1757,6 +2406,51 @@ function RevertCommitDialog({
       ) : null}
     </DialogFrame>
   );
+}
+
+function mapLoadedCommitDetails(
+  response: CommitDetailsResponse,
+): LoadedCommitDetails {
+  return {
+    body: response.body,
+    bodyTruncated: response.bodyTruncated,
+    files: response.files.map(mapCommitChangedFile),
+    truncated: response.truncated,
+  };
+}
+
+function cancelHistoryReadOperation(
+  operationId: string,
+  operationName: string,
+  summary: string,
+): void {
+  void cancelOperation({ operationId }).catch((error: unknown) => {
+    window.dispatchEvent(
+      new CustomEvent("artistic-git:error", {
+        detail: { cause: error, operationName, summary },
+      }),
+    );
+  });
+}
+
+function createFixtureCommitDiffContent(
+  file: HistoryCommit["changedFiles"][number],
+): DiffContent {
+  if (
+    file.changeKind === "renamed" &&
+    file.additions === 0 &&
+    file.deletions === 0
+  ) {
+    return { kind: "moved", message: null };
+  }
+
+  return {
+    kind: "text",
+    language: null,
+    newText: file.changeKind === "deleted" ? null : (file.preview ?? file.path),
+    oldText:
+      file.changeKind === "added" ? null : (file.oldPath ?? file.preview ?? ""),
+  };
 }
 
 function createCommitDiffPayload(
@@ -1794,27 +2488,6 @@ function getRevertUnavailableReason(
   }
 
   return null;
-}
-
-function getErrorSummary(error: unknown): string {
-  if (typeof error === "string") {
-    return error;
-  }
-
-  if (error instanceof Error) {
-    return error.message;
-  }
-
-  if (
-    typeof error === "object" &&
-    error !== null &&
-    "summary" in error &&
-    typeof error.summary === "string"
-  ) {
-    return error.summary;
-  }
-
-  return "Unknown error";
 }
 
 function laneX(lane: number): number {

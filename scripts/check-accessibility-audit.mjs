@@ -233,10 +233,11 @@ function auditRoleAttributes(sourceFile, opening, tagName, role) {
   }
 
   if (role === "dialog") {
-    if (!hasTrueAttribute(opening, "aria-modal", sourceFile)) {
+    if (!hasAnyAttribute(opening, ["aria-modal"], sourceFile)) {
       addNodeFinding(sourceFile, opening, {
         label: "dialog aria-modal",
-        message: 'Elements with role="dialog" must set aria-modal="true".',
+        message:
+          'Elements with role="dialog" must explicitly declare whether they are modal.',
       });
     }
 

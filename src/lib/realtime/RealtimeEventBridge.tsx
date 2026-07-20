@@ -9,6 +9,7 @@ import type {
   RepoChangedEvent,
 } from "@/lib/ipc/generated";
 import { installRealtimeEventBridge } from "@/lib/realtime/events";
+import { reportDesktopRuntimeError } from "@/lib/runtime-errors";
 
 type AppEventListener = typeof listenAppEvent;
 type RealtimeUnsubscribe = () => void;
@@ -55,9 +56,8 @@ export function RealtimeEventBridge({
           resolvedUnsubscribe();
         }
       })
-      .catch(() => {
-        // The bridge is inert outside a Tauri event runtime, which keeps
-        // browser-only tests and Storybook-style renders usable.
+      .catch((error) => {
+        reportDesktopRuntimeError(error);
       });
 
     return () => {

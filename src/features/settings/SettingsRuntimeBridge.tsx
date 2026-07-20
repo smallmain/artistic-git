@@ -1,9 +1,19 @@
 import * as React from "react";
+import { useTranslation } from "react-i18next";
+import { isTauri } from "@tauri-apps/api/core";
 
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { listenAppEvent } from "@/lib/ipc/events";
 import type { AppSettings } from "@/lib/ipc/generated";
-import { saveAppSettings, settingsSnapshot } from "@/lib/ipc/commands";
+import {
+  listRecentProjects,
+  saveAppSettings,
+  settingsSnapshot,
+} from "@/lib/ipc/commands";
+import {
+  reportDesktopRuntimeError,
+  reportDesktopRuntimeErrorGroup,
+} from "@/lib/runtime-errors";
 import { useWindowStore } from "@/store/window-store";
 import { useTheme } from "@/theme/ThemeProvider";
 
@@ -16,6 +26,7 @@ import {
 } from "./settings-model";
 
 export function SettingsRuntimeBridge() {
+  const { t } = useTranslation();
   const { setLanguagePreference } = useLanguage();
   const { setThemePreference } = useTheme();
   const activeRepositoryPath = useWindowStore(
@@ -28,8 +39,27 @@ export function SettingsRuntimeBridge() {
   const setProjectSettings = useWindowStore(
     (state) => state.setProjectSettings,
   );
+  const runtimeBootstrapAttempt = useWindowStore(
+    (state) => state.runtimeBootstrapAttempt,
+  );
+  const setRecentProjects = useWindowStore((state) => state.setRecentProjects);
+  const recentProjectsRefreshAttempt = useWindowStore(
+    (state) => state.recentProjectsRefreshAttempt,
+  );
+  const setRecentProjectsRuntime = useWindowStore(
+    (state) => state.setRecentProjectsRuntime,
+  );
+  const setSettingsRuntime = useWindowStore(
+    (state) => state.setSettingsRuntime,
+  );
   const activeRepositoryPathRef = React.useRef(activeRepositoryPath);
   const appSettingsRef = React.useRef(appSettings);
+  const recentProjectsRequestRef = React.useRef(0);
+  const translateRef = React.useRef(t);
+
+  React.useEffect(() => {
+    translateRef.current = t;
+  }, [t]);
 
   React.useEffect(() => {
     activeRepositoryPathRef.current = activeRepositoryPath;
@@ -73,6 +103,45 @@ export function SettingsRuntimeBridge() {
     [],
   );
 
+  const refreshRecentProjects = React.useCallback(
+    (settings = appSettingsRef.current) => {
+      const requestId = recentProjectsRequestRef.current + 1;
+      recentProjectsRequestRef.current = requestId;
+      setRecentProjectsRuntime({ status: "loading", error: null });
+      const limit = Math.min(
+        200,
+        Math.max(0, settings?.recentProjectLimit ?? 20),
+      );
+      void listRecentProjects({ limit })
+        .then((projects) => {
+          if (recentProjectsRequestRef.current === requestId) {
+            setRecentProjects(projects);
+            setRecentProjectsRuntime({ status: "ready", error: null });
+          }
+        })
+        .catch((error) => {
+          if (recentProjectsRequestRef.current === requestId) {
+            setRecentProjectsRuntime({ status: "failed", error });
+            reportDesktopRuntimeError(error);
+          }
+        });
+    },
+    [setRecentProjects, setRecentProjectsRuntime],
+  );
+
+  React.useEffect(
+    () => () => {
+      recentProjectsRequestRef.current += 1;
+    },
+    [],
+  );
+
+  React.useEffect(() => {
+    if (appSettings) {
+      refreshRecentProjects(appSettings);
+    }
+  }, [appSettings, recentProjectsRefreshAttempt, refreshRecentProjects]);
+
   React.useEffect(() => {
     let active = true;
 
@@ -83,15 +152,37 @@ export function SettingsRuntimeBridge() {
         }
         setAppVersion(snapshot.appVersion);
         applySettings(snapshot.settings);
+        setSettingsRuntime({ status: "ready", error: null });
+        reportDesktopRuntimeErrorGroup(
+          [snapshot.identitySourcesError, snapshot.sshKeyError],
+          translateRef.current("settings.supplementalLoadFailed"),
+        );
       })
-      .catch(() => {
-        // Browser-only tests and static previews do not have a Tauri runtime.
+      .catch((error) => {
+        if (active) {
+          if (isTauri()) {
+            setSettingsRuntime({ status: "failed", error });
+            reportDesktopRuntimeError(error);
+          } else {
+            applySettings(normalizeAppSettings(appSettingsRef.current));
+            setRecentProjects([]);
+            setRecentProjectsRuntime({ status: "ready", error: null });
+            setSettingsRuntime({ status: "ready", error: null });
+          }
+        }
       });
 
     return () => {
       active = false;
     };
-  }, [applySettings, setAppVersion]);
+  }, [
+    applySettings,
+    runtimeBootstrapAttempt,
+    setAppVersion,
+    setRecentProjects,
+    setRecentProjectsRuntime,
+    setSettingsRuntime,
+  ]);
 
   React.useEffect(() => {
     let active = true;
@@ -110,6 +201,8 @@ export function SettingsRuntimeBridge() {
         }
       } else if (payload.type === "projectUpdated") {
         setProjectSettings(payload.projectKey, payload.project);
+      } else if (payload.type === "recentProjectsChanged") {
+        refreshRecentProjects();
       }
     })
       .then((resolvedUnlisten) => {
@@ -119,15 +212,20 @@ export function SettingsRuntimeBridge() {
           resolvedUnlisten();
         }
       })
-      .catch(() => {
-        // No-op outside Tauri.
+      .catch((error) => {
+        reportDesktopRuntimeError(error);
       });
 
     return () => {
       active = false;
       unlisten?.();
     };
-  }, [applyIdentityToActiveRepository, applySettings, setProjectSettings]);
+  }, [
+    applyIdentityToActiveRepository,
+    applySettings,
+    refreshRecentProjects,
+    setProjectSettings,
+  ]);
 
   return null;
 }

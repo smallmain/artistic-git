@@ -1,6 +1,5 @@
 import {
   Archive,
-  Check,
   ChevronDown,
   ChevronRight,
   Cloud,
@@ -13,6 +12,7 @@ import {
   RefreshCw,
   Search,
   Settings,
+  TriangleAlert,
   Trash2,
   UploadCloud,
 } from "lucide-react";
@@ -20,8 +20,13 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { IconButton } from "@/components/ui/icon-button";
+import {
+  FloatingPanel,
+  type FloatingPanelAnchor,
+} from "@/components/ui/floating-panel";
 import { Tooltip } from "@/components/ui/tooltip";
 import { TruncatedText } from "@/components/ui/truncated-text";
+import { useLocalizedFormatters } from "@/i18n/format";
 import type {
   FetchStateEvent,
   SidebarLayoutSettings,
@@ -53,12 +58,10 @@ export interface StashListItem {
   timeLabel: string;
 }
 
-export type SyncFeedback =
-  { kind: "all" } | { branchName: string; kind: "branch" };
-
 interface RepositorySidebarProps {
   branchActionsDisabledReason?: string;
   branchesTruncated?: boolean;
+  branchesLoading?: boolean;
   branchesUnavailable?: boolean;
   branches: BranchListItem[];
   busy: boolean;
@@ -71,7 +74,7 @@ interface RepositorySidebarProps {
   onDeleteStash?: (stash: StashListItem) => void;
   onFetch?: () => void;
   onOpenSettings?: () => void;
-  onReviewMode?: () => void;
+  onReviewMode?: (trigger: HTMLButtonElement) => void;
   onShowStashDetails?: (stash: StashListItem) => void;
   onShowSafetyBackups?: () => void;
   onSidebarLayoutChange?: (layout: Required<SidebarLayoutSettings>) => void;
@@ -79,9 +82,9 @@ interface RepositorySidebarProps {
   remoteStateKnown?: boolean;
   repository: RepositorySummary;
   stashesTruncated?: boolean;
+  stashesLoading?: boolean;
   stashesUnavailable?: boolean;
   stashes: StashListItem[];
-  syncFeedback?: SyncFeedback | null;
 }
 
 const minSidebarWidth = 260;
@@ -101,6 +104,7 @@ function fallbackBranchViewportHeight() {
 export function RepositorySidebar({
   branchActionsDisabledReason,
   branchesTruncated = false,
+  branchesLoading = false,
   branchesUnavailable = false,
   branches,
   busy,
@@ -121,9 +125,9 @@ export function RepositorySidebar({
   remoteStateKnown = true,
   repository,
   stashesTruncated = false,
+  stashesLoading = false,
   stashesUnavailable = false,
   stashes,
-  syncFeedback,
 }: RepositorySidebarProps) {
   const { t } = useTranslation();
   const sidebarLayout = useWindowStore((state) => state.sidebarLayout);
@@ -184,7 +188,6 @@ export function RepositorySidebar({
       ),
     [branches, repository.hasRemote],
   );
-  const projectSyncComplete = syncFeedback?.kind === "all";
   const virtualBranches = React.useMemo(() => {
     const visibleCount =
       Math.ceil(branchViewport.height / branchRowHeight) +
@@ -407,27 +410,15 @@ export function RepositorySidebar({
               }
               data-testid="repository-sync-all"
               disabled={busy || !onFetch}
-              label={
-                projectSyncComplete
-                  ? t("repository.syncAllUpToDate")
-                  : t("repository.sync")
-              }
+              label={t("repository.sync")}
               onClick={onFetch}
               tooltip={
-                busy
-                  ? t("repository.busyTooltip")
-                  : projectSyncComplete
-                    ? t("repository.syncAllUpToDate")
-                    : t("repository.sync")
+                busy ? t("repository.busyTooltip") : t("repository.sync")
               }
               type="button"
               variant="ghost"
             >
-              {projectSyncComplete ? (
-                <Check className="size-4" aria-hidden="true" />
-              ) : (
-                <RefreshCw className="size-4" aria-hidden="true" />
-              )}
+              <RefreshCw className="size-4" aria-hidden="true" />
             </IconButton>
           ) : null}
         </div>
@@ -437,7 +428,7 @@ export function RepositorySidebar({
         <button
           className="flex h-9 flex-1 items-center justify-center gap-2 rounded-md bg-[linear-gradient(135deg,hsl(var(--review-cyan-start)),hsl(var(--review-cyan-end)))] px-3 text-sm font-medium text-white shadow-sm hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-60"
           disabled={busy || !onReviewMode}
-          onClick={onReviewMode}
+          onClick={(event) => onReviewMode?.(event.currentTarget)}
           title={
             busy ? t("repository.busyTooltip") : t("repository.reviewMode")
           }
@@ -463,7 +454,11 @@ export function RepositorySidebar({
           emptyLabel={
             branchesUnavailable
               ? t("repository.branchesLoadError")
-              : t("repository.noSearchResults")
+              : branchesLoading
+                ? t("repository.branchesLoading")
+                : branchQuery.trim()
+                  ? t("repository.noSearchResults")
+                  : t("repository.noBranches")
           }
           filteredCount={filteredBranches.length}
           icon={<GitBranch className="size-4" aria-hidden="true" />}
@@ -531,7 +526,6 @@ export function RepositorySidebar({
                   right: 0,
                   top: index * branchRowHeight,
                 }}
-                syncFeedback={syncFeedback}
               />
             ))}
           </ul>
@@ -549,7 +543,11 @@ export function RepositorySidebar({
           emptyLabel={
             stashesUnavailable
               ? t("repository.stashesLoadError")
-              : t("repository.noSearchResults")
+              : stashesLoading
+                ? t("repository.stashesLoading")
+                : stashQuery.trim()
+                  ? t("repository.noSearchResults")
+                  : t("repository.noStashes")
           }
           filteredCount={filteredStashes.length}
           icon={<Layers className="size-4" aria-hidden="true" />}
@@ -626,6 +624,7 @@ function RepositoryRemoteStatus({
   remoteStateKnown: boolean;
 }) {
   const { t } = useTranslation();
+  const formatters = useLocalizedFormatters();
   if (!remoteStateKnown) {
     return null;
   }
@@ -650,18 +649,36 @@ function RepositoryRemoteStatus({
   }
 
   const message =
-    fetchState.message ??
-    (fetchState.state === "offline"
+    fetchState.state === "offline"
       ? t("repository.fetchOffline")
-      : t("repository.fetchFailed"));
-  const lastSuccess = fetchState.lastSuccessAt
-    ? ` ${t("repository.fetchLastSuccess", {
-        timestamp: fetchState.lastSuccessAt,
-      })}`
-    : "";
+      : t("repository.fetchFailed");
+  const lastSuccessUnixSeconds = fetchState.lastSuccessAt
+    ? Number(fetchState.lastSuccessAt)
+    : Number.NaN;
+  const lastSuccess = Number.isFinite(lastSuccessUnixSeconds)
+    ? t("repository.fetchLastSuccess", {
+        timestamp: formatters.formatDate(lastSuccessUnixSeconds * 1000),
+      })
+    : null;
 
   return (
-    <Tooltip content={`${message}.${lastSuccess}`}>
+    <Tooltip
+      content={
+        <span className="grid gap-1">
+          <span>
+            {message}
+            {lastSuccess ? ` · ${lastSuccess}` : ""}
+          </span>
+          {fetchState.message ? (
+            <span className="text-muted-foreground">
+              {t("repository.fetchTechnicalDetails", {
+                message: fetchState.message,
+              })}
+            </span>
+          ) : null}
+        </span>
+      }
+    >
       {({ describedBy }) => (
         <span
           aria-describedby={describedBy}
@@ -672,7 +689,11 @@ function RepositoryRemoteStatus({
               : "text-destructive",
           )}
         >
-          <CloudOff className="size-4" aria-hidden="true" />
+          {fetchState.state === "offline" ? (
+            <CloudOff className="size-4" aria-hidden="true" />
+          ) : (
+            <TriangleAlert className="size-4" aria-hidden="true" />
+          )}
         </span>
       )}
     </Tooltip>
@@ -778,7 +799,6 @@ interface BranchRowProps {
   onFocus: (branch: BranchListItem) => void;
   onSync?: (branch: BranchListItem) => void;
   style?: React.CSSProperties;
-  syncFeedback?: SyncFeedback | null;
 }
 
 function BranchRow({
@@ -794,10 +814,11 @@ function BranchRow({
   onFocus,
   onSync,
   style,
-  syncFeedback,
 }: BranchRowProps) {
   const { t } = useTranslation();
-  const [menuOpen, setMenuOpen] = React.useState(false);
+  const mainButtonRef = React.useRef<HTMLButtonElement>(null);
+  const [menuAnchor, setMenuAnchor] =
+    React.useState<FloatingPanelAnchor | null>(null);
   const syncLabel = t("repository.syncBadge", {
     ahead: branch.ahead,
     behind: branch.behind,
@@ -813,9 +834,6 @@ function BranchRow({
     !branch.remoteOnly &&
     !branchActionsDisabled &&
     Boolean(onSync);
-  const branchSyncComplete =
-    syncFeedback?.kind === "branch" && syncFeedback.branchName === branch.name;
-
   return (
     <li
       aria-posinset={ariaPosInSet}
@@ -824,7 +842,7 @@ function BranchRow({
       data-testid="branch-row"
       onContextMenu={(event) => {
         event.preventDefault();
-        setMenuOpen(true);
+        setMenuAnchor(mainButtonRef.current ?? event.currentTarget);
       }}
       style={style}
     >
@@ -833,6 +851,7 @@ function BranchRow({
         onClick={() => {
           onFocus(branch);
         }}
+        ref={mainButtonRef}
         type="button"
       >
         <span
@@ -874,18 +893,8 @@ function BranchRow({
                 ? t("repository.syncRequiresLocalBranch")
                 : undefined)
             }
-            icon={
-              branchSyncComplete ? (
-                <Check className="size-3.5" aria-hidden="true" />
-              ) : (
-                <RefreshCw className="size-3.5" aria-hidden="true" />
-              )
-            }
-            label={
-              branchSyncComplete
-                ? t("repository.syncBranchUpToDate")
-                : t("repository.sync")
-            }
+            icon={<RefreshCw className="size-3.5" aria-hidden="true" />}
+            label={t("repository.sync")}
             onClick={canSync ? () => onSync?.(branch) : undefined}
           />
         ) : null}
@@ -908,11 +917,24 @@ function BranchRow({
           label={t("repository.deleteBranch")}
           onClick={canDelete ? () => onDelete?.(branch) : undefined}
         />
+        <IconButton
+          aria-expanded={menuAnchor !== null}
+          aria-haspopup="menu"
+          className="size-7"
+          label={t("repository.moreActions")}
+          onClick={(event) => setMenuAnchor(event.currentTarget)}
+          tooltip={t("repository.moreActions")}
+          variant="ghost"
+        >
+          <MoreHorizontal className="size-3.5" aria-hidden="true" />
+        </IconButton>
       </div>
-      {menuOpen ? (
-        <div
+      {menuAnchor ? (
+        <FloatingPanel
+          anchor={menuAnchor}
           aria-label={t("repository.moreActions")}
-          className="absolute left-8 top-8 z-30 w-56 rounded-md border bg-card p-1 text-sm shadow-floating"
+          className="w-56 p-1 text-sm"
+          onClose={() => setMenuAnchor(null)}
           role="menu"
         >
           {hasRemote ? (
@@ -920,7 +942,7 @@ function BranchRow({
               disabled={!canSync || busy}
               label={t("repository.sync")}
               onClick={() => {
-                setMenuOpen(false);
+                setMenuAnchor(null);
                 onSync?.(branch);
               }}
             />
@@ -929,7 +951,7 @@ function BranchRow({
             disabled={!canCheckout || busy}
             label={t("repository.checkout")}
             onClick={() => {
-              setMenuOpen(false);
+              setMenuAnchor(null);
               onCheckout?.(branch);
             }}
           />
@@ -937,7 +959,7 @@ function BranchRow({
             disabled={!canCreateFromBase || busy}
             label={t("repository.createFromBase")}
             onClick={() => {
-              setMenuOpen(false);
+              setMenuAnchor(null);
               onCreateFromBase?.(branch);
             }}
           />
@@ -945,20 +967,11 @@ function BranchRow({
             disabled={!canDelete || busy}
             label={t("repository.deleteBranch")}
             onClick={() => {
-              setMenuOpen(false);
+              setMenuAnchor(null);
               onDelete?.(branch);
             }}
           />
-          <button
-            className="mt-1 block h-8 w-full rounded px-2 text-left hover:bg-accent"
-            onClick={() => {
-              setMenuOpen(false);
-            }}
-            type="button"
-          >
-            {t("actions.close")}
-          </button>
-        </div>
+        </FloatingPanel>
       ) : null}
     </li>
   );
@@ -1017,6 +1030,8 @@ function StashRow({
     >
       <button
         className="grid h-10 w-full grid-cols-[auto_1fr_auto] items-center gap-2 rounded-md px-2 text-left text-sm hover:bg-accent"
+        disabled={busy || !onDetails}
+        onClick={onDetails ? () => onDetails(stash) : undefined}
         type="button"
       >
         <Layers className="size-4 text-muted-foreground" aria-hidden="true" />

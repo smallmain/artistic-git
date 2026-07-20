@@ -179,6 +179,47 @@ export type CloneRepositoryResponse = {
   repository: OpenRepositoryResponse;
 };
 
+export type CommitChangedFile = {
+  path: string;
+  oldPath: string | null;
+  oldMode: string | null;
+  newMode: string | null;
+  changeKind: DiffChangeKind;
+  additions: number;
+  deletions: number;
+};
+
+export type CommitDetailsRequest = {
+  repositoryPath: string;
+  oid: string;
+  limit: number | null;
+  operationId: OperationId | null;
+};
+
+export type CommitDetailsResponse = {
+  repositoryPath: string;
+  oid: string;
+  body: string | null;
+  bodyTruncated: boolean;
+  files: CommitChangedFile[];
+  truncated: boolean;
+};
+
+export type CommitFileDetailRequest = {
+  repositoryPath: string;
+  oid: string;
+  file: CommitChangedFile;
+  operationId: OperationId | null;
+};
+
+export type CommitFileDetailResponse = {
+  repositoryPath: string;
+  oid: string;
+  file: CommitChangedFile;
+  payload: DiffPayload;
+  diff: DiffContent;
+};
+
 export type CommitRequest = {
   repositoryPath: string;
   paths: string[];
@@ -227,7 +268,8 @@ export type ConfigChangeEvent =
       type: "projectRemoved";
       projectKey: string;
       project: ProjectSettings | null;
-    };
+    }
+  | { type: "recentProjectsChanged" };
 
 export type ConflictCancelRequest = {
   repositoryPath: string;
@@ -485,6 +527,10 @@ export type FetchStateEvent = {
   message: string | null;
 };
 
+export type ForgetRecentProjectRequest = {
+  path: string;
+};
+
 export type GenerateSshKeyRequest = {
   comment: string | null;
   passphrase: string | null;
@@ -673,6 +719,7 @@ export type LogPageRequest = {
   after: string | null;
   limit: number | null;
   operationId: OperationId | null;
+  revisions?: string[];
 };
 
 export type LogPageResponse = {
@@ -688,6 +735,7 @@ export type LogSearchRequest = {
   after: string | null;
   limit: number | null;
   operationId: OperationId | null;
+  revisions?: string[];
 };
 
 export type LoggingSettings = {
@@ -707,6 +755,7 @@ export type OpenLogDirResponse = {
 export type OpenRepositoryRequest = {
   path: string;
   toolIdentity: ToolGitIdentity | null;
+  operationId: OperationId | null;
 };
 
 export type OpenRepositoryResponse = {
@@ -715,6 +764,7 @@ export type OpenRepositoryResponse = {
   remoteMode: RepositoryRemoteMode;
   remotes: RepositoryRemote[];
   warnings: RepositoryOpenWarning[];
+  nonFatalErrors?: AppError[];
   health: RepositoryHealth;
   summary: RepositorySummary;
 };
@@ -769,6 +819,17 @@ export type ProjectSettingsRequest = {
 export type ProjectsDocument = {
   schemaVersion?: number;
   projects?: { [key in string]: ProjectSettings };
+};
+
+export type RecentProjectEntry = {
+  path: string;
+  displayName: string;
+  lastOpenedAt: string;
+  missing: boolean;
+};
+
+export type RecentProjectsRequest = {
+  limit: number;
 };
 
 export type RemoteHistoryChange = {
@@ -873,6 +934,12 @@ export type RepositorySummary = {
   isDetached: boolean;
   isUnborn: boolean;
   inProgress: boolean;
+  details?: RepositorySummaryDetails | null;
+};
+
+export type RepositorySummaryDetails = {
+  health: RepositoryHealth;
+  remotes: RepositoryRemote[];
 };
 
 export type ResolvedGitIdentity = {
@@ -975,6 +1042,7 @@ export type ReviewModeState = {
   autoStash: StashEntry | null;
   pullStatus: ReviewModePullStatus;
   pullMessage: string | null;
+  pullError?: AppError | null;
   hasRemoteUpdate: boolean;
 };
 
@@ -1029,7 +1097,9 @@ export type SettingsSnapshot = {
   appVersion: string;
   settings: AppSettings;
   identitySources: IdentitySourcesResponse;
+  identitySourcesError: AppError | null;
   sshKey: SshKeyStatus;
+  sshKeyError: AppError | null;
 };
 
 export type SidebarLayoutSettings = {

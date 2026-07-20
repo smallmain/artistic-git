@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppProviders } from "@/AppProviders";
 import { createI18n } from "@/i18n/i18n";
 import { createAppQueryClient } from "@/lib/query/client";
+import { defaultAppSettings } from "@/features/settings/settings-model";
 import type {
   ConflictEnteredEvent,
   DiffPayload,
@@ -32,6 +33,8 @@ const commandMocks = vi.hoisted(() => ({
   cancelStashRestore: vi.fn(),
   checkoutBranch: vi.fn(),
   closeCurrentWindow: vi.fn(),
+  commitDetails: vi.fn(),
+  commitFileDetail: vi.fn(),
   commitChanges: vi.fn(),
   completeConflictResolution: vi.fn(),
   conflictDetail: vi.fn(),
@@ -46,6 +49,7 @@ const commandMocks = vi.hoisted(() => ({
   listBranches: vi.fn(),
   listConflicts: vi.fn(),
   listLocalChanges: vi.fn(),
+  listRecentProjects: vi.fn(),
   localChangeDetail: vi.fn(),
   listSafetyBackups: vi.fn(),
   listStashes: vi.fn(),
@@ -53,10 +57,12 @@ const commandMocks = vi.hoisted(() => ({
   loadProjectSettings: vi.fn(),
   previewRenormalize: vi.fn(),
   repositorySummary: vi.fn(),
+  resetBisect: vi.fn(),
   restoreChanges: vi.fn(),
   restoreStash: vi.fn(),
   recoverReviewModeStash: vi.fn(),
   saveProjectSettings: vi.fn(),
+  saveAppSettings: vi.fn(),
   reviewModeRecovery: vi.fn(),
   revertCommit: vi.fn(),
   saveWindowGeometry: vi.fn(),
@@ -74,6 +80,15 @@ const commandMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/ipc/commands", () => commandMocks);
+
+const appEventMocks = vi.hoisted(() => ({
+  emitAppEvent: vi.fn(),
+}));
+
+vi.mock("@/lib/ipc/events", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/ipc/events")>();
+  return { ...actual, emitAppEvent: appEventMocks.emitAppEvent };
+});
 
 const tauriEventListeners = new Map<
   string,
@@ -109,6 +124,34 @@ function OperationSwitcher({
     <button onClick={() => setOperationProgress(operation)} type="button">
       switch operation
     </button>
+  );
+}
+
+function OperationLabelSwitcher({
+  operations,
+}: {
+  operations: OperationProgressEvent[];
+}) {
+  const setOperationProgress = useWindowStore(
+    (state) => state.setOperationProgress,
+  );
+  return operations.map((operation) => (
+    <button
+      key={operation.operationId}
+      onClick={() => setOperationProgress(operation)}
+      type="button"
+    >
+      {operation.operationId}
+    </button>
+  ));
+}
+
+function NavigationLockProbe() {
+  const navigationLocked = useWindowStore((state) => state.navigationLocked);
+  return (
+    <output data-testid="navigation-lock">
+      {navigationLocked ? "locked" : "unlocked"}
+    </output>
   );
 }
 
@@ -238,7 +281,8 @@ function createConflictEvent(): ConflictEnteredEvent {
 
 beforeEach(() => {
   window.localStorage.clear();
-  vi.clearAllMocks();
+  vi.resetAllMocks();
+  appEventMocks.emitAppEvent.mockResolvedValue(undefined);
   tauriEventListeners.clear();
   vi.mocked(listen).mockImplementation(async (event, handler) => {
     tauriEventListeners.set(
@@ -249,7 +293,27 @@ beforeEach(() => {
   });
   commandMocks.cancelPendingWindowExit.mockResolvedValue(undefined);
   commandMocks.closeCurrentWindow.mockResolvedValue(undefined);
+  commandMocks.commitDetails.mockImplementation((request) =>
+    Promise.resolve({
+      body: null,
+      bodyTruncated: false,
+      files: [],
+      oid: request.oid,
+      repositoryPath: request.repositoryPath,
+      truncated: false,
+    }),
+  );
   commandMocks.saveWindowGeometry.mockResolvedValue({});
+  commandMocks.listRecentProjects.mockResolvedValue([]);
+  commandMocks.saveAppSettings.mockImplementation(({ settings }) =>
+    Promise.resolve(settings),
+  );
+  commandMocks.settingsSnapshot.mockResolvedValue({
+    appVersion: "0.2.5",
+    identitySourcesError: null,
+    settings: defaultAppSettings,
+    sshKeyError: null,
+  });
   commandMocks.loadProjectSettings.mockResolvedValue({
     largeFileCheck: { enabled: true, thresholdMb: 50 },
     localChangesViewMode: "flat",
@@ -282,6 +346,24 @@ beforeEach(() => {
     isDetached: false,
     isUnborn: false,
     remoteMode: "origin",
+    repositoryPath: "/repo/art",
+  });
+  commandMocks.resetBisect.mockResolvedValue({
+    currentBranch: "main",
+    details: {
+      health: {
+        head: { kind: "branch", name: "main", oid: "abc1234" },
+        indexLock: null,
+        middleStates: [],
+      },
+      remotes: [],
+    },
+    hasOrigin: false,
+    headOid: "abc1234",
+    inProgress: false,
+    isDetached: false,
+    isUnborn: false,
+    remoteMode: "noRemote",
     repositoryPath: "/repo/art",
   });
   commandMocks.listBranches.mockResolvedValue({
@@ -337,6 +419,10 @@ beforeEach(() => {
     truncated: false,
   });
   commandMocks.listStashes.mockResolvedValue({ stashes: [] });
+  commandMocks.listConflicts.mockResolvedValue({
+    files: [],
+    operation: null,
+  });
   commandMocks.logPage.mockResolvedValue({ commits: [], nextAfter: null });
   commandMocks.cancelConflictResolution.mockResolvedValue({
     aborted: "merge",
@@ -439,6 +525,12 @@ beforeEach(() => {
     shouldPrompt: false,
   });
   commandMocks.cancelOperation.mockResolvedValue({ cancelled: true });
+  commandMocks.revertCommit.mockResolvedValue({
+    message: "Revert blocked history revert",
+    oid: "reverted1234567890",
+    pushed: false,
+    status: "reverted",
+  });
   commandMocks.setWindowCloseGuard.mockResolvedValue(undefined);
   commandMocks.restoreStash.mockResolvedValue({
     oid: "stashoid",
@@ -519,17 +611,125 @@ describe("RepositoryShell loading state", () => {
       expect(commandMocks.listBranches).toHaveBeenCalled();
       expect(commandMocks.listLocalChanges).toHaveBeenCalled();
       expect(commandMocks.listStashes).toHaveBeenCalled();
-      expect(commandMocks.logPage).toHaveBeenCalled();
     });
+    expect(commandMocks.logPage).not.toHaveBeenCalled();
 
     expect(screen.queryByText("feature/material-library")).toBeNull();
     expect(screen.queryByText("WIP material polish")).toBeNull();
     expect(screen.queryByText("Merge color pipeline preview")).toBeNull();
+    expect(screen.getByText("Loading repository information...")).toBeVisible();
+    expect(screen.getByText("Loading branches...")).toBeVisible();
+    expect(screen.getByText("Loading stashes...")).toBeVisible();
+    expect(screen.queryByText("No matching items")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /Local Changes/ }));
 
     expect(screen.queryByText("src/preview/render-preview.ts")).toBeNull();
     expect(screen.queryByLabelText("File comparison")).toBeNull();
+  });
+
+  it("keeps the repository loading status until the initial history is ready", async () => {
+    const pendingHistory = createPendingResponse({
+      commits: [],
+      nextAfter: null,
+    });
+    commandMocks.logPage.mockReturnValue(pendingHistory.promise);
+
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    await waitFor(() => {
+      expect(commandMocks.repositorySummary).toHaveBeenCalled();
+      expect(commandMocks.listBranches).toHaveBeenCalled();
+      expect(commandMocks.listLocalChanges).toHaveBeenCalled();
+      expect(commandMocks.listStashes).toHaveBeenCalled();
+    });
+    await screen.findByRole("button", { name: "main" });
+    expect(screen.getByText("Loading repository information...")).toBeVisible();
+
+    await act(async () => pendingHistory.resolve());
+    await waitFor(() =>
+      expect(
+        screen.queryByText("Loading repository information..."),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
+  it("filters history to the branch selected in the sidebar", async () => {
+    commandMocks.listBranches.mockResolvedValue({
+      branches: [
+        {
+          ahead: 0,
+          behind: 0,
+          current: true,
+          existence: "localOnly",
+          headOid: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          latestCommitUnixSeconds: "1760000000",
+          name: "refs/heads/main",
+          shortName: "main",
+          upstream: null,
+        },
+        {
+          ahead: 0,
+          behind: 0,
+          current: false,
+          existence: "localOnly",
+          headOid: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          latestCommitUnixSeconds: "1760000001",
+          name: "refs/heads/feature/lookdev",
+          shortName: "feature/lookdev",
+          upstream: null,
+        },
+      ],
+    });
+    commandMocks.logPage.mockImplementation((request) =>
+      Promise.resolve({
+        commits: request.revisions.includes("refs/heads/feature/lookdev")
+          ? [
+              {
+                authorEmail: "mira@example.test",
+                authorName: "Mira Chen",
+                authoredAtUnixSeconds: "1760000001",
+                oid: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                parents: [],
+                refs: ["feature/lookdev"],
+                subject: "Feature branch commit",
+              },
+            ]
+          : [
+              {
+                authorEmail: "mira@example.test",
+                authorName: "Mira Chen",
+                authoredAtUnixSeconds: "1760000000",
+                oid: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                parents: [],
+                refs: ["HEAD -> main"],
+                subject: "Main branch commit",
+              },
+            ],
+        nextAfter: null,
+      }),
+    );
+
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    expect(await screen.findByText("Main branch commit")).toBeVisible();
+    expect(screen.queryByText("Feature branch commit")).not.toBeInTheDocument();
+    expect(commandMocks.logPage).toHaveBeenCalledWith(
+      expect.objectContaining({ revisions: ["refs/heads/main"] }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "feature/lookdev" }));
+
+    expect(
+      await screen.findByRole("button", {
+        name: "Current branch: feature/lookdev",
+      }),
+    ).toBeVisible();
+    expect(await screen.findByText("Feature branch commit")).toBeVisible();
+    expect(screen.queryByText("Main branch commit")).not.toBeInTheDocument();
+    expect(commandMocks.logPage).toHaveBeenCalledWith(
+      expect.objectContaining({ revisions: ["refs/heads/feature/lookdev"] }),
+    );
   });
 
   it("shows local change query errors and retries without discarding details", async () => {
@@ -647,6 +847,10 @@ describe("RepositoryShell loading state", () => {
     expect(
       screen.queryByText("No remote repository configured"),
     ).not.toBeInTheDocument();
+    expect(
+      screen.getByText("Some repository information is unavailable"),
+    ).toBeVisible();
+    expect(screen.queryByText("Ready")).not.toBeInTheDocument();
 
     const receivedDetails: unknown[] = [];
     const handleError = (event: Event) => {
@@ -733,9 +937,438 @@ describe("RepositoryShell loading state", () => {
           ),
         ).not.toBeInTheDocument();
       });
+      expect(await screen.findByText("Ready")).toBeVisible();
     } finally {
       window.removeEventListener("artistic-git:error", handleError);
     }
+  });
+
+  it("shows detached HEAD without inventing a current branch", async () => {
+    commandMocks.repositorySummary.mockResolvedValue({
+      currentBranch: null,
+      hasOrigin: true,
+      headOid: "abc1234",
+      inProgress: false,
+      isDetached: true,
+      isUnborn: false,
+      remoteMode: "origin",
+      repositoryPath: "/repo/art",
+    });
+    commandMocks.listBranches.mockResolvedValue({
+      branches: [
+        {
+          ahead: 0,
+          behind: 0,
+          current: false,
+          existence: "localOnly",
+          headOid: "def5678",
+          latestCommitUnixSeconds: "1760000000",
+          name: "main",
+          shortName: "main",
+          upstream: null,
+        },
+      ],
+    });
+
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    expect(await screen.findByText("Not on a branch")).toBeVisible();
+    expect(screen.getByRole("button", { name: "All" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Current branch: main" }),
+    ).not.toBeInTheDocument();
+    expect(commandMocks.logPage).toHaveBeenCalledWith(
+      expect.objectContaining({ revisions: [] }),
+    );
+  });
+
+  it("waits for the branch scope before loading backend history", async () => {
+    const pendingSummary = createPendingResponse({
+      currentBranch: "main",
+      hasOrigin: true,
+      headOid: "abc1234",
+      inProgress: false,
+      isDetached: false,
+      isUnborn: false,
+      remoteMode: "origin" as const,
+      repositoryPath: "/repo/art",
+    });
+    const pendingBranches = createPendingResponse({
+      branches: [
+        branchSummary({
+          current: true,
+          existence: "localAndRemote",
+          headOid: "abc1234",
+          shortName: "main",
+        }),
+      ],
+    });
+    commandMocks.repositorySummary.mockReturnValue(pendingSummary.promise);
+    commandMocks.listBranches.mockReturnValue(pendingBranches.promise);
+
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    expect(commandMocks.logPage).not.toHaveBeenCalled();
+    await act(async () => pendingSummary.resolve());
+    expect(commandMocks.logPage).not.toHaveBeenCalled();
+    await act(async () => pendingBranches.resolve());
+
+    await waitFor(() =>
+      expect(commandMocks.logPage).toHaveBeenCalledWith(
+        expect.objectContaining({ revisions: ["refs/heads/main"] }),
+      ),
+    );
+    expect(commandMocks.logPage).toHaveBeenCalledTimes(1);
+  });
+
+  it("describes an index lock without claiming repository recovery is required", async () => {
+    commandMocks.repositorySummary.mockResolvedValue({
+      currentBranch: "main",
+      details: {
+        health: {
+          head: { kind: "branch", name: "main", oid: "abc1234" },
+          indexLock: {
+            ageSeconds: 30,
+            path: "/repo/art/.git/index.lock",
+            warning: "raw index lock warning",
+          },
+          middleStates: [],
+        },
+        remotes: [
+          {
+            isOrigin: true,
+            managed: true,
+            name: "origin",
+            url: "https://example.test/art.git",
+          },
+        ],
+      },
+      hasOrigin: true,
+      headOid: "abc1234",
+      inProgress: true,
+      isDetached: false,
+      isUnborn: false,
+      remoteMode: "origin",
+      repositoryPath: "/repo/art",
+    });
+
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    expect(
+      await screen.findByText(
+        "The repository may be in use by another Git tool.",
+      ),
+    ).toBeVisible();
+    expect(
+      screen.getByText(
+        "Git has been locked by another operation for 30 seconds. Close other Git tools, then recheck.",
+      ),
+    ).toBeVisible();
+    expect(screen.queryByText("Ready")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Review Mode" })).toBeDisabled();
+    expect(commandMocks.listConflicts).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "View details" }));
+    const detailsDialog = screen.getByRole("dialog", {
+      name: "Repository status details",
+    });
+    fireEvent.click(
+      within(detailsDialog).getByRole("button", {
+        name: "Show technical details",
+      }),
+    );
+    expect(detailsDialog).toHaveTextContent("/repo/art/.git/index.lock");
+    expect(detailsDialog).toHaveTextContent("raw index lock warning");
+    fireEvent.click(
+      within(detailsDialog).getByRole("button", { name: "Close" }),
+    );
+
+    commandMocks.repositorySummary.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Recheck" }));
+    await waitFor(() =>
+      expect(commandMocks.repositorySummary).toHaveBeenCalledTimes(1),
+    );
+  });
+
+  it("resets an existing Git bisect with write and close protection", async () => {
+    const finishedSummary = {
+      currentBranch: "main",
+      details: {
+        health: {
+          head: { kind: "branch" as const, name: "main", oid: "abc1234" },
+          indexLock: null,
+          middleStates: [],
+        },
+        remotes: [],
+      },
+      hasOrigin: false,
+      headOid: "abc1234",
+      inProgress: false,
+      isDetached: false,
+      isUnborn: false,
+      remoteMode: "noRemote" as const,
+      repositoryPath: "/repo/art",
+    };
+    const pendingReset = createPendingResponse(finishedSummary);
+    commandMocks.repositorySummary.mockResolvedValue({
+      ...finishedSummary,
+      details: {
+        ...finishedSummary.details,
+        health: {
+          ...finishedSummary.details.health,
+          middleStates: [
+            {
+              abortCommand: null,
+              kind: "bisect",
+              path: "/repo/art/.git/BISECT_LOG",
+            },
+          ],
+        },
+      },
+      inProgress: true,
+    });
+    commandMocks.resetBisect.mockReturnValueOnce(pendingReset.promise);
+
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    expect(
+      await screen.findByText(
+        "This repository has an unfinished Git bisect session. Reset it to return to normal use.",
+      ),
+    ).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Reset Git bisect" }));
+    const confirmDialog = screen.getByRole("dialog", {
+      name: "Reset Git bisect?",
+    });
+    fireEvent.click(
+      within(confirmDialog).getByRole("button", { name: "Reset Git bisect" }),
+    );
+
+    expect(
+      (await screen.findAllByText("Resetting Git bisect...")).length,
+    ).toBeGreaterThan(1);
+    expect(commandMocks.resetBisect).toHaveBeenCalledWith({
+      repositoryPath: "/repo/art",
+    });
+    await waitFor(() =>
+      expect(commandMocks.setWindowCloseGuard).toHaveBeenLastCalledWith({
+        active: true,
+      }),
+    );
+
+    await act(async () => pendingReset.resolve());
+    expect(await screen.findByTestId("app-toast")).toHaveTextContent(
+      "Git bisect was reset.",
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByText(
+          "This repository has an unfinished Git bisect session. Reset it to return to normal use.",
+        ),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
+  it("restores an unfinished merge in the conflict resolution view", async () => {
+    commandMocks.repositorySummary.mockResolvedValue({
+      currentBranch: "main",
+      details: {
+        health: {
+          head: { kind: "branch", name: "main", oid: "abc1234" },
+          indexLock: null,
+          middleStates: [
+            {
+              abortCommand: ["git", "merge", "--abort"],
+              kind: "merge",
+              path: "/repo/art/.git/MERGE_HEAD",
+            },
+          ],
+        },
+        remotes: [],
+      },
+      hasOrigin: false,
+      headOid: "abc1234",
+      inProgress: true,
+      isDetached: false,
+      isUnborn: false,
+      remoteMode: "noRemote",
+      repositoryPath: "/repo/art",
+    });
+    commandMocks.listConflicts.mockResolvedValue({
+      files: [],
+      operation: { kind: "merge", label: "Merge" },
+    });
+
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    const dialog = await screen.findByRole("dialog", {
+      name: "Resolve conflicts",
+    });
+    expect(
+      within(dialog).getAllByText(
+        "No conflicted files remain. Continue to finish the Git operation.",
+      ).length,
+    ).toBeGreaterThan(0);
+    expect(
+      within(dialog).getByRole("button", { name: "Finish resolving" }),
+    ).toBeEnabled();
+  });
+
+  it("offers a retry when an unfinished Git operation cannot be opened", async () => {
+    const recoveryError = {
+      operation: "listConflicts",
+      stderr: "unable to inspect index",
+      summary: "Conflict state could not be read",
+    };
+    commandMocks.repositorySummary.mockResolvedValue({
+      currentBranch: "main",
+      details: {
+        health: {
+          head: { kind: "branch", name: "main", oid: "abc1234" },
+          indexLock: null,
+          middleStates: [
+            {
+              abortCommand: ["git", "merge", "--abort"],
+              kind: "merge",
+              path: "/repo/art/.git/MERGE_HEAD",
+            },
+          ],
+        },
+        remotes: [],
+      },
+      hasOrigin: false,
+      headOid: "abc1234",
+      inProgress: true,
+      isDetached: false,
+      isUnborn: false,
+      remoteMode: "noRemote",
+      repositoryPath: "/repo/art",
+    });
+    commandMocks.listConflicts
+      .mockRejectedValueOnce(recoveryError)
+      .mockResolvedValue({
+        files: [],
+        operation: { kind: "merge", label: "Merge" },
+      });
+
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    expect(
+      await screen.findByText(
+        "The unfinished Git operation could not be opened.",
+      ),
+    ).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Try opening again" }));
+
+    expect(
+      await screen.findByRole("dialog", { name: "Resolve conflicts" }),
+    ).toBeInTheDocument();
+    expect(commandMocks.listConflicts).toHaveBeenCalledTimes(3);
+  });
+
+  it("clears recovery failures when the Git operation ends externally", async () => {
+    const unfinishedSummary = {
+      currentBranch: "main",
+      details: {
+        health: {
+          head: { kind: "branch" as const, name: "main", oid: "abc1234" },
+          indexLock: null,
+          middleStates: [
+            {
+              abortCommand: ["git", "merge", "--abort"],
+              kind: "merge" as const,
+              path: "/repo/art/.git/MERGE_HEAD",
+            },
+          ],
+        },
+        remotes: [],
+      },
+      hasOrigin: false,
+      headOid: "abc1234",
+      inProgress: true,
+      isDetached: false,
+      isUnborn: false,
+      remoteMode: "noRemote" as const,
+      repositoryPath: "/repo/art",
+    };
+    commandMocks.repositorySummary.mockResolvedValueOnce(unfinishedSummary);
+    commandMocks.listConflicts.mockRejectedValue({
+      operation: "listConflicts",
+      summary: "Conflict state could not be read",
+    });
+
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    expect(
+      await screen.findByText(
+        "The unfinished Git operation could not be opened.",
+      ),
+    ).toBeVisible();
+    commandMocks.repositorySummary.mockResolvedValue({
+      ...unfinishedSummary,
+      details: {
+        ...unfinishedSummary.details,
+        health: {
+          ...unfinishedSummary.details.health,
+          middleStates: [],
+        },
+      },
+      inProgress: false,
+    });
+
+    await act(async () => {
+      tauriEventListeners.get("repo-changed")?.({
+        payload: {
+          changedQueries: ["summary"],
+          repositoryPath: "/repo/art",
+        },
+      });
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.queryByText("The unfinished Git operation could not be opened."),
+      ).not.toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByRole("button", { name: "Try opening again" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows an unborn branch without an empty commit placeholder", async () => {
+    commandMocks.repositorySummary.mockResolvedValue({
+      currentBranch: "main",
+      hasOrigin: false,
+      headOid: null,
+      inProgress: false,
+      isDetached: false,
+      isUnborn: true,
+      remoteMode: "noRemote",
+      repositoryPath: "/repo/art",
+    });
+    commandMocks.listBranches.mockResolvedValue({
+      branches: [
+        {
+          ahead: 0,
+          behind: 0,
+          current: true,
+          existence: "localOnly",
+          headOid: null,
+          latestCommitUnixSeconds: null,
+          name: "main",
+          shortName: "main",
+          upstream: null,
+        },
+      ],
+    });
+
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    expect(await screen.findByText("No commits yet")).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Current branch: main" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/latest commit/i)).not.toBeInTheDocument();
   });
 });
 
@@ -929,6 +1562,32 @@ describe("RepositoryShell deferred local-change previews", () => {
 });
 
 describe("RepositoryShell session preferences", () => {
+  it("does not save synthesized defaults when project settings fail to load", async () => {
+    commandMocks.loadProjectSettings.mockRejectedValueOnce({
+      path: "/repo/art/.git/artistic-git.json",
+      summary: "Unable to load project settings",
+    });
+
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    expect(
+      await screen.findByTestId("repository-read-error-projectSettings"),
+    ).toBeVisible();
+    fireEvent.click(
+      await screen.findByRole("button", { name: /Local Changes/ }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Tree view" }));
+    expect(screen.getByRole("button", { name: "Tree view" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Branches" }));
+
+    await waitFor(() =>
+      expect(commandMocks.saveProjectSettings).not.toHaveBeenCalled(),
+    );
+  });
+
   it("restores and saves the project local changes view mode", async () => {
     commandMocks.loadProjectSettings.mockResolvedValueOnce({
       largeFileCheck: { enabled: true, thresholdMb: 50 },
@@ -1007,6 +1666,60 @@ describe("RepositoryShell session preferences", () => {
           }),
         }),
       ),
+    );
+  });
+
+  it("serializes rapid project preference saves and keeps the newest layout", async () => {
+    let resolveFirst!: (value: unknown) => void;
+    commandMocks.saveProjectSettings
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveFirst = resolve;
+          }),
+      )
+      .mockImplementationOnce((request) =>
+        Promise.resolve({
+          largeFileCheck: request.largeFileCheck,
+          localChangesViewMode: request.localChangesViewMode,
+          path: request.repositoryPath,
+          sidebar: request.sidebar,
+        }),
+      );
+
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+    await screen.findByLabelText("Search branches");
+    await screen.findByText("Ready");
+    fireEvent.click(screen.getByRole("button", { name: "Branches" }));
+    fireEvent.click(screen.getByRole("button", { name: "Stashes" }));
+
+    await waitFor(() =>
+      expect(commandMocks.saveProjectSettings).toHaveBeenCalledTimes(1),
+    );
+    await act(async () =>
+      resolveFirst({
+        largeFileCheck: { enabled: true, thresholdMb: 50 },
+        localChangesViewMode: "flat",
+        path: "/repo/art",
+        sidebar: {
+          branchSectionRatioPercent: 60,
+          branchesCollapsed: true,
+          stashesCollapsed: false,
+          widthPx: 280,
+        },
+      }),
+    );
+
+    await waitFor(() =>
+      expect(commandMocks.saveProjectSettings).toHaveBeenCalledTimes(2),
+    );
+    expect(commandMocks.saveProjectSettings).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        sidebar: expect.objectContaining({
+          branchesCollapsed: true,
+          stashesCollapsed: true,
+        }),
+      }),
     );
   });
 
@@ -1123,6 +1836,9 @@ describe("RepositoryShell stash flow", () => {
         repositoryPath: "/repo/art",
       }),
     );
+    expect(await screen.findByTestId("app-toast")).toHaveTextContent(
+      "Stash created.",
+    );
   });
 
   it("creates a stash for only checked files when selected", async () => {
@@ -1168,6 +1884,60 @@ describe("RepositoryShell stash flow", () => {
       repositoryPath: "/repo/art",
       selector: "stash@{0}",
     });
+    expect(await screen.findByTestId("app-toast")).toHaveTextContent(
+      "Stash applied. The saved copy is still available.",
+    );
+  });
+
+  it("reports when no changes remain to create a stash", async () => {
+    commandMocks.createStash.mockResolvedValueOnce({
+      created: false,
+      stash: null,
+      stdout: "No local changes to save",
+    });
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    const dialog = await openStashDialog();
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Create stash" }),
+    );
+
+    expect(await screen.findByTestId("app-toast")).toHaveTextContent(
+      "There are no changes left to stash.",
+    );
+    expect(dialog).not.toBeInTheDocument();
+  });
+
+  it("labels stash detail loading separately from stash updates", async () => {
+    const pendingDetails = createPendingResponse({
+      entry: stashEntry({
+        message: "WIP material polish",
+        selector: "stash@{0}",
+      }),
+      files: [],
+      rawDiff: "",
+    });
+    commandMocks.listStashes.mockResolvedValue({
+      stashes: [
+        stashEntry({
+          message: "WIP material polish",
+          selector: "stash@{0}",
+        }),
+      ],
+    });
+    commandMocks.stashDetails.mockReturnValueOnce(pendingDetails.promise);
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Stash details" }),
+    );
+
+    expect(screen.getByText("Loading stash details...")).toBeVisible();
+    expect(screen.queryByText("Updating stash...")).not.toBeInTheDocument();
+    await act(async () => pendingDetails.resolve());
+    expect(
+      await screen.findByRole("dialog", { name: "WIP material polish" }),
+    ).toBeVisible();
   });
 
   it("requires confirmation before deleting a stash", async () => {
@@ -1209,6 +1979,9 @@ describe("RepositoryShell stash flow", () => {
     expect(
       within(dialog).queryByRole("button", { name: "Close" }),
     ).not.toBeInTheDocument();
+    expect(within(dialog).getByRole("status")).toHaveTextContent(
+      "Deleting stash...",
+    );
     fireEvent.keyDown(document, { key: "Escape" });
     expect(dialog).toBeInTheDocument();
     expect(commandMocks.deleteStash).toHaveBeenCalledWith({
@@ -1260,9 +2033,12 @@ describe("RepositoryShell stash flow", () => {
     );
 
     const dialog = await screen.findByRole("dialog", {
-      name: "Auto Stash: switch branch",
+      name: "Automatically saved changes: switching branches",
     });
-    expect(dialog).toHaveTextContent("Automatically created by switch branch.");
+    expect(dialog).toHaveTextContent(
+      "Created automatically for switching branches.",
+    );
+    expect(dialog).not.toHaveTextContent("Auto Stash: switch branch");
     expect(dialog).toHaveTextContent("Created");
     expect(dialog).toHaveTextContent("2026");
     expect(dialog).toHaveTextContent("src/app.ts");
@@ -1310,8 +2086,42 @@ describe("RepositoryShell stash flow", () => {
 });
 
 describe("RepositoryShell review mode", () => {
-  it("starts review mode, blocks the shell, syncs remote updates, and exits", async () => {
+  it("reports review recovery check failures with their original details", async () => {
+    const recoveryError = new Error("review marker could not be read");
+    commandMocks.reviewModeRecovery.mockRejectedValueOnce(recoveryError);
+    const handleError = vi.fn();
+    window.addEventListener("artistic-git:error", handleError);
+
     renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    await waitFor(() => expect(handleError).toHaveBeenCalledTimes(1));
+    expect((handleError.mock.calls[0]![0] as CustomEvent).detail).toBe(
+      recoveryError,
+    );
+    window.removeEventListener("artistic-git:error", handleError);
+  });
+
+  it("starts review mode, blocks the shell, syncs remote updates, and exits", async () => {
+    const pendingSync = createPendingResponse({
+      state: reviewModeState({
+        hasRemoteUpdate: false,
+        subject: "Remote sync",
+      }),
+    });
+    const pendingExit = createPendingResponse({
+      conflict: null,
+      repositoryPath: "/repo/art",
+      stashRecovery: null,
+      status: "applied" as const,
+    });
+    commandMocks.syncReviewMode.mockReturnValueOnce(pendingSync.promise);
+    commandMocks.exitReviewMode.mockReturnValueOnce(pendingExit.promise);
+    renderWithProviders(
+      <>
+        <RepositoryShell repositoryPath="/repo/art" />
+        <NavigationLockProbe />
+      </>,
+    );
 
     fireEvent.click(await screen.findByRole("button", { name: "Review Mode" }));
 
@@ -1324,17 +2134,32 @@ describe("RepositoryShell review mode", () => {
     expect(overlay).toHaveTextContent("Latest remote work");
     expect(overlay).toHaveTextContent("New remote content is available.");
     expect(screen.getByRole("button", { name: "Review Mode" })).toBeDisabled();
+    expect(overlay).toHaveFocus();
+    expect(screen.getByTestId("navigation-lock")).toHaveTextContent("locked");
     expect(commandMocks.setWindowCloseGuard).toHaveBeenCalledWith({
       active: true,
     });
 
-    fireEvent.click(within(overlay).getByRole("button", { name: "Sync" }));
+    const syncButton = within(overlay).getByRole("button", { name: "Sync" });
+    fireEvent.keyDown(document, { key: "Tab" });
+    expect(syncButton).toHaveFocus();
+    screen.getByRole("button", { name: "Review Mode" }).focus();
+    expect(syncButton).toHaveFocus();
+
+    fireEvent.click(syncButton);
 
     await waitFor(() => expect(commandMocks.syncReviewMode).toHaveBeenCalled());
+    expect(
+      within(overlay).getByRole("button", { name: "Syncing review mode..." }),
+    ).toBeDisabled();
+    expect(
+      within(overlay).getByRole("button", { name: "Exit review mode" }),
+    ).toBeDisabled();
     expect(commandMocks.syncReviewMode).toHaveBeenCalledWith({
       operationId: expect.stringMatching(/^review-sync-/),
       repositoryPath: "/repo/art",
     });
+    await act(async () => pendingSync.resolve());
     expect(await screen.findByText("Remote sync")).toBeInTheDocument();
 
     fireEvent.click(
@@ -1342,10 +2167,14 @@ describe("RepositoryShell review mode", () => {
     );
 
     await waitFor(() => expect(commandMocks.exitReviewMode).toHaveBeenCalled());
+    expect(
+      within(overlay).getByRole("button", { name: "Exiting..." }),
+    ).toBeDisabled();
     expect(commandMocks.exitReviewMode).toHaveBeenCalledWith({
       operationId: expect.stringMatching(/^review-exit-/),
       repositoryPath: "/repo/art",
     });
+    await act(async () => pendingExit.resolve());
     await waitFor(() =>
       expect(
         screen.queryByRole("dialog", { name: "Review mode" }),
@@ -1354,6 +2183,8 @@ describe("RepositoryShell review mode", () => {
     expect(commandMocks.setWindowCloseGuard).toHaveBeenLastCalledWith({
       active: false,
     });
+    expect(screen.getByTestId("navigation-lock")).toHaveTextContent("unlocked");
+    expect(screen.getByRole("button", { name: "Review Mode" })).toHaveFocus();
   });
 
   it("shows offline status inside review mode without dispatching a global error", async () => {
@@ -1373,9 +2204,15 @@ describe("RepositoryShell review mode", () => {
 
     const overlay = await screen.findByRole("dialog", { name: "Review mode" });
     expect(overlay).toHaveTextContent("Latest remote work");
-    expect(
-      screen.getByRole("tooltip", { name: "could not resolve host" }),
-    ).toBeInTheDocument();
+    const tooltip = screen
+      .getByText("Technical details: could not resolve host")
+      .closest('[role="tooltip"]')!;
+    expect(tooltip).toHaveTextContent(
+      "Review mode is using local content because the remote could not be reached.",
+    );
+    expect(tooltip).toHaveTextContent(
+      "Technical details: could not resolve host",
+    );
     expect(errorListener).not.toHaveBeenCalled();
 
     window.removeEventListener("artistic-git:error", errorListener);
@@ -1426,6 +2263,9 @@ describe("RepositoryShell review mode", () => {
     expect(
       within(dialog).queryByRole("button", { name: "Close" }),
     ).not.toBeInTheDocument();
+    expect(within(dialog).getByRole("status")).toHaveTextContent(
+      "Restoring review mode changes...",
+    );
     fireEvent.keyDown(document, { key: "Escape" });
     expect(dialog).toBeInTheDocument();
 
@@ -1437,6 +2277,41 @@ describe("RepositoryShell review mode", () => {
 });
 
 describe("RepositoryShell close guard", () => {
+  it("shows exact user-facing labels for every emitted write operation", async () => {
+    const cases = [
+      ["Creating branch", "Creating branch..."],
+      ["Switching branch", "Switching branch..."],
+      ["Deleting branch", "Deleting branch..."],
+      ["Deleting safety backup", "Deleting safety backup..."],
+      ["Creating stash", "Creating stash..."],
+      ["Applying stash", "Applying stash..."],
+      ["Deleting stash", "Deleting stash..."],
+      ["Applying conflict selection", "Applying selection..."],
+    ] as const;
+    const operations = cases.map(([label], index) => ({
+      cancellable: false,
+      label,
+      operationId: `operation-label-${index}`,
+      progress: { kind: "indeterminate" as const },
+      repositoryPath: "/repo/art",
+      windowLabel: null,
+    }));
+    renderWithProviders(
+      <>
+        <RepositoryShell repositoryPath="/repo/art" />
+        <OperationLabelSwitcher operations={operations} />
+      </>,
+    );
+
+    for (const [index, [, expectedLabel]] of cases.entries()) {
+      fireEvent.click(
+        screen.getByRole("button", { name: `operation-label-${index}` }),
+      );
+      expect(await screen.findByText(expectedLabel)).toBeVisible();
+      expect(expectedLabel.endsWith("...")).toBe(true);
+    }
+  });
+
   it("passes the active write lock to history revert actions", async () => {
     commandMocks.logPage.mockResolvedValue({
       commits: [
@@ -1467,6 +2342,11 @@ describe("RepositoryShell close guard", () => {
         [activeOperation.operationId]: activeOperation,
       },
     });
+
+    const progress = screen.getByRole("progressbar");
+    expect(progress).not.toHaveAttribute("aria-valuenow");
+    expect(progress.firstElementChild).toHaveClass("animate-pulse");
+    expect(progress.firstElementChild).not.toHaveStyle({ width: "42%" });
 
     fireEvent.click(
       (await screen.findByText("Blocked history revert")).closest("button")!,
@@ -1990,6 +2870,182 @@ describe("RepositoryShell branch flow", () => {
     ).toBeEnabled();
   });
 
+  it("keeps an explicit sync status ahead of background refresh state", async () => {
+    commandMocks.fetchRepository.mockReturnValueOnce(
+      new Promise(() => undefined),
+    );
+    commandMocks.syncAllBranches.mockReturnValueOnce(
+      new Promise(() => undefined),
+    );
+
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    expect(await screen.findByText("Refreshing...")).toBeInTheDocument();
+    fireEvent.click(
+      (await screen.findAllByRole("button", { name: "Sync" }))[0]!,
+    );
+
+    expect(await screen.findByText("Syncing...")).toBeInTheDocument();
+  });
+
+  it("keeps the last remote failure in the main status", async () => {
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    await waitFor(() =>
+      expect(commandMocks.fetchRepository).toHaveBeenCalledTimes(1),
+    );
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:fetch-state", {
+          detail: {
+            lastSuccessAt: "1760000000",
+            message: "could not resolve host",
+            repositoryPath: "/repo/art",
+            state: "failed",
+          },
+        }),
+      );
+    });
+
+    const header = screen
+      .getByTestId("repository-shell")
+      .querySelector("section > header");
+    expect(header).not.toBeNull();
+    expect(
+      within(header as HTMLElement).getByText("Last remote check failed"),
+    ).toBeVisible();
+    expect(within(header as HTMLElement).queryByText("Ready")).toBeNull();
+  });
+
+  it("keeps later background fetch failures authoritative without opening an error dialog", async () => {
+    const fetchError = {
+      operation: "fetchRepository",
+      stderr: "authentication failed",
+      summary: "Remote authentication failed",
+    };
+    const handleError = vi.fn();
+    window.addEventListener("artistic-git:error", handleError);
+
+    try {
+      renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+      await waitFor(() =>
+        expect(commandMocks.fetchRepository).toHaveBeenCalledTimes(1),
+      );
+      await screen.findByText("Ready");
+      commandMocks.fetchRepository.mockRejectedValueOnce(fetchError);
+
+      window.dispatchEvent(new Event("focus"));
+
+      expect(await screen.findByText("Last remote check failed")).toBeVisible();
+      expect(handleError).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener("artistic-git:error", handleError);
+    }
+  });
+
+  it("clears an old remote failure after an explicit sync succeeds", async () => {
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+    await waitFor(() =>
+      expect(commandMocks.fetchRepository).toHaveBeenCalledTimes(1),
+    );
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:fetch-state", {
+          detail: {
+            lastSuccessAt: "1760000000",
+            message: "could not resolve host",
+            repositoryPath: "/repo/art",
+            state: "failed",
+          },
+        }),
+      );
+    });
+    expect(screen.getByText("Last remote check failed")).toBeVisible();
+
+    fireEvent.click(
+      (await screen.findAllByRole("button", { name: "Sync" }))[0]!,
+    );
+    await waitFor(() =>
+      expect(commandMocks.syncAllBranches).toHaveBeenCalledTimes(1),
+    );
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:fetch-state", {
+          detail: {
+            lastSuccessAt: "1760000100",
+            message: null,
+            repositoryPath: "/repo/art",
+            state: "idle",
+          },
+        }),
+      );
+    });
+
+    expect(await screen.findByText("Ready")).toBeVisible();
+    expect(
+      screen.queryByText("Last remote check failed"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("waits for an in-flight background fetch before reverting", async () => {
+    const pendingFetch = createPendingResponse({
+      event: {
+        lastSuccessAt: "1760000000",
+        message: null,
+        repositoryPath: "/repo/art",
+        state: "idle" as const,
+      },
+      skipped: false,
+    });
+    commandMocks.fetchRepository.mockReturnValueOnce(pendingFetch.promise);
+    commandMocks.listBranches.mockResolvedValue({
+      branches: [
+        branchSummary({
+          current: true,
+          existence: "localAndRemote",
+          headOid: "abc1234",
+          shortName: "main",
+        }),
+      ],
+    });
+    commandMocks.logPage.mockResolvedValue({
+      commits: [
+        {
+          authorEmail: "mira@example.test",
+          authorName: "Mira Chen",
+          authoredAtUnixSeconds: "1783488000",
+          oid: "d4512aa7e8fb9ec3f93a545cb658f7de71f18291",
+          parents: ["1111111111111111111111111111111111111111"],
+          refs: ["HEAD -> main"],
+          subject: "Wait for remote refresh",
+        },
+      ],
+      nextAfter: null,
+    });
+
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />, {
+      activeRepositoryPath: "/repo/art",
+    });
+    fireEvent.click(
+      (await screen.findByText("Wait for remote refresh")).closest("button")!,
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Revert commit" }),
+    );
+    fireEvent.click(
+      within(
+        screen.getByRole("dialog", { name: "Revert this commit?" }),
+      ).getByRole("button", { name: "Revert commit" }),
+    );
+
+    expect(commandMocks.fetchRepository).toHaveBeenCalledTimes(1);
+    expect(commandMocks.revertCommit).not.toHaveBeenCalled();
+
+    await act(async () => pendingFetch.resolve());
+    await waitFor(() => expect(commandMocks.revertCommit).toHaveBeenCalled());
+    expect(commandMocks.fetchRepository).toHaveBeenCalledTimes(1);
+  });
+
   it("fetches when the repository opens and when the window regains focus", async () => {
     renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
 
@@ -2004,8 +3060,30 @@ describe("RepositoryShell branch flow", () => {
     );
   });
 
+  it("does not fetch on open or focus when automatic fetching is disabled", async () => {
+    const settings = {
+      ...defaultAppSettings,
+      git: { ...defaultAppSettings.git, autoFetch: false },
+    };
+    commandMocks.settingsSnapshot.mockResolvedValue({
+      appVersion: "0.2.5",
+      identitySourcesError: null,
+      settings,
+      sshKeyError: null,
+    });
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />, {
+      appSettings: settings,
+    });
+
+    await screen.findByText("Ready");
+    expect(commandMocks.fetchRepository).not.toHaveBeenCalled();
+    window.dispatchEvent(new Event("focus"));
+    await act(async () => undefined);
+    expect(commandMocks.fetchRepository).not.toHaveBeenCalled();
+  });
+
   it("hides sync entrances and pending branch badges when the repository has no remote", async () => {
-    commandMocks.repositorySummary.mockResolvedValueOnce({
+    commandMocks.repositorySummary.mockResolvedValue({
       currentBranch: "main",
       hasOrigin: false,
       headOid: "abc1234",
@@ -2037,6 +3115,92 @@ describe("RepositoryShell branch flow", () => {
     ).not.toBeInTheDocument();
     expect(screen.queryByText("↑2")).not.toBeInTheDocument();
     expect(commandMocks.fetchRepository).not.toHaveBeenCalled();
+  });
+
+  it("explains when existing remotes are not connected for syncing", async () => {
+    commandMocks.repositorySummary.mockResolvedValue({
+      currentBranch: "main",
+      details: {
+        health: {
+          head: { kind: "branch", name: "main", oid: "abc1234" },
+          indexLock: null,
+          middleStates: [],
+        },
+        remotes: [
+          {
+            isOrigin: false,
+            managed: false,
+            name: "upstream",
+            url: "https://example.test/upstream.git",
+          },
+        ],
+      },
+      hasOrigin: false,
+      headOid: "abc1234",
+      inProgress: false,
+      isDetached: false,
+      isUnborn: false,
+      remoteMode: "noRemote",
+      repositoryPath: "/repo/art",
+    });
+
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    expect(
+      await screen.findByText(
+        "Remote repositories were found, but none is connected as the primary remote for syncing.",
+      ),
+    ).toBeVisible();
+    expect(
+      await screen.findByText("Primary remote setup required"),
+    ).toBeVisible();
+    expect(screen.queryByText("Ready")).toBeNull();
+  });
+
+  it("explains that additional remotes are not displayed or synced", async () => {
+    commandMocks.repositorySummary.mockResolvedValue({
+      currentBranch: "main",
+      details: {
+        health: {
+          head: { kind: "branch", name: "main", oid: "abc1234" },
+          indexLock: null,
+          middleStates: [],
+        },
+        remotes: [
+          {
+            isOrigin: true,
+            managed: true,
+            name: "origin",
+            url: "https://example.test/origin.git",
+          },
+          {
+            isOrigin: false,
+            managed: false,
+            name: "upstream",
+            url: "https://example.test/upstream.git",
+          },
+        ],
+      },
+      hasOrigin: true,
+      headOid: "abc1234",
+      inProgress: false,
+      isDetached: false,
+      isUnborn: false,
+      remoteMode: "origin",
+      repositoryPath: "/repo/art",
+    });
+
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    expect(
+      await screen.findByText(
+        "This app shows and syncs only the primary remote. Other remote repositories not shown or synced: 1.",
+      ),
+    ).toBeVisible();
+    expect(
+      await screen.findByText("Other remote repositories not managed: 1"),
+    ).toBeVisible();
+    expect(screen.queryByText("Ready")).toBeNull();
   });
 
   it("validates and creates a branch from the selected base with remote creation", async () => {
@@ -2122,7 +3286,7 @@ describe("RepositoryShell branch flow", () => {
       "invalid names",
       {
         exists: false,
-        message: "Branch names cannot contain spaces.",
+        message: "fatal: invalid ref name reported by git",
         name: "bad name",
         valid: false,
       },
@@ -2158,6 +3322,63 @@ describe("RepositoryShell branch flow", () => {
       ).toBeDisabled();
     },
   );
+
+  it("shows progress while a branch name is being checked", async () => {
+    mockBranchList();
+    const pendingValidation = createPendingResponse({
+      exists: false,
+      message: null,
+      name: "feature/slow-check",
+      valid: true,
+    });
+    commandMocks.validateBranchName.mockReturnValueOnce(
+      pendingValidation.promise,
+    );
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    const dialog = await openCreateBranchDialog("main");
+    fireEvent.change(within(dialog).getByLabelText("Branch name"), {
+      target: { value: "feature/slow-check" },
+    });
+
+    expect(
+      await within(dialog).findByText("Checking branch name..."),
+    ).toBeVisible();
+    expect(
+      within(dialog).getByRole("button", { name: "Create branch" }),
+    ).toBeDisabled();
+
+    await act(async () => pendingValidation.resolve());
+    expect(
+      await within(dialog).findByText("Branch name is available."),
+    ).toBeVisible();
+  });
+
+  it("keeps branch validation diagnostics out of ordinary form copy", async () => {
+    mockBranchList();
+    const validationError = new Error("git check-ref-format crashed");
+    commandMocks.validateBranchName.mockRejectedValueOnce(validationError);
+    const handleError = vi.fn();
+    window.addEventListener("artistic-git:error", handleError);
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    const dialog = await openCreateBranchDialog("main");
+    fireEvent.change(within(dialog).getByLabelText("Branch name"), {
+      target: { value: "feature/check-failed" },
+    });
+
+    expect(
+      await within(dialog).findByText("Enter a valid branch name."),
+    ).toBeVisible();
+    expect(
+      within(dialog).queryByText("git check-ref-format crashed"),
+    ).not.toBeInTheDocument();
+    expect(handleError).toHaveBeenCalledTimes(1);
+    expect((handleError.mock.calls[0]![0] as CustomEvent).detail).toBe(
+      validationError,
+    );
+    window.removeEventListener("artistic-git:error", handleError);
+  });
 
   it("switches branches with the selected local-change handling mode", async () => {
     mockBranchList();
@@ -2232,7 +3453,7 @@ describe("RepositoryShell branch flow", () => {
     expect(
       screen.getByRole("menuitem", { name: "Delete branch" }),
     ).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    fireEvent.keyDown(document, { key: "Escape" });
 
     const dialog = await openDeleteBranchDialog("feature/lookdev");
     expect(dialog).toHaveTextContent(
@@ -2360,11 +3581,10 @@ describe("RepositoryShell branch flow", () => {
           repositoryPath: "/repo/art",
         }),
       );
-      const toast = await screen.findByTestId("sync-result-toast");
+      const toast = await screen.findByTestId("app-toast");
       expect(toast).toHaveTextContent(
-        "main: synced · release updated from main: synced",
+        "Sync complete: 2 synced, 0 up to date, 0 need attention, 0 failed.",
       );
-      expect(timeoutSpy).toHaveBeenCalledWith(expect.any(Function), 5_000);
 
       const header = screen
         .getByTestId("repository-shell")
@@ -2375,21 +3595,60 @@ describe("RepositoryShell branch flow", () => {
       );
       expect(
         within(header as HTMLElement).queryByText(
-          "main: synced · release updated from main: synced",
+          "Sync complete: 2 synced, 0 up to date, 0 need attention, 0 failed.",
         ),
       ).not.toBeInTheDocument();
 
       const toastTimer = timeoutSpy.mock.calls
-        .filter(([, delay]) => delay === 5_000)
+        .filter(
+          ([, delay]) =>
+            typeof delay === "number" && delay >= 5_000 && delay <= 12_000,
+        )
         .at(-1);
       expect(toastTimer).toBeDefined();
       await act(async () => {
         (toastTimer?.[0] as () => void)();
       });
-      expect(screen.queryByTestId("sync-result-toast")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("app-toast")).not.toBeInTheDocument();
     } finally {
       timeoutSpy.mockRestore();
     }
+  });
+
+  it("keeps batch sync feedback bounded for thousands of branches", async () => {
+    mockBranchList();
+    commandMocks.syncAllBranches.mockResolvedValueOnce({
+      allUpToDate: false,
+      autoTracking: [],
+      branches: Array.from({ length: 5_000 }, (_, index) => ({
+        attempts: 1,
+        branchName: `generated/branch-${index}`,
+        conflict: null,
+        message: null,
+        remoteHistoryChange: null,
+        repositoryPath: "/repo/art",
+        stashRecovery: null,
+        status:
+          index % 2 === 0 ? ("pulled" as const) : ("alreadyUpToDate" as const),
+        upstream: `origin/generated/branch-${index}`,
+      })),
+      conflict: null,
+      remoteHistoryChange: null,
+      repositoryPath: "/repo/art",
+      stashRecovery: null,
+    });
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    fireEvent.click(
+      (await screen.findAllByRole("button", { name: "Sync" }))[0]!,
+    );
+
+    const toast = await screen.findByTestId("app-toast");
+    expect(toast).toHaveTextContent(
+      "Sync complete: 2500 synced, 2500 up to date, 0 need attention, 0 failed.",
+    );
+    expect(toast.textContent?.length).toBeLessThan(200);
+    expect(toast).not.toHaveTextContent("generated/branch-");
   });
 
   it("summarizes batch sync failures and attention items", async () => {
@@ -2435,6 +3694,8 @@ describe("RepositoryShell branch flow", () => {
       repositoryPath: "/repo/art",
       stashRecovery: null,
     });
+    const handleError = vi.fn();
+    window.addEventListener("artistic-git:error", handleError);
     renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
 
     const syncButtons = await screen.findAllByRole("button", {
@@ -2444,12 +3705,22 @@ describe("RepositoryShell branch flow", () => {
 
     expect(
       await screen.findByText(
-        "main: synced · feature/oops: failed (Needs manual cleanup.) · stable updated from release: action needed (Target branch was deleted.)",
+        "Sync complete: 1 synced, 0 up to date, 1 need attention, 1 failed.",
       ),
     ).toBeInTheDocument();
+    expect(handleError).toHaveBeenCalledTimes(1);
+    const detail = (handleError.mock.calls[0]![0] as CustomEvent).detail;
+    expect(detail.summary).toBe(
+      "Some synchronization tasks could not be completed.",
+    );
+    expect(detail.response.branches[1].message).toBe("Needs manual cleanup.");
+    expect(detail.response.autoTracking[0].message).toBe(
+      "Target branch was deleted.",
+    );
+    window.removeEventListener("artistic-git:error", handleError);
   });
 
-  it("flashes the project sync button when all branches are already up to date", async () => {
+  it("reports an up-to-date project in a toast without changing the sync action", async () => {
     mockBranchList();
     renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
 
@@ -2464,15 +3735,13 @@ describe("RepositoryShell branch flow", () => {
         repositoryPath: "/repo/art",
       }),
     );
-    expect(
-      await screen.findByRole("button", {
-        name: "All syncable branches are up to date",
-      }),
-    ).toBeInTheDocument();
-    const toast = await screen.findByTestId("sync-result-toast");
+    const toast = await screen.findByTestId("app-toast");
     expect(toast).toHaveTextContent("All syncable branches are up to date");
+    expect(screen.getByTestId("repository-sync-all")).toHaveAccessibleName(
+      "Sync",
+    );
     fireEvent.click(within(toast).getByRole("button", { name: "Close" }));
-    expect(screen.queryByTestId("sync-result-toast")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("app-toast")).not.toBeInTheDocument();
   });
 
   it("syncs only the selected branch from a branch row action", async () => {
@@ -2519,13 +3788,10 @@ describe("RepositoryShell branch flow", () => {
         repositoryPath: "/repo/art",
       }),
     );
-    expect(await screen.findAllByText("Branch is up to date")).not.toHaveLength(
-      0,
-    );
+    const toast = await screen.findByTestId("app-toast");
+    expect(toast).toHaveTextContent("feature/lookdev: up to date");
     expect(
-      within(branchRow as HTMLElement).getByRole("button", {
-        name: "Branch is up to date",
-      }),
+      within(branchRow as HTMLElement).getByRole("button", { name: "Sync" }),
     ).toBeInTheDocument();
     expect(commandMocks.syncAllBranches).not.toHaveBeenCalled();
   });
@@ -2704,6 +3970,9 @@ describe("RepositoryShell branch flow", () => {
     expect(
       within(confirm).queryByRole("button", { name: "Close" }),
     ).not.toBeInTheDocument();
+    expect(within(confirm).getByRole("status")).toHaveTextContent(
+      "Deleting safety backup...",
+    );
     fireEvent.keyDown(document, { key: "Escape" });
     expect(confirm).toBeInTheDocument();
 
@@ -2796,8 +4065,41 @@ describe("RepositoryShell commit flow", () => {
         pushImmediately: false,
         repositoryPath: "/repo/art",
       });
+      expect(await screen.findByTestId("app-toast")).toHaveTextContent(
+        "Commit created.",
+      );
+      expect(
+        screen.queryByRole("dialog", { name: "Commit changes" }),
+      ).not.toBeInTheDocument();
     },
   );
+
+  it("locks the commit form and dismissal controls while committing", async () => {
+    const pendingCommit = createPendingResponse({
+      committedPaths: ["src/app.ts", "assets/texture.png"],
+      lfsTrackedPaths: [],
+      oid: "pending1234567890",
+      status: "committed" as const,
+    });
+    commandMocks.commitChanges.mockReturnValueOnce(pendingCommit.promise);
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    const dialog = await openCommitDialog();
+    const messageInput = within(dialog).getByLabelText("Commit message");
+    fireEvent.change(messageInput, { target: { value: "Pending commit" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Commit" }));
+
+    await waitFor(() => expect(commandMocks.commitChanges).toHaveBeenCalled());
+    expect(messageInput).toBeDisabled();
+    expect(
+      within(dialog).queryByRole("button", { name: "Close" }),
+    ).not.toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(dialog).toBeInTheDocument();
+
+    await act(async () => pendingCommit.resolve());
+    await waitFor(() => expect(dialog).not.toBeInTheDocument());
+  });
 
   it("hides the push checkbox when the repository has no remote", async () => {
     commandMocks.repositorySummary.mockResolvedValueOnce({
@@ -2973,9 +4275,9 @@ describe("RepositoryShell commit flow", () => {
     expect(
       await screen.findByText("Commit paused for conflict resolution."),
     ).toBeInTheDocument();
-    expect(
-      await screen.findByRole("dialog", { name: "Resolve conflicts" }),
-    ).toBeInTheDocument();
+    const conflictDialog = await screen.findByRole("dialog", {
+      name: "Resolve conflicts",
+    });
     expect(screen.getByDisplayValue("Update assets")).toBeInTheDocument();
     expect(commandMocks.commitChanges).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -2983,6 +4285,73 @@ describe("RepositoryShell commit flow", () => {
         pushImmediately: true,
       }),
     );
+
+    fireEvent.click(
+      within(conflictDialog).getByRole("button", { name: "Cancel" }),
+    );
+    const cancelDialog = await screen.findByRole("dialog", {
+      name: "Cancel conflict resolution",
+    });
+    fireEvent.click(
+      within(cancelDialog).getByRole("button", { name: "Abort operation" }),
+    );
+
+    expect(
+      await screen.findByText(
+        "Conflict resolution ended. Review the changes, then commit again.",
+      ),
+    ).toBeVisible();
+    expect(
+      screen.queryByText("Commit paused for conflict resolution."),
+    ).not.toBeInTheDocument();
+    expect(screen.getByDisplayValue("Update assets")).toBeInTheDocument();
+  });
+
+  it("reports a cross-window conflict-clear broadcast failure with details", async () => {
+    const conflict = createConflictEvent();
+    const broadcastError = new Error("event transport unavailable");
+    const handleError = vi.fn();
+    appEventMocks.emitAppEvent.mockRejectedValueOnce(broadcastError);
+    window.addEventListener("artistic-git:error", handleError);
+
+    try {
+      renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />, {
+        conflictsByRepository: { "/repo/art": conflict },
+      });
+
+      const conflictDialog = await screen.findByRole("dialog", {
+        name: "Resolve conflicts",
+      });
+      fireEvent.click(
+        within(conflictDialog).getByRole("button", { name: "Cancel" }),
+      );
+      const cancelDialog = await screen.findByRole("dialog", {
+        name: "Cancel conflict resolution",
+      });
+      fireEvent.click(
+        within(cancelDialog).getByRole("button", { name: "Abort operation" }),
+      );
+
+      await waitFor(() =>
+        expect(appEventMocks.emitAppEvent).toHaveBeenCalledWith(
+          "conflict-cleared",
+          { repositoryPath: "/repo/art" },
+        ),
+      );
+      await waitFor(() => expect(handleError).toHaveBeenCalledTimes(1));
+      expect((handleError.mock.calls[0][0] as CustomEvent).detail).toEqual({
+        cause: broadcastError,
+        operationName: "broadcastConflictCleared",
+        repositoryPath: "/repo/art",
+        summary:
+          "Conflict resolution ended in this window, but other open windows could not be updated.",
+      });
+      expect(
+        screen.queryByRole("dialog", { name: "Resolve conflicts" }),
+      ).not.toBeInTheDocument();
+    } finally {
+      window.removeEventListener("artistic-git:error", handleError);
+    }
   });
 });
 
@@ -3019,7 +4388,7 @@ async function openStashDialog() {
   await screen.findAllByText("src/app.ts");
 
   fireEvent.contextMenu(screen.getAllByText("src/app.ts")[0]);
-  fireEvent.click(screen.getByRole("button", { name: "Stash selected (1)" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Stash selected (1)" }));
 
   return screen.getByRole("dialog", { name: "Create stash" });
 }
@@ -3071,7 +4440,9 @@ async function openRestoreDialog(path: string) {
   await screen.findAllByText(path);
 
   fireEvent.contextMenu(screen.getAllByText(path)[0]);
-  fireEvent.click(screen.getByRole("button", { name: "Restore selected (1)" }));
+  fireEvent.click(
+    screen.getByRole("menuitem", { name: "Restore selected (1)" }),
+  );
 
   return screen.getByRole("dialog", { name: "Restore selected changes?" });
 }

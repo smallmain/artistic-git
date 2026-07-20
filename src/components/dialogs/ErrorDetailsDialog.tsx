@@ -1,13 +1,14 @@
 import { FolderOpen } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import * as React from "react";
 
 import { DetailsDialog } from "@/components/dialogs/DetailsDialog";
 import { Button } from "@/components/ui/button";
+import { formatErrorDetails, getErrorSummary } from "@/lib/error-details";
 import { openLogDir } from "@/lib/ipc/commands";
-import type { AppError } from "@/lib/ipc/generated";
 
 interface ErrorDetailsDialogProps {
-  error: AppError | Error | string;
+  error: unknown;
   onCopyDetails?: (details: string) => Promise<void> | void;
   onOpenLogDir?: () => Promise<void> | void;
   onOpenChange: (open: boolean) => void;
@@ -21,67 +22,74 @@ export function ErrorDetailsDialog({
   onOpenChange,
   open,
 }: ErrorDetailsDialogProps) {
-  const { t } = useTranslation();
-  const handleOpenLogDir = onOpenLogDir ?? openLogDir;
+  if (!open) {
+    return null;
+  }
 
+  const details = formatErrorDetails(error);
   return (
-    <DetailsDialog
-      description={t("dialogs.error.description")}
-      details={formatErrorDetails(error)}
-      extraActions={
-        <Button
-          className="gap-2"
-          onClick={() => {
-            void handleOpenLogDir();
-          }}
-          type="button"
-          variant="ghost"
-        >
-          <FolderOpen className="size-4" aria-hidden="true" />
-          {t("actions.openLogDir")}
-        </Button>
-      }
+    <ErrorDetailsDialogContent
+      error={error}
+      key={details}
       onCopyDetails={onCopyDetails}
       onOpenChange={onOpenChange}
-      open={open}
-      summary={getErrorSummary(error)}
-      title={t("dialogs.error.title")}
+      onOpenLogDir={onOpenLogDir}
     />
   );
 }
 
-function getErrorSummary(error: AppError | Error | string): string {
-  if (typeof error === "string") {
-    return error;
-  }
+function ErrorDetailsDialogContent({
+  error,
+  onCopyDetails,
+  onOpenLogDir,
+  onOpenChange,
+}: Omit<ErrorDetailsDialogProps, "open">) {
+  const { t } = useTranslation();
+  const handleOpenLogDir: () => unknown = onOpenLogDir ?? openLogDir;
+  const [openingLogDir, setOpeningLogDir] = React.useState(false);
+  const [logDirError, setLogDirError] = React.useState<unknown>(null);
 
-  if (isAppError(error)) {
-    return error.summary;
-  }
+  const detailsError = logDirError
+    ? { logDirectoryError: logDirError, originalError: error }
+    : error;
 
-  return error.message;
-}
-
-function formatErrorDetails(error: AppError | Error | string): string {
-  if (typeof error === "string") {
-    return error;
-  }
-
-  if (isAppError(error)) {
-    return JSON.stringify(error, null, 2);
-  }
-
-  return JSON.stringify(
-    {
-      message: error.message,
-      name: error.name,
-      stack: error.stack ?? null,
-    },
-    null,
-    2,
+  return (
+    <DetailsDialog
+      description={t("dialogs.error.description")}
+      details={formatErrorDetails(detailsError)}
+      extraActions={
+        <div className="flex items-center gap-2">
+          {logDirError ? (
+            <span className="text-xs text-destructive" role="alert">
+              {t("dialogs.error.openLogDirFailed")}
+            </span>
+          ) : null}
+          <Button
+            className="gap-2"
+            disabled={openingLogDir}
+            onClick={() => {
+              setOpeningLogDir(true);
+              setLogDirError(null);
+              void Promise.resolve()
+                .then(() => handleOpenLogDir())
+                .catch(setLogDirError)
+                .finally(() => setOpeningLogDir(false));
+            }}
+            type="button"
+            variant="ghost"
+          >
+            <FolderOpen className="size-4" aria-hidden="true" />
+            {openingLogDir
+              ? t("actions.openingLogDir")
+              : t("actions.openLogDir")}
+          </Button>
+        </div>
+      }
+      onCopyDetails={onCopyDetails}
+      onOpenChange={onOpenChange}
+      open
+      summary={getErrorSummary(error)}
+      title={t("dialogs.error.title")}
+    />
   );
-}
-
-function isAppError(error: AppError | Error): error is AppError {
-  return "category" in error && "summary" in error && "context" in error;
 }

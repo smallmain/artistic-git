@@ -30,7 +30,12 @@ export type UpdateStatus =
     }
   | { state: "ready"; version: string; notes: string | null }
   | { state: "notAvailable" }
-  | { state: "failed"; message: string; visible: boolean };
+  | {
+      state: "failed";
+      message: string;
+      visible: boolean;
+      failureStage?: "check" | "install";
+    };
 
 export type UpdateReleasePageReason =
   "linuxPackageManager" | "unknownInstallFormat" | "unsupportedInstallFormat";
@@ -56,6 +61,7 @@ export type UpdateInstallBlockedReason =
   | "gitOperation"
   | "backgroundOperation"
   | "closeGuard"
+  | "gateUnavailable"
   | "noReadyUpdate"
   | "unsupportedInstallFormat"
   | "conflict"

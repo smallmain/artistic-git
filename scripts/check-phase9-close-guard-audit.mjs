@@ -33,6 +33,22 @@ const source = {
 
 const cancellableOperations = [
   {
+    backendOperation: "openRepository",
+    command: "open_repository",
+    frontendEvidence: [
+      [source.startScreen, /createOperationId\("open-repository"\)/],
+      [
+        source.startScreen,
+        /cancelOperation\(\{ operationId: openOperationId \}\)/,
+      ],
+      [
+        source.startScreenTest,
+        /cancels an in-flight repository open before closing/,
+      ],
+    ],
+    requestType: "OpenRepositoryRequest",
+  },
+  {
     backendOperation: "cloneRepository",
     command: "clone_repository",
     frontendEvidence: [
@@ -226,6 +242,18 @@ const cancellableOperations = [
     requestType: "CommitRequest",
   },
   {
+    backendOperation: "restoreChanges",
+    command: "restore_changes",
+    frontendEvidence: [
+      [
+        source.repositoryShell,
+        /createRepositoryOperationId\("restore-changes"\)/,
+      ],
+      [source.repositoryShellTest, /\^restore-changes-/],
+    ],
+    requestType: "RestoreChangesRequest",
+  },
+  {
     backendOperation: "revertCommit",
     command: "revert_commit",
     frontendEvidence: [
@@ -236,43 +264,7 @@ const cancellableOperations = [
   },
 ];
 
-const waitOnlyOperations = [
-  {
-    command: "open_repository",
-    evidence: [
-      [source.generated, requestBlock("OpenRepositoryRequest", /operationId/)],
-      [
-        source.startScreen,
-        /cancellable:\s*false,[\s\S]*label:\s*"Opening repository"/,
-      ],
-      [source.startScreen, /active=\{isCloning \|\| openingPath !== null\}/],
-      [
-        source.startScreen,
-        /canRecover=\{isCloning && cloneOperationId !== null && !cloneCancelling\}/,
-      ],
-      [
-        source.startScreenTest,
-        /guards an in-flight repository open as wait-only/,
-      ],
-      [
-        source.backend,
-        /"Updating submodules"[\s\S]*ProgressState::Indeterminate,\s*false/,
-      ],
-    ],
-    reason:
-      "open repository may run submodule updates; no cancel token exists, so close guard waits",
-  },
-  {
-    command: "restore_changes",
-    evidence: [
-      [source.generated, requestBlock("RestoreChangesRequest", /operationId/)],
-      [source.repositoryShell, /setRestoreBusy\(true\)[\s\S]*restoreChanges\(/],
-      [source.repositoryShell, /writeOperationBusy\s*=[\s\S]*restoreBusy/],
-    ],
-    reason:
-      "restore is a short rollback-backed local write; close guard blocks until it finishes",
-  },
-];
+const waitOnlyOperations = [];
 
 const notCloseGuardCancelled = [
   "abort_revert",
@@ -351,7 +343,7 @@ assertMatch(
 );
 assertMatch(
   source.repositoryShell,
-  /const writeOperationBusy\s*=[\s\S]*activeOperationBusy[\s\S]*reviewBusy;/,
+  /const writeOperationBusy\s*=[\s\S]*activeOperationBusy[\s\S]*reviewBusy[\s\S]*bisectResetBusy;/,
   "RepositoryShell write-operation close guard source set",
 );
 assertMatch(
@@ -497,7 +489,7 @@ function read(relativePath) {
 
 function assertRequestHasOperationId(requestType, command) {
   const block = typeBlock(source.generated, requestType);
-  if (!block.includes("operationId: OperationId | null")) {
+  if (!/operationId\??:\s*OperationId \| null/.test(block)) {
     failures.push(
       `${command}: ${requestType} must expose nullable operationId`,
     );
@@ -507,7 +499,7 @@ function assertRequestHasOperationId(requestType, command) {
 function assertBackendRegistersToken(backendOperation, command) {
   const registerPattern =
     backendOperation === "cloneRepository"
-      ? /register\(operation_id,\s*token\.clone\(\),\s*"cloneRepository"\)/
+      ? /register\(operation_id,\s*"cloneRepository"\)/
       : new RegExp(
           `run_cancellable_operation\\([\\s\\S]{0,220}"${escapeRegExp(
             backendOperation,
@@ -531,7 +523,7 @@ function assertTauriCommandEmitsCancellableProgress(command) {
   }
 
   const block = rustFunctionBlock(source.tauriLib, command);
-  if (!/emit_operation_started\(/.test(block)) {
+  if (!/reserve_and_emit_operation_started\(/.test(block)) {
     failures.push(
       `${command}: Tauri command must emit cancellable start progress`,
     );
@@ -553,15 +545,6 @@ function isWriteLikeCommand(command) {
   return /^(accept_|abort_|cancel_|check_for_updates|checkout_|clone_|complete_|create_|delete_|dismiss_|exit_|fetch_|generate_|install_|open_log_dir|open_repository|open_update_release_page|recover_|register_window_repository|restore_|review_mode_recovery|save_|select_|set_window_close_guard|start_|submit_|sync_|update_install_gate|validate_identity_for_write)/.test(
     command,
   );
-}
-
-function requestBlock(typeName, forbiddenPattern) {
-  return (fileSource) => {
-    const block = typeBlock(fileSource, typeName);
-    return forbiddenPattern.test(block)
-      ? `${typeName} unexpectedly contains ${forbiddenPattern}`
-      : null;
-  };
 }
 
 function typeBlock(fileSource, typeName) {
@@ -586,7 +569,9 @@ function interfaceBlock(fileSource, interfaceName) {
 }
 
 function rustFunctionBlock(fileSource, functionName) {
-  const pattern = new RegExp(`\\nfn ${escapeRegExp(functionName)}\\s*\\(`);
+  const pattern = new RegExp(
+    `\\n(?:pub\\s+)?(?:async\\s+)?fn ${escapeRegExp(functionName)}\\s*\\(`,
+  );
   const match = pattern.exec(fileSource);
   if (!match) {
     failures.push(`missing Rust function ${functionName}`);

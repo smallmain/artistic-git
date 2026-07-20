@@ -1,4 +1,5 @@
 import {
+  AlertTriangle,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -21,7 +22,6 @@ import {
   UserRound,
 } from "lucide-react";
 import * as React from "react";
-import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 
 import { DialogFrame } from "@/components/dialogs/DialogFrame";
@@ -61,7 +61,8 @@ import {
   settingsSnapshot,
 } from "@/lib/ipc/commands";
 import { cn } from "@/lib/utils";
-import { repoQueryKeys } from "@/lib/realtime/query-keys";
+import { showToast } from "@/lib/toast";
+import { dispatchErrorGroup } from "@/lib/runtime-errors";
 import { useWindowStore, type SettingsSection } from "@/store/window-store";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { useTheme } from "@/theme/ThemeProvider";
@@ -126,8 +127,7 @@ const maxAutoTrackingRules = 100;
 const httpsCredentialPageSize = 50;
 
 export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
-  const { t } = useTranslation();
-  const queryClient = useQueryClient();
+  const { i18n, t } = useTranslation();
   const { setLanguagePreference } = useLanguage();
   const { setThemePreference } = useTheme();
   const activeRepositoryPath = useWindowStore(
@@ -164,11 +164,38 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
   const [gitignoreDraft, setGitignoreDraft] = React.useState("");
   const [remoteUrlDraft, setRemoteUrlDraft] = React.useState("");
   const [loading, setLoading] = React.useState(open);
+  const [settingsLoadReady, setSettingsLoadReady] = React.useState(false);
+  const [settingsLoadFailure, setSettingsLoadFailure] =
+    React.useState<unknown>(null);
+  const [settingsLoadAttempt, setSettingsLoadAttempt] = React.useState(0);
+  const [identitySourceFailure, setIdentitySourceFailure] =
+    React.useState<unknown>(null);
+  const [sshKeyFailure, setSshKeyFailure] = React.useState<unknown>(null);
   const [loadingProject, setLoadingProject] = React.useState(false);
   const [projectLoadResolvedPath, setProjectLoadResolvedPath] = React.useState<
     string | null
   >(null);
+  const [projectLoadFailure, setProjectLoadFailure] = React.useState<{
+    error: unknown;
+    path: string;
+  } | null>(null);
+  const [gitignoreLoadFailure, setGitignoreLoadFailure] =
+    React.useState<unknown>(null);
+  const [remoteLoadFailure, setRemoteLoadFailure] =
+    React.useState<unknown>(null);
+  const [branchLoadFailure, setBranchLoadFailure] =
+    React.useState<unknown>(null);
+  const [loadingGitignore, setLoadingGitignore] = React.useState(false);
+  const [loadingRemote, setLoadingRemote] = React.useState(false);
+  const [loadingBranches, setLoadingBranches] = React.useState(false);
+  const [projectLoadAttempt, setProjectLoadAttempt] = React.useState(0);
+  const [gitignoreLoadAttempt, setGitignoreLoadAttempt] = React.useState(0);
+  const [remoteLoadAttempt, setRemoteLoadAttempt] = React.useState(0);
+  const [branchLoadAttempt, setBranchLoadAttempt] = React.useState(0);
   const [loadingCredentials, setLoadingCredentials] = React.useState(false);
+  const [credentialLoadFailure, setCredentialLoadFailure] =
+    React.useState<unknown>(null);
+  const [credentialLoadAttempt, setCredentialLoadAttempt] = React.useState(0);
   const [savingSettings, setSavingSettings] = React.useState(false);
   const [savingProject, setSavingProject] = React.useState(false);
   const [savingGitignore, setSavingGitignore] = React.useState(false);
@@ -188,12 +215,18 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
   const [identityTouched, setIdentityTouched] = React.useState(false);
   const [identitySaveAttempted, setIdentitySaveAttempted] =
     React.useState(false);
-  const appSettingsFallbackRef = React.useRef(appSettings);
   const mutationInFlightRef = React.useRef(false);
+  const manualUpdateCheckRef = React.useRef(false);
+  const credentialLoadRequestKeyRef = React.useRef<string | null>(null);
+  const projectLoadRequestKeyRef = React.useRef<string | null>(null);
+  const gitignoreLoadRequestKeyRef = React.useRef<string | null>(null);
+  const remoteLoadRequestKeyRef = React.useRef<string | null>(null);
+  const branchLoadRequestKeyRef = React.useRef<string | null>(null);
 
-  React.useEffect(() => {
-    appSettingsFallbackRef.current = appSettings;
-  }, [appSettings]);
+  const showSettingsResult = React.useCallback((message: string) => {
+    setStatus(null);
+    showToast({ key: "settings-result", message, tone: "success" });
+  }, []);
 
   React.useEffect(() => {
     if (!open) {
@@ -204,6 +237,10 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
     void Promise.resolve().then(() => {
       if (active) {
         setLoading(true);
+        setSettingsLoadReady(false);
+        setSettingsLoadFailure(null);
+        setIdentitySourceFailure(null);
+        setSshKeyFailure(null);
         setStatus(null);
       }
     });
@@ -219,14 +256,23 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
         setAppVersion(snapshot.appVersion);
         setIdentitySources(snapshot.identitySources);
         setSshKey(snapshot.sshKey);
+        setIdentitySourceFailure(snapshot.identitySourcesError);
+        setSshKeyFailure(snapshot.sshKeyError);
+        dispatchErrorGroup(
+          [snapshot.identitySourcesError, snapshot.sshKeyError],
+          i18n.t("settings.supplementalLoadFailed"),
+        );
+        setSettingsLoadReady(true);
         setIdentityTouched(false);
         setIdentitySaveAttempted(false);
       })
       .catch((error) => {
-        setDraft(normalizeAppSettings(appSettingsFallbackRef.current));
-        window.dispatchEvent(
-          new CustomEvent("artistic-git:error", { detail: error }),
-        );
+        if (active) {
+          setSettingsLoadFailure(error);
+          window.dispatchEvent(
+            new CustomEvent("artistic-git:error", { detail: error }),
+          );
+        }
       })
       .finally(() => {
         if (active) {
@@ -237,17 +283,42 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
     return () => {
       active = false;
     };
-  }, [open, setAppSettings, setAppVersion]);
+  }, [i18n, open, setAppSettings, setAppVersion, settingsLoadAttempt]);
 
   React.useEffect(() => {
-    if (!open || section !== "general") {
+    if (!manualUpdateCheckRef.current) {
+      return;
+    }
+    const updateState = updateStatus?.status.state;
+    if (!updateState || updateState === "checking") {
+      return;
+    }
+    manualUpdateCheckRef.current = false;
+    if (updateState === "notAvailable") {
+      showToast({
+        key: "settings-update-result",
+        message: t("settings.about.updateNotAvailable"),
+        tone: "success",
+      });
+    }
+  }, [t, updateStatus]);
+
+  React.useEffect(() => {
+    if (!open || !settingsLoadReady || section !== "general") {
       return;
     }
 
+    const requestKey = String(credentialLoadAttempt);
+    if (credentialLoadRequestKeyRef.current === requestKey) {
+      return;
+    }
+    credentialLoadRequestKeyRef.current = requestKey;
     let active = true;
+    let finished = false;
     void Promise.resolve().then(() => {
       if (active) {
         setLoadingCredentials(true);
+        setCredentialLoadFailure(null);
       }
     });
     void listHttpsCredentials()
@@ -260,13 +331,14 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
       })
       .catch((error) => {
         if (active) {
-          setHttpsCredentials({ credentials: [] });
+          setCredentialLoadFailure(error);
+          window.dispatchEvent(
+            new CustomEvent("artistic-git:error", { detail: error }),
+          );
         }
-        window.dispatchEvent(
-          new CustomEvent("artistic-git:error", { detail: error }),
-        );
       })
       .finally(() => {
+        finished = true;
         if (active) {
           setLoadingCredentials(false);
         }
@@ -274,71 +346,255 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
 
     return () => {
       active = false;
+      if (!finished && credentialLoadRequestKeyRef.current === requestKey) {
+        credentialLoadRequestKeyRef.current = null;
+      }
     };
-  }, [open, section]);
+  }, [credentialLoadAttempt, open, section, settingsLoadReady]);
 
   React.useEffect(() => {
-    if (!open || !activeRepositoryPath || section !== "project") {
+    if (
+      !open ||
+      !settingsLoadReady ||
+      !activeRepositoryPath ||
+      section !== "project"
+    ) {
       return;
     }
 
+    const requestKey = `${activeRepositoryPath}\0${projectLoadAttempt}`;
+    if (projectLoadRequestKeyRef.current === requestKey) {
+      return;
+    }
+    projectLoadRequestKeyRef.current = requestKey;
     let active = true;
+    let finished = false;
     void Promise.resolve().then(() => {
       if (active) {
         setLoadingProject(true);
+        setProjectLoadResolvedPath(null);
+        setProjectLoadFailure(null);
+        setProject(null);
       }
     });
-    void Promise.all([
-      loadProjectSettings({ repositoryPath: activeRepositoryPath }),
-      loadGitignore({ repositoryPath: activeRepositoryPath }),
-      loadRemoteSettings({ repositoryPath: activeRepositoryPath }),
-      listBranches({ repositoryPath: activeRepositoryPath }),
-    ])
-      .then(
-        ([
-          loadedProject,
-          loadedGitignore,
-          loadedRemoteSettings,
-          loadedBranches,
-        ]) => {
-          if (!active) {
-            return;
-          }
+    void loadProjectSettings({ repositoryPath: activeRepositoryPath })
+      .then((loadedProject) => {
+        if (active) {
           setProject(loadedProject);
           setProjectSettings(activeRepositoryPath, loadedProject);
-          setGitignore(loadedGitignore);
-          setGitignoreDraft(loadedGitignore.content);
-          setRemoteSettings(loadedRemoteSettings);
-          setRemoteUrlDraft(loadedRemoteSettings.originUrl ?? "");
-          setBranchOptions(loadedBranches.branches);
-          setRemoteRemoveArmed(false);
-        },
-      )
-      .catch((error) => {
-        if (!active) {
-          return;
+          setProjectLoadResolvedPath(activeRepositoryPath);
         }
-        setProject(null);
-        setGitignore(null);
-        setGitignoreDraft("");
-        setRemoteSettings(null);
-        setRemoteUrlDraft("");
-        setBranchOptions([]);
-        window.dispatchEvent(
-          new CustomEvent("artistic-git:error", { detail: error }),
-        );
+      })
+      .catch((error) => {
+        if (active) {
+          setProjectLoadFailure({ error, path: activeRepositoryPath });
+          window.dispatchEvent(
+            new CustomEvent("artistic-git:error", { detail: error }),
+          );
+        }
       })
       .finally(() => {
+        finished = true;
         if (active) {
-          setProjectLoadResolvedPath(activeRepositoryPath);
           setLoadingProject(false);
+        }
+      });
+    return () => {
+      active = false;
+      if (!finished && projectLoadRequestKeyRef.current === requestKey) {
+        projectLoadRequestKeyRef.current = null;
+      }
+    };
+  }, [
+    activeRepositoryPath,
+    open,
+    projectLoadAttempt,
+    section,
+    setProjectSettings,
+    settingsLoadReady,
+  ]);
+
+  React.useEffect(() => {
+    if (
+      !open ||
+      !settingsLoadReady ||
+      !activeRepositoryPath ||
+      section !== "project"
+    ) {
+      return;
+    }
+
+    const requestKey = `${activeRepositoryPath}\0${gitignoreLoadAttempt}`;
+    if (gitignoreLoadRequestKeyRef.current === requestKey) {
+      return;
+    }
+    gitignoreLoadRequestKeyRef.current = requestKey;
+    let active = true;
+    let finished = false;
+    void Promise.resolve().then(() => {
+      if (active) {
+        setLoadingGitignore(true);
+        setGitignoreLoadFailure(null);
+        setGitignore(null);
+        setGitignoreDraft("");
+      }
+    });
+    void loadGitignore({ repositoryPath: activeRepositoryPath })
+      .then((loadedGitignore) => {
+        if (active) {
+          setGitignore(loadedGitignore);
+          setGitignoreDraft(loadedGitignore.content);
+        }
+      })
+      .catch((error) => {
+        if (active) {
+          setGitignoreLoadFailure(error);
+          window.dispatchEvent(
+            new CustomEvent("artistic-git:error", { detail: error }),
+          );
+        }
+      })
+      .finally(() => {
+        finished = true;
+        if (active) {
+          setLoadingGitignore(false);
         }
       });
 
     return () => {
       active = false;
+      if (!finished && gitignoreLoadRequestKeyRef.current === requestKey) {
+        gitignoreLoadRequestKeyRef.current = null;
+      }
     };
-  }, [activeRepositoryPath, open, section, setProjectSettings]);
+  }, [
+    activeRepositoryPath,
+    gitignoreLoadAttempt,
+    open,
+    section,
+    settingsLoadReady,
+  ]);
+
+  React.useEffect(() => {
+    if (
+      !open ||
+      !settingsLoadReady ||
+      !activeRepositoryPath ||
+      section !== "project"
+    ) {
+      return;
+    }
+
+    const requestKey = `${activeRepositoryPath}\0${remoteLoadAttempt}`;
+    if (remoteLoadRequestKeyRef.current === requestKey) {
+      return;
+    }
+    remoteLoadRequestKeyRef.current = requestKey;
+    let active = true;
+    let finished = false;
+    void Promise.resolve().then(() => {
+      if (active) {
+        setLoadingRemote(true);
+        setRemoteLoadFailure(null);
+        setRemoteSettings(null);
+        setRemoteUrlDraft("");
+      }
+    });
+    void loadRemoteSettings({ repositoryPath: activeRepositoryPath })
+      .then((loadedRemoteSettings) => {
+        if (active) {
+          setRemoteSettings(loadedRemoteSettings);
+          setRemoteUrlDraft(loadedRemoteSettings.originUrl ?? "");
+          setRemoteRemoveArmed(false);
+        }
+      })
+      .catch((error) => {
+        if (active) {
+          setRemoteLoadFailure(error);
+          window.dispatchEvent(
+            new CustomEvent("artistic-git:error", { detail: error }),
+          );
+        }
+      })
+      .finally(() => {
+        finished = true;
+        if (active) {
+          setLoadingRemote(false);
+        }
+      });
+
+    return () => {
+      active = false;
+      if (!finished && remoteLoadRequestKeyRef.current === requestKey) {
+        remoteLoadRequestKeyRef.current = null;
+      }
+    };
+  }, [
+    activeRepositoryPath,
+    open,
+    remoteLoadAttempt,
+    section,
+    settingsLoadReady,
+  ]);
+
+  React.useEffect(() => {
+    if (
+      !open ||
+      !settingsLoadReady ||
+      !activeRepositoryPath ||
+      section !== "project"
+    ) {
+      return;
+    }
+
+    const requestKey = `${activeRepositoryPath}\0${branchLoadAttempt}`;
+    if (branchLoadRequestKeyRef.current === requestKey) {
+      return;
+    }
+    branchLoadRequestKeyRef.current = requestKey;
+    let active = true;
+    let finished = false;
+    void Promise.resolve().then(() => {
+      if (active) {
+        setLoadingBranches(true);
+        setBranchLoadFailure(null);
+        setBranchOptions([]);
+      }
+    });
+    void listBranches({ repositoryPath: activeRepositoryPath })
+      .then((loadedBranches) => {
+        if (active) {
+          setBranchOptions(loadedBranches.branches);
+        }
+      })
+      .catch((error) => {
+        if (active) {
+          setBranchLoadFailure(error);
+          window.dispatchEvent(
+            new CustomEvent("artistic-git:error", { detail: error }),
+          );
+        }
+      })
+      .finally(() => {
+        finished = true;
+        if (active) {
+          setLoadingBranches(false);
+        }
+      });
+
+    return () => {
+      active = false;
+      if (!finished && branchLoadRequestKeyRef.current === requestKey) {
+        branchLoadRequestKeyRef.current = null;
+      }
+    };
+  }, [
+    activeRepositoryPath,
+    branchLoadAttempt,
+    open,
+    section,
+    settingsLoadReady,
+  ]);
 
   if (!open) {
     return null;
@@ -348,10 +604,10 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
     Boolean(activeRepositoryPath) &&
     projectLoadResolvedPath === activeRepositoryPath;
   const visibleProject = projectScopeReady ? project : null;
-  const visibleGitignore = projectScopeReady ? gitignore : null;
-  const visibleGitignoreDraft = projectScopeReady ? gitignoreDraft : "";
-  const visibleRemoteSettings = projectScopeReady ? remoteSettings : null;
-  const visibleRemoteUrlDraft = projectScopeReady ? remoteUrlDraft : "";
+  const visibleGitignore = activeRepositoryPath ? gitignore : null;
+  const visibleGitignoreDraft = activeRepositoryPath ? gitignoreDraft : "";
+  const visibleRemoteSettings = activeRepositoryPath ? remoteSettings : null;
+  const visibleRemoteUrlDraft = activeRepositoryPath ? remoteUrlDraft : "";
   const normalizedProject = normalizeProjectSettings(visibleProject);
   const largeFileCheck =
     normalizedProject.largeFileCheck ?? defaultLargeFileCheck;
@@ -376,9 +632,6 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
   const operationBusy =
     updateInstallInProgress ||
     loading ||
-    (section === "project" &&
-      Boolean(activeRepositoryPath) &&
-      (loadingProject || !projectScopeReady)) ||
     (section === "general" && loadingCredentials) ||
     mutationBusy;
 
@@ -413,9 +666,6 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
       const validation = validateGitUser(gitUserFromSettings(nextSettings));
       if (!validation.valid) {
         setIdentitySaveAttempted(true);
-        setStatus(
-          t(validation.messageKey ?? "settings.general.identityRequired"),
-        );
         return null;
       }
     }
@@ -423,12 +673,6 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
       nextSettings.git?.fetchIntervalSeconds,
     );
     if (!intervalValidation.valid) {
-      setStatus(
-        t("settings.general.fetchIntervalRange", {
-          max: intervalValidation.max,
-          min: intervalValidation.min,
-        }),
-      );
       return null;
     }
     if (!beginMutation()) {
@@ -458,7 +702,7 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
             : current,
         );
       }
-      setStatus(t("settings.status.saved"));
+      showSettingsResult(i18n.t("settings.status.saved"));
       return normalized;
     } catch (error) {
       window.dispatchEvent(
@@ -501,7 +745,7 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
       });
       setProject(saved);
       setProjectSettings(activeRepositoryPath, saved);
-      setStatus(t("settings.status.projectSaved"));
+      showSettingsResult(t("settings.status.projectSaved"));
     } catch (error) {
       window.dispatchEvent(
         new CustomEvent("artistic-git:error", { detail: error }),
@@ -525,7 +769,7 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
       });
       setGitignore(saved);
       setGitignoreDraft(saved.content);
-      setStatus(t("settings.status.gitignoreSaved"));
+      showSettingsResult(t("settings.status.gitignoreSaved"));
     } catch (error) {
       window.dispatchEvent(
         new CustomEvent("artistic-git:error", { detail: error }),
@@ -545,7 +789,6 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
     const hasExistingOrigin = Boolean(remoteSettings?.originUrl);
     if (!trimmedUrl && hasExistingOrigin && !remoteRemoveArmed) {
       setRemoteRemoveArmed(true);
-      setStatus(t("settings.status.remoteRemoveArmed"));
       return;
     }
     if (!beginMutation()) {
@@ -563,22 +806,11 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
       setRemoteSettings(saved);
       setRemoteUrlDraft(saved.originUrl ?? "");
       setRemoteRemoveArmed(false);
-      setStatus(
+      showSettingsResult(
         saved.originUrl
           ? t("settings.status.remoteSaved")
           : t("settings.status.originRemoved"),
       );
-      await Promise.all([
-        queryClient.invalidateQueries({
-          queryKey: repoQueryKeys.summary(activeRepositoryPath),
-        }),
-        queryClient.invalidateQueries({
-          queryKey: repoQueryKeys.branches(activeRepositoryPath),
-        }),
-        queryClient.invalidateQueries({
-          queryKey: repoQueryKeys.history(activeRepositoryPath),
-        }),
-      ]);
     } catch (error) {
       window.dispatchEvent(
         new CustomEvent("artistic-git:error", { detail: error }),
@@ -596,9 +828,9 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
     }
     try {
       await navigator.clipboard.writeText(remoteUrl);
-      setStatus(t("settings.status.copied"));
-    } catch {
-      setStatus(t("settings.status.copyFailed"));
+      showSettingsResult(t("settings.status.copied"));
+    } catch (error) {
+      reportCopyFailure(error, "copyRemoteUrl");
     }
   };
 
@@ -608,10 +840,21 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
     }
     try {
       await navigator.clipboard.writeText(sshKey.publicKey);
-      setStatus(t("settings.status.copied"));
-    } catch {
-      setStatus(t("settings.status.copyFailed"));
+      showSettingsResult(t("settings.status.copied"));
+    } catch (error) {
+      reportCopyFailure(error, "copySshPublicKey");
     }
+  };
+
+  const reportCopyFailure = (error: unknown, operationName: string) => {
+    const summary = t("settings.status.copyFailed");
+    setStatus(null);
+    showToast({ key: "settings-result", message: summary, tone: "error" });
+    window.dispatchEvent(
+      new CustomEvent("artistic-git:error", {
+        detail: { cause: error, operationName, summary },
+      }),
+    );
   };
 
   const createSshKey = async () => {
@@ -626,7 +869,7 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
         passphrase: null,
       });
       setSshKey(next);
-      setStatus(t("settings.status.sshGenerated"));
+      showSettingsResult(t("settings.status.sshGenerated"));
     } catch (error) {
       window.dispatchEvent(
         new CustomEvent("artistic-git:error", { detail: error }),
@@ -652,8 +895,22 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
     void persistSettings(next);
   };
 
+  const persistGravatar = (gravatarEnabled: boolean) => {
+    const normalized = normalizeAppSettings(draft);
+    const next = {
+      ...normalized,
+      privacy: {
+        ...normalized.privacy,
+        gravatarEnabled,
+      },
+    };
+    setDraft(next);
+    void persistSettings(next);
+  };
+
   const startNewHttpsCredential = () => {
     setCredentialRemoveArmed(null);
+    setStatus(null);
     setCredentialDraft({
       editingKey: null,
       protocol: "https",
@@ -667,6 +924,7 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
 
   const editHttpsCredential = (credential: HttpsCredentialEntry) => {
     setCredentialRemoveArmed(null);
+    setStatus(null);
     setCredentialDraft({
       editingKey: httpsCredentialKey(credential),
       protocol: credential.protocol,
@@ -715,7 +973,7 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
       const next = await listHttpsCredentials();
       setHttpsCredentials(next);
       setCredentialDraft(null);
-      setStatus(t("settings.status.credentialSaved"));
+      showSettingsResult(t("settings.status.credentialSaved"));
     } catch (error) {
       window.dispatchEvent(
         new CustomEvent("artistic-git:error", { detail: error }),
@@ -749,7 +1007,7 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
       const next = await listHttpsCredentials();
       setHttpsCredentials(next);
       setCredentialRemoveArmed(null);
-      setStatus(t("settings.status.credentialForgotten"));
+      showSettingsResult(t("settings.status.credentialForgotten"));
     } catch (error) {
       window.dispatchEvent(
         new CustomEvent("artistic-git:error", { detail: error }),
@@ -767,9 +1025,7 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
       description={t("settings.description")}
       footer={
         <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0 text-sm text-muted-foreground">
-            {loading ? t("settings.status.loading") : status}
-          </div>
+          <div className="min-w-0 text-sm text-muted-foreground">{status}</div>
           <Button
             disabled={operationBusy}
             onClick={() => onOpenChange(false)}
@@ -807,7 +1063,12 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
                     : "text-muted-foreground hover:bg-accent hover:text-foreground",
                 )}
                 key={item.key}
-                onClick={() => setSection(item.key)}
+                onClick={() => {
+                  setStatus(null);
+                  setRemoteRemoveArmed(false);
+                  setCredentialRemoveArmed(null);
+                  setSection(item.key);
+                }}
                 type="button"
               >
                 {item.icon}
@@ -817,15 +1078,61 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
           </nav>
 
           <div className="min-h-0 overflow-auto pr-1">
-            {section === "general" ? (
+            {settingsLoadFailure ? (
+              <div
+                className="flex min-h-72 flex-col items-center justify-center gap-4 rounded-md border border-destructive/40 bg-destructive/5 p-6 text-center"
+                role="alert"
+              >
+                <AlertTriangle
+                  className="size-6 text-destructive"
+                  aria-hidden="true"
+                />
+                <div className="space-y-1">
+                  <h3 className="font-semibold">
+                    {t("settings.loadFailedTitle")}
+                  </h3>
+                  <p className="max-w-lg text-sm text-muted-foreground">
+                    {t("settings.loadFailedDescription")}
+                  </p>
+                </div>
+                <div className="flex flex-wrap justify-center gap-2">
+                  <Button
+                    onClick={() => {
+                      window.dispatchEvent(
+                        new CustomEvent("artistic-git:error", {
+                          detail: settingsLoadFailure,
+                        }),
+                      );
+                    }}
+                    type="button"
+                    variant="ghost"
+                  >
+                    {t("settings.viewLoadErrorDetails")}
+                  </Button>
+                  <Button
+                    onClick={() =>
+                      setSettingsLoadAttempt((current) => current + 1)
+                    }
+                    type="button"
+                    variant="secondary"
+                  >
+                    {t("settings.retryLoad")}
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+
+            {settingsLoadReady && section === "general" ? (
               <GeneralSettings
                 draft={draft}
                 fetchIntervalValidation={fetchIntervalValidation}
                 gitUser={gitUser}
                 identitySources={identitySources}
+                identitySourceFailure={identitySourceFailure}
                 identityValidation={identityValidation}
                 onCopyPublicKey={copyPublicKey}
                 onGenerateSshKey={createSshKey}
+                onGravatarChange={persistGravatar}
                 onLanguageChange={persistLanguage}
                 onSave={() =>
                   void persistSettings(draft, { validateIdentity: true })
@@ -839,12 +1146,31 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
                 credentials={httpsCredentials?.credentials ?? []}
                 credentialDraft={credentialDraft}
                 credentialRemoveArmed={credentialRemoveArmed}
+                credentialLoadFailure={credentialLoadFailure}
                 deletingCredentialKey={deletingCredentialKey}
-                onCancelCredentialEdit={() => setCredentialDraft(null)}
+                onCancelCredentialEdit={() => {
+                  setCredentialDraft(null);
+                  setStatus(null);
+                }}
                 onEditCredential={editHttpsCredential}
                 onForgetCredential={(credential) =>
                   void forgetHttpsCredential(credential)
                 }
+                onRetryCredentials={() =>
+                  setCredentialLoadAttempt((current) => current + 1)
+                }
+                onRetrySupplementalSettings={() =>
+                  setSettingsLoadAttempt((current) => current + 1)
+                }
+                onViewCredentialLoadError={() => {
+                  if (credentialLoadFailure) {
+                    window.dispatchEvent(
+                      new CustomEvent("artistic-git:error", {
+                        detail: credentialLoadFailure,
+                      }),
+                    );
+                  }
+                }}
                 onNewCredential={startNewHttpsCredential}
                 onSaveCredential={() => void persistHttpsCredential()}
                 onUpdateCredentialDraft={setCredentialDraft}
@@ -852,10 +1178,11 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
                 saving={savingSettings}
                 showIdentityValidation={showIdentityValidation}
                 sshKey={sshKey}
+                sshKeyFailure={sshKeyFailure}
               />
             ) : null}
 
-            {section === "project" ? (
+            {settingsLoadReady && section === "project" ? (
               <ProjectSettingsPanel
                 activeRepositoryPath={activeRepositoryPath}
                 gitignore={visibleGitignore}
@@ -863,6 +1190,12 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
                 largeFileCheck={largeFileCheck}
                 autoTrackingRules={normalizedProject.autoTrackingRules}
                 branchOptions={branchOptions}
+                branchLoadFailure={branchLoadFailure}
+                gitignoreLoadFailure={gitignoreLoadFailure}
+                loadingBranches={loadingBranches}
+                loadingGitignore={loadingGitignore}
+                loadingProject={loadingProject}
+                loadingRemote={loadingRemote}
                 onAutoTrackingRulesChange={(autoTrackingRules) => {
                   setProject((current) => ({
                     ...normalizeProjectSettings(current),
@@ -883,28 +1216,43 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
                   setRemoteRemoveArmed(false);
                 }}
                 onRemoteCopy={() => void copyRemoteUrl()}
+                onRetryBranches={() =>
+                  setBranchLoadAttempt((current) => current + 1)
+                }
+                onRetryGitignore={() =>
+                  setGitignoreLoadAttempt((current) => current + 1)
+                }
+                onRetryProject={() =>
+                  setProjectLoadAttempt((current) => current + 1)
+                }
+                onRetryRemote={() =>
+                  setRemoteLoadAttempt((current) => current + 1)
+                }
                 onSaveRemote={() => void persistRemote()}
                 onSaveGitignore={() => void persistGitignore()}
                 onSaveProject={() => void persistProject()}
                 remoteRemoveArmed={remoteRemoveArmed}
+                remoteLoadFailure={remoteLoadFailure}
                 remoteSettings={visibleRemoteSettings}
                 remoteUrlDraft={visibleRemoteUrlDraft}
                 savingGitignore={savingGitignore}
                 savingProject={savingProject}
                 savingRemote={savingRemote}
+                projectLoadFailure={projectLoadFailure?.error ?? null}
               />
             ) : null}
 
-            {section === "about" ? (
+            {settingsLoadReady && section === "about" ? (
               <AboutSettings
                 appVersion={appVersion ?? t("settings.about.unknown")}
                 installGate={updateInstallGate}
                 installing={updateInstallInProgress}
-                onCheckUpdates={() =>
+                onCheckUpdates={() => {
+                  manualUpdateCheckRef.current = true;
                   window.dispatchEvent(
                     new CustomEvent("artistic-git:check-updates"),
-                  )
-                }
+                  );
+                }}
                 onOpenReleasePage={() => {
                   void openUpdateReleasePage().catch((error) => {
                     window.dispatchEvent(
@@ -935,9 +1283,19 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
                 ? t("updaterPrompt.installing")
                 : generatingSshKey
                   ? t("settings.status.generatingSshKey")
-                  : mutationBusy
-                    ? t("settings.status.saving")
-                    : t("settings.status.loading")}
+                  : deletingCredentialKey !== null
+                    ? t("settings.status.deletingCredential")
+                    : savingRemote
+                      ? t("settings.status.savingRemote")
+                      : savingGitignore
+                        ? t("settings.status.savingGitignore")
+                        : savingProject
+                          ? t("settings.status.savingProject")
+                          : savingCredential
+                            ? t("settings.status.savingCredential")
+                            : mutationBusy
+                              ? t("settings.status.saving")
+                              : t("settings.status.loading")}
             </span>
           </div>
         ) : null}
@@ -947,6 +1305,7 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
 }
 
 function GeneralSettings({
+  credentialLoadFailure,
   credentialDraft,
   credentialRemoveArmed,
   credentials,
@@ -955,12 +1314,14 @@ function GeneralSettings({
   fetchIntervalValidation,
   gitUser,
   identitySources,
+  identitySourceFailure,
   identityValidation,
   onCopyPublicKey,
   onCancelCredentialEdit,
   onEditCredential,
   onForgetCredential,
   onGenerateSshKey,
+  onGravatarChange,
   onAutoUpdateCheckChange,
   onLanguageChange,
   onRememberSshPassphraseChange,
@@ -969,14 +1330,19 @@ function GeneralSettings({
   onSaveFetch,
   onThemeChange,
   onNewCredential,
+  onRetryCredentials,
+  onRetrySupplementalSettings,
   onUpdateDraft,
   onUpdateCredentialDraft,
   onUpdateUser,
+  onViewCredentialLoadError,
   savingCredential,
   saving,
   showIdentityValidation,
   sshKey,
+  sshKeyFailure,
 }: {
+  credentialLoadFailure: unknown;
   credentialDraft: HttpsCredentialDraft | null;
   credentialRemoveArmed: string | null;
   credentials: HttpsCredentialEntry[];
@@ -985,16 +1351,20 @@ function GeneralSettings({
   fetchIntervalValidation: FetchIntervalValidation;
   gitUser: GitUserSettings;
   identitySources: IdentitySourcesResponse | null;
+  identitySourceFailure: unknown;
   identityValidation: GitUserValidation;
   onCopyPublicKey: () => void;
   onCancelCredentialEdit: () => void;
   onEditCredential: (credential: HttpsCredentialEntry) => void;
   onForgetCredential: (credential: HttpsCredentialEntry) => void;
   onGenerateSshKey: () => void;
+  onGravatarChange: (checked: boolean) => void;
   onAutoUpdateCheckChange: (checked: boolean) => void;
   onLanguageChange: (value: "system" | "en" | "zh-CN") => void;
   onRememberSshPassphraseChange: (checked: boolean) => void;
   onNewCredential: () => void;
+  onRetryCredentials: () => void;
+  onRetrySupplementalSettings: () => void;
   onSave: () => void;
   onSaveCredential: () => void;
   onSaveFetch: () => void;
@@ -1004,10 +1374,12 @@ function GeneralSettings({
     React.SetStateAction<HttpsCredentialDraft | null>
   >;
   onUpdateUser: (user: GitUserSettings) => void;
+  onViewCredentialLoadError: () => void;
   savingCredential: boolean;
   saving: boolean;
   showIdentityValidation: boolean;
   sshKey: SshKeyStatus | null;
+  sshKeyFailure: unknown;
 }) {
   const { t } = useTranslation();
   const [credentialPageIndex, setCredentialPageIndex] = React.useState(0);
@@ -1030,6 +1402,13 @@ function GeneralSettings({
         icon={<UserRound className="size-4" aria-hidden="true" />}
         title={t("settings.general.identity")}
       >
+        {identitySourceFailure ? (
+          <SupplementalSettingsFailure
+            error={identitySourceFailure}
+            onRetry={onRetrySupplementalSettings}
+            title={t("settings.general.identitySourcesLoadFailed")}
+          />
+        ) : null}
         <div className="grid gap-3 sm:grid-cols-2">
           <TextField
             invalid={showIdentityValidation && identityValidation.nameMissing}
@@ -1077,6 +1456,13 @@ function GeneralSettings({
         icon={<KeyRound className="size-4" aria-hidden="true" />}
         title={t("settings.general.ssh")}
       >
+        {sshKeyFailure ? (
+          <SupplementalSettingsFailure
+            error={sshKeyFailure}
+            onRetry={onRetrySupplementalSettings}
+            title={t("settings.general.sshStatusLoadFailed")}
+          />
+        ) : null}
         <div className="rounded-md border bg-background p-3">
           <div className="mb-2 flex items-center justify-between gap-3">
             <span className="text-sm font-medium">
@@ -1124,127 +1510,167 @@ function GeneralSettings({
         icon={<KeyRound className="size-4" aria-hidden="true" />}
         title={t("settings.general.httpsCredentials")}
       >
-        <div>
-          <Button
-            className="gap-2"
-            onClick={onNewCredential}
-            type="button"
-            variant="secondary"
+        {credentialLoadFailure ? (
+          <div
+            className="space-y-3 rounded-md border border-destructive/40 bg-destructive/5 p-3"
+            role="alert"
           >
-            <Plus className="size-4" aria-hidden="true" />
-            {t("settings.general.addCredential")}
-          </Button>
-        </div>
-        {credentials.length > 0 ? (
-          <div className="space-y-2">
-            {visibleCredentials.map((credential) => {
-              const key = httpsCredentialKey(credential);
-              const armed = credentialRemoveArmed === key;
-              return (
-                <div
-                  className="flex items-center justify-between gap-3 rounded-md border bg-background px-3 py-2"
-                  data-testid="https-credential-item"
-                  key={key}
-                >
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-medium">
-                      {credential.host}
-                      {credential.path ? `/${credential.path}` : ""}
-                    </div>
-                    <div className="truncate text-xs text-muted-foreground">
-                      {credential.username} -{" "}
-                      {credential.scope === "path"
-                        ? t("settings.general.pathCredential")
-                        : t("settings.general.hostCredential")}
-                    </div>
-                  </div>
-                  <div className="flex shrink-0 gap-2">
-                    <Button
-                      className="gap-2"
-                      disabled={deletingCredentialKey === key}
-                      onClick={() => onEditCredential(credential)}
-                      type="button"
-                      variant="secondary"
-                    >
-                      <Pencil className="size-4" aria-hidden="true" />
-                      {t("settings.general.editCredential")}
-                    </Button>
-                    <Button
-                      className="gap-2"
-                      disabled={deletingCredentialKey === key}
-                      onClick={() => onForgetCredential(credential)}
-                      type="button"
-                      variant={armed ? "destructive" : "secondary"}
-                    >
-                      <Trash2 className="size-4" aria-hidden="true" />
-                      {armed
-                        ? t("settings.general.confirmForgetCredential")
-                        : t("settings.general.forgetCredential")}
-                    </Button>
-                  </div>
-                </div>
-              );
-            })}
-            {credentialPageCount > 1 ? (
-              <div className="flex items-center justify-between gap-2 pt-1">
-                <Button
-                  aria-label={t("settings.general.previousCredentialsPage")}
-                  disabled={currentCredentialPageIndex === 0}
-                  onClick={() =>
-                    setCredentialPageIndex(
-                      Math.max(0, currentCredentialPageIndex - 1),
-                    )
-                  }
-                  size="icon"
-                  title={t("settings.general.previousCredentialsPage")}
-                  type="button"
-                  variant="ghost"
-                >
-                  <ChevronLeft aria-hidden="true" className="size-4" />
-                </Button>
-                <span className="text-xs text-muted-foreground">
-                  {t("settings.general.credentialsPage", {
-                    page: currentCredentialPageIndex + 1,
-                    total: credentialPageCount,
-                  })}
-                </span>
-                <Button
-                  aria-label={t("settings.general.nextCredentialsPage")}
-                  disabled={
-                    currentCredentialPageIndex >= credentialPageCount - 1
-                  }
-                  onClick={() =>
-                    setCredentialPageIndex(
-                      Math.min(
-                        credentialPageCount - 1,
-                        currentCredentialPageIndex + 1,
-                      ),
-                    )
-                  }
-                  size="icon"
-                  title={t("settings.general.nextCredentialsPage")}
-                  type="button"
-                  variant="ghost"
-                >
-                  <ChevronRight aria-hidden="true" className="size-4" />
-                </Button>
+            <div className="flex items-start gap-2">
+              <AlertTriangle
+                aria-hidden="true"
+                className="mt-0.5 size-4 shrink-0 text-destructive"
+              />
+              <div className="space-y-1">
+                <p className="text-sm font-medium">
+                  {t("settings.general.credentialsLoadFailedTitle")}
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  {t("settings.general.credentialsLoadFailedDescription")}
+                </p>
               </div>
-            ) : null}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                onClick={onViewCredentialLoadError}
+                type="button"
+                variant="ghost"
+              >
+                {t("settings.general.viewCredentialsLoadErrorDetails")}
+              </Button>
+              <Button
+                onClick={onRetryCredentials}
+                type="button"
+                variant="secondary"
+              >
+                {t("settings.general.retryCredentialsLoad")}
+              </Button>
+            </div>
           </div>
         ) : (
-          <p className="rounded-md border border-dashed bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
-            {t("settings.general.noHttpsCredentials")}
-          </p>
+          <>
+            <div>
+              <Button
+                className="gap-2"
+                onClick={onNewCredential}
+                type="button"
+                variant="secondary"
+              >
+                <Plus className="size-4" aria-hidden="true" />
+                {t("settings.general.addCredential")}
+              </Button>
+            </div>
+            {credentials.length > 0 ? (
+              <div className="space-y-2">
+                {visibleCredentials.map((credential) => {
+                  const key = httpsCredentialKey(credential);
+                  const armed = credentialRemoveArmed === key;
+                  return (
+                    <div
+                      className="flex items-center justify-between gap-3 rounded-md border bg-background px-3 py-2"
+                      data-testid="https-credential-item"
+                      key={key}
+                    >
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-medium">
+                          {credential.host}
+                          {credential.path ? `/${credential.path}` : ""}
+                        </div>
+                        <div className="truncate text-xs text-muted-foreground">
+                          {credential.username} -{" "}
+                          {credential.scope === "path"
+                            ? t("settings.general.pathCredential")
+                            : t("settings.general.hostCredential")}
+                        </div>
+                      </div>
+                      <div className="flex shrink-0 gap-2">
+                        <Button
+                          className="gap-2"
+                          disabled={deletingCredentialKey === key}
+                          onClick={() => onEditCredential(credential)}
+                          type="button"
+                          variant="secondary"
+                        >
+                          <Pencil className="size-4" aria-hidden="true" />
+                          {t("settings.general.editCredential")}
+                        </Button>
+                        <Button
+                          className="gap-2"
+                          disabled={deletingCredentialKey === key}
+                          onClick={() => onForgetCredential(credential)}
+                          type="button"
+                          variant={armed ? "destructive" : "secondary"}
+                        >
+                          <Trash2 className="size-4" aria-hidden="true" />
+                          {armed
+                            ? t("settings.general.confirmForgetCredential")
+                            : t("settings.general.forgetCredential")}
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })}
+                {credentialPageCount > 1 ? (
+                  <div className="flex items-center justify-between gap-2 pt-1">
+                    <Button
+                      aria-label={t("settings.general.previousCredentialsPage")}
+                      disabled={currentCredentialPageIndex === 0}
+                      onClick={() =>
+                        setCredentialPageIndex(
+                          Math.max(0, currentCredentialPageIndex - 1),
+                        )
+                      }
+                      size="icon"
+                      title={t("settings.general.previousCredentialsPage")}
+                      type="button"
+                      variant="ghost"
+                    >
+                      <ChevronLeft aria-hidden="true" className="size-4" />
+                    </Button>
+                    <span className="text-xs text-muted-foreground">
+                      {t("settings.general.credentialsPage", {
+                        page: currentCredentialPageIndex + 1,
+                        total: credentialPageCount,
+                      })}
+                    </span>
+                    <Button
+                      aria-label={t("settings.general.nextCredentialsPage")}
+                      disabled={
+                        currentCredentialPageIndex >= credentialPageCount - 1
+                      }
+                      onClick={() =>
+                        setCredentialPageIndex(
+                          Math.min(
+                            credentialPageCount - 1,
+                            currentCredentialPageIndex + 1,
+                          ),
+                        )
+                      }
+                      size="icon"
+                      title={t("settings.general.nextCredentialsPage")}
+                      type="button"
+                      variant="ghost"
+                    >
+                      <ChevronRight aria-hidden="true" className="size-4" />
+                    </Button>
+                  </div>
+                ) : null}
+              </div>
+            ) : (
+              <p className="rounded-md border border-dashed bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+                {t("settings.general.noHttpsCredentials")}
+              </p>
+            )}
+            {credentialDraft ? (
+              <HttpsCredentialEditor
+                draft={credentialDraft}
+                onCancel={onCancelCredentialEdit}
+                onChange={onUpdateCredentialDraft}
+                onSave={onSaveCredential}
+                saving={savingCredential}
+              />
+            ) : null}
+          </>
         )}
-        {credentialDraft ? (
-          <HttpsCredentialEditor
-            draft={credentialDraft}
-            onCancel={onCancelCredentialEdit}
-            onChange={onUpdateCredentialDraft}
-            onSave={onSaveCredential}
-            saving={savingCredential}
-          />
-        ) : null}
       </SettingsGroup>
 
       <SettingsGroup
@@ -1347,15 +1773,7 @@ function GeneralSettings({
         <ToggleRow
           checked={draft.privacy?.gravatarEnabled ?? false}
           label={t("settings.general.gravatar")}
-          onChange={(checked) => {
-            onUpdateDraft((current) => ({
-              ...normalizeAppSettings(current),
-              privacy: {
-                ...normalizeAppSettings(current).privacy,
-                gravatarEnabled: checked,
-              },
-            }));
-          }}
+          onChange={onGravatarChange}
         />
       </SettingsGroup>
     </section>
@@ -1454,31 +1872,49 @@ function HttpsCredentialEditor({
 function ProjectSettingsPanel({
   activeRepositoryPath,
   autoTrackingRules,
+  branchLoadFailure,
   branchOptions,
   gitignore,
   gitignoreDraft,
+  gitignoreLoadFailure,
   largeFileCheck,
+  loadingBranches,
+  loadingGitignore,
+  loadingProject,
+  loadingRemote,
   onAutoTrackingRulesChange,
   onGitignoreChange,
   onLargeFileChange,
   onRemoteChange,
   onRemoteCopy,
+  onRetryBranches,
+  onRetryGitignore,
+  onRetryProject,
+  onRetryRemote,
   onSaveGitignore,
   onSaveProject,
   onSaveRemote,
   remoteRemoveArmed,
+  remoteLoadFailure,
   remoteSettings,
   remoteUrlDraft,
   savingGitignore,
   savingProject,
   savingRemote,
+  projectLoadFailure,
 }: {
   activeRepositoryPath: string | null;
   autoTrackingRules: AutoTrackingRule[];
+  branchLoadFailure: unknown;
   branchOptions: BranchSummary[];
   gitignore: GitignoreFileResponse | null;
   gitignoreDraft: string;
+  gitignoreLoadFailure: unknown;
   largeFileCheck: Required<{ enabled: boolean; thresholdMb: number }>;
+  loadingBranches: boolean;
+  loadingGitignore: boolean;
+  loadingProject: boolean;
+  loadingRemote: boolean;
   onAutoTrackingRulesChange: (rules: AutoTrackingRule[]) => void;
   onGitignoreChange: (value: string) => void;
   onLargeFileChange: (
@@ -1486,15 +1922,21 @@ function ProjectSettingsPanel({
   ) => void;
   onRemoteChange: (value: string) => void;
   onRemoteCopy: () => void;
+  onRetryBranches: () => void;
+  onRetryGitignore: () => void;
+  onRetryProject: () => void;
+  onRetryRemote: () => void;
   onSaveGitignore: () => void;
   onSaveProject: () => void;
   onSaveRemote: () => void;
   remoteRemoveArmed: boolean;
+  remoteLoadFailure: unknown;
   remoteSettings: RemoteSettingsResponse | null;
   remoteUrlDraft: string;
   savingGitignore: boolean;
   savingProject: boolean;
   savingRemote: boolean;
+  projectLoadFailure: unknown;
 }) {
   const { t } = useTranslation();
   const {
@@ -1535,6 +1977,10 @@ function ProjectSettingsPanel({
     autoTrackingRules,
     targetOptions,
   );
+  const projectReady = !loadingProject && !projectLoadFailure;
+  const gitignoreReady = !loadingGitignore && !gitignoreLoadFailure;
+  const remoteReady = !loadingRemote && !remoteLoadFailure;
+  const branchesReady = !loadingBranches && !branchLoadFailure;
 
   if (!activeRepositoryPath) {
     return (
@@ -1547,246 +1993,292 @@ function ProjectSettingsPanel({
   return (
     <section className="space-y-6">
       <SettingsGroup title={t("settings.project.largeFiles")}>
-        <ToggleRow
-          checked={largeFileCheck.enabled}
-          label={t("settings.project.largeFileCheck")}
-          onChange={(checked) =>
-            onLargeFileChange({ ...largeFileCheck, enabled: checked })
-          }
+        <ProjectSourceStatus
+          error={projectLoadFailure}
+          loading={loadingProject}
+          onRetry={onRetryProject}
         />
-        <label className="grid gap-1 text-sm">
-          <span className="font-medium">
-            {t("settings.project.thresholdMb")}
-          </span>
-          <input
-            className="h-9 w-32 rounded-md border bg-background px-3 text-sm"
-            min={1}
-            onChange={(event) =>
-              onLargeFileChange({
-                ...largeFileCheck,
-                thresholdMb: Math.max(1, Number(event.target.value) || 1),
-              })
-            }
-            type="number"
-            value={largeFileCheck.thresholdMb}
-          />
-        </label>
-        <Button
-          className="gap-2"
-          disabled={savingProject}
-          onClick={onSaveProject}
-          type="button"
-        >
-          <Save className="size-4" aria-hidden="true" />
-          {t("settings.project.saveProject")}
-        </Button>
+        {projectReady ? (
+          <>
+            <ToggleRow
+              checked={largeFileCheck.enabled}
+              label={t("settings.project.largeFileCheck")}
+              onChange={(checked) =>
+                onLargeFileChange({ ...largeFileCheck, enabled: checked })
+              }
+            />
+            <label className="grid gap-1 text-sm">
+              <span className="font-medium">
+                {t("settings.project.thresholdMb")}
+              </span>
+              <input
+                className="h-9 w-32 rounded-md border bg-background px-3 text-sm"
+                min={1}
+                onChange={(event) =>
+                  onLargeFileChange({
+                    ...largeFileCheck,
+                    thresholdMb: Math.max(1, Number(event.target.value) || 1),
+                  })
+                }
+                type="number"
+                value={largeFileCheck.thresholdMb}
+              />
+            </label>
+            <Button
+              className="gap-2"
+              disabled={savingProject}
+              onClick={onSaveProject}
+              type="button"
+            >
+              <Save className="size-4" aria-hidden="true" />
+              {t("settings.project.saveProject")}
+            </Button>
+          </>
+        ) : null}
       </SettingsGroup>
 
       <SettingsGroup title={t("settings.project.gitignore")}>
-        <div className="text-sm text-muted-foreground">
-          {gitignore?.path ?? t("settings.project.loadingGitignore")}
-        </div>
-        <textarea
-          className="min-h-56 w-full resize-y rounded-md border bg-background p-3 font-mono text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          onChange={(event) => onGitignoreChange(event.target.value)}
-          spellCheck={false}
-          value={gitignoreDraft}
+        <ProjectSourceStatus
+          error={gitignoreLoadFailure}
+          loading={loadingGitignore}
+          onRetry={onRetryGitignore}
         />
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            className="gap-2"
-            disabled={savingGitignore}
-            onClick={onSaveGitignore}
-            type="button"
-          >
-            <Save className="size-4" aria-hidden="true" />
-            {t("settings.project.saveGitignore")}
-          </Button>
-          <span className="text-sm text-muted-foreground">
-            {t("settings.project.gitignoreLocalChange")}
-          </span>
-        </div>
+        {gitignoreReady ? (
+          <>
+            <div className="text-sm text-muted-foreground">
+              {gitignore?.path ?? t("settings.project.loadingGitignore")}
+            </div>
+            <textarea
+              aria-label={t("settings.project.gitignore")}
+              className="min-h-56 w-full resize-y rounded-md border bg-background p-3 font-mono text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              onChange={(event) => onGitignoreChange(event.target.value)}
+              spellCheck={false}
+              value={gitignoreDraft}
+            />
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                className="gap-2"
+                disabled={savingGitignore}
+                onClick={onSaveGitignore}
+                type="button"
+              >
+                <Save className="size-4" aria-hidden="true" />
+                {t("settings.project.saveGitignore")}
+              </Button>
+              <span className="text-sm text-muted-foreground">
+                {t("settings.project.gitignoreLocalChange")}
+              </span>
+            </div>
+          </>
+        ) : null}
       </SettingsGroup>
 
       <SettingsGroup title={t("settings.project.remote")}>
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          {remoteSettings?.remoteMode === "origin" ? (
-            <Cloud className="size-4" aria-hidden="true" />
-          ) : (
-            <Trash2 className="size-4" aria-hidden="true" />
-          )}
-          <span>
-            {remoteSettings?.remoteMode === "origin"
-              ? t("settings.project.originConfigured")
-              : t("settings.project.noOriginConfigured")}
-          </span>
-        </div>
-        <div className="flex items-end gap-2">
-          <div className="min-w-0 flex-1">
-            <TextField
-              label={t("settings.project.originUrl")}
-              onChange={onRemoteChange}
-              value={remoteUrlDraft}
-            />
-          </div>
-          <Button
-            className="gap-2"
-            disabled={!remoteUrlDraft.trim()}
-            onClick={onRemoteCopy}
-            type="button"
-            variant="secondary"
-          >
-            <Clipboard className="size-4" aria-hidden="true" />
-            {t("actions.copy")}
-          </Button>
-        </div>
-        {remoteRemoveArmed ? (
-          <p className="text-sm text-destructive">
-            {t("settings.project.removeOriginWarning")}
-          </p>
-        ) : (
-          <p className="text-sm text-muted-foreground">
-            {t("settings.project.clearOriginHelp")}
-          </p>
-        )}
-        <Button
-          className="gap-2"
-          disabled={savingRemote}
-          onClick={onSaveRemote}
-          type="button"
-          variant={remoteRemoveArmed ? "destructive" : "default"}
-        >
-          <Save className="size-4" aria-hidden="true" />
-          {remoteRemoveArmed
-            ? t("settings.project.removeOrigin")
-            : t("settings.project.saveRemote")}
-        </Button>
+        <ProjectSourceStatus
+          error={remoteLoadFailure}
+          loading={loadingRemote}
+          onRetry={onRetryRemote}
+        />
+        {remoteReady ? (
+          <>
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              {remoteSettings?.remoteMode === "origin" ? (
+                <Cloud className="size-4" aria-hidden="true" />
+              ) : (
+                <Trash2 className="size-4" aria-hidden="true" />
+              )}
+              <span>
+                {remoteSettings?.remoteMode === "origin"
+                  ? t("settings.project.originConfigured")
+                  : t("settings.project.noOriginConfigured")}
+              </span>
+            </div>
+            <div className="flex items-end gap-2">
+              <div className="min-w-0 flex-1">
+                <TextField
+                  label={t("settings.project.originUrl")}
+                  onChange={onRemoteChange}
+                  value={remoteUrlDraft}
+                />
+              </div>
+              <Button
+                className="gap-2"
+                disabled={!remoteUrlDraft.trim()}
+                onClick={onRemoteCopy}
+                type="button"
+                variant="secondary"
+              >
+                <Clipboard className="size-4" aria-hidden="true" />
+                {t("actions.copy")}
+              </Button>
+            </div>
+            {remoteRemoveArmed ? (
+              <p className="text-sm text-destructive">
+                {t("settings.project.removeOriginWarning")}
+              </p>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                {t("settings.project.clearOriginHelp")}
+              </p>
+            )}
+            <Button
+              className="gap-2"
+              disabled={savingRemote}
+              onClick={onSaveRemote}
+              type="button"
+              variant={remoteRemoveArmed ? "destructive" : "default"}
+            >
+              <Save className="size-4" aria-hidden="true" />
+              {remoteRemoveArmed
+                ? t("settings.project.removeOrigin")
+                : t("settings.project.saveRemote")}
+            </Button>
+          </>
+        ) : null}
       </SettingsGroup>
 
       <SettingsGroup
         icon={<GitBranch className="size-4" aria-hidden="true" />}
         title={t("settings.project.autoTracking")}
       >
-        <p className="text-sm text-muted-foreground">
-          {t("settings.project.autoTrackingHelp")}
-        </p>
-        <div className="space-y-2">
-          {autoTrackingRules.length === 0 ? (
-            <p className="rounded-md border border-dashed bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
-              {t("settings.project.noAutoTrackingRules")}
-            </p>
-          ) : null}
-          {autoTrackingRules.map((rule, index) => {
-            const rowError = autoTrackingValidation.rowErrors[index];
-            const rowWarning = autoTrackingValidation.rowWarnings[index];
-            return (
-              <div
-                className="grid gap-2 rounded-md border bg-background p-3"
-                key={index}
-              >
-                <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
-                  <BranchSelect
-                    label={t("settings.project.autoTrackingSource")}
-                    noResultsLabel={t("repository.noSearchResults")}
-                    onChange={(sourceBranch) => {
-                      onAutoTrackingRulesChange(
-                        autoTrackingRules.map((candidate, candidateIndex) =>
-                          candidateIndex === index
-                            ? { ...candidate, sourceBranch }
-                            : candidate,
-                        ),
-                      );
-                    }}
-                    options={sourceSelectOptions}
-                    searchLabel={t("repository.searchBranches")}
-                    value={rule.sourceBranch}
-                  />
-                  <BranchSelect
-                    label={t("settings.project.autoTrackingTarget")}
-                    noResultsLabel={t("repository.noSearchResults")}
-                    onChange={(targetBranch) => {
-                      onAutoTrackingRulesChange(
-                        autoTrackingRules.map((candidate, candidateIndex) =>
-                          candidateIndex === index
-                            ? { ...candidate, targetBranch }
-                            : candidate,
-                        ),
-                      );
-                    }}
-                    options={targetSelectOptions}
-                    searchLabel={t("repository.searchBranches")}
-                    value={rule.targetBranch}
-                  />
-                  <Button
-                    className="self-end gap-2"
-                    onClick={() => {
-                      onAutoTrackingRulesChange(
-                        autoTrackingRules.filter(
-                          (_, candidateIndex) => candidateIndex !== index,
-                        ),
-                      );
-                    }}
-                    type="button"
-                    variant="secondary"
-                  >
-                    <Trash2 className="size-4" aria-hidden="true" />
-                    {t("actions.remove")}
-                  </Button>
-                </div>
-                {rowError ? (
-                  <p className="text-sm text-destructive">{t(rowError)}</p>
-                ) : null}
-                {!rowError && rowWarning ? (
-                  <p className="text-sm text-warning">{t(rowWarning)}</p>
-                ) : null}
-              </div>
-            );
-          })}
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button
-            className="gap-2"
-            disabled={
-              sourceOptions.length === 0 ||
-              targetOptions.length === 0 ||
-              autoTrackingRules.length >= maxAutoTrackingRules
+        <ProjectSourceStatus
+          error={projectLoadFailure ?? branchLoadFailure}
+          loading={loadingProject || loadingBranches}
+          onRetry={() => {
+            if (projectLoadFailure) {
+              onRetryProject();
             }
-            onClick={() => {
-              onAutoTrackingRulesChange([
-                ...autoTrackingRules,
-                {
-                  sourceBranch: sourceOptions[0]?.shortName ?? "",
-                  targetBranch: targetOptions[0]?.shortName ?? "",
-                },
-              ]);
-            }}
-            type="button"
-            variant="secondary"
-          >
-            <GitBranch className="size-4" aria-hidden="true" />
-            {t("settings.project.addAutoTrackingRule")}
-          </Button>
-          <Button
-            className="gap-2"
-            disabled={savingProject || !autoTrackingValidation.valid}
-            onClick={onSaveProject}
-            type="button"
-          >
-            <Save className="size-4" aria-hidden="true" />
-            {t("settings.project.saveProject")}
-          </Button>
-        </div>
-        {autoTrackingRules.length >= maxAutoTrackingRules ? (
-          <p className="text-sm text-muted-foreground" role="status">
-            {t("settings.project.autoTrackingRuleLimit", {
-              count: maxAutoTrackingRules,
-            })}
-          </p>
-        ) : null}
-        {!autoTrackingValidation.valid ? (
-          <p className="text-sm text-destructive">
-            {t("settings.project.autoTrackingInvalid")}
-          </p>
+            if (branchLoadFailure) {
+              onRetryBranches();
+            }
+          }}
+        />
+        {projectReady && branchesReady ? (
+          <>
+            <p className="text-sm text-muted-foreground">
+              {t("settings.project.autoTrackingHelp")}
+            </p>
+            <div className="space-y-2">
+              {autoTrackingRules.length === 0 ? (
+                <p className="rounded-md border border-dashed bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+                  {t("settings.project.noAutoTrackingRules")}
+                </p>
+              ) : null}
+              {autoTrackingRules.map((rule, index) => {
+                const rowError = autoTrackingValidation.rowErrors[index];
+                const rowWarning = autoTrackingValidation.rowWarnings[index];
+                return (
+                  <div
+                    className="grid gap-2 rounded-md border bg-background p-3"
+                    key={index}
+                  >
+                    <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+                      <BranchSelect
+                        label={t("settings.project.autoTrackingSource")}
+                        noResultsLabel={t("repository.noSearchResults")}
+                        onChange={(sourceBranch) => {
+                          onAutoTrackingRulesChange(
+                            autoTrackingRules.map(
+                              (candidate, candidateIndex) =>
+                                candidateIndex === index
+                                  ? { ...candidate, sourceBranch }
+                                  : candidate,
+                            ),
+                          );
+                        }}
+                        options={sourceSelectOptions}
+                        searchLabel={t("repository.searchBranches")}
+                        value={rule.sourceBranch}
+                      />
+                      <BranchSelect
+                        label={t("settings.project.autoTrackingTarget")}
+                        noResultsLabel={t("repository.noSearchResults")}
+                        onChange={(targetBranch) => {
+                          onAutoTrackingRulesChange(
+                            autoTrackingRules.map(
+                              (candidate, candidateIndex) =>
+                                candidateIndex === index
+                                  ? { ...candidate, targetBranch }
+                                  : candidate,
+                            ),
+                          );
+                        }}
+                        options={targetSelectOptions}
+                        searchLabel={t("repository.searchBranches")}
+                        value={rule.targetBranch}
+                      />
+                      <Button
+                        className="self-end gap-2"
+                        onClick={() => {
+                          onAutoTrackingRulesChange(
+                            autoTrackingRules.filter(
+                              (_, candidateIndex) => candidateIndex !== index,
+                            ),
+                          );
+                        }}
+                        type="button"
+                        variant="secondary"
+                      >
+                        <Trash2 className="size-4" aria-hidden="true" />
+                        {t("actions.remove")}
+                      </Button>
+                    </div>
+                    {rowError ? (
+                      <p className="text-sm text-destructive">{t(rowError)}</p>
+                    ) : null}
+                    {!rowError && rowWarning ? (
+                      <p className="text-sm text-warning">{t(rowWarning)}</p>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                className="gap-2"
+                disabled={
+                  sourceOptions.length === 0 ||
+                  targetOptions.length === 0 ||
+                  autoTrackingRules.length >= maxAutoTrackingRules
+                }
+                onClick={() => {
+                  onAutoTrackingRulesChange([
+                    ...autoTrackingRules,
+                    {
+                      sourceBranch: sourceOptions[0]?.shortName ?? "",
+                      targetBranch: targetOptions[0]?.shortName ?? "",
+                    },
+                  ]);
+                }}
+                type="button"
+                variant="secondary"
+              >
+                <GitBranch className="size-4" aria-hidden="true" />
+                {t("settings.project.addAutoTrackingRule")}
+              </Button>
+              <Button
+                className="gap-2"
+                disabled={savingProject || !autoTrackingValidation.valid}
+                onClick={onSaveProject}
+                type="button"
+              >
+                <Save className="size-4" aria-hidden="true" />
+                {t("settings.project.saveProject")}
+              </Button>
+            </div>
+            {autoTrackingRules.length >= maxAutoTrackingRules ? (
+              <p className="text-sm text-muted-foreground" role="status">
+                {t("settings.project.autoTrackingRuleLimit", {
+                  count: maxAutoTrackingRules,
+                })}
+              </p>
+            ) : null}
+            {!autoTrackingValidation.valid ? (
+              <p className="text-sm text-destructive">
+                {t("settings.project.autoTrackingInvalid")}
+              </p>
+            ) : null}
+          </>
         ) : null}
       </SettingsGroup>
     </section>
@@ -2041,15 +2533,16 @@ function UpdateStatusMessage({
         </p>
       );
     case "notAvailable":
-      return (
-        <p className="text-sm text-muted-foreground">
-          {t("settings.about.updateNotAvailable")}
-        </p>
-      );
+      return null;
     case "failed":
       return (
         <p className="text-sm text-destructive">
-          {t("settings.about.updateFailed", { message: status.message })}
+          {t(
+            status.failureStage === "install"
+              ? "settings.about.updateInstallFailed"
+              : "settings.about.updateFailed",
+            { message: status.message },
+          )}
         </p>
       );
   }
@@ -2069,10 +2562,14 @@ function updateInstallGateMessage(
       return t("settings.about.installBlockedConflict");
     case "reviewMode":
       return t("settings.about.installBlockedReviewMode");
+    case "gateUnavailable":
+      return t("settings.about.installBlockedGateUnavailable");
+    case "noReadyUpdate":
+      return t("settings.about.installBlockedNoReadyUpdate");
     case "unsupportedInstallFormat":
       return t("settings.about.installBlockedUnsupportedFormat");
     default:
-      return gate.message ?? t("settings.about.installBlocked");
+      return t("settings.about.installBlocked");
   }
 }
 
@@ -2083,6 +2580,97 @@ function httpsCredentialKey(credential: HttpsCredentialEntry): string {
     credential.scope,
     credential.path ?? "",
   ].join("\n");
+}
+
+function SupplementalSettingsFailure({
+  error,
+  onRetry,
+  title,
+}: {
+  error: unknown;
+  onRetry: () => void;
+  title: string;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div
+      className="space-y-2 rounded-md border border-destructive/40 bg-destructive/5 p-3"
+      role="alert"
+    >
+      <p className="text-sm font-medium text-destructive">{title}</p>
+      <p className="text-sm text-muted-foreground">
+        {t("settings.general.supplementalLoadFailedDescription")}
+      </p>
+      <div className="flex flex-wrap gap-2">
+        <Button
+          onClick={() => {
+            window.dispatchEvent(
+              new CustomEvent("artistic-git:error", { detail: error }),
+            );
+          }}
+          type="button"
+          variant="ghost"
+        >
+          {t("dialogs.error.showDetails")}
+        </Button>
+        <Button onClick={onRetry} type="button" variant="secondary">
+          {t("actions.retry")}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function ProjectSourceStatus({
+  error,
+  loading,
+  onRetry,
+}: {
+  error: unknown;
+  loading: boolean;
+  onRetry: () => void;
+}) {
+  const { t } = useTranslation();
+  if (loading) {
+    return (
+      <div
+        className="flex items-center gap-2 text-sm text-muted-foreground"
+        role="status"
+      >
+        <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+        {t("settings.project.loadingSource")}
+      </div>
+    );
+  }
+  if (!error) {
+    return null;
+  }
+  return (
+    <div
+      className="space-y-2 rounded-md border border-destructive/40 bg-destructive/5 p-3"
+      role="alert"
+    >
+      <p className="text-sm text-muted-foreground">
+        {t("settings.project.sourceLoadFailed")}
+      </p>
+      <div className="flex flex-wrap gap-2">
+        <Button
+          onClick={() => {
+            window.dispatchEvent(
+              new CustomEvent("artistic-git:error", { detail: error }),
+            );
+          }}
+          type="button"
+          variant="ghost"
+        >
+          {t("settings.project.viewLoadErrorDetails")}
+        </Button>
+        <Button onClick={onRetry} type="button" variant="secondary">
+          {t("settings.project.retryLoad")}
+        </Button>
+      </div>
+    </div>
+  );
 }
 
 function SettingsGroup({

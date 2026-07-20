@@ -2,7 +2,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc, Mutex,
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use artistic_git_contracts::{AppError, AppResult};
 use artistic_git_git_runner::{OperationBusy, OperationConcurrency};
@@ -22,11 +22,13 @@ const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 const UPDATE_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const UPDATE_READ_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 const UPDATE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(6 * 60 * 60);
+const AUTOMATIC_UPDATE_CHECK_COOLDOWN: Duration = Duration::from_secs(60 * 60);
 
 #[derive(Default)]
 pub struct UpdaterRuntimeState {
     next_request_id: AtomicU64,
     active_check: Mutex<Option<ActiveCheck>>,
+    last_check_started_at: Mutex<Option<Instant>>,
     ready: Mutex<Option<ReadyUpdate>>,
     ready_prompt: Mutex<Option<UpdateStatusEvent>>,
 }
@@ -925,6 +927,21 @@ impl UpdaterRuntimeState {
             }));
         }
 
+        let mut last_check_started_at = self.last_check_started_at.lock().map_err(|_| {
+            artistic_git_app::unexpected_command_error(
+                "update check schedule is unavailable",
+                UPDATE_CHECK_OPERATION,
+            )
+        })?;
+        if status.source == UpdateCheckSource::Automatic
+            && last_check_started_at
+                .as_ref()
+                .is_some_and(|started_at| started_at.elapsed() < AUTOMATIC_UPDATE_CHECK_COOLDOWN)
+        {
+            return Ok(BeginCheckOutcome::Busy);
+        }
+        *last_check_started_at = Some(Instant::now());
+
         *active_check_guard = Some(ActiveCheck {
             status,
             manual_observers: Vec::new(),
@@ -1176,6 +1193,41 @@ mod tests {
             state
                 .begin_check(checking_status_event("manual-1", UpdateCheckSource::Manual,))
                 .expect("begin check after guard drop"),
+            BeginCheckOutcome::Started(_)
+        ));
+    }
+
+    #[test]
+    fn automatic_checks_share_a_runtime_wide_cooldown() {
+        let state = UpdaterRuntimeState::default();
+        let guard = match state
+            .begin_check(checking_status_event(
+                "auto-window-1",
+                UpdateCheckSource::Automatic,
+            ))
+            .expect("begin first automatic check")
+        {
+            BeginCheckOutcome::Started(guard) => guard,
+            _ => panic!("first automatic check should start"),
+        };
+        drop(guard);
+
+        assert!(matches!(
+            state
+                .begin_check(checking_status_event(
+                    "auto-window-2",
+                    UpdateCheckSource::Automatic,
+                ))
+                .expect("deduplicate automatic checks across windows"),
+            BeginCheckOutcome::Busy
+        ));
+        assert!(matches!(
+            state
+                .begin_check(checking_status_event(
+                    "manual-window-2",
+                    UpdateCheckSource::Manual,
+                ))
+                .expect("manual checks bypass the automatic cooldown"),
             BeginCheckOutcome::Started(_)
         ));
     }

@@ -32,9 +32,16 @@ import {
 const developmentRuntimeMocks = vi.hoisted(() => ({
   isDevelopmentRuntime: vi.fn(() => false),
 }));
+const runtimeErrorMocks = vi.hoisted(() => ({
+  reportDesktopRuntimeError: vi.fn(),
+}));
 
 vi.mock("./development-runtime", () => ({
   isDevelopmentRuntime: developmentRuntimeMocks.isDevelopmentRuntime,
+}));
+
+vi.mock("@/lib/runtime-errors", () => ({
+  reportDesktopRuntimeError: runtimeErrorMocks.reportDesktopRuntimeError,
 }));
 
 type AppEventHandler = EventCallback<AppEventPayloads[AppEventName]>;
@@ -111,6 +118,23 @@ afterEach(() => {
 });
 
 describe("UpdaterRuntimeBridge", () => {
+  it("reports updater event listener failures with the original details", async () => {
+    const listenerError = new Error("updater event channel unavailable");
+    bridgeMocks.listenAppEvent.mockRejectedValue(listenerError);
+
+    render(
+      <TestProviders>
+        <UpdaterRuntimeBridge />
+      </TestProviders>,
+    );
+
+    await waitFor(() =>
+      expect(runtimeErrorMocks.reportDesktopRuntimeError).toHaveBeenCalledWith(
+        listenerError,
+      ),
+    );
+  });
+
   it("runs a manual update check from the app event", async () => {
     render(
       <TestProviders>
@@ -307,7 +331,7 @@ describe("UpdaterRuntimeBridge", () => {
       },
     });
 
-    expect(screen.getByText("Downloading update (25%).")).toBeInTheDocument();
+    expect(screen.getByText("Downloading update (25%)...")).toBeInTheDocument();
     expect(
       screen.getByRole("progressbar", { name: "Update download progress" }),
     ).toHaveAttribute("aria-valuenow", "25");
@@ -359,20 +383,82 @@ describe("UpdaterRuntimeBridge", () => {
   });
 
   it("shows manual check failures in the update prompt", async () => {
-    bridgeMocks.checkForUpdates.mockRejectedValue(new Error("offline"));
+    const checkError = {
+      operation: "checkForUpdates",
+      stderr: "connection timed out",
+      summary: "offline",
+    };
+    const receivedDetails: unknown[] = [];
+    const handleError = (event: Event) => {
+      receivedDetails.push((event as CustomEvent).detail);
+    };
+    bridgeMocks.checkForUpdates.mockRejectedValue(checkError);
+    window.addEventListener("artistic-git:error", handleError);
 
-    render(
-      <TestProviders>
-        <UpdaterRuntimeBridge />
-      </TestProviders>,
-    );
+    try {
+      render(
+        <TestProviders>
+          <UpdaterRuntimeBridge />
+        </TestProviders>,
+      );
 
-    window.dispatchEvent(new CustomEvent("artistic-git:check-updates"));
+      window.dispatchEvent(new CustomEvent("artistic-git:check-updates"));
 
-    expect(
-      await screen.findByRole("dialog", { name: "Check failed" }),
-    ).toBeInTheDocument();
-    expect(screen.getByText("Check failed: offline")).toBeInTheDocument();
+      expect(
+        await screen.findByRole("dialog", { name: "Check failed" }),
+      ).toBeInTheDocument();
+      expect(screen.getByText("Check failed: offline")).toBeInTheDocument();
+      expect(receivedDetails).toEqual([checkError]);
+    } finally {
+      window.removeEventListener("artistic-git:error", handleError);
+    }
+  });
+
+  it("preserves installation failure details for the error dialog", async () => {
+    const installError = {
+      operation: "installReadyUpdate",
+      stderr: "installer exited with code 1",
+      summary: "Update installation failed",
+    };
+    const receivedDetails: unknown[] = [];
+    const handleError = (event: Event) => {
+      receivedDetails.push((event as CustomEvent).detail);
+    };
+    bridgeMocks.installReadyUpdate.mockRejectedValue(installError);
+    window.addEventListener("artistic-git:error", handleError);
+
+    try {
+      render(
+        <TestProviders
+          initialWindowState={{
+            updateStatus: {
+              requestId: "manual-install-failure",
+              source: "manual",
+              targetWindowLabel: "main",
+              status: {
+                notes: null,
+                state: "ready",
+                version: "0.2.0",
+              },
+            },
+          }}
+        >
+          <UpdaterRuntimeBridge />
+        </TestProviders>,
+      );
+
+      window.dispatchEvent(new CustomEvent("artistic-git:install-update"));
+
+      await waitFor(() => expect(receivedDetails).toEqual([installError]));
+      expect(
+        await screen.findByRole("dialog", { name: "Installation failed" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText("Installation failed: Update installation failed"),
+      ).toBeInTheDocument();
+    } finally {
+      window.removeEventListener("artistic-git:error", handleError);
+    }
   });
 
   it("does not reopen a dismissed prompt for the same update request", async () => {
@@ -621,6 +707,54 @@ describe("UpdaterRuntimeBridge", () => {
     expect(
       screen.getByRole("button", { name: "Restart and install" }),
     ).toBeDisabled();
+  });
+
+  it("shows a stable blocker and preserves details when the install gate cannot be checked", async () => {
+    const gateError = {
+      operation: "updateInstallGate",
+      stderr: "backend channel closed",
+      summary: "Unable to inspect running operations",
+    };
+    const receivedDetails: unknown[] = [];
+    const handleError = (event: Event) => {
+      receivedDetails.push((event as CustomEvent).detail);
+    };
+    bridgeMocks.updateInstallGate.mockRejectedValue(gateError);
+    window.addEventListener("artistic-git:error", handleError);
+
+    try {
+      render(
+        <TestProviders>
+          <UpdaterRuntimeBridge />
+          <UpdateProbe />
+        </TestProviders>,
+      );
+
+      await waitFor(() => expect(updateStatusHandler).not.toBeNull());
+      await emitUpdateStatus({
+        requestId: "manual-gate-error-1",
+        source: "manual",
+        targetWindowLabel: "main",
+        status: {
+          notes: null,
+          state: "ready",
+          version: "0.2.0",
+        },
+      });
+
+      expect(
+        await screen.findByText(
+          "Couldn't confirm whether the update can be installed. Try again.",
+        ),
+      ).toBeInTheDocument();
+      expect(screen.getByText("gateUnavailable")).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Restart and install" }),
+      ).toBeDisabled();
+      await waitFor(() => expect(receivedDetails).toEqual([gateError]));
+    } finally {
+      window.removeEventListener("artistic-git:error", handleError);
+    }
   });
 
   it("blocks install when conflict resolution is active in this window", async () => {

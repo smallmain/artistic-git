@@ -19,6 +19,7 @@ fn backend_full_chain_uses_real_temporary_remote_from_clone_to_revert() {
         &runner,
         None,
         OpenRepositoryRequest {
+            operation_id: None,
             path: display_path(&local.path),
             tool_identity: Some(tool_identity()),
         },

@@ -5,6 +5,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import type { QueryClient } from "@tanstack/react-query";
@@ -15,9 +16,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LanguageProvider } from "@/i18n/LanguageProvider";
 import { createI18n } from "@/i18n/i18n";
 import { createAppQueryClient } from "@/lib/query/client";
-import type { WindowStoreState } from "@/store/window-store";
-import { WindowStoreProvider } from "@/store/window-store";
+import type { WindowStoreApi, WindowStoreState } from "@/store/window-store";
+import { createWindowStore, WindowStoreProvider } from "@/store/window-store";
 import { ThemeProvider } from "@/theme/ThemeProvider";
+import { ToastViewport } from "@/components/ui/toast-viewport";
 
 import { defaultAppSettings } from "./settings-model";
 import { SettingsModal } from "./SettingsModal";
@@ -42,7 +44,7 @@ const commandMocks = vi.hoisted(() => ({
 vi.mock("@/lib/ipc/commands", () => commandMocks);
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  vi.resetAllMocks();
   commandMocks.settingsSnapshot.mockResolvedValue({
     appVersion: "0.1.0",
     identitySources: {
@@ -114,6 +116,87 @@ afterEach(() => {
 });
 
 describe("SettingsModal", () => {
+  it("keeps every settings form locked until the current settings load succeeds", async () => {
+    const loadError = {
+      operation: "settingsSnapshot",
+      stderr: "settings file is unreadable",
+      summary: "Unable to load settings",
+    };
+    const receivedDetails: unknown[] = [];
+    const handleError = (event: Event) => {
+      receivedDetails.push((event as CustomEvent).detail);
+    };
+    commandMocks.settingsSnapshot
+      .mockRejectedValueOnce(loadError)
+      .mockResolvedValueOnce({
+        appVersion: "0.1.0",
+        identitySources: {
+          globalGitconfig: { email: null, name: null },
+          globalGitconfigPath: null,
+          settings: { email: null, name: null },
+        },
+        settings: defaultAppSettings,
+        sshKey: {
+          exists: false,
+          privateKeyPath: null,
+          publicKey: null,
+          publicKeyPath: null,
+        },
+      });
+    window.addEventListener("artistic-git:error", handleError);
+
+    try {
+      render(
+        <TestProviders initialWindowState={{ appSettings: null }}>
+          <SettingsModal onOpenChange={vi.fn()} open />
+        </TestProviders>,
+      );
+
+      expect(
+        await screen.findByRole("heading", { name: "Couldn't load settings" }),
+      ).toBeVisible();
+      expect(
+        screen.queryByRole("button", { name: "Save identity" }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: "Save project settings" }),
+      ).not.toBeInTheDocument();
+      expect(commandMocks.saveAppSettings).not.toHaveBeenCalled();
+      expect(receivedDetails).toEqual([loadError]);
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "View error details" }),
+      );
+      expect(receivedDetails).toEqual([loadError, loadError]);
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+      expect(
+        await screen.findByRole("button", {
+          name: "Save update check settings",
+        }),
+      ).toBeVisible();
+      expect(commandMocks.settingsSnapshot).toHaveBeenCalledTimes(2);
+    } finally {
+      window.removeEventListener("artistic-git:error", handleError);
+    }
+  });
+
+  it("shows identity validation once beside the identity fields", async () => {
+    render(
+      <TestProviders>
+        <SettingsModal onOpenChange={vi.fn()} open />
+      </TestProviders>,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Save identity" }),
+    );
+
+    expect(
+      screen.getAllByText("Enter both author name and email before saving."),
+    ).toHaveLength(1);
+  });
+
   it("loads repository branches only when project settings are opened", async () => {
     render(
       <TestProviders initialWindowState={{ activeRepositoryPath: "/repo/art" }}>
@@ -133,6 +216,116 @@ describe("SettingsModal", () => {
     expect(commandMocks.listBranches).toHaveBeenCalledWith({
       repositoryPath: "/repo/art",
     });
+  });
+
+  it("preserves unsaved project drafts when switching settings sections", async () => {
+    render(
+      <TestProviders
+        initialWindowState={{
+          activeRepositoryPath: "/repo/art",
+          settingsSection: "project",
+        }}
+      >
+        <SettingsModal onOpenChange={vi.fn()} open />
+      </TestProviders>,
+    );
+
+    const remoteInput = await screen.findByLabelText("Remote repository URL");
+    const gitignoreEditor = screen.getByRole("textbox", { name: ".gitignore" });
+    fireEvent.change(remoteInput, {
+      target: { value: "https://example.test/draft.git" },
+    });
+    fireEvent.change(gitignoreEditor, { target: { value: "*.draft\n" } });
+    await waitFor(() => {
+      expect(commandMocks.loadProjectSettings).toHaveBeenCalledTimes(1);
+      expect(commandMocks.loadGitignore).toHaveBeenCalledTimes(1);
+      expect(commandMocks.loadRemoteSettings).toHaveBeenCalledTimes(1);
+      expect(commandMocks.listBranches).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "General" }));
+    fireEvent.click(screen.getByRole("button", { name: "Project" }));
+
+    expect(screen.getByLabelText("Remote repository URL")).toHaveValue(
+      "https://example.test/draft.git",
+    );
+    expect(screen.getByRole("textbox", { name: ".gitignore" })).toHaveValue(
+      "*.draft\n",
+    );
+    expect(commandMocks.loadProjectSettings).toHaveBeenCalledTimes(1);
+    expect(commandMocks.loadGitignore).toHaveBeenCalledTimes(1);
+    expect(commandMocks.loadRemoteSettings).toHaveBeenCalledTimes(1);
+    expect(commandMocks.listBranches).toHaveBeenCalledTimes(1);
+  });
+
+  it("isolates a failed project source and retries it without blocking other settings", async () => {
+    const loadError = {
+      operation: "loadGitignore",
+      stderr: "permission denied",
+      summary: "Could not read .gitignore",
+    };
+    const receivedDetails: unknown[] = [];
+    const handleError = (event: Event) => {
+      receivedDetails.push((event as CustomEvent).detail);
+    };
+    commandMocks.loadGitignore.mockRejectedValueOnce(loadError);
+    window.addEventListener("artistic-git:error", handleError);
+
+    try {
+      render(
+        <TestProviders
+          initialWindowState={{
+            activeRepositoryPath: "/repo/art",
+            settingsSection: "project",
+          }}
+        >
+          <SettingsModal onOpenChange={vi.fn()} open />
+        </TestProviders>,
+      );
+
+      expect(
+        await screen.findByText(
+          "This section could not be loaded. Other project settings remain available.",
+        ),
+      ).toBeVisible();
+      expect(screen.getByLabelText("Remote repository URL")).toHaveValue(
+        "https://example.test/repo.git",
+      );
+      expect(
+        screen.getAllByRole("button", { name: "Save project settings" }),
+      ).toEqual(expect.arrayContaining([expect.any(HTMLButtonElement)]));
+      for (const button of screen.getAllByRole("button", {
+        name: "Save project settings",
+      })) {
+        expect(button).toBeEnabled();
+      }
+      expect(
+        screen.queryByRole("button", { name: "Save .gitignore" }),
+      ).not.toBeInTheDocument();
+      expect(commandMocks.saveProjectSettings).not.toHaveBeenCalled();
+      expect(commandMocks.saveGitignore).not.toHaveBeenCalled();
+      expect(commandMocks.saveRemoteSettings).not.toHaveBeenCalled();
+      expect(receivedDetails).toEqual([loadError]);
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "View error details" }),
+      );
+      expect(receivedDetails).toEqual([loadError, loadError]);
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+      expect(
+        await screen.findByRole("button", { name: "Save .gitignore" }),
+      ).toBeEnabled();
+      expect(commandMocks.loadGitignore).toHaveBeenCalledTimes(2);
+      expect(commandMocks.loadProjectSettings).toHaveBeenCalledTimes(1);
+      expect(commandMocks.loadRemoteSettings).toHaveBeenCalledTimes(1);
+      expect(commandMocks.listBranches).toHaveBeenCalledTimes(1);
+      expect(screen.getByLabelText("Remote repository URL")).toHaveValue(
+        "https://example.test/repo.git",
+      );
+    } finally {
+      window.removeEventListener("artistic-git:error", handleError);
+    }
   });
 
   it("shows interval validation and disables saving when fetch interval is out of range", async () => {
@@ -220,11 +413,12 @@ describe("SettingsModal", () => {
 
     expect(screen.getByTestId("settings-content")).toHaveAttribute("inert");
     expect(screen.getByRole("status")).toHaveTextContent("Loading settings...");
+    expect(screen.getAllByText("Loading settings...")).toHaveLength(1);
     expect(screen.getAllByRole("button", { name: "Close" })).toHaveLength(1);
     expect(screen.getByRole("button", { name: "Close" })).toBeDisabled();
   });
 
-  it("invalidates repository queries after origin is removed", async () => {
+  it("relies on the repository change event after origin is removed", async () => {
     const queryClient = createAppQueryClient();
     const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
 
@@ -245,10 +439,17 @@ describe("SettingsModal", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save remote" }));
 
     expect(
-      await screen.findByText("Select Remove origin to confirm disconnection."),
+      await screen.findByText(
+        "Select Disconnect remote repository to confirm.",
+      ),
     ).toBeInTheDocument();
+    expect(
+      screen.getAllByText("Select Disconnect remote repository to confirm."),
+    ).toHaveLength(1);
 
-    fireEvent.click(screen.getByRole("button", { name: "Remove origin" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Disconnect remote repository" }),
+    );
 
     await waitFor(() =>
       expect(commandMocks.saveRemoteSettings).toHaveBeenCalledWith({
@@ -257,15 +458,37 @@ describe("SettingsModal", () => {
         repositoryPath: "/repo/art",
       }),
     );
-    expect(invalidateQueries).toHaveBeenCalledWith({
-      queryKey: ["repository", "/repo/art", "summary"],
-    });
-    expect(invalidateQueries).toHaveBeenCalledWith({
-      queryKey: ["repository", "/repo/art", "branches"],
-    });
-    expect(invalidateQueries).toHaveBeenCalledWith({
-      queryKey: ["repository", "/repo/art", "history"],
-    });
+    expect(invalidateQueries).not.toHaveBeenCalled();
+  });
+
+  it("clears form-specific guidance when switching settings sections", async () => {
+    render(
+      <TestProviders
+        initialWindowState={{
+          activeRepositoryPath: "/repo/art",
+          settingsSection: "project",
+        }}
+      >
+        <SettingsModal onOpenChange={vi.fn()} open />
+      </TestProviders>,
+    );
+
+    const remoteInput = await screen.findByLabelText("Remote repository URL");
+    fireEvent.change(remoteInput, { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save remote" }));
+    expect(
+      await screen.findByText(
+        "Select Disconnect remote repository to confirm.",
+      ),
+    ).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "About" }));
+    expect(
+      screen.queryByText("Select Disconnect remote repository to confirm."),
+    ).not.toBeInTheDocument();
+    expect(
+      await screen.findByText("Updates haven't been checked yet."),
+    ).toBeVisible();
   });
 
   it("validates automatic tracking rules before saving project settings", async () => {
@@ -426,6 +649,123 @@ describe("SettingsModal", () => {
     ).toBeInTheDocument();
   });
 
+  it("does not present a credential load failure as an empty credential list", async () => {
+    const loadError = {
+      operation: "listHttpsCredentials",
+      stderr: "secure storage is locked",
+      summary: "Unable to list credentials",
+    };
+    const receivedDetails: unknown[] = [];
+    const handleError = (event: Event) => {
+      receivedDetails.push((event as CustomEvent).detail);
+    };
+    commandMocks.listHttpsCredentials
+      .mockRejectedValueOnce(loadError)
+      .mockResolvedValueOnce({
+        credentials: [
+          {
+            protocol: "https",
+            host: "github.com",
+            path: null,
+            scope: "host",
+            username: "alice",
+          },
+        ],
+      });
+    window.addEventListener("artistic-git:error", handleError);
+
+    try {
+      render(
+        <TestProviders>
+          <SettingsModal onOpenChange={vi.fn()} open />
+        </TestProviders>,
+      );
+
+      expect(
+        await screen.findByText("Couldn't load saved credentials"),
+      ).toBeVisible();
+      expect(
+        screen.queryByText("No HTTPS credentials are saved."),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: "Add credential" }),
+      ).not.toBeInTheDocument();
+      expect(receivedDetails).toEqual([loadError]);
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "View error details" }),
+      );
+      expect(receivedDetails).toEqual([loadError, loadError]);
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+      expect(await screen.findByText("github.com")).toBeVisible();
+      expect(commandMocks.listHttpsCredentials).toHaveBeenCalledTimes(2);
+    } finally {
+      window.removeEventListener("artistic-git:error", handleError);
+    }
+  });
+
+  it("clears credential guidance when editing is cancelled", async () => {
+    render(
+      <TestProviders>
+        <SettingsModal onOpenChange={vi.fn()} open />
+      </TestProviders>,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Add credential" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Save credential" }));
+    expect(
+      screen.getByText("Enter host and username before saving."),
+    ).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(
+      screen.queryByText("Enter host and username before saving."),
+    ).not.toBeInTheDocument();
+  });
+
+  it("labels credential deletion accurately while it is pending", async () => {
+    let finishDelete: (() => void) | undefined;
+    commandMocks.deleteHttpsCredential.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        finishDelete = resolve;
+      }),
+    );
+    commandMocks.listHttpsCredentials
+      .mockResolvedValueOnce({
+        credentials: [
+          {
+            protocol: "https",
+            host: "github.com",
+            path: null,
+            scope: "host",
+            username: "alice",
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ credentials: [] });
+
+    render(
+      <TestProviders>
+        <SettingsModal onOpenChange={vi.fn()} open />
+      </TestProviders>,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Remove saved credential" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Confirm removal" }));
+
+    expect(
+      await screen.findByText("Deleting saved credential..."),
+    ).toBeVisible();
+    expect(screen.queryByText("Saving settings...")).not.toBeInTheDocument();
+
+    await act(async () => finishDelete?.());
+  });
+
   it("paginates large saved credential lists", async () => {
     commandMocks.listHttpsCredentials.mockResolvedValue({
       credentials: Array.from({ length: 120 }, (_, index) => ({
@@ -509,6 +849,92 @@ describe("SettingsModal", () => {
     ).toBeInTheDocument();
   });
 
+  it("preserves an HTTPS credential draft while switching sections", async () => {
+    render(
+      <TestProviders initialWindowState={{ activeRepositoryPath: "/repo/art" }}>
+        <SettingsModal onOpenChange={vi.fn()} open />
+      </TestProviders>,
+    );
+
+    expect(await screen.findByText("github.com")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("Scope"), {
+      target: { value: "path" },
+    });
+    fireEvent.change(screen.getByLabelText("Repository path"), {
+      target: { value: "team/art" },
+    });
+    fireEvent.change(screen.getByLabelText("Username"), {
+      target: { value: "draft-user" },
+    });
+    fireEvent.change(screen.getByLabelText("Access token"), {
+      target: { value: "draft-token" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Project" }));
+    await screen.findByLabelText("Remote repository URL");
+    fireEvent.click(screen.getByRole("button", { name: "General" }));
+
+    expect(await screen.findByLabelText("Repository path")).toHaveValue(
+      "team/art",
+    );
+    expect(screen.getByLabelText("Username")).toHaveValue("draft-user");
+    expect(screen.getByLabelText("Access token")).toHaveValue("draft-token");
+    expect(commandMocks.listHttpsCredentials).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows copy failures as a toast and preserves the original error", async () => {
+    const clipboardDescriptor = Object.getOwnPropertyDescriptor(
+      navigator,
+      "clipboard",
+    );
+    const copyError = new Error("clipboard permission denied");
+    const receivedDetails: unknown[] = [];
+    const handleError = (event: Event) => {
+      receivedDetails.push((event as CustomEvent).detail);
+    };
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn().mockRejectedValue(copyError) },
+    });
+    window.addEventListener("artistic-git:error", handleError);
+
+    try {
+      render(
+        <TestProviders
+          initialWindowState={{ activeRepositoryPath: "/repo/art" }}
+        >
+          <SettingsModal onOpenChange={vi.fn()} open />
+        </TestProviders>,
+      );
+
+      fireEvent.click(await screen.findByRole("button", { name: "Project" }));
+      await screen.findByDisplayValue("https://example.test/repo.git");
+      fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+
+      expect(await screen.findByText("Copy failed")).toBeInTheDocument();
+      expect(
+        within(screen.getByRole("dialog", { name: "Settings" })).queryByText(
+          "Copy failed",
+        ),
+      ).not.toBeInTheDocument();
+      expect(receivedDetails).toEqual([
+        {
+          cause: copyError,
+          operationName: "copyRemoteUrl",
+          summary: "Copy failed",
+        },
+      ]);
+    } finally {
+      window.removeEventListener("artistic-git:error", handleError);
+      if (clipboardDescriptor) {
+        Object.defineProperty(navigator, "clipboard", clipboardDescriptor);
+      } else {
+        Reflect.deleteProperty(navigator, "clipboard");
+      }
+    }
+  });
+
   it("persists the SSH passphrase remember setting", async () => {
     render(
       <TestProviders>
@@ -557,6 +983,77 @@ describe("SettingsModal", () => {
         }),
       ),
     );
+  });
+
+  it("persists the Gravatar privacy setting immediately", async () => {
+    render(
+      <TestProviders>
+        <SettingsModal onOpenChange={vi.fn()} open />
+      </TestProviders>,
+    );
+
+    fireEvent.click(await screen.findByLabelText("Enable Gravatar avatars"));
+
+    await waitFor(() =>
+      expect(commandMocks.saveAppSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          settings: expect.objectContaining({
+            privacy: expect.objectContaining({ gravatarEnabled: true }),
+          }),
+        }),
+      ),
+    );
+  });
+
+  it("uses the newly selected language for the save result toast", async () => {
+    render(
+      <TestProviders>
+        <SettingsModal onOpenChange={vi.fn()} open />
+      </TestProviders>,
+    );
+
+    fireEvent.change(await screen.findByLabelText("Language"), {
+      target: { value: "zh-CN" },
+    });
+
+    expect(await screen.findByText("设置已保存")).toBeInTheDocument();
+    expect(screen.queryByText("Settings saved")).not.toBeInTheDocument();
+  });
+
+  it("reports a completed manual update check in a toast", async () => {
+    const windowStore = createWindowStore({ settingsSection: "about" });
+    render(
+      <TestProviders windowStore={windowStore}>
+        <SettingsModal onOpenChange={vi.fn()} open />
+      </TestProviders>,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Check for updates" }),
+    );
+    act(() => {
+      windowStore.getState().setUpdateStatus({
+        requestId: "manual-current-1",
+        source: "manual",
+        status: { state: "checking" },
+        targetWindowLabel: "main",
+      });
+    });
+    act(() => {
+      windowStore.getState().setUpdateStatus({
+        requestId: "manual-current-1",
+        source: "manual",
+        status: { state: "notAvailable" },
+        targetWindowLabel: "main",
+      });
+    });
+
+    expect(await screen.findByTestId("app-toast")).toHaveTextContent(
+      "Artistic Git is up to date.",
+    );
+    expect(
+      screen.queryByText("Updates haven't been checked yet."),
+    ).not.toBeInTheDocument();
   });
 
   it("shows silent automatic failures in about and dispatches a manual check request", async () => {
@@ -618,7 +1115,7 @@ describe("SettingsModal", () => {
     );
 
     expect(
-      await screen.findByText("Downloading version 0.2.0 (50%)."),
+      await screen.findByText("Downloading version 0.2.0 (50%)..."),
     ).toBeInTheDocument();
     expect(screen.getByText("Automatic release notes")).toBeInTheDocument();
     expect(
@@ -674,16 +1171,50 @@ describe("SettingsModal", () => {
       expect.objectContaining({ type: "artistic-git:install-update" }),
     );
   });
+
+  it("localizes the temporary update preparation gate", async () => {
+    render(
+      <TestProviders
+        initialWindowState={{
+          settingsSection: "about",
+          updateInstallGate: {
+            blocked: true,
+            message: "no downloaded update is ready to install",
+            reason: "noReadyUpdate",
+          },
+          updateStatus: {
+            requestId: "manual-ready-preparing",
+            source: "manual",
+            targetWindowLabel: "main",
+            status: {
+              notes: null,
+              state: "ready",
+              version: "0.2.0",
+            },
+          },
+        }}
+      >
+        <SettingsModal onOpenChange={vi.fn()} open />
+      </TestProviders>,
+    );
+
+    expect(await screen.findByText("Preparing the update...")).toBeVisible();
+    expect(
+      screen.queryByText("no downloaded update is ready to install"),
+    ).not.toBeInTheDocument();
+  });
 });
 
 function TestProviders({
   children,
   initialWindowState,
   queryClient,
+  windowStore,
 }: {
   children: ReactNode;
   initialWindowState?: Partial<WindowStoreState>;
   queryClient?: QueryClient;
+  windowStore?: WindowStoreApi;
 }) {
   const i18n = createI18n("en");
 
@@ -692,8 +1223,12 @@ function TestProviders({
       <QueryClientProvider client={queryClient ?? createAppQueryClient()}>
         <LanguageProvider i18n={i18n} initialPreference="en">
           <ThemeProvider initialPreference="light">
-            <WindowStoreProvider initialState={initialWindowState}>
+            <WindowStoreProvider
+              initialState={initialWindowState}
+              store={windowStore}
+            >
               {children}
+              <ToastViewport />
             </WindowStoreProvider>
           </ThemeProvider>
         </LanguageProvider>

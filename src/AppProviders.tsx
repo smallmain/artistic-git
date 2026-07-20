@@ -3,6 +3,7 @@ import * as React from "react";
 import { I18nextProvider } from "react-i18next";
 import { type i18n as I18nInstance } from "i18next";
 
+import { ToastViewport } from "@/components/ui/toast-viewport";
 import { appI18n } from "@/i18n/i18n";
 import { SettingsRuntimeBridge } from "@/features/settings/SettingsRuntimeBridge";
 import { UpdaterRuntimeBridge } from "@/features/updater/UpdaterRuntimeBridge";
@@ -54,6 +55,7 @@ export function AppProviders({
               <SettingsRuntimeBridge />
               <UpdaterRuntimeBridge />
               {children}
+              <ToastViewport />
             </WindowStoreProvider>
           </ThemeProvider>
         </LanguageProvider>

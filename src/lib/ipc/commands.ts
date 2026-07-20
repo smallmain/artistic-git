@@ -20,6 +20,10 @@ import type {
   CheckoutBranchRequest,
   CloneRepositoryRequest,
   CloneRepositoryResponse,
+  CommitDetailsRequest,
+  CommitDetailsResponse,
+  CommitFileDetailRequest,
+  CommitFileDetailResponse,
   CommitRequest,
   CommitResponse,
   ConflictCancelRequest,
@@ -47,6 +51,7 @@ import type {
   ExitReviewModeResponse,
   FetchRepositoryRequest,
   FetchRepositoryResponse,
+  ForgetRecentProjectRequest,
   GenerateSshKeyRequest,
   GitignoreFileResponse,
   GitignoreRequest,
@@ -68,6 +73,8 @@ import type {
   OpenRepositoryResponse,
   ProjectSettings,
   ProjectSettingsRequest,
+  RecentProjectEntry,
+  RecentProjectsRequest,
   RemoteSettingsResponse,
   RemoteRepositoryProbeRequest,
   RemoteRepositoryProbeResponse,
@@ -115,7 +122,7 @@ import type {
 export interface AppCommandArgs {
   health: undefined;
   window_context: undefined;
-  new_project_window: undefined;
+  new_project_window: { request?: NewWindowRequest } | undefined;
   open_repository_window: { request: OpenRepositoryWindowRequest };
   register_window_repository: { request: OpenRepositoryWindowRequest };
   save_window_geometry: { request: OpenRepositoryWindowRequest };
@@ -132,6 +139,7 @@ export interface AppCommandArgs {
   cancel_clone_repository: { request: CancelCloneRepositoryRequest };
   cancel_operation: { request: CancelOperationRequest };
   repository_summary: { request: RepositoryPathRequest };
+  reset_bisect: { request: RepositoryPathRequest };
   fetch_repository: { request: FetchRepositoryRequest };
   sync_current_branch: { request: SyncCurrentBranchRequest };
   sync_branch: { request: SyncBranchRequest };
@@ -164,6 +172,8 @@ export interface AppCommandArgs {
   delete_stash: { request: DeleteStashRequest };
   log_page: { request: LogPageRequest };
   search_log: { request: LogSearchRequest };
+  commit_details: { request: CommitDetailsRequest };
+  commit_file_detail: { request: CommitFileDetailRequest };
   list_conflicts: { request: ConflictListRequest };
   conflict_detail: { request: ConflictPathRequest };
   select_conflict_side: { request: ConflictSelectSideRequest };
@@ -176,6 +186,9 @@ export interface AppCommandArgs {
   abort_revert: { request: AbortRevertRequest };
   settings_snapshot: undefined;
   load_app_settings: undefined;
+  list_recent_projects: { request: RecentProjectsRequest };
+  forget_recent_project: { request: ForgetRecentProjectRequest };
+  clear_recent_projects: undefined;
   save_app_settings: { request: SaveAppSettingsRequest };
   load_project_settings: { request: ProjectSettingsRequest };
   save_project_settings: { request: SaveProjectSettingsRequest };
@@ -192,6 +205,9 @@ export interface AppCommandArgs {
   };
   submit_ssh_passphrase_prompt: {
     request: SubmitSshPassphrasePromptRequest;
+  };
+  set_auth_prompt_listener_ready: {
+    request: AuthPromptListenerReadyRequest;
   };
   check_for_updates: { request: UpdateCheckRequest };
   update_install_gate: undefined;
@@ -218,6 +234,7 @@ export interface AppCommandResponses {
   cancel_clone_repository: CancelCloneRepositoryResponse;
   cancel_operation: CancelOperationResponse;
   repository_summary: RepositorySummary;
+  reset_bisect: RepositorySummary;
   fetch_repository: FetchRepositoryResponse;
   sync_current_branch: SyncCurrentBranchResponse;
   sync_branch: SyncBranchResponse;
@@ -250,6 +267,8 @@ export interface AppCommandResponses {
   delete_stash: DeleteStashResponse;
   log_page: LogPageResponse;
   search_log: LogPageResponse;
+  commit_details: CommitDetailsResponse;
+  commit_file_detail: CommitFileDetailResponse;
   list_conflicts: ConflictListResponse;
   conflict_detail: ConflictDetailResponse;
   select_conflict_side: ConflictSelectSideResponse;
@@ -262,6 +281,9 @@ export interface AppCommandResponses {
   abort_revert: AbortRevertResponse;
   settings_snapshot: SettingsSnapshot;
   load_app_settings: AppSettings;
+  list_recent_projects: RecentProjectEntry[];
+  forget_recent_project: void;
+  clear_recent_projects: void;
   save_app_settings: AppSettings;
   load_project_settings: ProjectSettings;
   save_project_settings: ProjectSettings;
@@ -275,6 +297,7 @@ export interface AppCommandResponses {
   delete_https_credential: void;
   submit_https_credential_prompt: void;
   submit_ssh_passphrase_prompt: void;
+  set_auth_prompt_listener_ready: void;
   check_for_updates: UpdateStatusEvent;
   update_install_gate: UpdateInstallGateResponse;
   install_ready_update: void;
@@ -295,6 +318,10 @@ export interface NewWindowResponse {
   label: string;
 }
 
+export interface NewWindowRequest {
+  initialAction: "clone" | "open" | null;
+}
+
 export interface OpenRepositoryWindowRequest {
   repositoryPath: string;
 }
@@ -310,6 +337,10 @@ export interface RendererCrashInjectionRequest {
 export interface HttpsCredentialPromptEvent {
   promptId: string;
   request: HttpsCredentialPromptRequest;
+}
+
+export interface AuthPromptDismissedEvent {
+  promptId: string;
 }
 
 export interface SubmitHttpsCredentialPromptRequest {
@@ -330,6 +361,11 @@ export interface SubmitSshPassphrasePromptRequest {
   passphrase?: string | null;
   remember: boolean;
   cancelled: boolean;
+}
+
+export interface AuthPromptListenerReadyRequest {
+  kind: "httpsCredential" | "sshPassphrase";
+  ready: boolean;
 }
 
 export interface CrashDialogPayload {
@@ -376,8 +412,13 @@ export function windowContext(): Promise<WindowContextResponse> {
   return invokeAppCommand("window_context");
 }
 
-export function newProjectWindow(): Promise<NewWindowResponse> {
-  return invokeAppCommand("new_project_window");
+export function newProjectWindow(
+  request?: NewWindowRequest,
+): Promise<NewWindowResponse> {
+  return invokeAppCommand(
+    "new_project_window",
+    request ? { request } : undefined,
+  );
 }
 
 export function openRepositoryWindow(
@@ -464,6 +505,12 @@ export function repositorySummary(
   request: RepositoryPathRequest,
 ): Promise<RepositorySummary> {
   return invokeAppCommand("repository_summary", { request });
+}
+
+export function resetBisect(
+  request: RepositoryPathRequest,
+): Promise<RepositorySummary> {
+  return invokeAppCommand("reset_bisect", { request });
 }
 
 export function fetchRepository(
@@ -654,6 +701,18 @@ export function searchLog(request: LogSearchRequest): Promise<LogPageResponse> {
   return invokeAppCommand("search_log", { request });
 }
 
+export function commitDetails(
+  request: CommitDetailsRequest,
+): Promise<CommitDetailsResponse> {
+  return invokeAppCommand("commit_details", { request });
+}
+
+export function commitFileDetail(
+  request: CommitFileDetailRequest,
+): Promise<CommitFileDetailResponse> {
+  return invokeAppCommand("commit_file_detail", { request });
+}
+
 export function listConflicts(
   request: ConflictListRequest,
 ): Promise<ConflictListResponse> {
@@ -718,6 +777,22 @@ export function settingsSnapshot(): Promise<SettingsSnapshot> {
 
 export function loadAppSettings(): Promise<AppSettings> {
   return invokeAppCommand("load_app_settings");
+}
+
+export function listRecentProjects(
+  request: RecentProjectsRequest,
+): Promise<RecentProjectEntry[]> {
+  return invokeAppCommand("list_recent_projects", { request });
+}
+
+export function forgetRecentProject(
+  request: ForgetRecentProjectRequest,
+): Promise<void> {
+  return invokeAppCommand("forget_recent_project", { request });
+}
+
+export function clearRecentProjects(): Promise<void> {
+  return invokeAppCommand("clear_recent_projects");
 }
 
 export function saveAppSettings(
@@ -792,6 +867,12 @@ export function submitSshPassphrasePrompt(
   request: SubmitSshPassphrasePromptRequest,
 ): Promise<void> {
   return invokeAppCommand("submit_ssh_passphrase_prompt", { request });
+}
+
+export function setAuthPromptListenerReady(
+  request: AuthPromptListenerReadyRequest,
+): Promise<void> {
+  return invokeAppCommand("set_auth_prompt_listener_ready", { request });
 }
 
 export function checkForUpdates(

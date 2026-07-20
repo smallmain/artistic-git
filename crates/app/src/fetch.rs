@@ -25,7 +25,15 @@ pub struct FetchStateStore {
 
 impl FetchStateStore {
     pub fn started_event(&self, repository_path: impl AsRef<str>) -> FetchStateEvent {
-        self.update(repository_path.as_ref(), FetchState::Fetching, None, None)
+        let repository_path = repository_path.as_ref();
+        let records = self.records.lock().expect("fetch state lock poisoned");
+        let record = records.get(repository_path).cloned().unwrap_or_default();
+        FetchStateEvent {
+            repository_path: repository_path.to_owned(),
+            state: FetchState::Fetching,
+            last_success_at: record.last_success_at,
+            message: None,
+        }
     }
 
     pub fn snapshot_event(&self, repository_path: impl AsRef<str>) -> FetchStateEvent {
@@ -35,7 +43,7 @@ impl FetchStateStore {
         event_from_record(repository_path, record)
     }
 
-    fn success_event(&self, repository_path: &str) -> FetchStateEvent {
+    pub(crate) fn success_event(&self, repository_path: &str) -> FetchStateEvent {
         self.update(
             repository_path,
             FetchState::Idle,
@@ -430,6 +438,55 @@ mod tests {
             .message
             .as_deref()
             .is_some_and(|message| message.contains("already in progress")));
+    }
+
+    #[test]
+    fn successful_remote_contact_prevents_skipped_fetch_from_restoring_old_failure() {
+        let (runner, _dist_temp) = fake_runner();
+        let repo = TestTempDir::new("ag-fetch-authoritative-state").expect("temp repo");
+        let state_store = FetchStateStore::default();
+        let repository_path =
+            display_path(&std::fs::canonicalize(repo.path()).expect("canonical repository path"));
+        let failed = state_store.failed_event(&repository_path, "offline");
+        assert_eq!(failed.state, FetchState::Failed);
+
+        let succeeded = state_store.success_event(&repository_path);
+        assert_eq!(succeeded.state, FetchState::Idle);
+        let _write = runner
+            .operation_concurrency()
+            .try_begin_write()
+            .expect("hold write lock");
+
+        let response = fetch_repository(
+            &runner,
+            &state_store,
+            FetchRepositoryRequest {
+                repository_path: display_path(repo.path()),
+            },
+        )
+        .expect("fetch skip");
+
+        assert!(response.skipped);
+        assert_eq!(response.event.state, FetchState::Idle);
+        assert!(response.event.last_success_at.is_some());
+    }
+
+    #[test]
+    fn skipped_fetch_restores_the_last_terminal_state_after_started_notification() {
+        let state_store = FetchStateStore::default();
+        let repository_path = "/repo/art";
+        let failed = state_store.failed_event(repository_path, "offline");
+        assert_eq!(failed.state, FetchState::Failed);
+
+        let started = state_store.started_event(repository_path);
+        assert_eq!(started.state, FetchState::Fetching);
+
+        let skipped = state_store.skipped_event(repository_path, "write in progress");
+        assert_eq!(skipped.state, FetchState::Failed);
+        assert_eq!(
+            state_store.snapshot_event(repository_path).state,
+            FetchState::Failed
+        );
     }
 
     #[test]

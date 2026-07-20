@@ -26,6 +26,7 @@ import { ConfirmDialog } from "@/components/dialogs/ConfirmDialog";
 import { Button } from "@/components/ui/button";
 import { DiffViewer } from "@/features/diff";
 import { useLocalizedFormatters } from "@/i18n/format";
+import { DialogLayerContext, useModalLayer } from "@/lib/dialog-layer";
 import {
   cancelConflictResolution,
   cancelOperation,
@@ -97,6 +98,8 @@ export function ConflictResolutionOverlay({
   onClose,
 }: ConflictResolutionOverlayProps) {
   const { t } = useTranslation();
+  const overlayRef = React.useRef<HTMLElement>(null);
+  const dialogId = useModalLayer(overlayRef);
   const [files, setFiles] = React.useState<ConflictFile[]>(event.files);
   const [checkedPaths, setCheckedPaths] = React.useState<Set<string>>(
     () => new Set(),
@@ -117,6 +120,7 @@ export function ConflictResolutionOverlay({
   const activeOperationIdRef = React.useRef<string | null>(null);
   const [cancelling, setCancelling] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const operationFailedMessage = t("conflicts.operationFailed");
   const [confirmCancel, setConfirmCancel] = React.useState(false);
   const conflictListKey = `${event.repositoryPath}\0${event.operationId}`;
   const [conflictListPage, setConflictListPage] = React.useState({
@@ -125,12 +129,15 @@ export function ConflictResolutionOverlay({
   });
   const requestedPageIndex =
     conflictListPage.key === conflictListKey ? conflictListPage.pageIndex : 0;
-  const reportError = React.useCallback((source: unknown) => {
-    setError(errorSummary(source));
-    window.dispatchEvent(
-      new CustomEvent("artistic-git:error", { detail: source }),
-    );
-  }, []);
+  const reportError = React.useCallback(
+    (source: unknown) => {
+      setError(operationFailedMessage);
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:error", { detail: source }),
+      );
+    },
+    [operationFailedMessage],
+  );
 
   React.useEffect(() => {
     let active = true;
@@ -140,7 +147,7 @@ export function ConflictResolutionOverlay({
         if (!active) {
           return;
         }
-        setFiles(response.files.length > 0 ? response.files : event.files);
+        setFiles(response.files);
       })
       .catch((source: unknown) => {
         if (active) {
@@ -227,7 +234,7 @@ export function ConflictResolutionOverlay({
   const unresolvedCount = files.filter(
     (file) => file.status === "unresolved",
   ).length;
-  const allResolved = files.length > 0 && unresolvedCount === 0;
+  const allResolved = unresolvedCount === 0;
   const selectedFiles = files.filter((file) => checkedPaths.has(file.path));
   const conflictPageCount = Math.max(
     1,
@@ -297,7 +304,7 @@ export function ConflictResolutionOverlay({
     const operationId = createConflictOperationId();
     if (
       paths.length === 0 ||
-      !beginBusy(t(`conflicts.side.${side}`), operationId)
+      !beginBusy(t("conflicts.applyingSelection"), operationId)
     ) {
       return;
     }
@@ -354,7 +361,9 @@ export function ConflictResolutionOverlay({
     if (!operationId || cancelling) {
       return;
     }
+    const previousBusyLabel = busyLabel;
     setCancelling(true);
+    setBusyLabel(t("conflicts.cancelling"));
     try {
       const response = await api.cancelOperation({ operationId });
       if (!response.cancelled && activeOperationIdRef.current === operationId) {
@@ -363,13 +372,14 @@ export function ConflictResolutionOverlay({
     } catch (source) {
       if (activeOperationIdRef.current === operationId) {
         setCancelling(false);
+        setBusyLabel(previousBusyLabel);
         reportError(source);
       }
     }
   };
 
   const runSave = async (content: string, pendingHunks: number) => {
-    if (!selectedPath || !beginBusy(t("conflicts.save"))) {
+    if (!selectedPath || !beginBusy(t("conflicts.saving"))) {
       return;
     }
     const detailPath = selectedPath;
@@ -398,7 +408,7 @@ export function ConflictResolutionOverlay({
   };
 
   const runComplete = async () => {
-    if (!allResolved || !beginBusy(t("conflicts.complete"))) {
+    if (!allResolved || !beginBusy(t("conflicts.completing"))) {
       return;
     }
     setError(null);
@@ -417,7 +427,7 @@ export function ConflictResolutionOverlay({
   };
 
   const runCancel = async () => {
-    if (!beginBusy(t("actions.cancel"))) {
+    if (!beginBusy(t("conflicts.cancelling"))) {
       return;
     }
     setError(null);
@@ -436,261 +446,272 @@ export function ConflictResolutionOverlay({
   };
 
   return (
-    <section
-      aria-label={t("conflicts.title")}
-      aria-modal="true"
-      className="fixed inset-0 z-50 flex min-h-0 flex-col bg-background text-foreground"
-      data-testid="conflict-resolution-overlay"
-      role="dialog"
-    >
-      <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b bg-card px-4">
-        <div className="min-w-0">
-          <h1 className="truncate text-base font-semibold">
-            {event.operationName}
-          </h1>
-          <p className="truncate text-xs text-muted-foreground">
-            {t("conflicts.summary", {
-              resolved: files.length - unresolvedCount,
-              total: files.length,
-            })}
-          </p>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {busyLabel ? (
-            <span className="text-sm text-muted-foreground">{busyLabel}</span>
-          ) : null}
-          {activeOperationId ? (
+    <DialogLayerContext.Provider value={dialogId}>
+      <section
+        ref={overlayRef}
+        aria-label={t("conflicts.title")}
+        aria-modal="true"
+        className="fixed inset-0 z-50 flex min-h-0 flex-col bg-background text-foreground"
+        data-testid="conflict-resolution-overlay"
+        role="dialog"
+        tabIndex={-1}
+      >
+        <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b bg-card px-4">
+          <div className="min-w-0">
+            <h1 className="truncate text-base font-semibold">
+              {t("conflicts.title")}
+            </h1>
+            <p className="truncate text-xs text-muted-foreground">
+              {files.length === 0
+                ? t("conflicts.noFilesRemaining")
+                : t("conflicts.summary", {
+                    resolved: files.length - unresolvedCount,
+                    total: files.length,
+                  })}
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            {busyLabel ? (
+              <span className="text-sm text-muted-foreground" role="status">
+                {busyLabel}
+              </span>
+            ) : null}
+            {activeOperationId ? (
+              <Button
+                data-testid="conflict-cancel-active-operation"
+                disabled={cancelling}
+                onClick={() => {
+                  void cancelActiveOperation();
+                }}
+                type="button"
+                variant="secondary"
+              >
+                <X className="mr-2 size-4" aria-hidden="true" />
+                {t("actions.cancel")}
+              </Button>
+            ) : null}
             <Button
-              data-testid="conflict-cancel-active-operation"
-              disabled={cancelling}
+              data-testid="conflict-complete"
+              disabled={!allResolved || busyLabel !== null}
               onClick={() => {
-                void cancelActiveOperation();
+                void runComplete();
               }}
               type="button"
-              variant="secondary"
+            >
+              <CheckCircle2 className="mr-2 size-4" aria-hidden="true" />
+              {t("conflicts.complete")}
+            </Button>
+            <Button
+              disabled={busyLabel !== null}
+              onClick={() => setConfirmCancel(true)}
+              type="button"
+              variant="ghost"
             >
               <X className="mr-2 size-4" aria-hidden="true" />
               {t("actions.cancel")}
             </Button>
-          ) : null}
-          <Button
-            data-testid="conflict-complete"
-            disabled={!allResolved || busyLabel !== null}
-            onClick={() => {
-              void runComplete();
-            }}
-            type="button"
-          >
-            <CheckCircle2 className="mr-2 size-4" aria-hidden="true" />
-            {t("conflicts.complete")}
-          </Button>
-          <Button
-            disabled={busyLabel !== null}
-            onClick={() => setConfirmCancel(true)}
-            type="button"
-            variant="ghost"
-          >
-            <X className="mr-2 size-4" aria-hidden="true" />
-            {t("actions.cancel")}
-          </Button>
-        </div>
-      </header>
-
-      {error ? (
-        <div className="flex shrink-0 items-center gap-2 border-b bg-destructive/10 px-4 py-2 text-sm text-destructive">
-          <AlertTriangle className="size-4 shrink-0" aria-hidden="true" />
-          <span className="min-w-0 truncate">{error}</span>
-        </div>
-      ) : null}
-
-      <div className="flex min-h-0 flex-1">
-        <aside
-          aria-busy={busyLabel !== null}
-          className="flex w-80 shrink-0 flex-col border-r bg-card"
-          inert={busyLabel !== null}
-        >
-          <div className="grid grid-cols-2 gap-2 border-b p-3">
-            <Button
-              disabled={busyLabel !== null}
-              onClick={() =>
-                setCheckedPaths(new Set(files.map((file) => file.path)))
-              }
-              type="button"
-              variant="secondary"
-            >
-              <SquareCheck className="mr-2 size-4" aria-hidden="true" />
-              {t("conflicts.selectAll")}
-            </Button>
-            <Button
-              disabled={busyLabel !== null}
-              onClick={() => {
-                setCheckedPaths(
-                  new Set(
-                    files
-                      .filter((file) => !checkedPaths.has(file.path))
-                      .map((file) => file.path),
-                  ),
-                );
-              }}
-              type="button"
-              variant="secondary"
-            >
-              <RotateCcw className="mr-2 size-4" aria-hidden="true" />
-              {t("conflicts.invert")}
-            </Button>
-            <Button
-              data-testid="conflict-use-other"
-              disabled={
-                selectedOrCurrentPaths.length === 0 || busyLabel !== null
-              }
-              onClick={() => {
-                void runSelectSide("other");
-              }}
-              type="button"
-              variant="ghost"
-            >
-              {t("conflicts.useOther")}
-            </Button>
-            <Button
-              data-testid="conflict-use-own"
-              disabled={
-                selectedOrCurrentPaths.length === 0 || busyLabel !== null
-              }
-              onClick={() => {
-                void runSelectSide("own");
-              }}
-              type="button"
-              variant="ghost"
-            >
-              {t("conflicts.useOwn")}
-            </Button>
           </div>
+        </header>
 
-          <div
-            className="min-h-0 flex-1 overflow-auto"
-            data-testid="conflict-file-list"
+        {error ? (
+          <div className="flex shrink-0 items-center gap-2 border-b bg-destructive/10 px-4 py-2 text-sm text-destructive">
+            <AlertTriangle className="size-4 shrink-0" aria-hidden="true" />
+            <span className="min-w-0 truncate">{error}</span>
+          </div>
+        ) : null}
+
+        <div className="flex min-h-0 flex-1">
+          <aside
+            aria-busy={busyLabel !== null}
+            className="flex w-80 shrink-0 flex-col border-r bg-card"
+            inert={busyLabel !== null}
           >
-            {visibleFiles.map((file) => (
-              <ConflictFileRow
-                checked={checkedPaths.has(file.path)}
+            <div className="grid grid-cols-2 gap-2 border-b p-3">
+              <Button
                 disabled={busyLabel !== null}
-                file={file}
-                key={file.path}
-                onCheckedChange={(checked) => {
-                  setCheckedPaths((current) => {
-                    const next = new Set(current);
-                    if (checked) {
-                      next.add(file.path);
-                    } else {
-                      next.delete(file.path);
-                    }
-                    return next;
-                  });
+                onClick={() =>
+                  setCheckedPaths(new Set(files.map((file) => file.path)))
+                }
+                type="button"
+                variant="secondary"
+              >
+                <SquareCheck className="mr-2 size-4" aria-hidden="true" />
+                {t("conflicts.selectAll")}
+              </Button>
+              <Button
+                disabled={busyLabel !== null}
+                onClick={() => {
+                  setCheckedPaths(
+                    new Set(
+                      files
+                        .filter((file) => !checkedPaths.has(file.path))
+                        .map((file) => file.path),
+                    ),
+                  );
                 }}
-                onSelect={() => setSelectedPathPreference(file.path)}
-                selected={file.path === selectedPath}
-              />
-            ))}
-            {conflictPageCount > 1 ? (
-              <div className="flex items-center justify-between gap-2 border-b p-2">
-                <Button
-                  aria-label={t("conflicts.previousPage")}
-                  data-testid="conflict-previous-page"
-                  disabled={busyLabel !== null || conflictPageIndex === 0}
-                  onClick={() => {
-                    setConflictListPage({
-                      key: conflictListKey,
-                      pageIndex: Math.max(0, conflictPageIndex - 1),
-                    });
-                  }}
-                  size="icon"
-                  title={t("conflicts.previousPage")}
-                  type="button"
-                  variant="ghost"
-                >
-                  <ChevronLeft aria-hidden="true" className="size-4" />
-                </Button>
-                <span className="text-xs text-muted-foreground">
-                  {t("conflicts.page", {
-                    page: conflictPageIndex + 1,
-                    total: conflictPageCount,
-                  })}
-                </span>
-                <Button
-                  aria-label={t("conflicts.nextPage")}
-                  data-testid="conflict-next-page"
-                  disabled={
-                    busyLabel !== null ||
-                    conflictPageIndex >= conflictPageCount - 1
-                  }
-                  onClick={() => {
-                    setConflictListPage({
-                      key: conflictListKey,
-                      pageIndex: Math.min(
-                        conflictPageCount - 1,
-                        conflictPageIndex + 1,
-                      ),
-                    });
-                  }}
-                  size="icon"
-                  title={t("conflicts.nextPage")}
-                  type="button"
-                  variant="ghost"
-                >
-                  <ChevronRight aria-hidden="true" className="size-4" />
-                </Button>
-              </div>
-            ) : null}
-          </div>
-        </aside>
-
-        <div className="min-w-0 flex-1 bg-background">
-          {visibleDetail ? (
-            <ConflictDetailPanel
-              detail={visibleDetail.detail}
-              file={visibleDetail.file}
-              onSave={(content, pendingHunks) => {
-                void runSave(content, pendingHunks);
-              }}
-              onSelectSide={(side) => {
-                void runSelectSide(side, [visibleDetail.file.path]);
-              }}
-              saving={busyLabel !== null}
-              sideLabels={sideLabels}
-            />
-          ) : (
-            <div
-              className="flex h-full items-center justify-center text-sm text-muted-foreground"
-              role={selectedDetailFailed ? "alert" : "status"}
-            >
-              {t(
-                selectedDetailFailed
-                  ? "conflicts.detailUnavailable"
-                  : "conflicts.loading",
-              )}
+                type="button"
+                variant="secondary"
+              >
+                <RotateCcw className="mr-2 size-4" aria-hidden="true" />
+                {t("conflicts.invert")}
+              </Button>
+              <Button
+                data-testid="conflict-use-other"
+                disabled={
+                  selectedOrCurrentPaths.length === 0 || busyLabel !== null
+                }
+                onClick={() => {
+                  void runSelectSide("other");
+                }}
+                type="button"
+                variant="ghost"
+              >
+                {t("conflicts.useOther")}
+              </Button>
+              <Button
+                data-testid="conflict-use-own"
+                disabled={
+                  selectedOrCurrentPaths.length === 0 || busyLabel !== null
+                }
+                onClick={() => {
+                  void runSelectSide("own");
+                }}
+                type="button"
+                variant="ghost"
+              >
+                {t("conflicts.useOwn")}
+              </Button>
             </div>
-          )}
-        </div>
-      </div>
 
-      <ConfirmDialog
-        busy={busyLabel !== null}
-        confirmLabel={t("conflicts.abort")}
-        description={t("conflicts.cancelDescription")}
-        onConfirm={() => {
-          void runCancel();
-        }}
-        onOpenChange={(open) => {
-          if (!open && busyLabel !== null) {
-            return;
-          }
-          setConfirmCancel(open);
-        }}
-        open={confirmCancel}
-        title={t("conflicts.cancelTitle")}
-        variant="danger"
-      />
-    </section>
+            <div
+              className="min-h-0 flex-1 overflow-auto"
+              data-testid="conflict-file-list"
+            >
+              {visibleFiles.map((file) => (
+                <ConflictFileRow
+                  checked={checkedPaths.has(file.path)}
+                  disabled={busyLabel !== null}
+                  file={file}
+                  key={file.path}
+                  onCheckedChange={(checked) => {
+                    setCheckedPaths((current) => {
+                      const next = new Set(current);
+                      if (checked) {
+                        next.add(file.path);
+                      } else {
+                        next.delete(file.path);
+                      }
+                      return next;
+                    });
+                  }}
+                  onSelect={() => setSelectedPathPreference(file.path)}
+                  selected={file.path === selectedPath}
+                />
+              ))}
+              {conflictPageCount > 1 ? (
+                <div className="flex items-center justify-between gap-2 border-b p-2">
+                  <Button
+                    aria-label={t("conflicts.previousPage")}
+                    data-testid="conflict-previous-page"
+                    disabled={busyLabel !== null || conflictPageIndex === 0}
+                    onClick={() => {
+                      setConflictListPage({
+                        key: conflictListKey,
+                        pageIndex: Math.max(0, conflictPageIndex - 1),
+                      });
+                    }}
+                    size="icon"
+                    title={t("conflicts.previousPage")}
+                    type="button"
+                    variant="ghost"
+                  >
+                    <ChevronLeft aria-hidden="true" className="size-4" />
+                  </Button>
+                  <span className="text-xs text-muted-foreground">
+                    {t("conflicts.page", {
+                      page: conflictPageIndex + 1,
+                      total: conflictPageCount,
+                    })}
+                  </span>
+                  <Button
+                    aria-label={t("conflicts.nextPage")}
+                    data-testid="conflict-next-page"
+                    disabled={
+                      busyLabel !== null ||
+                      conflictPageIndex >= conflictPageCount - 1
+                    }
+                    onClick={() => {
+                      setConflictListPage({
+                        key: conflictListKey,
+                        pageIndex: Math.min(
+                          conflictPageCount - 1,
+                          conflictPageIndex + 1,
+                        ),
+                      });
+                    }}
+                    size="icon"
+                    title={t("conflicts.nextPage")}
+                    type="button"
+                    variant="ghost"
+                  >
+                    <ChevronRight aria-hidden="true" className="size-4" />
+                  </Button>
+                </div>
+              ) : null}
+            </div>
+          </aside>
+
+          <div className="min-w-0 flex-1 bg-background">
+            {visibleDetail ? (
+              <ConflictDetailPanel
+                detail={visibleDetail.detail}
+                file={visibleDetail.file}
+                onSave={(content, pendingHunks) => {
+                  void runSave(content, pendingHunks);
+                }}
+                onSelectSide={(side) => {
+                  void runSelectSide(side, [visibleDetail.file.path]);
+                }}
+                saving={busyLabel !== null}
+                sideLabels={sideLabels}
+              />
+            ) : (
+              <div
+                className="flex h-full items-center justify-center text-sm text-muted-foreground"
+                role={selectedDetailFailed ? "alert" : "status"}
+              >
+                {t(
+                  files.length === 0
+                    ? "conflicts.noFilesRemaining"
+                    : selectedDetailFailed
+                      ? "conflicts.detailUnavailable"
+                      : "conflicts.loading",
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <ConfirmDialog
+          busy={busyLabel !== null}
+          busyLabel={t("conflicts.cancelling")}
+          confirmLabel={t("conflicts.abort")}
+          description={t("conflicts.cancelDescription")}
+          onConfirm={() => {
+            void runCancel();
+          }}
+          onOpenChange={(open) => {
+            if (!open && busyLabel !== null) {
+              return;
+            }
+            setConfirmCancel(open);
+          }}
+          open={confirmCancel}
+          title={t("conflicts.cancelTitle")}
+          variant="danger"
+        />
+      </section>
+    </DialogLayerContext.Provider>
   );
 }
 
@@ -1621,19 +1642,4 @@ function conflictSideLabels(
     useOwn: t("conflicts.useOwn"),
     useOwnHunk: t("conflicts.useOwnHunk"),
   };
-}
-
-function errorSummary(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  if (
-    typeof error === "object" &&
-    error !== null &&
-    "summary" in error &&
-    typeof error.summary === "string"
-  ) {
-    return error.summary;
-  }
-  return typeof error === "string" ? error : "Unknown error";
 }

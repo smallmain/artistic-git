@@ -58,29 +58,82 @@ export function useIncrementalFilteredRows(
   source: IncrementalHistoryRows,
   branchMode: BranchFilterMode,
   selectedBranches: ReadonlySet<string>,
+  activeBranchName: string | null = null,
 ): HistoryRow[] {
   const [projector] = React.useState(createFilteredRowsProjector);
   const filterKey = React.useMemo(
     () =>
-      `${branchMode}:${Array.from(selectedBranches).toSorted().join("\u0000")}`,
-    [branchMode, selectedBranches],
+      `${branchMode}:${activeBranchName ?? ""}:${Array.from(selectedBranches).toSorted().join("\u0000")}`,
+    [activeBranchName, branchMode, selectedBranches],
+  );
+  const reachableCommitIds = React.useMemo(
+    () =>
+      collectReachableCommitIds(
+        source.rows,
+        branchMode === "auto"
+          ? activeBranchName === null
+            ? new Set<string>()
+            : new Set([activeBranchName])
+          : selectedBranches,
+      ),
+    [activeBranchName, branchMode, selectedBranches, source],
   );
 
   return React.useMemo(
     () =>
       projector.project(source, filterKey, (row) => {
-        if (branchMode === "all") {
+        if (
+          branchMode === "all" ||
+          (branchMode === "auto" && activeBranchName === null)
+        ) {
           return true;
         }
-        const branchNames = row.commit.refs
-          .filter((ref) => ref.type === "branch")
-          .map((ref) => ref.name);
-        return branchMode === "auto"
-          ? branchNames.length === 0 || branchNames.includes("main")
-          : branchNames.some((branch) => selectedBranches.has(branch));
+        return reachableCommitIds.has(row.commit.id);
       }),
-    [branchMode, filterKey, projector, selectedBranches, source],
+    [
+      activeBranchName,
+      branchMode,
+      filterKey,
+      projector,
+      reachableCommitIds,
+      source,
+    ],
   );
+}
+
+function collectReachableCommitIds(
+  rows: readonly HistoryRow[],
+  branchNames: ReadonlySet<string>,
+): Set<string> {
+  const rowsByCommitName = new Map<string, HistoryRow>();
+  const pending: HistoryRow[] = [];
+  for (const row of rows) {
+    rowsByCommitName.set(row.commit.id, row);
+    rowsByCommitName.set(row.commit.shortId, row);
+    if (
+      row.commit.refs.some(
+        (ref) => ref.type === "branch" && branchNames.has(ref.name),
+      )
+    ) {
+      pending.push(row);
+    }
+  }
+
+  const reachable = new Set<string>();
+  while (pending.length > 0) {
+    const row = pending.pop();
+    if (!row || reachable.has(row.commit.id)) {
+      continue;
+    }
+    reachable.add(row.commit.id);
+    for (const parent of row.commit.parents) {
+      const parentRow = rowsByCommitName.get(parent);
+      if (parentRow) {
+        pending.push(parentRow);
+      }
+    }
+  }
+  return reachable;
 }
 
 function createHistoryRowsProjector<Page>(

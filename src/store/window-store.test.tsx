@@ -140,6 +140,28 @@ describe("window store", () => {
       label: "Updating submodules",
     });
   });
+
+  it("keeps recent projects within the configured display limit", () => {
+    const projects = Array.from({ length: 8 }, (_, index) => ({
+      displayName: `Project ${index}`,
+      path: `/repo/project-${index}`,
+    }));
+    const store = createWindowStore({
+      appSettings: { recentProjectLimit: 3 },
+      recentProjects: projects,
+    });
+
+    expect(
+      store.getState().recentProjects.map((project) => project.path),
+    ).toEqual(["/repo/project-0", "/repo/project-1", "/repo/project-2"]);
+
+    store.getState().setRecentProjects(projects.slice().reverse());
+    expect(store.getState().recentProjects).toHaveLength(3);
+    expect(store.getState().recentProjects[0].path).toBe("/repo/project-7");
+
+    store.getState().setAppSettings({ recentProjectLimit: 2 });
+    expect(store.getState().recentProjects).toHaveLength(2);
+  });
 });
 
 function WindowStoreProbe({ label }: { label: string }) {

@@ -31,7 +31,30 @@ pub struct SettingsSnapshot {
     pub app_version: String,
     pub settings: AppSettings,
     pub identity_sources: IdentitySourcesResponse,
+    pub identity_sources_error: Option<AppError>,
     pub ssh_key: SshKeyStatus,
+    pub ssh_key_error: Option<AppError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentProjectsRequest {
+    pub limit: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentProjectEntry {
+    pub path: String,
+    pub display_name: String,
+    pub last_opened_at: String,
+    pub missing: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ForgetRecentProjectRequest {
+    pub path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Type)]
@@ -154,13 +177,39 @@ pub fn settings_snapshot(
     config: Option<&ConfigActor>,
     _runner: &GitRunner,
 ) -> AppResult<SettingsSnapshot> {
+    let settings = require_config(config, "loadAppSettings")?
+        .settings()
+        .map_err(|source| config_error(source, "loadAppSettings"))?;
+    let (identity_sources, identity_sources_error) = match identity_sources(config) {
+        Ok(sources) => (sources, None),
+        Err(error) => (
+            IdentitySourcesResponse {
+                settings: settings.git.user.clone(),
+                global_gitconfig: GitUserSettings::default(),
+                global_gitconfig_path: real_global_gitconfig_path().as_deref().map(display_path),
+            },
+            Some(error),
+        ),
+    };
+    let (ssh_key, ssh_key_error) = match ssh_key_status() {
+        Ok(status) => (status, None),
+        Err(error) => (
+            SshKeyStatus {
+                private_key_path: default_ssh_private_key_path().as_deref().map(display_path),
+                public_key_path: None,
+                public_key: None,
+                exists: false,
+            },
+            Some(error),
+        ),
+    };
     Ok(SettingsSnapshot {
         app_version: env!("CARGO_PKG_VERSION").to_owned(),
-        settings: require_config(config, "loadAppSettings")?
-            .settings()
-            .map_err(|source| config_error(source, "loadAppSettings"))?,
-        identity_sources: identity_sources(config)?,
-        ssh_key: ssh_key_status()?,
+        settings,
+        identity_sources,
+        identity_sources_error,
+        ssh_key,
+        ssh_key_error,
     })
 }
 
@@ -168,6 +217,50 @@ pub fn load_app_settings(config: Option<&ConfigActor>) -> AppResult<AppSettings>
     require_config(config, "loadAppSettings")?
         .settings()
         .map_err(|source| config_error(source, "loadAppSettings"))
+}
+
+pub fn list_recent_projects(
+    config: Option<&ConfigActor>,
+    request: RecentProjectsRequest,
+) -> AppResult<Vec<RecentProjectEntry>> {
+    let projects = require_config(config, "listRecentProjects")?
+        .projects()
+        .map_err(|source| config_error(source, "listRecentProjects"))?;
+    Ok(projects
+        .recent_projects(usize::from(request.limit.min(200)))
+        .into_iter()
+        .filter_map(|project| {
+            let last_opened_at = project.last_opened_at?;
+            let path = project.path;
+            let display_name = project
+                .display_name
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or_else(|| display_name_from_path(&path));
+            Some(RecentProjectEntry {
+                missing: !Path::new(&path).is_dir(),
+                path,
+                display_name,
+                last_opened_at,
+            })
+        })
+        .collect())
+}
+
+pub fn forget_recent_project(
+    config: Option<&ConfigActor>,
+    request: ForgetRecentProjectRequest,
+) -> AppResult<()> {
+    require_config(config, "forgetRecentProject")?
+        .forget_recent_project(&request.path)
+        .map_err(|source| config_error(source, "forgetRecentProject"))?;
+    Ok(())
+}
+
+pub fn clear_recent_projects(config: Option<&ConfigActor>) -> AppResult<()> {
+    require_config(config, "clearRecentProjects")?
+        .clear_recent_projects()
+        .map_err(|source| config_error(source, "clearRecentProjects"))?;
+    Ok(())
 }
 
 pub fn save_app_settings(
@@ -337,7 +430,12 @@ fn read_utf8_file_with_limit(path: &Path, limit_bytes: usize) -> io::Result<Stri
             format!("file exceeds the {limit_bytes}-byte application safety limit"),
         ));
     }
-    String::from_utf8(bytes).map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))
+    String::from_utf8(bytes).map_err(|source| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("file is not valid UTF-8: {source}"),
+        )
+    })
 }
 
 pub fn identity_sources(config: Option<&ConfigActor>) -> AppResult<IdentitySourcesResponse> {
@@ -349,8 +447,8 @@ pub fn identity_sources(config: Option<&ConfigActor>) -> AppResult<IdentitySourc
     let global_gitconfig_path = real_global_gitconfig_path();
     let global_gitconfig = global_gitconfig_path
         .as_deref()
-        .and_then(|path| read_utf8_file_with_limit(path, GITIGNORE_FILE_LIMIT_BYTES).ok())
-        .map(|content| parse_gitconfig_user(&content))
+        .map(|path| read_global_gitconfig_user(path, "loadIdentitySources"))
+        .transpose()?
         .unwrap_or_default();
 
     Ok(IdentitySourcesResponse {
@@ -378,7 +476,7 @@ pub fn validate_identity_for_write(
             .transpose()?;
         resolve_identity(
             repository.unwrap_or_default(),
-            read_real_global_gitconfig_user(),
+            read_real_global_gitconfig_user("validateIdentityForWrite")?,
         )
     } else {
         ResolvedGitIdentity {
@@ -885,11 +983,26 @@ fn clean_optional_value(value: String) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
-fn read_real_global_gitconfig_user() -> GitUserSettings {
+fn read_real_global_gitconfig_user(operation_name: &str) -> AppResult<GitUserSettings> {
     real_global_gitconfig_path()
-        .and_then(|path| read_utf8_file_with_limit(&path, GITIGNORE_FILE_LIMIT_BYTES).ok())
-        .map(|content| parse_gitconfig_user(&content))
-        .unwrap_or_default()
+        .as_deref()
+        .map(|path| read_global_gitconfig_user(path, operation_name))
+        .transpose()
+        .map(|identity| identity.unwrap_or_default())
+}
+
+fn read_global_gitconfig_user(path: &Path, operation_name: &str) -> AppResult<GitUserSettings> {
+    match read_utf8_file_with_limit(path, GITIGNORE_FILE_LIMIT_BYTES) {
+        Ok(content) => Ok(parse_gitconfig_user(&content)),
+        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(GitUserSettings::default()),
+        Err(source) => Err(crate::logged_app_error(AppError::expected(
+            format!(
+                "failed to read global Git configuration at {}: {source}",
+                display_path(path)
+            ),
+            operation_name,
+        ))),
+    }
 }
 
 fn real_global_gitconfig_path() -> Option<PathBuf> {
@@ -974,6 +1087,15 @@ fn display_path(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
+fn display_name_from_path(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or(path)
+        .to_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -997,6 +1119,32 @@ mod tests {
         let error = read_utf8_file_with_limit(&path, 4).expect_err("oversized file");
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert!(error.to_string().contains("4-byte"));
+    }
+
+    #[test]
+    fn missing_global_gitconfig_is_treated_as_empty() {
+        let temp = TestTempDir::new("ag-settings-missing-gitconfig").expect("temp");
+        let identity = read_global_gitconfig_user(
+            &temp.path().join("missing.gitconfig"),
+            "loadIdentitySources",
+        )
+        .expect("missing config should be empty");
+
+        assert_eq!(identity, GitUserSettings::default());
+    }
+
+    #[test]
+    fn invalid_global_gitconfig_preserves_the_read_error() {
+        let temp = TestTempDir::new("ag-settings-invalid-gitconfig").expect("temp");
+        let path = temp.path().join("invalid.gitconfig");
+        fs::write(&path, [0xff, 0xfe]).expect("write invalid UTF-8 fixture");
+
+        let error = read_global_gitconfig_user(&path, "loadIdentitySources")
+            .expect_err("invalid config should fail");
+
+        assert_eq!(error.context.operation_name, "loadIdentitySources");
+        assert!(error.summary.contains("invalid.gitconfig"));
+        assert!(error.summary.contains("UTF-8"));
     }
 
     #[test]

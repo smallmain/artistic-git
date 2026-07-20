@@ -26,6 +26,10 @@ export interface RecentProject {
 }
 
 export type SettingsSection = "general" | "project" | "about";
+export type RuntimeBootstrapState =
+  | { status: "loading"; error: null }
+  | { status: "ready"; error: null }
+  | { status: "failed"; error: unknown };
 
 export interface WindowStoreState {
   activeRepositoryPath: string | null;
@@ -34,9 +38,14 @@ export interface WindowStoreState {
   conflictsByRepository: Record<string, ConflictEnteredEvent>;
   fetchStatesByRepository: Record<string, FetchStateEvent>;
   onboarded: boolean;
+  navigationLocked: boolean;
   operationsById: Record<string, OperationProgressEvent>;
   projectSettingsByRepository: Record<string, ProjectSettings>;
   recentProjects: RecentProject[];
+  recentProjectsRefreshAttempt: number;
+  recentProjectsRuntime: RuntimeBootstrapState;
+  runtimeBootstrapAttempt: number;
+  settingsRuntime: RuntimeBootstrapState;
   repoChangesByRepository: Record<string, RepoChangedEvent>;
   settingsModalOpen: boolean;
   settingsSection: SettingsSection;
@@ -47,6 +56,7 @@ export interface WindowStoreState {
   updatePromptOpen: boolean;
   updateStatus: UpdateStatusEvent | null;
   windowLabel: string | null;
+  windowRuntime: RuntimeBootstrapState;
 }
 
 export interface WindowStoreActions {
@@ -55,20 +65,25 @@ export interface WindowStoreActions {
   clearConflict: (repositoryPath: string) => void;
   openSettings: (section?: SettingsSection) => void;
   removeRecentProject: (path: string) => void;
+  retryRuntimeBootstrap: () => void;
+  retryRecentProjects: () => void;
   setActiveRepositoryPath: (repositoryPath: string | null) => void;
   setAppSettings: (appSettings: AppSettings | null) => void;
   setAppVersion: (appVersion: string | null) => void;
   setConflictEntered: (event: ConflictEnteredEvent) => void;
   setFetchState: (event: FetchStateEvent) => void;
   setOnboarded: (onboarded: boolean) => void;
+  setNavigationLocked: (locked: boolean) => void;
   setOperationProgress: (event: OperationProgressEvent) => void;
   setProjectSettings: (
     repositoryPath: string,
     project: ProjectSettings,
   ) => void;
   setRecentProjects: (recentProjects: RecentProject[]) => void;
+  setRecentProjectsRuntime: (state: RuntimeBootstrapState) => void;
   setRepoChanged: (event: RepoChangedEvent) => void;
   setSettingsSection: (section: SettingsSection) => void;
+  setSettingsRuntime: (state: RuntimeBootstrapState) => void;
   setSidebarLayout: (sidebarLayout: Partial<SidebarLayoutSettings>) => void;
   setUpdateInstallGate: (gate: UpdateInstallGateResponse) => void;
   setUpdateInstallInProgress: (inProgress: boolean) => void;
@@ -76,12 +91,15 @@ export interface WindowStoreActions {
   setUpdatePromptOpen: (open: boolean) => void;
   setUpdateStatus: (event: UpdateStatusEvent | null) => void;
   setWindowLabel: (windowLabel: string | null) => void;
+  setWindowRuntime: (state: RuntimeBootstrapState) => void;
 }
 
 export type WindowStore = WindowStoreState & WindowStoreActions;
 export type WindowStoreApi = StoreApi<WindowStore>;
 
 const sidebarLayoutStorageKey = "artistic-git:sidebar-layout";
+const defaultRecentProjectLimit = 20;
+const maximumRecentProjectLimit = 200;
 
 const initialWindowStoreState: WindowStoreState = {
   activeRepositoryPath: null,
@@ -90,9 +108,14 @@ const initialWindowStoreState: WindowStoreState = {
   conflictsByRepository: {},
   fetchStatesByRepository: {},
   onboarded: true,
+  navigationLocked: false,
   operationsById: {},
   projectSettingsByRepository: {},
   recentProjects: [],
+  recentProjectsRefreshAttempt: 0,
+  recentProjectsRuntime: { status: "loading", error: null },
+  runtimeBootstrapAttempt: 0,
+  settingsRuntime: { status: "loading", error: null },
   repoChangesByRepository: {},
   settingsModalOpen: false,
   settingsSection: "general",
@@ -112,6 +135,7 @@ const initialWindowStoreState: WindowStoreState = {
   updatePromptOpen: false,
   updateStatus: null,
   windowLabel: null,
+  windowRuntime: { status: "loading", error: null },
 };
 
 const WindowStoreContext = React.createContext<WindowStoreApi | null>(null);
@@ -156,11 +180,27 @@ export function createWindowStore(
         ),
       }));
     },
+    retryRuntimeBootstrap: () => {
+      set((state) => ({
+        runtimeBootstrapAttempt: state.runtimeBootstrapAttempt + 1,
+        settingsRuntime: { status: "loading", error: null },
+        windowRuntime: { status: "loading", error: null },
+      }));
+    },
+    retryRecentProjects: () => {
+      set((state) => ({
+        recentProjectsRefreshAttempt: state.recentProjectsRefreshAttempt + 1,
+        recentProjectsRuntime: { status: "loading", error: null },
+      }));
+    },
     setActiveRepositoryPath: (repositoryPath) => {
       set({ activeRepositoryPath: repositoryPath });
     },
     setAppSettings: (appSettings) => {
-      set({ appSettings });
+      set((state) => ({
+        appSettings,
+        recentProjects: limitRecentProjects(state.recentProjects, appSettings),
+      }));
     },
     setAppVersion: (appVersion) => {
       set({ appVersion });
@@ -183,6 +223,9 @@ export function createWindowStore(
     },
     setOnboarded: (onboarded) => {
       set({ onboarded });
+    },
+    setNavigationLocked: (navigationLocked) => {
+      set({ navigationLocked });
     },
     setOperationProgress: (event) => {
       set((state) => {
@@ -212,7 +255,12 @@ export function createWindowStore(
       }));
     },
     setRecentProjects: (recentProjects) => {
-      set({ recentProjects });
+      set((state) => ({
+        recentProjects: limitRecentProjects(recentProjects, state.appSettings),
+      }));
+    },
+    setRecentProjectsRuntime: (recentProjectsRuntime) => {
+      set({ recentProjectsRuntime });
     },
     setRepoChanged: (event) => {
       set((state) => ({
@@ -224,6 +272,9 @@ export function createWindowStore(
     },
     setSettingsSection: (section) => {
       set({ settingsSection: section });
+    },
+    setSettingsRuntime: (settingsRuntime) => {
+      set({ settingsRuntime });
     },
     setSidebarLayout: (sidebarLayout) => {
       set((state) => {
@@ -256,6 +307,9 @@ export function createWindowStore(
     },
     setWindowLabel: (windowLabel) => {
       set({ windowLabel });
+    },
+    setWindowRuntime: (windowRuntime) => {
+      set({ windowRuntime });
     },
   }));
 }
@@ -372,6 +426,8 @@ function createInitialWindowStoreState(
   initialState?: Partial<WindowStoreState>,
 ): WindowStoreState {
   const persistedSidebarLayout = readPersistedSidebarLayout();
+  const appSettings =
+    initialState?.appSettings ?? initialWindowStoreState.appSettings;
 
   return {
     ...initialWindowStoreState,
@@ -392,10 +448,10 @@ function createInitialWindowStoreState(
       ...initialWindowStoreState.projectSettingsByRepository,
       ...initialState?.projectSettingsByRepository,
     },
-    recentProjects: [
-      ...(initialState?.recentProjects ??
-        initialWindowStoreState.recentProjects),
-    ],
+    recentProjects: limitRecentProjects(
+      initialState?.recentProjects ?? initialWindowStoreState.recentProjects,
+      appSettings,
+    ),
     repoChangesByRepository: {
       ...initialWindowStoreState.repoChangesByRepository,
       ...initialState?.repoChangesByRepository,
@@ -406,6 +462,26 @@ function createInitialWindowStoreState(
       ...initialState?.sidebarLayout,
     },
   };
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function recentProjectLimit(appSettings: AppSettings | null): number {
+  const configured = appSettings?.recentProjectLimit;
+  if (typeof configured !== "number" || !Number.isFinite(configured)) {
+    return defaultRecentProjectLimit;
+  }
+
+  return Math.min(
+    maximumRecentProjectLimit,
+    Math.max(1, Math.floor(configured)),
+  );
+}
+
+function limitRecentProjects(
+  recentProjects: RecentProject[],
+  appSettings: AppSettings | null,
+): RecentProject[] {
+  return recentProjects.slice(0, recentProjectLimit(appSettings));
 }
 
 function readPersistedSidebarLayout(): Partial<

@@ -100,7 +100,8 @@ const evidenceChecks = [
   {
     id: "pending-crash-window-context",
     layer: "renderer",
-    requirement: "pending renderer crash is exposed idempotently through window_context",
+    requirement:
+      "pending renderer crash is exposed idempotently through window_context",
     source: "tauriLib",
     pattern:
       /fn window_context\([\s\S]*let pending_crash = registry_peek_pending_crash\(&registry, &label\);[\s\S]*pending_crash,/,
@@ -222,7 +223,7 @@ const evidenceChecks = [
     layer: "rust",
     requirement: "frontend listens for Rust panic crash reports",
     source: "app",
-    pattern: /listen<CrashDialogPayload>\("crash-reported"/,
+    pattern: /listenRuntimeEvent<CrashDialogPayload>\("crash-reported"/,
   },
   {
     id: "panic-dialog-component-test",
@@ -236,14 +237,14 @@ const evidenceChecks = [
     layer: "dialog",
     requirement: "crash dialog invokes the restart action",
     source: "crashDialog",
-    pattern: /onClick=\{\(\) => \{[\s\S]*onRestart\?\.\(\)/,
+    pattern: /onClick=\{\(\) => \{[\s\S]*void onRestart\(\)/,
   },
   {
     id: "crash-dialog-restart-copy",
     layer: "dialog",
     requirement: "crash dialog restart action has visible copy",
     source: "i18n",
-    pattern: /restartApp: "Restart app"/,
+    pattern: /reloadWindow: "Reload window"/,
   },
 ];
 

@@ -5,7 +5,6 @@ import {
   ChevronRight,
   FileText,
   History,
-  Info,
   Loader2,
   Trash2,
   X,
@@ -19,13 +18,12 @@ import {
   RepositorySidebar,
   type RepositorySummary,
   type StashListItem,
-  type SyncFeedback,
 } from "@/components/sidebar/RepositorySidebar";
 import { ConfirmDialog } from "@/components/dialogs/ConfirmDialog";
+import { DetailsDialog } from "@/components/dialogs/DetailsDialog";
 import { DialogFrame } from "@/components/dialogs/DialogFrame";
 import { Button } from "@/components/ui/button";
 import { BranchSelect } from "@/components/ui/branch-select";
-import { IconButton } from "@/components/ui/icon-button";
 import {
   ConflictResolutionOverlay,
   type ConflictResolutionApi,
@@ -66,6 +64,7 @@ import {
   restoreStash,
   recoverReviewModeStash,
   repositorySummary,
+  resetBisect,
   reviewModeRecovery,
   saveProjectSettings,
   saveWindowGeometry,
@@ -79,6 +78,7 @@ import {
   validateBranchName,
 } from "@/lib/ipc/commands";
 import type {
+  AppError,
   BranchOperationResponse,
   BranchNameValidationResponse,
   BranchSummary,
@@ -88,6 +88,8 @@ import type {
   LocalChange,
   LocalChangesViewMode,
   ReviewModeState,
+  RepositoryHealth,
+  RepositoryMiddleStateKind,
   RemoteHistoryChange,
   SyncAllBranchesResponse,
   SyncBranchResponse,
@@ -98,10 +100,13 @@ import type {
   StashRecoveryPoint,
 } from "@/lib/ipc/generated";
 import { emitAppEvent } from "@/lib/ipc/events";
+import { hasOpenModalLayer } from "@/lib/dialog-layer";
 import { repoQueryKeys } from "@/lib/realtime/query-keys";
+import { showToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useWindowStore } from "@/store/window-store";
 import {
+  type NormalizedProjectSettings,
   normalizeAppSettings,
   normalizeProjectSettings,
   validateFetchIntervalSeconds,
@@ -110,7 +115,13 @@ import { ReviewModeOverlay } from "@/features/review/ReviewModeOverlay";
 import { WindowCloseGuard } from "@/features/window-close-guard/WindowCloseGuard";
 
 type MainTab = "history" | "localChanges";
+type ReviewBusyAction = "exit" | "recover" | "start" | "sync";
+type SafetyBackupBusyAction = "delete" | "load";
+type StashBusyAction = "apply" | "create" | "delete";
 type StashScope = "all" | "selected";
+type ExistingGitOperationRecoveryStatus =
+  | { error: unknown | null; state: "failed" }
+  | { error: null; state: "checking" };
 type SyncStatusTranslator = (
   key: string,
   options?: Record<string, unknown>,
@@ -118,7 +129,6 @@ type SyncStatusTranslator = (
 const stashDetailsFilePageSize = 200;
 const safetyBackupPageSize = 100;
 const largeFileWarningPageSize = 100;
-const syncResultToastDurationMs = 5_000;
 
 interface RepositoryShellProps {
   repositoryPath: string;
@@ -143,6 +153,8 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     React.useState(true);
   const [commitBusy, setCommitBusy] = React.useState(false);
   const [commitStatus, setCommitStatus] = React.useState<string | null>(null);
+  const [commitConflictOperationId, setCommitConflictOperationId] =
+    React.useState<string | null>(null);
   const [gpgFailure, setGpgFailure] = React.useState<{
     stderr: string;
     summary: string;
@@ -160,15 +172,26 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   const [branchActionBusy, setBranchActionBusy] = React.useState(false);
   const [fetchBusy, setFetchBusy] = React.useState(false);
   const [syncBusy, setSyncBusy] = React.useState(false);
-  const [syncFeedback, setSyncFeedback] = React.useState<SyncFeedback | null>(
-    null,
-  );
-  const [syncResultToast, setSyncResultToast] = React.useState<string | null>(
-    null,
-  );
   const [historyWriteBusy, setHistoryWriteBusy] = React.useState(false);
-  const [safetyBackupBusy, setSafetyBackupBusy] = React.useState(false);
-  const [reviewBusy, setReviewBusy] = React.useState(false);
+  const [historyInitialLoading, setHistoryInitialLoading] =
+    React.useState(true);
+  const [existingGitOperationRecovery, setExistingGitOperationRecovery] =
+    React.useState<ExistingGitOperationRecoveryStatus | null>(null);
+  const [existingGitOperationRetry, setExistingGitOperationRetry] =
+    React.useState(0);
+  const [repositoryHealthDetailsOpen, setRepositoryHealthDetailsOpen] =
+    React.useState(false);
+  const [repositoryHealthRecheckBusy, setRepositoryHealthRecheckBusy] =
+    React.useState(false);
+  const [bisectResetConfirmOpen, setBisectResetConfirmOpen] =
+    React.useState(false);
+  const [bisectResetBusy, setBisectResetBusy] = React.useState(false);
+  const [safetyBackupBusyAction, setSafetyBackupBusyAction] =
+    React.useState<SafetyBackupBusyAction | null>(null);
+  const safetyBackupBusy = safetyBackupBusyAction !== null;
+  const [reviewBusyAction, setReviewBusyAction] =
+    React.useState<ReviewBusyAction | null>(null);
+  const reviewBusy = reviewBusyAction !== null;
   const [remoteHistoryChange, setRemoteHistoryChange] =
     React.useState<RemoteHistoryChange | null>(null);
   const [safetyBackupsOpen, setSafetyBackupsOpen] = React.useState(false);
@@ -181,10 +204,9 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     React.useState<SafetyBackupSummary | null>(null);
   const [reviewModeState, setReviewModeState] =
     React.useState<ReviewModeState | null>(null);
+  const reviewReturnFocusRef = React.useRef<HTMLElement | null>(null);
   const [reviewRecoveryPrompt, setReviewRecoveryPrompt] = React.useState(false);
-  const [liveFetchState, setLiveFetchState] =
-    React.useState<FetchStateEvent | null>(null);
-  const fetchInFlightRef = React.useRef(false);
+  const fetchInFlightRef = React.useRef<Promise<void> | null>(null);
   const initialFetchRepositoryRef = React.useRef<string | null>(null);
   const [branchToCheckout, setBranchToCheckout] =
     React.useState<BranchListItem | null>(null);
@@ -198,10 +220,16 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     React.useState(false);
   const [branchNameValidation, setBranchNameValidation] =
     React.useState<BranchNameValidationResponse | null>(null);
+  const [branchNameChecking, setBranchNameChecking] = React.useState(false);
   const [branchToDelete, setBranchToDelete] =
     React.useState<BranchListItem | null>(null);
   const [deleteRemoteBranch, setDeleteRemoteBranch] = React.useState(false);
-  const [stashActionBusy, setStashActionBusy] = React.useState(false);
+  const [stashBusyAction, setStashBusyAction] =
+    React.useState<StashBusyAction | null>(null);
+  const stashActionBusy = stashBusyAction !== null;
+  const [localChangesViewModeOverride, setLocalChangesViewModeOverride] =
+    React.useState<LocalChangesViewMode | null>(null);
+  const [stashDetailsBusy, setStashDetailsBusy] = React.useState(false);
   const [cancellingOperationId, setCancellingOperationId] = React.useState<
     string | null
   >(null);
@@ -222,6 +250,13 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   >([]);
   const [selectedLocalChange, setSelectedLocalChange] =
     React.useState<LocalChangeItem | null>(null);
+  const projectPreferencesDraftRef =
+    React.useRef<NormalizedProjectSettings | null>(null);
+  const projectPreferencesLastSavedRef =
+    React.useRef<NormalizedProjectSettings | null>(null);
+  const pendingProjectPreferencesRef =
+    React.useRef<NormalizedProjectSettings | null>(null);
+  const projectPreferencesSaveInFlightRef = React.useRef(false);
   const [focusedBranch, setFocusedBranch] =
     React.useState<BranchListItem | null>(null);
   const summaryQuery = useQuery({
@@ -300,18 +335,38 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   );
   const historyBranches = React.useMemo(
     () =>
-      branches.map((branch) => ({
+      (branchesQuery.data?.branches ?? []).map((branch) => ({
         current: branch.current,
-        name: branch.name,
+        name: branch.shortName || branch.name,
+        revision:
+          branch.existence === "remoteOnly"
+            ? `refs/remotes/origin/${branch.shortName || branch.name}`
+            : `refs/heads/${branch.shortName || branch.name}`,
       })),
-    [branches],
+    [branchesQuery.data],
   );
+  const historyScopeReady = !summaryQuery.isPending && !branchesQuery.isPending;
+  const historyBranchesForWorkbench = React.useMemo(() => {
+    if (historyBranches.length > 0) {
+      return historyBranches;
+    }
+    const branchName = summaryQuery.data?.currentBranch;
+    return branchName
+      ? [
+          {
+            current: true,
+            name: branchName,
+            revision: `refs/heads/${branchName}`,
+          },
+        ]
+      : [];
+  }, [historyBranches, summaryQuery.data?.currentBranch]);
   const stashes = React.useMemo(
     () =>
       stashesQuery.data?.stashes.map((stash) =>
-        mapStashEntryToItem(stash, formatters.formatRelativeTime),
+        mapStashEntryToItem(stash, formatters.formatRelativeTime, t),
       ) ?? [],
-    [formatters.formatRelativeTime, stashesQuery.data],
+    [formatters.formatRelativeTime, stashesQuery.data, t],
   );
   const localChanges = React.useMemo(
     () => localChangesQuery.data?.changes.map(mapLocalChangeToItem) ?? [],
@@ -381,16 +436,17 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       : null;
 
   const currentBranch = React.useMemo(
-    () => branches.find((branch) => branch.current) ?? branches[0],
+    () => branches.find((branch) => branch.current) ?? null,
     [branches],
   );
   const effectiveFocusedBranch = React.useMemo(
     () =>
       branches.find((branch) => branch.name === focusedBranch?.name) ??
-      currentBranch ??
-      null,
+      currentBranch,
     [branches, currentBranch, focusedBranch],
   );
+  const effectiveHistoryBranchName =
+    effectiveFocusedBranch?.name ?? summaryQuery.data?.currentBranch ?? null;
   const operations = useWindowStore((state) => state.operationsById);
   const windowLabel = useWindowStore((state) => state.windowLabel);
   const appSettings = useWindowStore((state) => state.appSettings);
@@ -404,6 +460,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   const storedFetchState = useWindowStore(
     (state) => state.fetchStatesByRepository[repositoryPath] ?? null,
   );
+  const setFetchState = useWindowStore((state) => state.setFetchState);
   const openSettings = useWindowStore((state) => state.openSettings);
   const conflict = useWindowStore(
     (state) => state.conflictsByRepository[repositoryPath] ?? null,
@@ -411,6 +468,9 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   const clearConflict = useWindowStore((state) => state.clearConflict);
   const setConflictEntered = useWindowStore(
     (state) => state.setConflictEntered,
+  );
+  const setNavigationLocked = useWindowStore(
+    (state) => state.setNavigationLocked,
   );
   const activeOperation = React.useMemo(
     () =>
@@ -431,21 +491,36 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       setCancellingOperationId(null);
     }
   }, [activeOperation?.operationId]);
-  const fetchState = liveFetchState ?? storedFetchState;
-  const effectiveProjectSettings = React.useMemo(
+  const fetchState = storedFetchState;
+  const persistableProjectSettings = React.useMemo(
     () =>
-      normalizeProjectSettings(
-        projectSettings ??
-          projectSettingsQuery.data ?? { path: repositoryPath },
-      ),
-    [projectSettings, projectSettingsQuery.data, repositoryPath],
+      projectSettingsQuery.isSuccess
+        ? (projectSettingsQuery.data ?? projectSettings)
+        : null,
+    [
+      projectSettings,
+      projectSettingsQuery.data,
+      projectSettingsQuery.isSuccess,
+    ],
   );
+  const effectiveProjectSettings = React.useMemo(() => {
+    const normalized = normalizeProjectSettings(
+      persistableProjectSettings ?? { path: repositoryPath },
+    );
+    return localChangesViewModeOverride
+      ? { ...normalized, localChangesViewMode: localChangesViewModeOverride }
+      : normalized;
+  }, [
+    localChangesViewModeOverride,
+    persistableProjectSettings,
+    repositoryPath,
+  ]);
 
   React.useEffect(() => {
     const handleFetchState = (event: Event) => {
       const payload = (event as CustomEvent<FetchStateEvent>).detail;
       if (payload?.repositoryPath === repositoryPath) {
-        setLiveFetchState(payload);
+        setFetchState(payload);
       }
     };
 
@@ -453,10 +528,13 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     return () => {
       window.removeEventListener("artistic-git:fetch-state", handleFetchState);
     };
-  }, [repositoryPath]);
+  }, [repositoryPath, setFetchState]);
 
   React.useEffect(() => {
     const handleViewTab = (event: Event) => {
+      if (hasOpenModalLayer()) {
+        return;
+      }
       const tab = (event as CustomEvent<MainTab>).detail;
       if (tab === "history") {
         showHistoryTab();
@@ -488,11 +566,21 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       return;
     }
 
-    const normalizedProject = normalizeProjectSettings(
-      projectSettingsQuery.data,
-    );
-    setProjectSettings(repositoryPath, normalizedProject);
-    setSidebarLayout(normalizedProject.sidebar);
+    let active = true;
+    void Promise.resolve().then(() => {
+      if (!active) {
+        return;
+      }
+      const normalizedProject = normalizeProjectSettings(
+        projectSettingsQuery.data,
+      );
+      setProjectSettings(repositoryPath, normalizedProject);
+      setSidebarLayout(normalizedProject.sidebar);
+      setLocalChangesViewModeOverride(null);
+    });
+    return () => {
+      active = false;
+    };
   }, [
     projectSettingsQuery.data,
     repositoryPath,
@@ -519,13 +607,18 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
           if (!cancelled) {
             setBranchNameValidation({
               exists: false,
-              message:
-                error instanceof Error
-                  ? error.message
-                  : t("repository.branchNameInvalid"),
+              message: null,
               name,
               valid: false,
             });
+            window.dispatchEvent(
+              new CustomEvent("artistic-git:error", { detail: error }),
+            );
+          }
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setBranchNameChecking(false);
           }
         });
     }, 250);
@@ -534,15 +627,11 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       cancelled = true;
       window.clearTimeout(timeoutId);
     };
-  }, [branchCreateBase, newBranchName, repositoryPath, t]);
+  }, [branchCreateBase, newBranchName, repositoryPath]);
 
   const repository = React.useMemo<RepositorySummary>(
     () => ({
-      branchName:
-        summaryQuery.data?.currentBranch ??
-        currentBranch?.name ??
-        effectiveFocusedBranch?.name ??
-        "",
+      branchName: summaryQuery.data?.currentBranch ?? currentBranch?.name ?? "",
       // React Query retains successful data during a failed refresh, preserving
       // the last confirmed value. An initial unknown state stays conservative so
       // it cannot start remote operations before the summary has loaded.
@@ -552,19 +641,183 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         repositoryPath.split(/[\\/]/).filter(Boolean).at(-1) ??
         t("repository.untitledProject"),
     }),
-    [
-      currentBranch?.name,
-      effectiveFocusedBranch?.name,
-      repositoryPath,
-      summaryQuery.data,
-      t,
-    ],
+    [currentBranch?.name, repositoryPath, summaryQuery.data, t],
   );
   const remoteStateKnown = summaryQuery.data !== undefined;
+  const initialRepositoryLoading =
+    summaryQuery.isPending ||
+    branchesQuery.isPending ||
+    stashesQuery.isPending ||
+    localChangesQuery.isPending ||
+    projectSettingsQuery.isPending ||
+    (activeTab === "history" &&
+      repositoryReadErrors.length === 0 &&
+      historyInitialLoading);
   const localChangeCount = localChanges.length;
-  const branchActionsDisabledReason = summaryQuery.data?.isUnborn
-    ? t("repository.unbornBranchActionsDisabled")
-    : undefined;
+  const repositoryRefreshing = fetchBusy || fetchState?.state === "fetching";
+  const repositoryInProgress = summaryQuery.data?.inProgress === true;
+  const repositoryDetached = summaryQuery.data?.isDetached === true;
+  const repositoryHealth = summaryQuery.data?.details?.health ?? null;
+  const repositoryMiddleState = repositoryHealth?.middleStates[0] ?? null;
+  const repositoryIndexLock = repositoryHealth?.indexLock ?? null;
+  const repositoryIndexLocked = Boolean(repositoryIndexLock);
+  const repositoryBisectActive = repositoryMiddleState?.kind === "bisect";
+  const repositoryRemotes = summaryQuery.data?.details?.remotes ?? [];
+  const additionalRemoteCount = repositoryRemotes.filter(
+    (remote) => !remote.isOrigin,
+  ).length;
+  const repositoryHasOtherRemotes =
+    summaryQuery.data?.hasOrigin === false && repositoryRemotes.length > 0;
+  const repositoryAttentionLabel = repositoryMiddleState
+    ? repositoryMiddleStateStatus(repositoryMiddleState.kind, t)
+    : repositoryIndexLocked
+      ? t("repository.indexLockPresent")
+      : t("repository.inProgress");
+  const repositoryWriteBlocked = repositoryInProgress || repositoryDetached;
+  const branchActionsDisabledReason = repositoryInProgress
+    ? repositoryIndexLocked && !repositoryMiddleState
+      ? t("repository.indexLockActionsDisabled")
+      : t("repository.inProgressActionsDisabled")
+    : summaryQuery.data?.isUnborn
+      ? t("repository.unbornBranchActionsDisabled")
+      : undefined;
+  const attemptedGitOperationRecoveryRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    let active = true;
+    if (
+      conflict ||
+      !repositoryMiddleState ||
+      repositoryMiddleState.kind === "bisect"
+    ) {
+      void Promise.resolve().then(() => {
+        if (active) {
+          setExistingGitOperationRecovery(null);
+        }
+      });
+      return () => {
+        active = false;
+      };
+    }
+
+    const recoveryKey = [
+      repositoryPath,
+      repositoryMiddleState.kind,
+      repositoryMiddleState.path,
+      summaryQuery.dataUpdatedAt,
+      existingGitOperationRetry,
+    ].join(":");
+    if (attemptedGitOperationRecoveryRef.current === recoveryKey) {
+      return;
+    }
+    attemptedGitOperationRecoveryRef.current = recoveryKey;
+    void Promise.resolve().then(() => {
+      if (active) {
+        setExistingGitOperationRecovery({ error: null, state: "checking" });
+      }
+    });
+
+    void listConflicts({ repositoryPath })
+      .then((response) => {
+        if (!active) {
+          return;
+        }
+        if (!response.operation) {
+          attemptedGitOperationRecoveryRef.current = null;
+          setExistingGitOperationRecovery({ error: null, state: "failed" });
+          return;
+        }
+        setExistingGitOperationRecovery(null);
+        setConflictEntered({
+          files: response.files,
+          operationId: createRepositoryOperationId(
+            `existing-${response.operation.kind}`,
+          ),
+          operationName: response.operation.label,
+          repositoryPath,
+        });
+      })
+      .catch((error) => {
+        if (active) {
+          attemptedGitOperationRecoveryRef.current = null;
+          setExistingGitOperationRecovery({ error, state: "failed" });
+          window.dispatchEvent(
+            new CustomEvent("artistic-git:error", { detail: error }),
+          );
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [
+    conflict,
+    existingGitOperationRetry,
+    repositoryMiddleState,
+    repositoryPath,
+    setConflictEntered,
+    summaryQuery.dataUpdatedAt,
+  ]);
+  React.useEffect(() => {
+    if (!repositoryIndexLock && !repositoryBisectActive) {
+      let active = true;
+      void Promise.resolve().then(() => {
+        if (active) {
+          setRepositoryHealthDetailsOpen(false);
+          setBisectResetConfirmOpen(false);
+        }
+      });
+      return () => {
+        active = false;
+      };
+    }
+  }, [repositoryBisectActive, repositoryIndexLock]);
+
+  const recheckRepositoryHealth = React.useCallback(async () => {
+    if (repositoryHealthRecheckBusy) {
+      return;
+    }
+
+    setRepositoryHealthRecheckBusy(true);
+    try {
+      const result = await summaryQuery.refetch();
+      if (result.error) {
+        window.dispatchEvent(
+          new CustomEvent("artistic-git:error", { detail: result.error }),
+        );
+      }
+    } finally {
+      setRepositoryHealthRecheckBusy(false);
+    }
+  }, [repositoryHealthRecheckBusy, summaryQuery]);
+
+  const runResetBisect = React.useCallback(async () => {
+    if (bisectResetBusy || !repositoryBisectActive) {
+      return;
+    }
+
+    setBisectResetBusy(true);
+    try {
+      const activeFetch = fetchInFlightRef.current;
+      if (activeFetch) {
+        await activeFetch.catch(() => undefined);
+      }
+      const summary = await resetBisect({ repositoryPath });
+      queryClient.setQueryData(repoQueryKeys.summary(repositoryPath), summary);
+      setBisectResetConfirmOpen(false);
+      setRepositoryHealthDetailsOpen(false);
+      showToast({
+        key: "repository-bisect-reset",
+        message: t("repository.bisectResetComplete"),
+        tone: "success",
+      });
+    } catch (error) {
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:error", { detail: error }),
+      );
+    } finally {
+      setBisectResetBusy(false);
+    }
+  }, [bisectResetBusy, queryClient, repositoryBisectActive, repositoryPath, t]);
   const activeOperationBusy = activeOperation !== null;
   const busy =
     activeOperationBusy ||
@@ -574,9 +827,16 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     branchActionBusy ||
     safetyBackupBusy ||
     stashActionBusy ||
+    stashDetailsBusy ||
     historyWriteBusy ||
-    reviewBusy;
+    reviewBusy ||
+    bisectResetBusy;
   const reviewActive = reviewModeState !== null;
+  const modalWorkflowActive = reviewActive || conflict !== null;
+  React.useEffect(() => {
+    setNavigationLocked(modalWorkflowActive);
+    return () => setNavigationLocked(false);
+  }, [modalWorkflowActive, setNavigationLocked]);
   const writeOperationBusy =
     activeOperationBusy ||
     syncBusy ||
@@ -586,7 +846,8 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     safetyBackupBusy ||
     stashActionBusy ||
     historyWriteBusy ||
-    reviewBusy;
+    reviewBusy ||
+    bisectResetBusy;
   const closeGuardActiveOperation =
     activeOperation?.cancellable === true ? activeOperation : null;
   const closeGuardActive =
@@ -602,28 +863,68 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   const closeGuardCanRecover =
     closeGuardActiveOperation !== null ||
     (closeGuardNeedsRecovery && !writeOperationBusy);
-  const interactionBusy = busy || reviewActive;
+  const interactionBusy = busy || reviewActive || repositoryInProgress;
   const busyLabel = activeOperation
     ? operationLabel(activeOperation.label, t)
-    : fetchBusy
-      ? t("repository.refreshing")
+    : initialRepositoryLoading
+      ? t("repository.loadingRepository")
       : syncBusy
         ? t("repository.syncBusy")
-        : commitBusy
-          ? t("localChanges.commitBusy")
-          : restoreBusy
-            ? t("localChanges.restoreBusy")
-            : branchActionBusy
-              ? t("repository.branchBusy")
-              : safetyBackupBusy
-                ? t("repository.safetyBackupBusy")
-                : stashActionBusy
-                  ? t("repository.stashBusy")
-                  : historyWriteBusy
-                    ? t("history.revert.busy")
-                    : reviewBusy
-                      ? t("review.busy")
-                      : t("repository.ready");
+        : repositoryRefreshing
+          ? t("repository.refreshing")
+          : commitBusy
+            ? t("localChanges.commitBusy")
+            : restoreBusy
+              ? t("localChanges.restoreBusy")
+              : branchActionBusy
+                ? t("repository.branchBusy")
+                : bisectResetBusy
+                  ? t("repository.resettingBisect")
+                  : safetyBackupBusy
+                    ? safetyBackupBusyAction === "load"
+                      ? t("repository.loadingSafetyBackups")
+                      : t("repository.deletingSafetyBackup")
+                    : stashActionBusy
+                      ? stashBusyAction === "apply"
+                        ? t("repository.applyingStash")
+                        : stashBusyAction === "create"
+                          ? t("localChanges.creatingStash")
+                          : t("repository.deletingStash")
+                      : stashDetailsBusy
+                        ? t("repository.stashDetailsBusy")
+                        : historyWriteBusy
+                          ? t("history.revert.busy")
+                          : reviewBusyAction === "sync"
+                            ? t("review.syncing")
+                            : reviewBusyAction === "exit"
+                              ? t("review.exiting")
+                              : reviewBusy
+                                ? t("review.busy")
+                                : repositoryInProgress
+                                  ? repositoryAttentionLabel
+                                  : repositoryDetached
+                                    ? t("repository.detachedHead")
+                                    : summaryQuery.data?.isUnborn
+                                      ? t("repository.unbornHead")
+                                      : repositoryReadErrors.length > 0
+                                        ? t("repository.partialInfoUnavailable")
+                                        : fetchState?.state === "offline"
+                                          ? t("repository.fetchOffline")
+                                          : fetchState?.state === "failed"
+                                            ? t("repository.fetchFailed")
+                                            : repositoryHasOtherRemotes
+                                              ? t(
+                                                  "repository.otherRemotesStatus",
+                                                )
+                                              : additionalRemoteCount > 0
+                                                ? t(
+                                                    "repository.additionalRemotesStatus",
+                                                    {
+                                                      count:
+                                                        additionalRemoteCount,
+                                                    },
+                                                  )
+                                                : t("repository.ready");
   const selectedCommitPaths = React.useMemo(
     () => pathsForChangeIds(commitIds ?? [], localChanges),
     [commitIds, localChanges],
@@ -653,79 +954,167 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   const fetchInterval = validateFetchIntervalSeconds(
     fetchPreferences?.fetchIntervalSeconds,
   );
+
+  React.useEffect(() => {
+    if (
+      !persistableProjectSettings ||
+      projectPreferencesSaveInFlightRef.current ||
+      pendingProjectPreferencesRef.current
+    ) {
+      return;
+    }
+    const normalized = normalizeProjectSettings(persistableProjectSettings);
+    projectPreferencesDraftRef.current = normalized;
+    projectPreferencesLastSavedRef.current = normalized;
+  }, [persistableProjectSettings]);
+
+  const flushProjectPreferences = React.useCallback(async () => {
+    if (projectPreferencesSaveInFlightRef.current) {
+      return;
+    }
+    projectPreferencesSaveInFlightRef.current = true;
+    try {
+      while (pendingProjectPreferencesRef.current) {
+        const nextProject = pendingProjectPreferencesRef.current;
+        pendingProjectPreferencesRef.current = null;
+        try {
+          const saved = normalizeProjectSettings(
+            await saveProjectSettings({
+              autoTrackingRules: nextProject.autoTrackingRules,
+              largeFileCheck: nextProject.largeFileCheck,
+              localChangesViewMode: nextProject.localChangesViewMode,
+              repositoryPath,
+              sidebar: nextProject.sidebar,
+            }),
+          );
+          projectPreferencesLastSavedRef.current = saved;
+          if (!pendingProjectPreferencesRef.current) {
+            projectPreferencesDraftRef.current = saved;
+            setProjectSettings(repositoryPath, saved);
+            setLocalChangesViewModeOverride(null);
+          }
+        } catch (error) {
+          if (!pendingProjectPreferencesRef.current) {
+            const rollback = projectPreferencesLastSavedRef.current;
+            if (rollback) {
+              projectPreferencesDraftRef.current = rollback;
+              setProjectSettings(repositoryPath, rollback);
+              setSidebarLayout(rollback.sidebar);
+              setLocalChangesViewModeOverride(null);
+            }
+          }
+          window.dispatchEvent(
+            new CustomEvent("artistic-git:error", { detail: error }),
+          );
+        }
+      }
+    } finally {
+      projectPreferencesSaveInFlightRef.current = false;
+    }
+  }, [repositoryPath, setProjectSettings, setSidebarLayout]);
+
   const persistProjectPreferences = React.useCallback(
-    async (updates: {
+    (updates: {
       localChangesViewMode?: LocalChangesViewMode;
       sidebar?: Required<SidebarLayoutSettings>;
     }) => {
-      const nextProject = {
-        ...effectiveProjectSettings,
-        localChangesViewMode:
-          updates.localChangesViewMode ??
-          effectiveProjectSettings.localChangesViewMode,
-        sidebar: updates.sidebar ?? effectiveProjectSettings.sidebar,
-      };
-
-      setProjectSettings(repositoryPath, nextProject);
       if (updates.sidebar) {
         setSidebarLayout(updates.sidebar);
       }
-
-      try {
-        const saved = await saveProjectSettings({
-          autoTrackingRules: nextProject.autoTrackingRules,
-          largeFileCheck: nextProject.largeFileCheck,
-          localChangesViewMode: nextProject.localChangesViewMode,
-          repositoryPath,
-          sidebar: nextProject.sidebar,
-        });
-        setProjectSettings(repositoryPath, normalizeProjectSettings(saved));
-      } catch (error) {
-        window.dispatchEvent(
-          new CustomEvent("artistic-git:error", { detail: error }),
-        );
+      if (updates.localChangesViewMode) {
+        setLocalChangesViewModeOverride(updates.localChangesViewMode);
       }
+
+      if (!persistableProjectSettings) {
+        return;
+      }
+
+      const currentProject =
+        projectPreferencesDraftRef.current ??
+        normalizeProjectSettings(persistableProjectSettings);
+      projectPreferencesLastSavedRef.current ??= currentProject;
+      const nextProject = {
+        ...currentProject,
+        localChangesViewMode:
+          updates.localChangesViewMode ?? currentProject.localChangesViewMode,
+        sidebar: updates.sidebar ?? currentProject.sidebar,
+      };
+
+      projectPreferencesDraftRef.current = nextProject;
+      pendingProjectPreferencesRef.current = nextProject;
+      setProjectSettings(repositoryPath, nextProject);
+      void flushProjectPreferences();
     },
     [
-      effectiveProjectSettings,
+      flushProjectPreferences,
+      persistableProjectSettings,
       repositoryPath,
       setProjectSettings,
       setSidebarLayout,
     ],
   );
 
-  const runFetch = React.useCallback(async () => {
-    if (fetchInFlightRef.current || !repository.hasRemote) {
-      return;
-    }
-
-    fetchInFlightRef.current = true;
-    setFetchBusy(true);
-    try {
-      const response = await fetchRepository({ repositoryPath });
-      setLiveFetchState(response.event);
-      if (!response.skipped && response.event.state === "idle") {
-        await Promise.all([
-          queryClient.invalidateQueries({
-            queryKey: repoQueryKeys.summary(repositoryPath),
-          }),
-          queryClient.invalidateQueries({
-            queryKey: repoQueryKeys.branches(repositoryPath),
-          }),
-          queryClient.invalidateQueries({
-            queryKey: repoQueryKeys.history(repositoryPath),
-          }),
-        ]);
+  const runFetch = React.useCallback(
+    async (options: { throwOnError?: boolean } = {}) => {
+      if (!repository.hasRemote) {
+        return;
       }
-    } catch (error) {
-      window.dispatchEvent(
-        new CustomEvent("artistic-git:error", { detail: error }),
-      );
-    } finally {
-      fetchInFlightRef.current = false;
-      setFetchBusy(false);
-    }
-  }, [queryClient, repository.hasRemote, repositoryPath]);
+
+      const existingRequest = fetchInFlightRef.current;
+      if (existingRequest) {
+        try {
+          await existingRequest;
+        } catch (error) {
+          if (options.throwOnError) {
+            throw error;
+          }
+        }
+        return;
+      }
+
+      setFetchBusy(true);
+      setFetchState({
+        lastSuccessAt: storedFetchState?.lastSuccessAt ?? null,
+        message: null,
+        repositoryPath,
+        state: "fetching",
+      });
+      const request = (async () => {
+        try {
+          const response = await fetchRepository({ repositoryPath });
+          setFetchState(response.event);
+        } catch (error) {
+          setFetchState({
+            lastSuccessAt: storedFetchState?.lastSuccessAt ?? null,
+            message: fetchErrorMessage(error),
+            repositoryPath,
+            state: "failed",
+          });
+          throw error;
+        }
+      })();
+      fetchInFlightRef.current = request;
+
+      try {
+        await request;
+      } catch (error) {
+        if (options.throwOnError) {
+          throw error;
+        }
+      } finally {
+        if (fetchInFlightRef.current === request) {
+          fetchInFlightRef.current = null;
+          setFetchBusy(false);
+        }
+      }
+    },
+    [
+      repository.hasRemote,
+      repositoryPath,
+      setFetchState,
+      storedFetchState?.lastSuccessAt,
+    ],
+  );
 
   const handleSyncAllResponse = React.useCallback(
     (response: SyncAllBranchesResponse) => {
@@ -742,10 +1131,21 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         }
         setConflictEntered(conflict);
       }
-      setSyncResultToast(formatSyncAllStatus(response, t));
-      setSyncFeedback(response.allUpToDate ? { kind: "all" } : null);
+      showToast({
+        key: "repository-sync-result",
+        message: formatSyncAllStatus(response, t),
+        tone: syncAllToastTone(response),
+      });
+      if (syncAllHasFailure(response)) {
+        reportResolvedOperationError({
+          operationName: "syncAllBranches",
+          repositoryPath,
+          response,
+          summary: t("repository.syncFailedDetails"),
+        });
+      }
     },
-    [setConflictEntered, t],
+    [repositoryPath, setConflictEntered, t],
   );
 
   const handleSyncBranchResponse = React.useCallback(
@@ -755,11 +1155,6 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         response.remoteHistoryChange
       ) {
         setRemoteHistoryChange(response.remoteHistoryChange);
-      }
-      if (response.status === "alreadyUpToDate") {
-        setSyncFeedback({ branchName: response.branchName, kind: "branch" });
-      } else {
-        setSyncFeedback(null);
       }
       const { conflict, stashRecovery } = response;
       if (conflict) {
@@ -771,9 +1166,29 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         }
         setConflictEntered(conflict);
       }
-      setSyncResultToast(formatSyncBranchStatus(response, t));
+      showToast({
+        key: "repository-sync-result",
+        message: formatSyncBranchStatus(response, t),
+        tone:
+          response.status === "failed"
+            ? "error"
+            : response.status === "conflicts" ||
+                response.status === "remoteHistoryChanged"
+              ? "warning"
+              : "success",
+      });
+      if (response.status === "failed") {
+        reportResolvedOperationError({
+          operationName: "syncBranch",
+          repositoryPath,
+          response,
+          summary: t("repository.syncBranchFailedDetails", {
+            branch: response.branchName,
+          }),
+        });
+      }
     },
-    [setConflictEntered, t],
+    [repositoryPath, setConflictEntered, t],
   );
 
   const runSyncAllBranches = React.useCallback(async () => {
@@ -782,8 +1197,6 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     }
 
     setSyncBusy(true);
-    setSyncFeedback(null);
-    setSyncResultToast(null);
     try {
       const operationId = createRepositoryOperationId("sync-all");
       const response = await syncAllBranches({
@@ -791,20 +1204,6 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         repositoryPath,
       });
       handleSyncAllResponse(response);
-      await Promise.all([
-        queryClient.invalidateQueries({
-          queryKey: repoQueryKeys.summary(repositoryPath),
-        }),
-        queryClient.invalidateQueries({
-          queryKey: repoQueryKeys.branches(repositoryPath),
-        }),
-        queryClient.invalidateQueries({
-          queryKey: repoQueryKeys.history(repositoryPath),
-        }),
-        queryClient.invalidateQueries({
-          queryKey: repoQueryKeys.localChanges(repositoryPath),
-        }),
-      ]);
     } catch (error) {
       window.dispatchEvent(
         new CustomEvent("artistic-git:error", { detail: error }),
@@ -812,13 +1211,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     } finally {
       setSyncBusy(false);
     }
-  }, [
-    queryClient,
-    handleSyncAllResponse,
-    repository.hasRemote,
-    repositoryPath,
-    syncBusy,
-  ]);
+  }, [handleSyncAllResponse, repository.hasRemote, repositoryPath, syncBusy]);
 
   const runSyncBranch = React.useCallback(
     async (branch: BranchListItem) => {
@@ -827,8 +1220,6 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       }
 
       setSyncBusy(true);
-      setSyncFeedback(null);
-      setSyncResultToast(null);
       try {
         const operationId = createRepositoryOperationId("sync-branch");
         const response = await syncBranch({
@@ -837,20 +1228,6 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
           repositoryPath,
         });
         handleSyncBranchResponse(response);
-        await Promise.all([
-          queryClient.invalidateQueries({
-            queryKey: repoQueryKeys.summary(repositoryPath),
-          }),
-          queryClient.invalidateQueries({
-            queryKey: repoQueryKeys.branches(repositoryPath),
-          }),
-          queryClient.invalidateQueries({
-            queryKey: repoQueryKeys.history(repositoryPath),
-          }),
-          queryClient.invalidateQueries({
-            queryKey: repoQueryKeys.localChanges(repositoryPath),
-          }),
-        ]);
       } catch (error) {
         window.dispatchEvent(
           new CustomEvent("artistic-git:error", { detail: error }),
@@ -859,13 +1236,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         setSyncBusy(false);
       }
     },
-    [
-      handleSyncBranchResponse,
-      queryClient,
-      repository.hasRemote,
-      repositoryPath,
-      syncBusy,
-    ],
+    [handleSyncBranchResponse, repository.hasRemote, repositoryPath, syncBusy],
   );
 
   const runAcceptRemoteHistory = React.useCallback(async () => {
@@ -891,20 +1262,6 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         setConflictEntered(response.conflict);
       }
       setRemoteHistoryChange(null);
-      await Promise.all([
-        queryClient.invalidateQueries({
-          queryKey: repoQueryKeys.summary(repositoryPath),
-        }),
-        queryClient.invalidateQueries({
-          queryKey: repoQueryKeys.branches(repositoryPath),
-        }),
-        queryClient.invalidateQueries({
-          queryKey: repoQueryKeys.history(repositoryPath),
-        }),
-        queryClient.invalidateQueries({
-          queryKey: repoQueryKeys.localChanges(repositoryPath),
-        }),
-      ]);
     } catch (error) {
       window.dispatchEvent(
         new CustomEvent("artistic-git:error", { detail: error }),
@@ -912,10 +1269,10 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     } finally {
       setSyncBusy(false);
     }
-  }, [queryClient, remoteHistoryChange, repositoryPath, setConflictEntered]);
+  }, [remoteHistoryChange, repositoryPath, setConflictEntered]);
 
   const refreshSafetyBackups = React.useCallback(async () => {
-    setSafetyBackupBusy(true);
+    setSafetyBackupBusyAction("load");
     try {
       const response = await listSafetyBackups({ repositoryPath });
       setSafetyBackups(response.backups);
@@ -926,7 +1283,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         new CustomEvent("artistic-git:error", { detail: error }),
       );
     } finally {
-      setSafetyBackupBusy(false);
+      setSafetyBackupBusyAction(null);
     }
   }, [repositoryPath]);
 
@@ -935,7 +1292,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       return;
     }
 
-    setSafetyBackupBusy(true);
+    setSafetyBackupBusyAction("delete");
     try {
       await deleteSafetyBackup({
         backupBranch: safetyBackupToDelete.name,
@@ -946,37 +1303,14 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       const response = await listSafetyBackups({ repositoryPath });
       setSafetyBackups(response.backups);
       setSafetyBackupsTruncated(response.truncated);
-      await queryClient.invalidateQueries({
-        queryKey: repoQueryKeys.branches(repositoryPath),
-      });
     } catch (error) {
       window.dispatchEvent(
         new CustomEvent("artistic-git:error", { detail: error }),
       );
     } finally {
-      setSafetyBackupBusy(false);
+      setSafetyBackupBusyAction(null);
     }
-  }, [queryClient, repositoryPath, safetyBackupToDelete]);
-
-  const invalidateReviewQueries = React.useCallback(async () => {
-    await Promise.all([
-      queryClient.invalidateQueries({
-        queryKey: repoQueryKeys.summary(repositoryPath),
-      }),
-      queryClient.invalidateQueries({
-        queryKey: repoQueryKeys.branches(repositoryPath),
-      }),
-      queryClient.invalidateQueries({
-        queryKey: repoQueryKeys.history(repositoryPath),
-      }),
-      queryClient.invalidateQueries({
-        queryKey: repoQueryKeys.localChanges(repositoryPath),
-      }),
-      queryClient.invalidateQueries({
-        queryKey: repoQueryKeys.stashes(repositoryPath),
-      }),
-    ]);
-  }, [queryClient, repositoryPath]);
+  }, [repositoryPath, safetyBackupToDelete]);
 
   const handleReviewExitResponse = React.useCallback(
     async (response: Awaited<ReturnType<typeof exitReviewMode>>) => {
@@ -991,62 +1325,67 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       }
       setReviewModeState(null);
       setReviewRecoveryPrompt(false);
-      await invalidateReviewQueries();
     },
-    [invalidateReviewQueries, setConflictEntered],
+    [setConflictEntered],
   );
 
-  const runStartReviewMode = React.useCallback(async () => {
-    if (reviewBusy || reviewModeState) {
-      return;
-    }
+  const runStartReviewMode = React.useCallback(
+    async (returnFocusTarget?: HTMLElement) => {
+      if (reviewBusy || reviewModeState) {
+        return;
+      }
 
-    setReviewBusy(true);
-    try {
-      const operationId = createRepositoryOperationId("review-start");
-      const response = await startReviewMode({
-        operationId,
-        repositoryPath,
-      });
-      setReviewModeState(response.state);
-      await invalidateReviewQueries();
-    } catch (error) {
-      window.dispatchEvent(
-        new CustomEvent("artistic-git:error", { detail: error }),
-      );
-    } finally {
-      setReviewBusy(false);
-    }
-  }, [invalidateReviewQueries, repositoryPath, reviewBusy, reviewModeState]);
+      reviewReturnFocusRef.current =
+        returnFocusTarget ??
+        (document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : null);
+      setReviewBusyAction("start");
+      try {
+        const operationId = createRepositoryOperationId("review-start");
+        const response = await startReviewMode({
+          operationId,
+          repositoryPath,
+        });
+        setReviewModeState(response.state);
+      } catch (error) {
+        window.dispatchEvent(
+          new CustomEvent("artistic-git:error", { detail: error }),
+        );
+      } finally {
+        setReviewBusyAction(null);
+      }
+    },
+    [repositoryPath, reviewBusy, reviewModeState],
+  );
 
   const runSyncReviewMode = React.useCallback(async () => {
     if (reviewBusy || !reviewModeState) {
       return;
     }
 
-    setReviewBusy(true);
+    setReviewBusyAction("sync");
     try {
       const response = await syncReviewMode({
         operationId: createRepositoryOperationId("review-sync"),
         repositoryPath,
       });
       setReviewModeState(response.state);
-      await invalidateReviewQueries();
     } catch (error) {
       window.dispatchEvent(
         new CustomEvent("artistic-git:error", { detail: error }),
       );
     } finally {
-      setReviewBusy(false);
+      setReviewBusyAction(null);
     }
-  }, [invalidateReviewQueries, repositoryPath, reviewBusy, reviewModeState]);
+  }, [repositoryPath, reviewBusy, reviewModeState]);
 
   const runExitReviewMode = React.useCallback(async () => {
     if (reviewBusy || !reviewModeState) {
       return;
     }
 
-    setReviewBusy(true);
+    setReviewBusyAction("exit");
     try {
       const response = await exitReviewMode({
         operationId: createRepositoryOperationId("review-exit"),
@@ -1058,7 +1397,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         new CustomEvent("artistic-git:error", { detail: error }),
       );
     } finally {
-      setReviewBusy(false);
+      setReviewBusyAction(null);
     }
   }, [handleReviewExitResponse, repositoryPath, reviewBusy, reviewModeState]);
 
@@ -1067,7 +1406,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       return;
     }
 
-    setReviewBusy(true);
+    setReviewBusyAction("recover");
     try {
       const response = await recoverReviewModeStash({
         operationId: createRepositoryOperationId("review-recover"),
@@ -1079,7 +1418,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         new CustomEvent("artistic-git:error", { detail: error }),
       );
     } finally {
-      setReviewBusy(false);
+      setReviewBusyAction(null);
     }
   }, [handleReviewExitResponse, repositoryPath, reviewBusy]);
 
@@ -1102,7 +1441,13 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
           setReviewRecoveryPrompt(true);
         }
       })
-      .catch(() => undefined);
+      .catch((error) => {
+        if (!cancelled) {
+          window.dispatchEvent(
+            new CustomEvent("artistic-git:error", { detail: error }),
+          );
+        }
+      });
 
     return () => {
       cancelled = true;
@@ -1110,44 +1455,28 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   }, [repositoryPath]);
 
   React.useEffect(() => {
-    if (!syncFeedback) {
-      return;
-    }
-
-    const timeout = window.setTimeout(() => {
-      setSyncFeedback(null);
-    }, 1600);
-
-    return () => {
-      window.clearTimeout(timeout);
-    };
-  }, [syncFeedback]);
-
-  React.useEffect(() => {
-    if (!syncResultToast) {
-      return;
-    }
-
-    const timeout = window.setTimeout(() => {
-      setSyncResultToast(null);
-    }, syncResultToastDurationMs);
-
-    return () => {
-      window.clearTimeout(timeout);
-    };
-  }, [syncResultToast]);
-
-  React.useEffect(() => {
     if (
-      repository.hasRemote &&
-      initialFetchRepositoryRef.current !== repositoryPath
+      !fetchPreferences?.autoFetch ||
+      !repository.hasRemote ||
+      initialFetchRepositoryRef.current === repositoryPath
     ) {
-      initialFetchRepositoryRef.current = repositoryPath;
-      void runFetch();
+      return;
     }
-  }, [repository.hasRemote, repositoryPath, runFetch]);
+
+    initialFetchRepositoryRef.current = repositoryPath;
+    void runFetch();
+  }, [
+    fetchPreferences?.autoFetch,
+    repository.hasRemote,
+    repositoryPath,
+    runFetch,
+  ]);
 
   React.useEffect(() => {
+    if (!fetchPreferences?.autoFetch || !repository.hasRemote) {
+      return;
+    }
+
     const triggerFocusedFetch = () => {
       if (document.visibilityState === "hidden") {
         return;
@@ -1162,7 +1491,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       window.removeEventListener("focus", triggerFocusedFetch);
       document.removeEventListener("visibilitychange", triggerFocusedFetch);
     };
-  }, [runFetch]);
+  }, [fetchPreferences?.autoFetch, repository.hasRemote, runFetch]);
 
   React.useEffect(() => {
     if (
@@ -1209,6 +1538,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       setNewBranchCheckout(true);
       setNewBranchCreateRemote(Boolean(summaryQuery.data?.hasOrigin));
       setBranchNameValidation(null);
+      setBranchNameChecking(false);
       setCheckoutMode("autoStash");
     },
     [summaryQuery.data?.hasOrigin],
@@ -1226,6 +1556,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   const updateNewBranchName = React.useCallback((name: string) => {
     setNewBranchName(name);
     setBranchNameValidation(null);
+    setBranchNameChecking(name.trim().length > 0);
   }, []);
 
   const rememberBranchStashRecovery = React.useCallback(
@@ -1379,6 +1710,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     setCommitMessage("");
     setCommitPushImmediately(true);
     setCommitStatus(null);
+    setCommitConflictOperationId(null);
     setGpgFailure(null);
     setLargeFileWarning(null);
   }, [commitBusy]);
@@ -1433,6 +1765,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
 
       setCommitBusy(true);
       setCommitStatus(null);
+      setCommitConflictOperationId(null);
       setGpgFailure(null);
       setLargeFileWarning(null);
       try {
@@ -1448,7 +1781,11 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         });
 
         if (response.status === "committed") {
-          setCommitStatus(t("localChanges.commitCommitted"));
+          showToast({
+            key: "repository-action-result",
+            message: t("localChanges.commitCommitted"),
+            tone: "success",
+          });
           setCommitIds(null);
           setCommitMessage("");
           setCommitPushImmediately(true);
@@ -1470,6 +1807,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
             }));
           }
           setCommitStatus(t("localChanges.commitConflict"));
+          setCommitConflictOperationId(response.conflict.operationId);
           setConflictEntered(response.conflict);
         } else {
           setCommitStatus(t("localChanges.nothingToCommit"));
@@ -1495,7 +1833,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
 
   const fetchBeforeCurrentBranchWrite = React.useCallback(async () => {
     if (shouldFetchBeforeCurrentBranchWrite) {
-      await runFetch();
+      await runFetch({ throwOnError: true });
     }
   }, [runFetch, shouldFetchBeforeCurrentBranchWrite]);
 
@@ -1523,7 +1861,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
 
   const applyStash = React.useCallback(
     async (stash: StashListItem) => {
-      setStashActionBusy(true);
+      setStashBusyAction("apply");
       try {
         const response = await restoreStash({
           dropOnSuccess: false,
@@ -1539,16 +1877,22 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
             [outcome.conflict.operationId]: response.recovery,
           }));
           setConflictEntered(outcome.conflict);
+        } else {
+          showToast({
+            key: "repository-stash-result",
+            message: t("repository.stashApplied"),
+            tone: "success",
+          });
         }
       } catch (error) {
         window.dispatchEvent(
           new CustomEvent("artistic-git:error", { detail: error }),
         );
       } finally {
-        setStashActionBusy(false);
+        setStashBusyAction(null);
       }
     },
-    [repositoryPath, setConflictEntered],
+    [repositoryPath, setConflictEntered, t],
   );
 
   const createStashFromDialog = React.useCallback(async () => {
@@ -1564,9 +1908,9 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       return;
     }
 
-    setStashActionBusy(true);
+    setStashBusyAction("create");
     try {
-      await createStash({
+      const response = await createStash({
         includeUntracked: true,
         message: stashMessage.trim() || defaultStashMessage(),
         operationId: createRepositoryOperationId("create-stash"),
@@ -1576,12 +1920,21 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       setStashIds(null);
       setStashMessage("");
       setStashScope("all");
+      showToast({
+        key: "repository-stash-result",
+        message: t(
+          response.created
+            ? "repository.stashCreated"
+            : "repository.stashNothingToCreate",
+        ),
+        tone: response.created ? "success" : "info",
+      });
     } catch (error) {
       window.dispatchEvent(
         new CustomEvent("artistic-git:error", { detail: error }),
       );
     } finally {
-      setStashActionBusy(false);
+      setStashBusyAction(null);
     }
   }, [
     defaultStashMessage,
@@ -1591,13 +1944,14 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     stashIds,
     stashMessage,
     stashScope,
+    t,
   ]);
 
   const confirmDeleteStash = React.useCallback(async () => {
     if (!stashToDelete) {
       return;
     }
-    setStashActionBusy(true);
+    setStashBusyAction("delete");
     try {
       await deleteStash({
         operationId: createRepositoryOperationId("delete-stash"),
@@ -1610,13 +1964,13 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         new CustomEvent("artistic-git:error", { detail: error }),
       );
     } finally {
-      setStashActionBusy(false);
+      setStashBusyAction(null);
     }
   }, [repositoryPath, stashToDelete]);
 
   const showStashDetails = React.useCallback(
     async (stash: StashListItem) => {
-      setStashActionBusy(true);
+      setStashDetailsBusy(true);
       try {
         const response = await stashDetails({
           repositoryPath,
@@ -1628,7 +1982,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
           new CustomEvent("artistic-git:error", { detail: error }),
         );
       } finally {
-        setStashActionBusy(false);
+        setStashDetailsBusy(false);
       }
     },
     [repositoryPath],
@@ -1706,6 +2060,10 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   const closeConflictOverlay = React.useCallback(
     (conflictRepositoryPath: string) => {
       if (conflict) {
+        if (conflict.operationId === commitConflictOperationId) {
+          setCommitConflictOperationId(null);
+          setCommitStatus(t("localChanges.commitConflictEnded"));
+        }
         setRevertAutoStashByOperation((current) => {
           if (!current[conflict.operationId]) {
             return current;
@@ -1730,9 +2088,20 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
             repositoryPath: conflictRepositoryPath,
           }),
         )
-        .catch(() => undefined);
+        .catch((error: unknown) => {
+          window.dispatchEvent(
+            new CustomEvent("artistic-git:error", {
+              detail: {
+                cause: error,
+                operationName: "broadcastConflictCleared",
+                repositoryPath: conflictRepositoryPath,
+                summary: t("conflicts.clearBroadcastFailed"),
+              },
+            }),
+          );
+        });
     },
-    [clearConflict, conflict],
+    [clearConflict, commitConflictOperationId, conflict, t],
   );
 
   const recoverCloseGuardedState = React.useCallback(async () => {
@@ -1759,7 +2128,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     }
 
     if (reviewRecoveryPrompt && !reviewModeState) {
-      setReviewBusy(true);
+      setReviewBusyAction("recover");
       try {
         const response = await recoverReviewModeStash({
           operationId: createRepositoryOperationId("review-recover-close"),
@@ -1770,10 +2139,10 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
           throw new Error(t("repository.closeGuardRecoveryConflict"));
         }
       } finally {
-        setReviewBusy(false);
+        setReviewBusyAction(null);
       }
     } else if (reviewModeState) {
-      setReviewBusy(true);
+      setReviewBusyAction("exit");
       try {
         const response = await exitReviewMode({
           operationId: createRepositoryOperationId("review-exit-close"),
@@ -1784,7 +2153,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
           throw new Error(t("repository.closeGuardRecoveryConflict"));
         }
       } finally {
-        setReviewBusy(false);
+        setReviewBusyAction(null);
       }
     }
   }, [
@@ -1842,6 +2211,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         branchesUnavailable={
           branchesQuery.error !== null && branchesQuery.data === undefined
         }
+        branchesLoading={branchesQuery.isPending}
         branches={branches}
         branchesTruncated={branchesQuery.data?.truncated ?? false}
         busy={interactionBusy}
@@ -1863,7 +2233,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         onDeleteStash={setStashToDelete}
         onFetch={() => void runSyncAllBranches()}
         onOpenSettings={() => openSettings("general")}
-        onReviewMode={() => void runStartReviewMode()}
+        onReviewMode={(trigger) => void runStartReviewMode(trigger)}
         onSidebarLayoutChange={(layout) => {
           void persistProjectPreferences({ sidebar: layout });
         }}
@@ -1875,21 +2245,39 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         stashesUnavailable={
           stashesQuery.error !== null && stashesQuery.data === undefined
         }
+        stashesLoading={stashesQuery.isPending}
         stashes={stashes}
         stashesTruncated={stashesQuery.data?.truncated ?? false}
-        syncFeedback={syncFeedback}
       />
       <section className="flex min-w-0 flex-1 flex-col">
         {activeOperation ? (
-          <div className="h-1 shrink-0 bg-secondary">
+          <div
+            aria-label={busyLabel}
+            aria-valuemax={100}
+            aria-valuemin={0}
+            aria-valuenow={
+              activeOperation.progress.kind === "percent" &&
+              activeOperation.progress.value !== null
+                ? activeOperation.progress.value
+                : undefined
+            }
+            className="h-1 shrink-0 overflow-hidden bg-secondary"
+            role="progressbar"
+          >
             <div
-              className="h-full bg-primary transition-[width]"
+              className={cn(
+                "h-full bg-primary",
+                activeOperation.progress.kind === "percent" &&
+                  activeOperation.progress.value !== null
+                  ? "transition-[width]"
+                  : "w-1/2 animate-pulse",
+              )}
               style={{
                 width:
                   activeOperation.progress.kind === "percent" &&
                   activeOperation.progress.value !== null
                     ? `${activeOperation.progress.value}%`
-                    : "42%",
+                    : undefined,
               }}
             />
           </div>
@@ -1951,11 +2339,129 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
           <RepositoryReadErrorStrip errors={repositoryReadErrors} />
         ) : null}
 
-        {remoteStateKnown && !repository.hasRemote ? (
+        {existingGitOperationRecovery ? (
+          <div
+            className="flex shrink-0 items-center justify-between gap-3 border-b bg-warning/10 px-4 py-2 text-sm"
+            role={
+              existingGitOperationRecovery.state === "failed"
+                ? "alert"
+                : "status"
+            }
+          >
+            <span className="flex min-w-0 items-center gap-2">
+              {existingGitOperationRecovery.state === "checking" ? (
+                <Loader2
+                  className="size-4 shrink-0 animate-spin"
+                  aria-hidden="true"
+                />
+              ) : (
+                <AlertTriangle className="size-4 shrink-0" aria-hidden="true" />
+              )}
+              <span className="truncate">
+                {existingGitOperationRecovery.state === "checking"
+                  ? t("repository.openingUnfinishedOperation")
+                  : t("repository.openUnfinishedOperationFailed")}
+              </span>
+            </span>
+            {existingGitOperationRecovery.state === "failed" ? (
+              <div className="flex shrink-0 items-center gap-1">
+                {existingGitOperationRecovery.error ? (
+                  <Button
+                    onClick={() => {
+                      window.dispatchEvent(
+                        new CustomEvent("artistic-git:error", {
+                          detail: existingGitOperationRecovery.error,
+                        }),
+                      );
+                    }}
+                    type="button"
+                    variant="ghost"
+                  >
+                    {t("repository.viewErrorDetails")}
+                  </Button>
+                ) : null}
+                <Button
+                  onClick={() =>
+                    setExistingGitOperationRetry((current) => current + 1)
+                  }
+                  type="button"
+                  variant="secondary"
+                >
+                  {t("repository.retryOpenUnfinishedOperation")}
+                </Button>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {repositoryIndexLock || repositoryBisectActive ? (
+          <div
+            className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b bg-warning/10 px-4 py-2 text-sm"
+            role="alert"
+          >
+            <span className="flex min-w-0 flex-1 items-center gap-2">
+              <AlertTriangle className="size-4 shrink-0" aria-hidden="true" />
+              <span>
+                {repositoryBisectActive
+                  ? t("repository.bisectActiveBanner")
+                  : t("repository.indexLockBanner", {
+                      duration: formatIndexLockAge(
+                        repositoryIndexLock?.ageSeconds ?? 0,
+                        t,
+                      ),
+                    })}
+              </span>
+            </span>
+            <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-1">
+              <Button
+                onClick={() => setRepositoryHealthDetailsOpen(true)}
+                type="button"
+                variant="ghost"
+              >
+                {t("repository.viewRepositoryHealthDetails")}
+              </Button>
+              <Button
+                className="gap-2"
+                disabled={repositoryHealthRecheckBusy || bisectResetBusy}
+                onClick={() => void recheckRepositoryHealth()}
+                type="button"
+                variant="secondary"
+              >
+                {repositoryHealthRecheckBusy ? (
+                  <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                ) : null}
+                {repositoryHealthRecheckBusy
+                  ? t("repository.recheckingHealth")
+                  : t("repository.recheckHealth")}
+              </Button>
+              {repositoryBisectActive ? (
+                <Button
+                  disabled={repositoryHealthRecheckBusy || bisectResetBusy}
+                  onClick={() => setBisectResetConfirmOpen(true)}
+                  type="button"
+                  variant="destructive"
+                >
+                  {t("repository.resetBisect")}
+                </Button>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+
+        {remoteStateKnown &&
+        (!repository.hasRemote || additionalRemoteCount > 0) ? (
           <div className="flex shrink-0 items-center justify-between gap-3 border-b bg-warning/10 px-4 py-2 text-sm">
             <span className="flex min-w-0 items-center gap-2">
               <AlertTriangle className="size-4 shrink-0" aria-hidden="true" />
-              <span className="truncate">{t("repository.noRemote")}</span>
+              <span className="truncate">
+                {!repository.hasRemote
+                  ? repositoryHasOtherRemotes
+                    ? t("repository.otherRemotesNotConnected")
+                    : t("repository.noRemote")
+                  : t("repository.additionalRemotesNotManaged", {
+                      count: additionalRemoteCount,
+                    })}
+              </span>
             </span>
             <Button
               onClick={() => openSettings("project")}
@@ -1971,20 +2477,17 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         <div className="min-h-0 flex-1 overflow-hidden p-4">
           {activeTab === "history" ? (
             <div className="flex h-full min-h-0 flex-col gap-3">
-              {effectiveFocusedBranch ? (
-                <div className="shrink-0 rounded-md border bg-card px-3 py-2 text-sm text-muted-foreground">
-                  {t("repository.focusedBranch", {
-                    branch: effectiveFocusedBranch.name,
-                    commit: effectiveFocusedBranch.latestCommitId,
-                  })}
-                </div>
-              ) : null}
               <div className="min-h-0 flex-1 overflow-auto">
                 <HistoryWorkbench
-                  branches={historyBranches}
+                  activeBranchName={effectiveHistoryBranchName}
+                  branches={historyBranchesForWorkbench}
                   hasRemote={repository.hasRemote}
-                  historyRepositoryPath={repositoryPath}
+                  historyRepositoryPath={
+                    historyScopeReady ? repositoryPath : null
+                  }
+                  key={effectiveHistoryBranchName ?? "all-history"}
                   onBeforeRevert={fetchBeforeCurrentBranchWrite}
+                  onInitialLoadingChange={setHistoryInitialLoading}
                   onRevertAutoStash={(operationId, stash) => {
                     setRevertAutoStashByOperation((current) => ({
                       ...current,
@@ -1998,13 +2501,17 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
                     }));
                   }}
                   onWriteBusyChange={setHistoryWriteBusy}
-                  writeDisabled={writeOperationBusy}
+                  writeDisabled={writeOperationBusy || repositoryWriteBlocked}
                 />
               </div>
             </div>
           ) : (
             <LocalChangesPanel
-              busy={interactionBusy || localChangesQuery.isFetching}
+              busy={
+                interactionBusy ||
+                repositoryDetached ||
+                localChangesQuery.isFetching
+              }
               changes={localChanges}
               detailState={localChangeDetailState}
               error={localChangesQuery.error}
@@ -2041,14 +2548,20 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       ) : null}
       {reviewModeState ? (
         <ReviewModeOverlay
-          busy={reviewBusy}
+          busyAction={
+            reviewBusyAction === "sync" || reviewBusyAction === "exit"
+              ? reviewBusyAction
+              : null
+          }
           onExit={() => void runExitReviewMode()}
           onSync={() => void runSyncReviewMode()}
+          returnFocusRef={reviewReturnFocusRef}
           state={reviewModeState}
         />
       ) : null}
       <ConfirmDialog
         busy={reviewBusy}
+        busyLabel={t("review.recovering")}
         confirmLabel={t("review.recover")}
         description={t("review.recoveryDescription")}
         onConfirm={() => void runRecoverReviewMode()}
@@ -2059,6 +2572,37 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         }}
         open={reviewRecoveryPrompt}
         title={t("review.recoveryTitle")}
+      />
+      <DetailsDialog
+        description={
+          repositoryBisectActive
+            ? t("repository.bisectDetailsDescription")
+            : t("repository.indexLockDetailsDescription")
+        }
+        details={formatRepositoryHealthDetails(repositoryHealth, t)}
+        onOpenChange={setRepositoryHealthDetailsOpen}
+        open={repositoryHealthDetailsOpen}
+        summary={
+          repositoryBisectActive
+            ? t("repository.bisectActiveBanner")
+            : t("repository.indexLockPresent")
+        }
+        title={t("repository.repositoryHealthDetailsTitle")}
+      />
+      <ConfirmDialog
+        busy={bisectResetBusy}
+        busyLabel={t("repository.resettingBisect")}
+        confirmLabel={t("repository.resetBisect")}
+        description={t("repository.resetBisectDescription")}
+        onConfirm={() => void runResetBisect()}
+        onOpenChange={(open) => {
+          if (!bisectResetBusy) {
+            setBisectResetConfirmOpen(open);
+          }
+        }}
+        open={bisectResetConfirmOpen}
+        title={t("repository.resetBisectTitle")}
+        variant="danger"
       />
       <RemoteHistoryChangedDialog
         busy={syncBusy}
@@ -2085,6 +2629,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       />
       <ConfirmDialog
         busy={safetyBackupBusy}
+        busyLabel={t("repository.deletingSafetyBackup")}
         confirmLabel={t("repository.deleteSafetyBackup")}
         description={t("repository.deleteSafetyBackupDescription", {
           name: safetyBackupToDelete?.name ?? "",
@@ -2108,6 +2653,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         baseBranch={branchCreateBase}
         baseBranches={branches}
         busy={branchActionBusy}
+        checkingName={branchNameChecking}
         checkoutImmediately={newBranchCheckout}
         createRemote={newBranchCreateRemote}
         hasRemote={repository.hasRemote}
@@ -2118,6 +2664,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         onBaseBranchChange={(baseBranch) => {
           setBranchCreateBase(baseBranch);
           setBranchNameValidation(null);
+          setBranchNameChecking(newBranchName.trim().length > 0);
         }}
         onCreateRemoteChange={setNewBranchCreateRemote}
         onLocalChangesModeChange={setCheckoutMode}
@@ -2128,6 +2675,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
             setNewBranchName("");
             setNewBranchCreateRemote(false);
             setBranchNameValidation(null);
+            setBranchNameChecking(false);
           }
         }}
         validation={branchNameValidation}
@@ -2198,6 +2746,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       />
       <ConfirmDialog
         busy={stashActionBusy}
+        busyLabel={t("repository.deletingStash")}
         confirmLabel={t("repository.deleteStash")}
         description={t("repository.deleteStashDescription", {
           name: stashToDelete?.name ?? "",
@@ -2239,12 +2788,6 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
           }
         }}
       />
-      {syncResultToast ? (
-        <SyncResultToast
-          message={syncResultToast}
-          onDismiss={() => setSyncResultToast(null)}
-        />
-      ) : null}
     </main>
   );
 }
@@ -2314,18 +2857,33 @@ function isRepositoryShellOperation(
 function operationLabel(label: string, t: (key: string) => string): string {
   switch (label) {
     case "Syncing":
-    case "Accepting remote history":
-    case "Syncing review mode":
       return t("repository.syncBusy");
-    case "Updating branch":
-    case "Deleting backup branch":
-      return t("repository.branchBusy");
-    case "Updating stash":
-      return t("repository.stashBusy");
+    case "Accepting remote history":
+      return t("repository.acceptingRemoteHistory");
+    case "Syncing review mode":
+      return t("review.syncing");
+    case "Creating branch":
+      return t("repository.creatingBranch");
+    case "Switching branch":
+      return t("repository.switchingBranch");
+    case "Deleting branch":
+      return t("repository.deletingBranch");
+    case "Deleting safety backup":
+      return t("repository.deletingSafetyBackup");
+    case "Creating stash":
+      return t("localChanges.creatingStash");
+    case "Applying stash":
+      return t("repository.applyingStash");
+    case "Deleting stash":
+      return t("repository.deletingStash");
+    case "Applying conflict selection":
+      return t("conflicts.applyingSelection");
     case "Starting review mode":
+      return t("review.starting");
     case "Exiting review mode":
+      return t("review.exiting");
     case "Recovering review mode":
-      return t("review.busy");
+      return t("review.recovering");
     case "Committing changes":
       return t("localChanges.commitBusy");
     case "Restoring changes":
@@ -2353,41 +2911,81 @@ function operationLabel(label: string, t: (key: string) => string): string {
   }
 }
 
-function SyncResultToast({
-  message,
-  onDismiss,
-}: {
-  message: string;
-  onDismiss: () => void;
-}) {
-  const { t } = useTranslation();
+function repositoryMiddleStateStatus(
+  kind: RepositoryMiddleStateKind,
+  t: (key: string) => string,
+): string {
+  switch (kind) {
+    case "merge":
+      return t("repository.inProgressMerge");
+    case "rebase":
+      return t("repository.inProgressRebase");
+    case "cherryPick":
+      return t("repository.inProgressCherryPick");
+    case "revert":
+      return t("repository.inProgressRevert");
+    case "bisect":
+      return t("repository.inProgressBisect");
+  }
+}
 
-  return (
-    <div
-      aria-live="polite"
-      className="fixed bottom-4 right-4 z-40 flex max-h-[min(24rem,calc(100vh-2rem))] w-[min(28rem,calc(100vw-2rem))] items-start gap-3 overflow-y-auto rounded-lg border bg-card p-3 text-sm text-card-foreground shadow-floating"
-      data-testid="sync-result-toast"
-      role="status"
-    >
-      <Info className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-      <p className="min-w-0 flex-1 whitespace-pre-wrap break-words">
-        {message}
-      </p>
-      <IconButton
-        className="-mr-1 -mt-1 shrink-0"
-        label={t("actions.close")}
-        onClick={onDismiss}
-        type="button"
-        variant="ghost"
-      >
-        <X className="size-4" aria-hidden="true" />
-      </IconButton>
-    </div>
+function formatIndexLockAge(
+  ageSeconds: number,
+  t: SyncStatusTranslator,
+): string {
+  if (ageSeconds >= 3_600) {
+    const count = Math.floor(ageSeconds / 3_600);
+    return t(
+      count === 1
+        ? "repository.indexLockAgeHour"
+        : "repository.indexLockAgeHours",
+      { count },
+    );
+  }
+  if (ageSeconds >= 60) {
+    const count = Math.floor(ageSeconds / 60);
+    return t(
+      count === 1
+        ? "repository.indexLockAgeMinute"
+        : "repository.indexLockAgeMinutes",
+      { count },
+    );
+  }
+
+  const count = Math.max(0, Math.floor(ageSeconds));
+  return t(
+    count === 1
+      ? "repository.indexLockAgeSecond"
+      : "repository.indexLockAgeSeconds",
+    { count },
   );
+}
+
+function formatRepositoryHealthDetails(
+  health: RepositoryHealth | null,
+  t: SyncStatusTranslator,
+): string {
+  return health
+    ? JSON.stringify(health, null, 2)
+    : t("repository.repositoryHealthDetailsUnavailable");
 }
 
 function createRepositoryOperationId(prefix: string): string {
   return `${prefix}-${globalThis.crypto?.randomUUID?.() ?? Date.now().toString(36)}`;
+}
+
+function localizedBranchNameValidation(
+  validation: BranchNameValidationResponse,
+  name: string,
+  t: SyncStatusTranslator,
+): string {
+  if (validation.exists) {
+    return t("repository.branchNameExists");
+  }
+  if (/\s/.test(name)) {
+    return t("repository.branchNameNoSpaces");
+  }
+  return t("repository.branchNameInvalid");
 }
 
 function formatSyncAllStatus(
@@ -2398,19 +2996,34 @@ function formatSyncAllStatus(
     return t("repository.syncAllUpToDate");
   }
 
-  const parts = [
-    ...response.branches.map((branch) => formatSyncBranchStatus(branch, t)),
-    ...response.autoTracking.map((rule) => formatSyncRuleStatus(rule, t)),
+  const statuses = [
+    ...response.branches.map((branch) => branch.status),
+    ...response.autoTracking.map((rule) => rule.status),
   ];
+  const upToDate = statuses.filter(
+    (status) => status === "alreadyUpToDate",
+  ).length;
+  const failed = statuses.filter((status) => status === "failed").length;
+  const attention = statuses.filter(
+    (status) =>
+      status === "conflicts" ||
+      status === "remoteHistoryChanged" ||
+      status === "invalid",
+  ).length;
+  const synced = statuses.length - upToDate - failed - attention;
 
-  return parts.length > 0 ? parts.join(" · ") : t("repository.syncAllUpToDate");
+  return t("repository.syncBatchSummary", {
+    attention,
+    failed,
+    synced,
+    upToDate,
+  });
 }
 
 function formatSyncBranchStatus(
   response: SyncBranchResponse,
   t: SyncStatusTranslator,
 ): string {
-  const message = syncMessageSuffix(response.message);
   switch (response.status) {
     case "alreadyUpToDate":
       return t("repository.syncBranchResultUpToDate", {
@@ -2423,13 +3036,13 @@ function formatSyncBranchStatus(
     case "failed":
       return t("repository.syncBranchResultFailed", {
         branch: response.branchName,
-        message,
+        message: "",
       });
     case "conflicts":
     case "remoteHistoryChanged":
       return t("repository.syncBranchResultNeedsAttention", {
         branch: response.branchName,
-        message,
+        message: "",
       });
     default:
       return t("repository.syncBranchResultSuccess", {
@@ -2438,32 +3051,77 @@ function formatSyncBranchStatus(
   }
 }
 
-function formatSyncRuleStatus(
-  response: SyncAllBranchesResponse["autoTracking"][number],
-  t: SyncStatusTranslator,
-): string {
-  const message = syncMessageSuffix(response.message);
-  const source = response.sourceBranch;
-  const target = response.targetBranch;
-  switch (response.status) {
-    case "alreadyUpToDate":
-      return t("repository.syncRuleResultUpToDate", { source, target });
-    case "applied":
-      return t("repository.syncRuleResultSuccess", { source, target });
-    case "failed":
-      return t("repository.syncRuleResultFailed", { source, target, message });
-    case "conflicts":
-    case "invalid":
-      return t("repository.syncRuleResultNeedsAttention", {
-        source,
-        target,
-        message,
-      });
-  }
+function syncAllHasFailure(response: SyncAllBranchesResponse): boolean {
+  return (
+    response.branches.some((branch) => branch.status === "failed") ||
+    response.autoTracking.some(
+      (rule) => rule.status === "failed" || rule.status === "invalid",
+    )
+  );
 }
 
-function syncMessageSuffix(message: string | null | undefined): string {
-  return message ? ` (${message})` : "";
+function syncAllToastTone(
+  response: SyncAllBranchesResponse,
+): "error" | "success" | "warning" {
+  if (syncAllHasFailure(response)) {
+    return "error";
+  }
+  if (
+    response.conflict ||
+    response.remoteHistoryChange ||
+    response.branches.some(
+      (branch) =>
+        branch.status === "conflicts" ||
+        branch.status === "remoteHistoryChanged",
+    ) ||
+    response.autoTracking.some((rule) => rule.status === "conflicts")
+  ) {
+    return "warning";
+  }
+  return "success";
+}
+
+function reportResolvedOperationError({
+  operationName,
+  repositoryPath,
+  response,
+  summary,
+}: {
+  operationName: string;
+  repositoryPath: string;
+  response: unknown;
+  summary: string;
+}) {
+  const error: AppError & { response: unknown } = {
+    category: "expected",
+    context: {
+      operationId: null,
+      operationName,
+      repositoryPath,
+      windowLabel: null,
+    },
+    git: null,
+    response,
+    summary,
+  };
+  window.dispatchEvent(
+    new CustomEvent("artistic-git:error", { detail: error }),
+  );
+}
+
+function fetchErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "summary" in error &&
+    typeof error.summary === "string"
+  ) {
+    return error.summary;
+  }
+  return typeof error === "string" ? error : "remote check failed";
 }
 
 function mapBranchSummaryToItem(branch: BranchSummary): BranchListItem {
@@ -2482,14 +3140,49 @@ function mapBranchSummaryToItem(branch: BranchSummary): BranchListItem {
 function mapStashEntryToItem(
   stash: StashEntry,
   formatRelativeTime: (value: Date | number | string) => string,
+  t: SyncStatusTranslator,
 ): StashListItem {
+  const origin = localizedAutoStashOrigin(stash.origin, t);
   return {
     id: stash.selector,
-    name: stash.message,
+    name: stash.isAutoStash
+      ? t("repository.autoStashName", { origin })
+      : stash.message,
     timeLabel: stash.createdAtUnixSeconds
       ? formatRelativeTime(Number(stash.createdAtUnixSeconds) * 1000)
       : "",
   };
+}
+
+function localizedAutoStashOrigin(
+  origin: string | null | undefined,
+  t: SyncStatusTranslator,
+): string {
+  const switchMatch = origin?.match(/^before switching to (.+)$/);
+  if (switchMatch) {
+    return t("repository.autoStashOriginSwitchBranch", {
+      branch: switchMatch[1],
+    });
+  }
+
+  switch (origin) {
+    case "switch branch":
+      return t("repository.autoStashOriginSwitchBranches");
+    case "before syncing current branch":
+      return t("repository.autoStashOriginSync");
+    case "before applying automatic tracking":
+      return t("repository.autoStashOriginAutomaticTracking");
+    case "before accepting remote history":
+      return t("repository.autoStashOriginAcceptRemoteHistory");
+    case "review mode":
+      return t("repository.autoStashOriginReview");
+    case "before reverting commit":
+      return t("repository.autoStashOriginRevert");
+    default:
+      return origin?.startsWith("stash apply recovery")
+        ? t("repository.autoStashOriginRecovery")
+        : t("repository.autoStashUnknownOrigin");
+  }
 }
 
 function mapLocalChangeToItem(change: LocalChange): LocalChangeItem {
@@ -2515,6 +3208,22 @@ function mapLocalChangeToItem(change: LocalChange): LocalChangeItem {
   };
 }
 
+function DialogBusyStatus({ busy, label }: { busy: boolean; label: string }) {
+  if (!busy) {
+    return <span />;
+  }
+
+  return (
+    <span
+      className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground"
+      role="status"
+    >
+      <Loader2 className="size-4 shrink-0 animate-spin" aria-hidden="true" />
+      <span className="truncate">{label}</span>
+    </span>
+  );
+}
+
 function RemoteHistoryChangedDialog({
   busy,
   change,
@@ -2534,22 +3243,39 @@ function RemoteHistoryChangedDialog({
 
   return (
     <DialogFrame
+      dismissible={!busy}
       description={t("repository.remoteHistoryChangedDescription", {
         branch: change.branchName,
       })}
       footer={
-        <div className="flex justify-end gap-2">
-          <Button
-            disabled={busy}
-            onClick={() => onOpenChange(false)}
-            type="button"
-            variant="ghost"
-          >
-            {t("actions.cancel")}
-          </Button>
-          <Button disabled={busy} onClick={onAccept} type="button">
-            {t("repository.acceptRemoteHistory")}
-          </Button>
+        <div className="flex w-full flex-wrap items-center justify-between gap-3">
+          <DialogBusyStatus
+            busy={busy}
+            label={t("repository.acceptingRemoteHistory")}
+          />
+          <div className="ml-auto flex shrink-0 gap-2">
+            <Button
+              disabled={busy}
+              onClick={() => onOpenChange(false)}
+              type="button"
+              variant="ghost"
+            >
+              {t("actions.cancel")}
+            </Button>
+            <Button
+              className="gap-2"
+              disabled={busy}
+              onClick={onAccept}
+              type="button"
+            >
+              {busy ? (
+                <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+              ) : null}
+              {busy
+                ? t("repository.acceptingRemoteHistory")
+                : t("repository.acceptRemoteHistory")}
+            </Button>
+          </div>
         </div>
       }
       onOpenChange={onOpenChange}
@@ -2626,6 +3352,7 @@ function SafetyBackupsDialog({
   return (
     <DialogFrame
       description={t("repository.safetyBackupsDescription")}
+      dismissible={!busy}
       footer={
         <div className="flex justify-end">
           <Button
@@ -2771,24 +3498,37 @@ function DeleteBranchDialog({
   return (
     <DialogFrame
       description={description}
+      dismissible={!busy}
       footer={
-        <div className="flex justify-end gap-2">
-          <Button
-            disabled={busy}
-            onClick={() => onOpenChange(false)}
-            type="button"
-            variant="ghost"
-          >
-            {t("actions.cancel")}
-          </Button>
-          <Button
-            disabled={!canDelete}
-            onClick={onConfirm}
-            type="button"
-            variant="destructive"
-          >
-            {t("repository.deleteBranch")}
-          </Button>
+        <div className="flex w-full flex-wrap items-center justify-between gap-3">
+          <DialogBusyStatus
+            busy={busy}
+            label={t("repository.deletingBranch")}
+          />
+          <div className="ml-auto flex shrink-0 gap-2">
+            <Button
+              disabled={busy}
+              onClick={() => onOpenChange(false)}
+              type="button"
+              variant="ghost"
+            >
+              {t("actions.cancel")}
+            </Button>
+            <Button
+              className="gap-2"
+              disabled={!canDelete}
+              onClick={onConfirm}
+              type="button"
+              variant="destructive"
+            >
+              {busy ? (
+                <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+              ) : null}
+              {busy
+                ? t("repository.deletingBranch")
+                : t("repository.deleteBranch")}
+            </Button>
+          </div>
         </div>
       }
       onOpenChange={onOpenChange}
@@ -2839,6 +3579,7 @@ function CreateBranchDialog({
   baseBranch,
   baseBranches,
   busy,
+  checkingName,
   checkoutImmediately,
   createRemote,
   hasRemote,
@@ -2856,6 +3597,7 @@ function CreateBranchDialog({
   baseBranch: BranchListItem | null;
   baseBranches: BranchListItem[];
   busy: boolean;
+  checkingName: boolean;
   checkoutImmediately: boolean;
   createRemote: boolean;
   hasRemote: boolean;
@@ -2885,9 +3627,9 @@ function CreateBranchDialog({
   }
 
   const trimmedName = name.trim();
-  const validationMessage =
-    validation?.message ??
-    (validation?.exists ? t("repository.branchNameExists") : null);
+  const validationMessage = validation
+    ? localizedBranchNameValidation(validation, name, t)
+    : null;
   const canCreate =
     trimmedName.length > 0 && validation?.valid === true && !busy;
 
@@ -2896,19 +3638,36 @@ function CreateBranchDialog({
       description={t("repository.createBranchDescription", {
         branch: baseBranch.name,
       })}
+      dismissible={!busy}
       footer={
-        <div className="flex justify-end gap-2">
-          <Button
-            disabled={busy}
-            onClick={() => onOpenChange(false)}
-            type="button"
-            variant="ghost"
-          >
-            {t("actions.cancel")}
-          </Button>
-          <Button disabled={!canCreate} onClick={onCreate} type="button">
-            {t("repository.createBranch")}
-          </Button>
+        <div className="flex w-full flex-wrap items-center justify-between gap-3">
+          <DialogBusyStatus
+            busy={busy}
+            label={t("repository.creatingBranch")}
+          />
+          <div className="ml-auto flex shrink-0 gap-2">
+            <Button
+              disabled={busy}
+              onClick={() => onOpenChange(false)}
+              type="button"
+              variant="ghost"
+            >
+              {t("actions.cancel")}
+            </Button>
+            <Button
+              className="gap-2"
+              disabled={!canCreate}
+              onClick={onCreate}
+              type="button"
+            >
+              {busy ? (
+                <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+              ) : null}
+              {busy
+                ? t("repository.creatingBranch")
+                : t("repository.createBranch")}
+            </Button>
+          </div>
         </div>
       }
       onOpenChange={onOpenChange}
@@ -2943,6 +3702,7 @@ function CreateBranchDialog({
         <input
           autoFocus
           className="h-9 rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          disabled={busy}
           onChange={(event) => onNameChange(event.target.value)}
           placeholder={t("repository.branchNamePlaceholder")}
           value={name}
@@ -2953,12 +3713,17 @@ function CreateBranchDialog({
         <p
           className={cn(
             "text-sm",
-            validation?.valid ? "text-muted-foreground" : "text-destructive",
+            checkingName || validation?.valid
+              ? "text-muted-foreground"
+              : "text-destructive",
           )}
+          role="status"
         >
-          {validation?.valid
-            ? t("repository.branchNameAvailable")
-            : (validationMessage ?? t("repository.branchNameInvalid"))}
+          {checkingName
+            ? t("repository.branchNameChecking")
+            : validation?.valid
+              ? t("repository.branchNameAvailable")
+              : (validationMessage ?? t("repository.branchNameInvalid"))}
         </p>
       ) : null}
 
@@ -2966,6 +3731,7 @@ function CreateBranchDialog({
         <input
           checked={checkoutImmediately}
           className="size-4"
+          disabled={busy}
           onChange={(event) =>
             onCheckoutImmediatelyChange(event.target.checked)
           }
@@ -3024,19 +3790,36 @@ function CheckoutBranchDialog({
       description={t("repository.checkoutBranchDescription", {
         branch: branch.name,
       })}
+      dismissible={!busy}
       footer={
-        <div className="flex justify-end gap-2">
-          <Button
-            disabled={busy}
-            onClick={() => onOpenChange(false)}
-            type="button"
-            variant="ghost"
-          >
-            {t("actions.cancel")}
-          </Button>
-          <Button disabled={busy} onClick={onConfirm} type="button">
-            {t("repository.checkout")}
-          </Button>
+        <div className="flex w-full flex-wrap items-center justify-between gap-3">
+          <DialogBusyStatus
+            busy={busy}
+            label={t("repository.switchingBranch")}
+          />
+          <div className="ml-auto flex shrink-0 gap-2">
+            <Button
+              disabled={busy}
+              onClick={() => onOpenChange(false)}
+              type="button"
+              variant="ghost"
+            >
+              {t("actions.cancel")}
+            </Button>
+            <Button
+              className="gap-2"
+              disabled={busy}
+              onClick={onConfirm}
+              type="button"
+            >
+              {busy ? (
+                <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+              ) : null}
+              {busy
+                ? t("repository.switchingBranch")
+                : t("repository.checkout")}
+            </Button>
+          </div>
         </div>
       }
       onOpenChange={onOpenChange}
@@ -3151,6 +3934,7 @@ function CommitChangesDialog({
   return (
     <DialogFrame
       description={t("localChanges.commitDescription", { count: fileCount })}
+      dismissible={!busy}
       footer={
         <div className="flex flex-wrap items-center justify-between gap-3">
           <span
@@ -3187,6 +3971,7 @@ function CommitChangesDialog({
         <textarea
           className="min-h-28 resize-y rounded-md border bg-background p-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
           data-testid="commit-message-input"
+          disabled={busy}
           onChange={(event) => onMessageChange(event.target.value)}
           onKeyDown={(event) => {
             if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
@@ -3217,6 +4002,7 @@ function CommitChangesDialog({
 
       {largeFileWarning ? (
         <LargeFileWarningPanel
+          busy={busy}
           files={largeFileWarning.files}
           onCommitNormally={onCommitNormally}
           onTrackWithLfs={onTrackWithLfs}
@@ -3231,6 +4017,7 @@ function CommitChangesDialog({
             {gpgFailure.stderr}
           </pre>
           <Button
+            disabled={busy}
             onClick={onDisableSigningAndRetry}
             type="button"
             variant="secondary"
@@ -3244,11 +4031,13 @@ function CommitChangesDialog({
 }
 
 function LargeFileWarningPanel({
+  busy,
   files,
   onCommitNormally,
   onTrackWithLfs,
   thresholdMb,
 }: {
+  busy: boolean;
   files: LargeFileWarning[];
   onCommitNormally: () => void;
   onTrackWithLfs: () => void;
@@ -3286,7 +4075,7 @@ function LargeFileWarningPanel({
         <div className="flex items-center justify-between gap-2">
           <Button
             aria-label={t("localChanges.previousLargeFilesPage")}
-            disabled={currentPageIndex === 0}
+            disabled={busy || currentPageIndex === 0}
             onClick={() => setPageIndex(Math.max(0, currentPageIndex - 1))}
             size="icon"
             title={t("localChanges.previousLargeFilesPage")}
@@ -3303,7 +4092,7 @@ function LargeFileWarningPanel({
           </span>
           <Button
             aria-label={t("localChanges.nextLargeFilesPage")}
-            disabled={currentPageIndex >= pageCount - 1}
+            disabled={busy || currentPageIndex >= pageCount - 1}
             onClick={() =>
               setPageIndex(Math.min(pageCount - 1, currentPageIndex + 1))
             }
@@ -3317,10 +4106,20 @@ function LargeFileWarningPanel({
         </div>
       ) : null}
       <div className="flex flex-wrap gap-2">
-        <Button onClick={onTrackWithLfs} type="button" variant="secondary">
+        <Button
+          disabled={busy}
+          onClick={onTrackWithLfs}
+          type="button"
+          variant="secondary"
+        >
           {t("localChanges.trackWithLfs")}
         </Button>
-        <Button onClick={onCommitNormally} type="button" variant="secondary">
+        <Button
+          disabled={busy}
+          onClick={onCommitNormally}
+          type="button"
+          variant="secondary"
+        >
           {t("localChanges.commitNormally")}
         </Button>
       </div>
@@ -3429,6 +4228,10 @@ function StashDetailsDialog({
         timeStyle: "short",
       })
     : t("repository.stashUnknownTime");
+  const autoStashOrigin = localizedAutoStashOrigin(details.entry.origin, t);
+  const title = details.entry.isAutoStash
+    ? t("repository.autoStashName", { origin: autoStashOrigin })
+    : details.entry.message;
 
   return (
     <DialogFrame
@@ -3446,7 +4249,7 @@ function StashDetailsDialog({
         </div>
       }
       onOpenChange={onOpenChange}
-      title={details.entry.message}
+      title={title}
     >
       <div className="grid gap-3">
         <dl className="grid gap-3 rounded-md border bg-background p-3 text-sm sm:grid-cols-2">
@@ -3465,8 +4268,7 @@ function StashDetailsDialog({
         {details.entry.isAutoStash ? (
           <div className="rounded-md border bg-secondary px-3 py-2 text-sm">
             {t("repository.autoStashOrigin", {
-              origin:
-                details.entry.origin ?? t("repository.autoStashUnknownOrigin"),
+              origin: autoStashOrigin,
             })}
           </div>
         ) : null}
@@ -3663,19 +4465,36 @@ function CreateStashDialog({
   return (
     <DialogFrame
       description={description}
+      dismissible={!busy}
       footer={
-        <div className="flex justify-end gap-2">
-          <Button
-            disabled={busy}
-            onClick={() => onOpenChange(false)}
-            type="button"
-            variant="ghost"
-          >
-            {t("actions.cancel")}
-          </Button>
-          <Button disabled={!canCreate} onClick={onCreate} type="button">
-            {t("localChanges.createStash")}
-          </Button>
+        <div className="flex w-full flex-wrap items-center justify-between gap-3">
+          <DialogBusyStatus
+            busy={busy}
+            label={t("localChanges.creatingStash")}
+          />
+          <div className="ml-auto flex shrink-0 gap-2">
+            <Button
+              disabled={busy}
+              onClick={() => onOpenChange(false)}
+              type="button"
+              variant="ghost"
+            >
+              {t("actions.cancel")}
+            </Button>
+            <Button
+              className="gap-2"
+              disabled={!canCreate}
+              onClick={onCreate}
+              type="button"
+            >
+              {busy ? (
+                <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+              ) : null}
+              {busy
+                ? t("localChanges.creatingStash")
+                : t("localChanges.createStash")}
+            </Button>
+          </div>
         </div>
       }
       onOpenChange={onOpenChange}
@@ -3685,6 +4504,7 @@ function CreateStashDialog({
         <span className="font-medium">{t("localChanges.stashName")}</span>
         <input
           className="h-9 rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          disabled={busy}
           onChange={(event) => onMessageChange(event.target.value)}
           placeholder={defaultMessage}
           value={message}

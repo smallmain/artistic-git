@@ -1,4 +1,5 @@
 use crate::auth_ipc::{AuthPromptDecision, InteractionPolicy};
+use artistic_git_contracts::OperationId;
 use artistic_git_core::keyring::{
     HttpsCredential, HttpsCredentialKey, HttpsCredentialRecord, HttpsCredentialSource,
     KeyringError, KeyringVault,
@@ -119,6 +120,14 @@ pub trait HttpsCredentialPromptSink: Send + Sync + 'static {
         &self,
         request: HttpsCredentialPromptRequest,
     ) -> HttpsCredentialPromptResult;
+
+    fn prompt_https_credentials_for_operation(
+        &self,
+        _operation_id: &OperationId,
+        request: HttpsCredentialPromptRequest,
+    ) -> HttpsCredentialPromptResult {
+        self.prompt_https_credentials(request)
+    }
 }
 
 #[derive(Debug, Default)]

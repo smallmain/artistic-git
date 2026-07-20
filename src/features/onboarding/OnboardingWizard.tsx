@@ -22,6 +22,7 @@ import {
   settingsSnapshot,
 } from "@/lib/ipc/commands";
 import { useWindowStore } from "@/store/window-store";
+import { showToast } from "@/lib/toast";
 import {
   cleanGitUser,
   gitUserFromSettings,
@@ -32,6 +33,7 @@ import {
   validateGitUser,
 } from "@/features/settings/settings-model";
 import { cn } from "@/lib/utils";
+import { dispatchErrorGroup } from "@/lib/runtime-errors";
 
 type OnboardingStep = "identity" | "ssh";
 type OnboardingBusyState = "loading" | "saving" | "generatingSshKey";
@@ -50,6 +52,9 @@ export function OnboardingWizard() {
     gitUserFromSettings(appSettings),
   );
   const [sshKey, setSshKey] = React.useState<SshKeyStatus | null>(null);
+  const [identitySourceFailure, setIdentitySourceFailure] =
+    React.useState<unknown>(null);
+  const [sshKeyFailure, setSshKeyFailure] = React.useState<unknown>(null);
   const [passphrase, setPassphrase] = React.useState("");
   const [step, setStep] = React.useState<OnboardingStep>("identity");
   const [status, setStatus] = React.useState<string | null>(null);
@@ -88,11 +93,17 @@ export function OnboardingWizard() {
       setAppSettings(normalized);
       setUser(cleanGitUser(sourceUser));
       setSshKey(snapshot.sshKey);
+      setIdentitySourceFailure(snapshot.identitySourcesError);
+      setSshKeyFailure(snapshot.sshKeyError);
+      dispatchErrorGroup(
+        [snapshot.identitySourcesError, snapshot.sshKeyError],
+        t("onboarding.supplementalLoadFailed"),
+      );
       setIdentityTouched(false);
       setIdentityAttempted(false);
       setSnapshotState({ kind: "ready" });
     },
-    [setAppSettings],
+    [setAppSettings, t],
   );
 
   const requestSnapshot = React.useCallback(async () => {
@@ -220,9 +231,25 @@ export function OnboardingWizard() {
     }
     try {
       await navigator.clipboard.writeText(sshKey.publicKey);
-      setStatus(t("settings.status.copied"));
-    } catch {
-      setStatus(t("settings.status.copyFailed"));
+      setStatus(null);
+      showToast({
+        key: "onboarding-result",
+        message: t("settings.status.copied"),
+        tone: "success",
+      });
+    } catch (error) {
+      const summary = t("settings.status.copyFailed");
+      setStatus(null);
+      showToast({ key: "onboarding-result", message: summary, tone: "error" });
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:error", {
+          detail: {
+            cause: error,
+            operationName: "copySshPublicKey",
+            summary,
+          },
+        }),
+      );
     }
   };
 
@@ -240,7 +267,12 @@ export function OnboardingWizard() {
       });
       if (mountedRef.current) {
         setSshKey(next);
-        setStatus(t("settings.status.sshGenerated"));
+        setStatus(null);
+        showToast({
+          key: "onboarding-result",
+          message: t("settings.status.sshGenerated"),
+          tone: "success",
+        });
       }
     } catch (error) {
       window.dispatchEvent(
@@ -287,10 +319,6 @@ export function OnboardingWizard() {
           />
         </div>
 
-        <p className="rounded-md border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
-          {t("onboarding.macosTranslocation")}
-        </p>
-
         {snapshotState.kind === "failed" ? (
           <div className="space-y-4" role="alert">
             <div className="flex items-start gap-3">
@@ -334,6 +362,12 @@ export function OnboardingWizard() {
           </div>
         ) : snapshotState.kind === "ready" && step === "identity" ? (
           <div className="space-y-3">
+            {identitySourceFailure ? (
+              <OnboardingSupplementalFailure
+                error={identitySourceFailure}
+                message={t("onboarding.identitySourceLoadFailed")}
+              />
+            ) : null}
             <label className="grid gap-1 text-sm">
               <span className="font-medium">{t("settings.general.name")}</span>
               <input
@@ -391,6 +425,12 @@ export function OnboardingWizard() {
           </div>
         ) : snapshotState.kind === "ready" ? (
           <div className="space-y-3">
+            {sshKeyFailure ? (
+              <OnboardingSupplementalFailure
+                error={sshKeyFailure}
+                message={t("onboarding.sshStatusLoadFailed")}
+              />
+            ) : null}
             <div className="rounded-md border bg-background p-3">
               <div className="mb-2 flex items-center justify-between gap-3">
                 <span className="text-sm font-medium">
@@ -459,11 +499,15 @@ export function OnboardingWizard() {
             <div className="flex items-center gap-2">
               <Button
                 disabled={busyState !== null}
-                onClick={() => void complete(false)}
+                onClick={() => void complete(step === "ssh")}
                 type="button"
                 variant="ghost"
               >
-                {t("onboarding.skip")}
+                {t(
+                  step === "identity"
+                    ? "onboarding.skipSetup"
+                    : "onboarding.skipSsh",
+                )}
               </Button>
               {step === "identity" ? (
                 <Button
@@ -497,6 +541,35 @@ export function OnboardingWizard() {
         ) : null}
       </section>
     </main>
+  );
+}
+
+function OnboardingSupplementalFailure({
+  error,
+  message,
+}: {
+  error: unknown;
+  message: string;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div
+      className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-3"
+      role="alert"
+    >
+      <span className="text-sm text-destructive">{message}</span>
+      <Button
+        onClick={() => {
+          window.dispatchEvent(
+            new CustomEvent("artistic-git:error", { detail: error }),
+          );
+        }}
+        type="button"
+        variant="ghost"
+      >
+        {t("onboarding.viewErrorDetails")}
+      </Button>
+    </div>
   );
 }
 

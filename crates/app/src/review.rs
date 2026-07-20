@@ -157,27 +157,30 @@ fn create_review_auto_stash(
 }
 
 fn pull_current_branch_ff_only(runner: &GitRunner, root: &Path) -> PullOutcome {
-    if crate::remote::read_origin_url(runner, root, REVIEW_OPERATION)
-        .ok()
-        .flatten()
-        .is_none()
-    {
-        return PullOutcome::new(ReviewModePullStatus::NoRemote, None);
+    match crate::remote::read_origin_url(runner, root, REVIEW_OPERATION) {
+        Ok(Some(_)) => {}
+        Ok(None) => return PullOutcome::new(ReviewModePullStatus::NoRemote, None),
+        Err(error) => return PullOutcome::failed(error),
     }
 
     if let Err(error) = run_raw_status(runner, root, ["fetch", "origin", "--prune"]) {
         return if error.network {
-            PullOutcome::new(ReviewModePullStatus::Offline, Some(error.summary))
+            PullOutcome::with_error(ReviewModePullStatus::Offline, error.error)
         } else {
-            PullOutcome::new(ReviewModePullStatus::Failed, Some(error.summary))
+            PullOutcome::failed(error.error)
         };
     }
 
-    let Some(upstream) = upstream_branch(runner, root).ok().flatten() else {
-        return PullOutcome::new(ReviewModePullStatus::NoUpstream, None);
+    let upstream = match upstream_branch(runner, root) {
+        Ok(Some(upstream)) => upstream,
+        Ok(None) => return PullOutcome::new(ReviewModePullStatus::NoUpstream, None),
+        Err(error) => return PullOutcome::failed(error),
     };
 
-    let (_ahead, behind) = ahead_behind(runner, root, "HEAD", upstream.as_str()).unwrap_or((0, 0));
+    let (_ahead, behind) = match ahead_behind(runner, root, "HEAD", upstream.as_str()) {
+        Ok(counts) => counts,
+        Err(error) => return PullOutcome::failed(error),
+    };
     if behind == 0 {
         return PullOutcome::new(ReviewModePullStatus::AlreadyUpToDate, None);
     }
@@ -185,9 +188,9 @@ fn pull_current_branch_ff_only(runner: &GitRunner, root: &Path) -> PullOutcome {
     match run_raw_status(runner, root, ["merge", "--ff-only", upstream.as_str()]) {
         Ok(()) => PullOutcome::new(ReviewModePullStatus::Pulled, None),
         Err(error) if error.network => {
-            PullOutcome::new(ReviewModePullStatus::Offline, Some(error.summary))
+            PullOutcome::with_error(ReviewModePullStatus::Offline, error.error)
         }
-        Err(error) => PullOutcome::new(ReviewModePullStatus::Failed, Some(error.summary)),
+        Err(error) => PullOutcome::failed(error.error),
     }
 }
 
@@ -199,13 +202,18 @@ fn build_state(
 ) -> AppResult<ReviewModeState> {
     Ok(ReviewModeState {
         repository_path: display_path(root),
-        branch_name: crate::repository::current_branch_name(runner, root, REVIEW_OPERATION).ok(),
-        head_oid: rev_parse(runner, root, "HEAD").ok(),
+        branch_name: Some(crate::repository::current_branch_name(
+            runner,
+            root,
+            REVIEW_OPERATION,
+        )?),
+        head_oid: Some(rev_parse(runner, root, "HEAD")?),
         latest_commit: latest_commit(runner, root)?,
         auto_stash,
         pull_status: pull.status,
         pull_message: pull.message,
-        has_remote_update: current_branch_has_remote_update(runner, root).unwrap_or(false),
+        pull_error: pull.error,
+        has_remote_update: current_branch_has_remote_update(runner, root)?,
     })
 }
 
@@ -386,7 +394,7 @@ fn ensure_clean_worktree(runner: &GitRunner, root: &Path, operation_name: &str) 
 }
 
 fn upstream_branch(runner: &GitRunner, root: &Path) -> AppResult<Option<String>> {
-    let (_plan, output) = run_git_raw(
+    let (plan, output) = run_git_raw(
         runner,
         Some(root),
         ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
@@ -396,8 +404,17 @@ fn upstream_branch(runner: &GitRunner, root: &Path) -> AppResult<Option<String>>
         Ok(Some(
             String::from_utf8_lossy(&output.stdout).trim().to_owned(),
         ))
-    } else {
+    } else if combined_output(&output)
+        .to_ascii_lowercase()
+        .contains("no upstream configured")
+    {
         Ok(None)
+    } else {
+        Err(command_failure(
+            &plan,
+            output,
+            "failed to inspect the current branch upstream",
+        ))
     }
 }
 
@@ -413,11 +430,23 @@ fn ahead_behind(runner: &GitRunner, root: &Path, left: &str, right: &str) -> App
     let ahead = parts
         .next()
         .and_then(|value| value.parse().ok())
-        .unwrap_or(0);
+        .ok_or_else(|| {
+            expected_repo_error(
+                "Git returned an invalid ahead/behind count",
+                root,
+                REVIEW_OPERATION,
+            )
+        })?;
     let behind = parts
         .next()
         .and_then(|value| value.parse().ok())
-        .unwrap_or(0);
+        .ok_or_else(|| {
+            expected_repo_error(
+                "Git returned an invalid ahead/behind count",
+                root,
+                REVIEW_OPERATION,
+            )
+        })?;
     Ok((ahead, behind))
 }
 
@@ -433,7 +462,7 @@ where
 {
     let (plan, output) =
         run_git_raw(runner, Some(root), args, REVIEW_OPERATION).map_err(|error| RawGitFailure {
-            summary: error.summary,
+            error,
             network: false,
         })?;
     if output.status.success() {
@@ -442,8 +471,8 @@ where
         let summary =
             first_error_line(&output).unwrap_or_else(|| "Git operation failed".to_owned());
         let network = is_network_error(&output);
-        crate::log_app_error(&command_failure(&plan, output, summary.clone()));
-        Err(RawGitFailure { summary, network })
+        let error = command_failure(&plan, output, summary);
+        Err(RawGitFailure { error, network })
     }
 }
 
@@ -528,16 +557,33 @@ fn config_error(
 struct PullOutcome {
     status: ReviewModePullStatus,
     message: Option<String>,
+    error: Option<AppError>,
 }
 
 impl PullOutcome {
     fn new(status: ReviewModePullStatus, message: Option<String>) -> Self {
-        Self { status, message }
+        Self {
+            status,
+            message,
+            error: None,
+        }
+    }
+
+    fn with_error(status: ReviewModePullStatus, error: AppError) -> Self {
+        Self {
+            message: Some(error.summary.clone()),
+            error: Some(error),
+            status,
+        }
+    }
+
+    fn failed(error: AppError) -> Self {
+        Self::with_error(ReviewModePullStatus::Failed, error)
     }
 }
 
 struct RawGitFailure {
-    summary: String,
+    error: AppError,
     network: bool,
 }
 

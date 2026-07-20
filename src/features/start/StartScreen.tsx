@@ -16,6 +16,7 @@ import { useTranslation } from "react-i18next";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
 import { DialogFrame } from "@/components/dialogs/DialogFrame";
+import { ConfirmDialog } from "@/components/dialogs/ConfirmDialog";
 import { ErrorDetailsDialog } from "@/components/dialogs/ErrorDetailsDialog";
 import { Button } from "@/components/ui/button";
 import { BranchSelect } from "@/components/ui/branch-select";
@@ -24,7 +25,9 @@ import { TruncatedText } from "@/components/ui/truncated-text";
 import {
   cancelCloneRepository,
   cancelOperation,
+  clearRecentProjects as clearPersistedRecentProjects,
   cloneRepository,
+  forgetRecentProject,
   openRepository,
   openRepositoryWindow,
   probeRemoteRepository,
@@ -39,11 +42,13 @@ import type {
   ProgressState,
 } from "@/lib/ipc/generated";
 import { cn } from "@/lib/utils";
+import { showToast } from "@/lib/toast";
+import { dispatchErrorGroup } from "@/lib/runtime-errors";
 import {
   normalizeAppSettings,
   toolIdentityFromSettings,
 } from "@/features/settings/settings-model";
-import { useWindowStore } from "@/store/window-store";
+import { recentProjectLimit, useWindowStore } from "@/store/window-store";
 import { WindowCloseGuard } from "@/features/window-close-guard/WindowCloseGuard";
 
 const cloneParentStorageKey = "artistic-git:last-clone-parent-dir";
@@ -70,6 +75,12 @@ type CloneRemoteState =
 export function StartScreen() {
   const { t } = useTranslation();
   const recentProjects = useWindowStore((state) => state.recentProjects);
+  const recentProjectsRuntime = useWindowStore(
+    (state) => state.recentProjectsRuntime,
+  );
+  const retryRecentProjects = useWindowStore(
+    (state) => state.retryRecentProjects,
+  );
   const appSettings = useWindowStore((state) => state.appSettings);
   const openSettings = useWindowStore((state) => state.openSettings);
   const setAppSettings = useWindowStore((state) => state.setAppSettings);
@@ -83,6 +94,9 @@ export function StartScreen() {
   const clearRecentProjects = useWindowStore(
     (state) => state.clearRecentProjects,
   );
+  const setNavigationLocked = useWindowStore(
+    (state) => state.setNavigationLocked,
+  );
   const setOnboarded = useWindowStore((state) => state.setOnboarded);
   const [missingProject, setMissingProject] = React.useState<string | null>(
     null,
@@ -92,6 +106,17 @@ export function StartScreen() {
   const choosingOpenRepositoryRef = React.useRef(false);
   const openingRepositoryRef = React.useRef(false);
   const [openingPath, setOpeningPath] = React.useState<string | null>(null);
+  const [openOperationId, setOpenOperationId] = React.useState<string | null>(
+    null,
+  );
+  const [openCancelling, setOpenCancelling] = React.useState(false);
+  const [openRouteFailure, setOpenRouteFailure] = React.useState<{
+    error: unknown;
+    path: string;
+  } | null>(null);
+  const [recentMutation, setRecentMutation] = React.useState<string | null>(
+    null,
+  );
   const [cloneDialogOpen, setCloneDialogOpen] = React.useState(false);
   const cloneDialogOpenRef = React.useRef(false);
   const [cloneUrl, setCloneUrl] = React.useState("");
@@ -115,8 +140,14 @@ export function StartScreen() {
   );
   const restoreCloneProbeDetailsFocusRef = React.useRef(false);
   const [cloneError, setCloneError] = React.useState<string | null>(null);
+  const [cloneCompletedPath, setCloneCompletedPath] = React.useState<
+    string | null
+  >(null);
+  const [openingClonedProject, setOpeningClonedProject] = React.useState(false);
   const [isCloning, setIsCloning] = React.useState(false);
   const [cloneCancelling, setCloneCancelling] = React.useState(false);
+  const [cloneCancelConfirmOpen, setCloneCancelConfirmOpen] =
+    React.useState(false);
   const [cloneOperationId, setCloneOperationId] = React.useState<string | null>(
     null,
   );
@@ -124,7 +155,18 @@ export function StartScreen() {
     React.useState<OperationProgressEvent | null>(null);
   const [openProgress, setOpenProgress] =
     React.useState<OperationProgressEvent | null>(null);
+  const visibleRecentProjects = React.useMemo(
+    () => recentProjects.slice(0, recentProjectLimit(appSettings)),
+    [appSettings, recentProjects],
+  );
   const cloneOperationIdRef = React.useRef<string | null>(null);
+  const openOperationIdRef = React.useRef<string | null>(null);
+  const pageInteractionBusy =
+    isChoosingOpenRepository || openingPath !== null || isCloning;
+  React.useEffect(() => {
+    setNavigationLocked(pageInteractionBusy);
+    return () => setNavigationLocked(false);
+  }, [pageInteractionBusy, setNavigationLocked]);
   React.useEffect(() => {
     if (
       cloneProbeDetails === null &&
@@ -137,12 +179,16 @@ export function StartScreen() {
   const activateRepository = React.useCallback(
     (repositoryPath: string) => {
       setActiveRepositoryPath(repositoryPath);
-      setRecentProjects([
-        recentProjectFromPath(repositoryPath),
-        ...recentProjects.filter((project) => project.path !== repositoryPath),
-      ]);
+      setRecentProjects(
+        [
+          recentProjectFromPath(repositoryPath),
+          ...recentProjects.filter(
+            (project) => project.path !== repositoryPath,
+          ),
+        ].slice(0, recentProjectLimit(appSettings)),
+      );
     },
-    [recentProjects, setActiveRepositoryPath, setRecentProjects],
+    [appSettings, recentProjects, setActiveRepositoryPath, setRecentProjects],
   );
   const routeRepository = React.useCallback(
     async (repositoryPath: string) => {
@@ -177,43 +223,102 @@ export function StartScreen() {
         validateIdentity: false,
       })
         .then(setAppSettings)
-        .catch(() => undefined);
+        .catch((error) => {
+          dispatchErrorGroup([error], t("start.clonePreferenceSaveFailed"));
+        });
     },
-    [appSettings, setAppSettings],
+    [appSettings, setAppSettings, t],
   );
   const handleOpenRepository = React.useCallback(
     async (path: string) => {
       if (openingRepositoryRef.current) {
         return;
       }
+      const operationId = createOperationId("open-repository");
       openingRepositoryRef.current = true;
+      openOperationIdRef.current = operationId;
+      setOpenOperationId(operationId);
+      setOpenCancelling(false);
+      setOpenRouteFailure(null);
       setOpeningPath(path);
       setOpenProgress({
-        cancellable: false,
+        cancellable: true,
         label: "Opening repository",
-        operationId: "open-repository",
+        operationId,
         progress: { kind: "indeterminate" },
         repositoryPath: null,
         windowLabel: null,
       });
       try {
         const response = await openRepository({
+          operationId,
           path,
           toolIdentity: toolIdentityFromSettings(appSettings),
         });
-        await routeRepository(response.repositoryPath);
-      } catch (error) {
-        window.dispatchEvent(
-          new CustomEvent("artistic-git:error", { detail: error }),
+        reportNonFatalRepositoryErrors(
+          response.nonFatalErrors,
+          t("start.openedWithWarnings"),
         );
+        try {
+          await routeRepository(response.repositoryPath);
+        } catch (error) {
+          setOpenRouteFailure({ error, path: response.repositoryPath });
+          dispatchErrorGroup([error], t("start.openRouteFailed"));
+        }
+      } catch (error) {
+        if (!isOperationCancelledError(error)) {
+          window.dispatchEvent(
+            new CustomEvent("artistic-git:error", { detail: error }),
+          );
+        }
       } finally {
         openingRepositoryRef.current = false;
+        openOperationIdRef.current = null;
+        setOpenOperationId(null);
+        setOpenCancelling(false);
         setOpeningPath(null);
         setOpenProgress(null);
       }
     },
-    [appSettings, routeRepository],
+    [appSettings, routeRepository, t],
   );
+  const retryOpenRepositoryRoute = React.useCallback(async () => {
+    if (!openRouteFailure) {
+      return;
+    }
+    try {
+      await routeRepository(openRouteFailure.path);
+      setOpenRouteFailure(null);
+    } catch (error) {
+      setOpenRouteFailure((current) =>
+        current ? { ...current, error } : current,
+      );
+      dispatchErrorGroup([error], t("start.openRouteFailed"));
+    }
+  }, [openRouteFailure, routeRepository, t]);
+  const cancelOpenRepository = React.useCallback(async () => {
+    if (!openOperationId || openCancelling) {
+      return;
+    }
+
+    setOpenCancelling(true);
+    try {
+      const response = await cancelOperation({ operationId: openOperationId });
+      if (!response.cancelled) {
+        showToast({
+          key: "open-cancel-result",
+          message: t("start.openCancelUnavailable"),
+          tone: "info",
+        });
+        setOpenCancelling(false);
+      }
+    } catch (error) {
+      setOpenCancelling(false);
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:error", { detail: error }),
+      );
+    }
+  }, [openCancelling, openOperationId, t]);
   const handleChooseOpenRepository = React.useCallback(async () => {
     if (
       choosingOpenRepositoryRef.current ||
@@ -249,6 +354,7 @@ export function StartScreen() {
     setIsCloning(true);
     setCloneCancelling(false);
     setCloneError(null);
+    setCloneCompletedPath(null);
     cloneOperationIdRef.current = operationId;
     setCloneOperationId(operationId);
     setCloneProgress({
@@ -273,24 +379,38 @@ export function StartScreen() {
         toolIdentity: toolIdentityFromSettings(appSettings),
         url: cloneUrl.trim(),
       });
+      reportNonFatalRepositoryErrors(
+        response.repository.nonFatalErrors,
+        t("start.openedWithWarnings"),
+      );
       rememberCloneParentDirectory(parentDirectory);
-      await routeRepository(response.repository.repositoryPath);
-      cloneDialogOpenRef.current = false;
-      setCloneDialogOpen(false);
-      setCloneUrl("");
-      setCloneBranch("");
-      setCloneRemoteState({ kind: "idle" });
-      setCloneProbeDetails(null);
-      setCloneDirectoryName("");
-      setCloneDirectoryNameTouched(false);
+      const clonedPath = response.repository.repositoryPath;
+      setCloneCompletedPath(clonedPath);
+      try {
+        await routeRepository(clonedPath);
+        cloneDialogOpenRef.current = false;
+        setCloneDialogOpen(false);
+        setCloneUrl("");
+        setCloneBranch("");
+        setCloneRemoteState({ kind: "idle" });
+        setCloneProbeDetails(null);
+        setCloneDirectoryName("");
+        setCloneDirectoryNameTouched(false);
+        setCloneCompletedPath(null);
+      } catch (error) {
+        setCloneError(t("start.cloneOpenFailed", { path: clonedPath }));
+        dispatchErrorGroup([error], t("start.cloneOpenFailedSummary"));
+      }
     } catch (error) {
       const cancelled = isOperationCancelledError(error);
-      setCloneError(
-        cancelled
-          ? t("start.cloneCancelled")
-          : errorSummary(error, t("start.cloneFailed")),
-      );
-      if (!cancelled) {
+      if (cancelled) {
+        setCloneError(null);
+        showToast({
+          key: "clone-result",
+          message: t("start.cloneCancelled"),
+        });
+      } else {
+        setCloneError(t("start.cloneFailed"));
         window.dispatchEvent(
           new CustomEvent("artistic-git:error", { detail: error }),
         );
@@ -298,6 +418,7 @@ export function StartScreen() {
     } finally {
       setIsCloning(false);
       setCloneCancelling(false);
+      setCloneCancelConfirmOpen(false);
       setCloneOperationId(null);
       setCloneProgress(null);
       if (cloneOperationIdRef.current === operationId) {
@@ -315,6 +436,24 @@ export function StartScreen() {
     routeRepository,
     t,
   ]);
+  const retryOpenClonedProject = React.useCallback(async () => {
+    if (!cloneCompletedPath || openingClonedProject) {
+      return;
+    }
+    setOpeningClonedProject(true);
+    try {
+      await routeRepository(cloneCompletedPath);
+      cloneDialogOpenRef.current = false;
+      setCloneDialogOpen(false);
+      setCloneCompletedPath(null);
+      setCloneError(null);
+    } catch (error) {
+      setCloneError(t("start.cloneOpenFailed", { path: cloneCompletedPath }));
+      dispatchErrorGroup([error], t("start.cloneOpenFailedSummary"));
+    } finally {
+      setOpeningClonedProject(false);
+    }
+  }, [cloneCompletedPath, openingClonedProject, routeRepository, t]);
   const handleChooseCloneParentDirectory = React.useCallback(async () => {
     try {
       const selected = await openDialog({
@@ -328,32 +467,87 @@ export function StartScreen() {
         setCloneError(null);
       }
     } catch (error) {
-      setCloneError(errorSummary(error, t("start.cloneChooseParentFailed")));
+      setCloneError(t("start.cloneChooseParentFailed"));
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:error", { detail: error }),
+      );
     }
   }, [cloneParentDirectory, t]);
-  const handleCancelClone = React.useCallback(async () => {
+  const handleForgetRecentProject = React.useCallback(
+    async (path: string) => {
+      if (recentMutation !== null || pageInteractionBusy) {
+        return;
+      }
+      setRecentMutation(path);
+      try {
+        await forgetRecentProject({ path });
+        removeRecentProject(path);
+        if (missingProject === path) {
+          setMissingProject(null);
+        }
+      } catch (error) {
+        window.dispatchEvent(
+          new CustomEvent("artistic-git:error", { detail: error }),
+        );
+      } finally {
+        setRecentMutation(null);
+      }
+    },
+    [missingProject, pageInteractionBusy, recentMutation, removeRecentProject],
+  );
+  const handleClearRecentProjects = React.useCallback(async () => {
+    if (recentMutation !== null || pageInteractionBusy) {
+      return;
+    }
+    setRecentMutation("*");
+    try {
+      await clearPersistedRecentProjects();
+      clearRecentProjects();
+      setMissingProject(null);
+    } catch (error) {
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:error", { detail: error }),
+      );
+    } finally {
+      setRecentMutation(null);
+    }
+  }, [clearRecentProjects, pageInteractionBusy, recentMutation]);
+  const handleCancelClone = React.useCallback(() => {
     if (!cloneOperationId) {
       return;
     }
-    if (!window.confirm(t("start.cloneCancelConfirm"))) {
+    setCloneCancelConfirmOpen(true);
+  }, [cloneOperationId]);
+
+  const confirmCancelClone = React.useCallback(async () => {
+    if (!cloneOperationId || !isCloning) {
+      setCloneCancelConfirmOpen(false);
       return;
     }
 
     setCloneCancelling(true);
+    setCloneCancelConfirmOpen(false);
     setCloneError(null);
     try {
       const response = await cancelCloneRepository({
         operationId: cloneOperationId,
       });
       if (!response.cancelled) {
-        setCloneError(t("start.cloneCancelUnavailable"));
+        setCloneError(null);
+        showToast({
+          key: "clone-result",
+          message: t("start.cloneCancelUnavailable"),
+        });
         setCloneCancelling(false);
       }
     } catch (error) {
-      setCloneError(errorSummary(error, t("start.cloneCancelFailed")));
+      setCloneError(t("start.cloneCancelFailed"));
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:error", { detail: error }),
+      );
       setCloneCancelling(false);
     }
-  }, [cloneOperationId, t]);
+  }, [cloneOperationId, isCloning, t]);
   const recoverCloneForWindowClose = React.useCallback(async () => {
     if (!cloneOperationId) {
       return;
@@ -367,10 +561,10 @@ export function StartScreen() {
         operationId: cloneOperationId,
       });
     } catch (error) {
-      const message = errorSummary(error, t("start.cloneCancelFailed"));
+      const message = t("start.cloneCancelFailed");
       setCloneError(message);
       setCloneCancelling(false);
-      throw new Error(message, { cause: error });
+      throw error;
     }
 
     if (!response.cancelled) {
@@ -380,6 +574,22 @@ export function StartScreen() {
       throw new Error(message);
     }
   }, [cloneOperationId, t]);
+  const recoverOperationForWindowClose = React.useCallback(async () => {
+    if (isCloning) {
+      await recoverCloneForWindowClose();
+      return;
+    }
+    if (!openOperationId) {
+      return;
+    }
+
+    setOpenCancelling(true);
+    const response = await cancelOperation({ operationId: openOperationId });
+    if (!response.cancelled) {
+      setOpenCancelling(false);
+      throw new Error(t("start.openCancelUnavailable"));
+    }
+  }, [isCloning, openOperationId, recoverCloneForWindowClose, t]);
   const handleCloneUrlChange = React.useCallback(
     (url: string) => {
       setCloneUrl(url);
@@ -464,13 +674,21 @@ export function StartScreen() {
       ) {
         setCloneProgress(event.payload);
       }
-    }).then((unlisten) => {
-      if (disposed) {
-        unlisten();
-      } else {
-        unlistenProgress = unlisten;
-      }
-    });
+    })
+      .then((unlisten) => {
+        if (disposed) {
+          unlisten();
+        } else {
+          unlistenProgress = unlisten;
+        }
+      })
+      .catch((error) => {
+        if (!disposed) {
+          window.dispatchEvent(
+            new CustomEvent("artistic-git:error", { detail: error }),
+          );
+        }
+      });
 
     return () => {
       disposed = true;
@@ -479,29 +697,40 @@ export function StartScreen() {
   }, []);
 
   React.useEffect(() => {
-    if (!openingPath) {
+    if (!openOperationId) {
       return undefined;
     }
 
     let disposed = false;
     let unlistenProgress: (() => void) | null = null;
     void listenAppEvent("operation-progress", (event) => {
-      if (!disposed && isOpenRepositoryProgress(event.payload)) {
+      if (
+        !disposed &&
+        event.payload.operationId === openOperationIdRef.current
+      ) {
         setOpenProgress(event.payload);
       }
-    }).then((unlisten) => {
-      if (disposed) {
-        unlisten();
-      } else {
-        unlistenProgress = unlisten;
-      }
-    });
+    })
+      .then((unlisten) => {
+        if (disposed) {
+          unlisten();
+        } else {
+          unlistenProgress = unlisten;
+        }
+      })
+      .catch((error) => {
+        if (!disposed) {
+          window.dispatchEvent(
+            new CustomEvent("artistic-git:error", { detail: error }),
+          );
+        }
+      });
 
     return () => {
       disposed = true;
       unlistenProgress?.();
     };
-  }, [openingPath]);
+  }, [openOperationId]);
 
   React.useEffect(() => {
     const openProject = () => {
@@ -535,6 +764,23 @@ export function StartScreen() {
       window.removeEventListener("artistic-git:clone-project", cloneProject);
     };
   }, [appSettings, cloneUrl, handleChooseOpenRepository, isCloning]);
+
+  React.useEffect(() => {
+    const action = new URLSearchParams(window.location.search).get("action");
+    if (action !== "open" && action !== "clone") {
+      return;
+    }
+    const url = new URL(window.location.href);
+    url.searchParams.delete("action");
+    window.history.replaceState(null, "", url);
+    window.dispatchEvent(
+      new CustomEvent(
+        action === "clone"
+          ? "artistic-git:clone-project"
+          : "artistic-git:open-project",
+      ),
+    );
+  }, []);
 
   return (
     <main
@@ -599,13 +845,52 @@ export function StartScreen() {
                 {t("actions.cloneProject")}
               </Button>
               {openingPath ? (
-                <OpenProgressView progress={openProgress} />
+                <OpenProgressView
+                  cancelling={openCancelling}
+                  onCancel={() => void cancelOpenRepository()}
+                  progress={openProgress}
+                />
+              ) : null}
+              {!openingPath && openRouteFailure ? (
+                <div
+                  className="space-y-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-sm"
+                  role="alert"
+                >
+                  <p>
+                    {t("start.openRouteFailedAt", {
+                      path: openRouteFailure.path,
+                    })}
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      onClick={() =>
+                        window.dispatchEvent(
+                          new CustomEvent("artistic-git:error", {
+                            detail: openRouteFailure.error,
+                          }),
+                        )
+                      }
+                      type="button"
+                      variant="ghost"
+                    >
+                      {t("dialogs.error.showDetails")}
+                    </Button>
+                    <Button
+                      onClick={() => void retryOpenRepositoryRoute()}
+                      type="button"
+                      variant="secondary"
+                    >
+                      {t("start.retryOpenProject")}
+                    </Button>
+                  </div>
+                </div>
               ) : null}
             </div>
           </div>
 
           <div className="flex items-center gap-2">
             <IconButton
+              disabled={pageInteractionBusy}
               label={t("start.openOnboarding")}
               onClick={() => {
                 setOnboarded(false);
@@ -617,6 +902,7 @@ export function StartScreen() {
               <GraduationCap className="size-5" aria-hidden="true" />
             </IconButton>
             <IconButton
+              disabled={pageInteractionBusy}
               label={t("actions.openSettings")}
               onClick={() => {
                 openSettings("general");
@@ -633,25 +919,78 @@ export function StartScreen() {
         <section className="flex min-w-0 flex-col pb-6 md:py-12">
           <div className="mb-4 flex items-center justify-between gap-4">
             <h2 className="text-base font-medium">{t("app.recentProjects")}</h2>
-            {recentProjects.length > 0 ? (
+            {recentProjectsRuntime.status === "ready" &&
+            visibleRecentProjects.length > 0 ? (
               <button
                 className="text-sm text-muted-foreground hover:text-foreground"
-                onClick={clearRecentProjects}
+                disabled={pageInteractionBusy || recentMutation !== null}
+                onClick={() => void handleClearRecentProjects()}
                 type="button"
               >
-                {t("start.clearRecent")}
+                {recentMutation === "*"
+                  ? t("start.clearingRecent")
+                  : t("start.clearRecent")}
               </button>
             ) : null}
           </div>
 
           <div className="min-h-0 flex-1 overflow-auto rounded-md border bg-card">
-            {recentProjects.length === 0 ? (
+            {recentProjectsRuntime.status === "loading" ? (
+              <div
+                aria-live="polite"
+                className="flex h-full min-h-64 items-center justify-center gap-2 px-8 text-sm text-muted-foreground"
+                role="status"
+              >
+                <LoaderCircle
+                  className="size-4 animate-spin"
+                  aria-hidden="true"
+                />
+                {t("start.loadingRecent")}
+              </div>
+            ) : recentProjectsRuntime.status === "failed" ? (
+              <div
+                className="flex h-full min-h-64 flex-col items-center justify-center gap-3 px-8 text-center"
+                role="alert"
+              >
+                <CircleAlert
+                  className="size-5 text-destructive"
+                  aria-hidden="true"
+                />
+                <p className="text-sm text-muted-foreground">
+                  {t("start.recentLoadFailed")}
+                </p>
+                <div className="flex gap-2">
+                  <Button
+                    onClick={() =>
+                      window.dispatchEvent(
+                        new CustomEvent("artistic-git:error", {
+                          detail: recentProjectsRuntime.error,
+                        }),
+                      )
+                    }
+                    type="button"
+                    variant="ghost"
+                  >
+                    {t("dialogs.error.showDetails")}
+                  </Button>
+                  <Button
+                    className="gap-2"
+                    onClick={retryRecentProjects}
+                    type="button"
+                    variant="secondary"
+                  >
+                    <RefreshCw className="size-4" aria-hidden="true" />
+                    {t("actions.retry")}
+                  </Button>
+                </div>
+              </div>
+            ) : visibleRecentProjects.length === 0 ? (
               <div className="flex h-full min-h-64 items-center justify-center px-8 text-center text-sm text-muted-foreground">
                 {t("app.recentProjectsEmpty")}
               </div>
             ) : (
               <ul className="divide-y">
-                {recentProjects.map((project) => (
+                {visibleRecentProjects.map((project) => (
                   <li key={project.path}>
                     <div
                       className={cn(
@@ -692,18 +1031,35 @@ export function StartScreen() {
                         </span>
                       </button>
                       <IconButton
+                        aria-busy={recentMutation === project.path}
                         className="opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
-                        label={t("start.removeRecent", {
-                          name: project.displayName,
-                        })}
-                        onClick={() => {
-                          removeRecentProject(project.path);
-                        }}
+                        label={
+                          recentMutation === project.path
+                            ? t("start.removingRecent", {
+                                name: project.displayName,
+                              })
+                            : t("start.removeRecent", {
+                                name: project.displayName,
+                              })
+                        }
+                        disabled={
+                          pageInteractionBusy || recentMutation !== null
+                        }
+                        onClick={() =>
+                          void handleForgetRecentProject(project.path)
+                        }
                         tooltip={t("start.removeRecentTooltip")}
                         type="button"
                         variant="ghost"
                       >
-                        <Trash2 className="size-4" aria-hidden="true" />
+                        {recentMutation === project.path ? (
+                          <LoaderCircle
+                            className="size-4 animate-spin"
+                            aria-hidden="true"
+                          />
+                        ) : (
+                          <Trash2 className="size-4" aria-hidden="true" />
+                        )}
                       </IconButton>
                     </div>
                   </li>
@@ -722,10 +1078,8 @@ export function StartScreen() {
               </span>
               <button
                 className="shrink-0 font-medium text-foreground underline-offset-4 hover:underline"
-                onClick={() => {
-                  removeRecentProject(missingProject);
-                  setMissingProject(null);
-                }}
+                disabled={pageInteractionBusy || recentMutation !== null}
+                onClick={() => void handleForgetRecentProject(missingProject)}
                 type="button"
               >
                 {t("start.removeFromList")}
@@ -739,9 +1093,11 @@ export function StartScreen() {
           branch={cloneBranch}
           busy={isCloning}
           cancelling={cloneCancelling}
+          completedPath={cloneCompletedPath}
           directoryName={cloneDirectoryName}
           error={cloneError}
           onCancelClone={() => void handleCancelClone()}
+          onRetryOpen={() => void retryOpenClonedProject()}
           onBranchChange={setCloneBranch}
           onChooseParentDirectory={() =>
             void handleChooseCloneParentDirectory()
@@ -755,6 +1111,10 @@ export function StartScreen() {
             if (!isCloning) {
               cloneDialogOpenRef.current = open;
               setCloneDialogOpen(open);
+              if (!open) {
+                setCloneCompletedPath(null);
+                setCloneError(null);
+              }
             }
           }}
           onParentDirectoryChange={(value) => {
@@ -777,10 +1137,20 @@ export function StartScreen() {
           progress={cloneProgress}
           probeDetailsTriggerRef={cloneProbeDetailsTriggerRef}
           remoteState={cloneRemoteState}
+          retryingOpen={openingClonedProject}
           onShowProbeDetails={setCloneProbeDetails}
           url={cloneUrl}
         />
       ) : null}
+      <ConfirmDialog
+        confirmLabel={t("start.cloneCancel")}
+        description={t("start.cloneCancelConfirm")}
+        onConfirm={() => void confirmCancelClone()}
+        onOpenChange={setCloneCancelConfirmOpen}
+        open={cloneCancelConfirmOpen && isCloning}
+        title={t("start.cloneCancelTitle")}
+        variant="danger"
+      />
       <ErrorDetailsDialog
         error={cloneProbeDetails ?? ""}
         onOpenChange={(open) => {
@@ -794,12 +1164,23 @@ export function StartScreen() {
       <WindowCloseGuard
         active={isCloning || openingPath !== null}
         canRecover={
-          isCloning &&
-          cloneOperationId !== null &&
-          cloneProgress?.cancellable === true &&
-          !cloneCancelling
+          (isCloning &&
+            cloneOperationId !== null &&
+            cloneProgress?.cancellable === true &&
+            !cloneCancelling) ||
+          (openingPath !== null &&
+            openOperationId !== null &&
+            openProgress?.cancellable === true &&
+            !openCancelling)
         }
-        onRecover={recoverCloneForWindowClose}
+        confirmLabel={isCloning ? undefined : t("start.openCloseGuardConfirm")}
+        description={
+          isCloning ? undefined : t("start.openCloseGuardDescription")
+        }
+        onRecover={recoverOperationForWindowClose}
+        recoveryBusyLabel={
+          isCloning ? undefined : t("start.openCloseGuardCancelling")
+        }
       />
     </main>
   );
@@ -809,10 +1190,12 @@ interface CloneRepositoryDialogProps {
   branch: string;
   busy: boolean;
   cancelling: boolean;
+  completedPath: string | null;
   directoryName: string;
   error: string | null;
   onBranchChange: (value: string) => void;
   onCancelClone: () => void;
+  onRetryOpen: () => void;
   onChooseParentDirectory: () => void;
   onDirectoryNameChange: (value: string) => void;
   onOpenChange: (open: boolean) => void;
@@ -825,6 +1208,7 @@ interface CloneRepositoryDialogProps {
   progress: OperationProgressEvent | null;
   probeDetailsTriggerRef: React.RefObject<HTMLButtonElement | null>;
   remoteState: CloneRemoteState;
+  retryingOpen: boolean;
   url: string;
 }
 
@@ -832,10 +1216,12 @@ function CloneRepositoryDialog({
   branch,
   busy,
   cancelling,
+  completedPath,
   directoryName,
   error,
   onBranchChange,
   onCancelClone,
+  onRetryOpen,
   onChooseParentDirectory,
   onDirectoryNameChange,
   onOpenChange,
@@ -848,6 +1234,7 @@ function CloneRepositoryDialog({
   progress,
   probeDetailsTriggerRef,
   remoteState,
+  retryingOpen,
   url,
 }: CloneRepositoryDialogProps) {
   const { t } = useTranslation();
@@ -900,6 +1287,35 @@ function CloneRepositoryDialog({
             >
               {cancelling ? t("start.cloneCancelling") : t("start.cloneCancel")}
             </Button>
+          ) : completedPath ? (
+            <>
+              <Button
+                disabled={retryingOpen}
+                onClick={() => onOpenChange(false)}
+                type="button"
+                variant="ghost"
+              >
+                {t("actions.close")}
+              </Button>
+              <Button
+                className="gap-2"
+                disabled={retryingOpen}
+                onClick={onRetryOpen}
+                type="button"
+              >
+                {retryingOpen ? (
+                  <LoaderCircle
+                    className="size-4 animate-spin"
+                    aria-hidden="true"
+                  />
+                ) : (
+                  <FolderOpen className="size-4" aria-hidden="true" />
+                )}
+                {retryingOpen
+                  ? t("start.retryingOpenProject")
+                  : t("start.retryOpenProject")}
+              </Button>
+            </>
           ) : (
             <>
               <Button
@@ -928,6 +1344,31 @@ function CloneRepositoryDialog({
           error={error}
           progress={progress}
         />
+      ) : completedPath ? (
+        <div className="space-y-3" role="status" aria-live="polite">
+          <div className="flex items-start gap-2 rounded-md border border-success/40 bg-success/10 p-3 text-sm">
+            <CircleCheck
+              className="mt-0.5 size-4 shrink-0 text-success"
+              aria-hidden="true"
+            />
+            <div className="min-w-0 space-y-1">
+              <p className="font-medium">{t("start.cloneCompleted")}</p>
+              <TruncatedText
+                className="block text-xs text-muted-foreground"
+                normalizePath
+                text={completedPath}
+              />
+            </div>
+          </div>
+          {error ? (
+            <div
+              className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm"
+              role="alert"
+            >
+              {error}
+            </div>
+          ) : null}
+        </div>
       ) : (
         <form
           className="flex flex-col gap-4"
@@ -1172,8 +1613,12 @@ function CloneProgressView({
 }
 
 function OpenProgressView({
+  cancelling,
+  onCancel,
   progress,
 }: {
+  cancelling: boolean;
+  onCancel: () => void;
   progress: OperationProgressEvent | null;
 }) {
   const { t } = useTranslation();
@@ -1193,6 +1638,16 @@ function OpenProgressView({
             {Math.round(percent)}%
           </span>
         ) : null}
+      </div>
+      <div className="mt-2 flex justify-end">
+        <Button
+          disabled={cancelling || progress?.cancellable !== true}
+          onClick={onCancel}
+          type="button"
+          variant="ghost"
+        >
+          {cancelling ? t("actions.cancelling") : t("actions.cancel")}
+        </Button>
       </div>
       <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted">
         <div
@@ -1217,6 +1672,16 @@ function recentProjectFromPath(path: string) {
     lastOpenedAt: new Date().toISOString(),
     path,
   };
+}
+
+function reportNonFatalRepositoryErrors(
+  errors: AppError[] | undefined,
+  summary: string,
+) {
+  if (!errors?.length) {
+    return;
+  }
+  dispatchErrorGroup(errors, summary);
 }
 
 function inferDirectoryNameFromUrl(url: string): string {
@@ -1285,7 +1750,7 @@ function cloneProgressLabel(
     case "Cloning submodules":
       return t("start.cloneProgressSubmodules");
     case "Clone complete":
-      return t("start.cloneProgressComplete");
+      return t("start.cloneProgressFinalizing");
     case "Cloning repository":
     default:
       return t("start.cloneProgressClone");
@@ -1302,33 +1767,11 @@ function openProgressLabel(
     case "Downloading submodule LFS objects":
       return t("repository.downloadingSubmoduleLfs");
     case "Submodules ready":
-      return t("repository.submodulesReady");
+      return t("start.openProgressFinalizing");
     case "Opening repository":
     default:
       return t("start.openingRepository");
   }
-}
-
-function isOpenRepositoryProgress(event: OperationProgressEvent): boolean {
-  return (
-    event.operationId.startsWith("open-repository") &&
-    (event.label === "Updating submodules" ||
-      event.label === "Downloading submodule LFS objects" ||
-      event.label === "Submodules ready")
-  );
-}
-
-function errorSummary(error: unknown, fallback: string): string {
-  if (
-    typeof error === "object" &&
-    error !== null &&
-    "summary" in error &&
-    typeof error.summary === "string"
-  ) {
-    return error.summary;
-  }
-
-  return error instanceof Error ? error.message : fallback;
 }
 
 function errorDetails(

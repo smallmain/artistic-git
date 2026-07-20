@@ -41,6 +41,15 @@ export function DiffViewer({
   const { t } = useTranslation();
   const [textMode, setTextMode] = React.useState<TextDiffMode>(initialTextMode);
   const effectiveContent = getEffectiveContent(content, payload);
+  const modeChangeSummary =
+    payload.metadata.modeChanged === "true" &&
+    payload.metadata.oldMode &&
+    payload.metadata.newMode
+      ? t("diff.modeChangeSummary", {
+          newMode: payload.metadata.newMode,
+          oldMode: payload.metadata.oldMode,
+        })
+      : null;
 
   const updateTextMode = (mode: TextDiffMode) => {
     setTextMode(mode);
@@ -60,10 +69,14 @@ export function DiffViewer({
             <p className="truncate text-sm font-medium">
               {formatDiffPath(payload)}
             </p>
-            <p className="truncate text-xs text-muted-foreground">
+            <p
+              className="truncate text-xs text-muted-foreground"
+              title={modeChangeSummary ?? undefined}
+            >
               {t(`diff.changeKind.${payload.changeKind}`)} ·{" "}
               {t(`diff.fileKind.${payload.fileKind}`)}
               {payload.lfsLock?.locked ? ` · ${t("diff.lfsLocked")}` : ""}
+              {modeChangeSummary ? ` · ${modeChangeSummary}` : ""}
             </p>
           </div>
         </div>
@@ -365,17 +378,33 @@ function FileDiffCard({
   const newBytes = parseOptionalNumber(payload.metadata.newBytes);
   const lfsStatus = content.kind === "lfsPointer" ? content.status : undefined;
   const isSubmodule = payload.metadata.submodule === "true";
+  const modeChanged = payload.metadata.modeChanged === "true";
+  const modeOnly = modeChanged && payload.metadata.contentChanged === "false";
+  const submoduleTitle =
+    payload.changeKind === "added"
+      ? t("diff.card.submoduleAdded", { path: payload.newPath })
+      : payload.changeKind === "deleted"
+        ? t("diff.card.submoduleDeleted", { path: payload.newPath })
+        : payload.changeKind === "renamed"
+          ? t("diff.card.submoduleMoved", { path: payload.newPath })
+          : payload.changeKind === "copied"
+            ? t("diff.card.submoduleCopied", { path: payload.newPath })
+            : t("diff.card.submoduleUpdated", { path: payload.newPath });
   const title =
-    content.kind === "deferred" || payload.metadata.previewDeferred === "true"
-      ? t("diff.card.previewDeferred")
-      : content.kind === "lfsPointer" && content.status === "loading"
-        ? t("diff.card.lfsLoading")
-        : content.kind === "lfsPointer" && content.status === "error"
-          ? (content.message ?? t("diff.card.lfsError"))
-          : (content.message ??
-            (isSubmodule
-              ? t("diff.card.submoduleUpdated", { path: payload.newPath })
-              : t(`diff.card.${content.kind}`)));
+    payload.metadata.oversized === "true"
+      ? t("diff.card.oversizedText")
+      : content.kind === "deferred" ||
+          payload.metadata.previewDeferred === "true"
+        ? t("diff.card.previewDeferred")
+        : content.kind === "lfsPointer" && content.status === "loading"
+          ? t("diff.card.lfsLoading")
+          : content.kind === "lfsPointer" && content.status === "error"
+            ? t("diff.card.lfsError")
+            : modeOnly
+              ? t("diff.card.modeChanged")
+              : isSubmodule
+                ? submoduleTitle
+                : t(`diff.card.${content.kind}`);
   const role =
     lfsStatus === "loading"
       ? "status"
@@ -396,6 +425,16 @@ function FileDiffCard({
             <p className="mt-1 break-all text-sm text-muted-foreground">
               {formatDiffPath(payload)}
             </p>
+            {content.message ? (
+              <details className="mt-3 text-sm text-muted-foreground">
+                <summary className="cursor-pointer font-medium text-foreground">
+                  {t("dialogs.error.showDetails")}
+                </summary>
+                <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md border bg-muted p-2 font-mono text-xs">
+                  {content.message}
+                </pre>
+              </details>
+            ) : null}
             <dl className="mt-4 grid gap-2 text-sm">
               {lfsStatus ? (
                 <MetadataRow
@@ -436,6 +475,14 @@ function FileDiffCard({
                 <MetadataRow
                   label={t("diff.newVersion")}
                   value={shortOid(payload.metadata.newOid)}
+                />
+              ) : null}
+              {modeChanged &&
+              payload.metadata.oldMode &&
+              payload.metadata.newMode ? (
+                <MetadataRow
+                  label={t("diff.fileMode")}
+                  value={`${payload.metadata.oldMode} -> ${payload.metadata.newMode}`}
                 />
               ) : null}
             </dl>

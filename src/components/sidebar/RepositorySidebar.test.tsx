@@ -77,7 +77,7 @@ describe("RepositorySidebar", () => {
     expect(
       screen.getByRole("menuitem", { name: "Delete branch" }),
     ).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    fireEvent.keyDown(document, { key: "Escape" });
 
     fireEvent.contextMenu(screen.getByText("concept-pass"));
     fireEvent.click(screen.getByRole("menuitem", { name: "Delete branch" }));
@@ -140,6 +140,9 @@ describe("RepositorySidebar", () => {
     expect(onShowStashDetails).toHaveBeenCalledWith(
       expect.objectContaining({ id: "stash@{0}" }),
     );
+
+    fireEvent.click(screen.getByRole("button", { name: /WIP/ }));
+    expect(onShowStashDetails).toHaveBeenCalledTimes(2);
   });
 
   it("shows fetch offline status with the failure summary", () => {
@@ -152,11 +155,27 @@ describe("RepositorySidebar", () => {
       },
     });
 
-    expect(
-      screen.getByRole("tooltip", {
-        name: /Could not resolve host: example.test/,
-      }),
-    ).toBeInTheDocument();
+    const tooltip = screen
+      .getByText("Technical details: Could not resolve host: example.test")
+      .closest('[role="tooltip"]')!;
+    expect(tooltip).toHaveTextContent("Remote repository may be offline");
+    expect(tooltip).toHaveTextContent(
+      "Technical details: Could not resolve host: example.test",
+    );
+    expect(tooltip).toHaveTextContent("2025");
+    expect(tooltip).not.toHaveTextContent("1760000000");
+  });
+
+  it("distinguishes empty lists from empty search results", () => {
+    renderSidebar({ branchItems: [], stashItems: [] });
+
+    expect(screen.getByText("No branches yet")).toBeVisible();
+    expect(screen.getByText("No stashes yet")).toBeVisible();
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Search branches" }), {
+      target: { value: "missing" },
+    });
+    expect(screen.getByText("No matching items")).toBeVisible();
   });
 
   it("hides sync entrances and pending badges when there is no remote", () => {

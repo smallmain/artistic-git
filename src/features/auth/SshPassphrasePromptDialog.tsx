@@ -1,42 +1,111 @@
-import { KeyRound } from "lucide-react";
+import { KeyRound, Loader2 } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { DialogFrame } from "@/components/dialogs/DialogFrame";
 import { Button } from "@/components/ui/button";
 import type {
+  AuthPromptDismissedEvent,
   SshPassphrasePromptEvent,
   SubmitSshPassphrasePromptRequest,
 } from "@/lib/ipc/commands";
-import { submitSshPassphrasePrompt } from "@/lib/ipc/commands";
+import {
+  setAuthPromptListenerReady,
+  submitSshPassphrasePrompt,
+} from "@/lib/ipc/commands";
 import { listenRuntimeEvent } from "@/lib/ipc/events";
 
 export function SshPassphrasePromptDialog() {
   const { t } = useTranslation();
-  const [prompt, setPrompt] = React.useState<SshPassphrasePromptEvent | null>(
-    null,
-  );
+  const [prompts, setPrompts] = React.useState<SshPassphrasePromptEvent[]>([]);
+  const prompt = prompts[0] ?? null;
   const [passphrase, setPassphrase] = React.useState("");
   const [remember, setRemember] = React.useState(false);
-  const [submitting, setSubmitting] = React.useState(false);
+  const [busyAction, setBusyAction] = React.useState<
+    "cancel" | "submit" | null
+  >(null);
 
   React.useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    void listenRuntimeEvent<SshPassphrasePromptEvent>(
-      "ssh-passphrase-prompt",
-      (event) => {
-        const next = event.payload;
-        setPrompt(next);
+    if (!prompt) {
+      return;
+    }
+    let active = true;
+    void Promise.resolve().then(() => {
+      if (active) {
         setPassphrase("");
-        setRemember(next.request.rememberAvailable);
-        setSubmitting(false);
-      },
-    ).then((resolvedUnlisten) => {
-      unlisten = resolvedUnlisten;
+        setRemember(prompt.request.rememberAvailable);
+        setBusyAction(null);
+      }
     });
+    return () => {
+      active = false;
+    };
+  }, [prompt]);
+
+  React.useEffect(() => {
+    let mounted = true;
+    const unlisteners: Array<() => void> = [];
+    void (async () => {
+      try {
+        unlisteners.push(
+          await listenRuntimeEvent<SshPassphrasePromptEvent>(
+            "ssh-passphrase-prompt",
+            (event) => {
+              const next = event.payload;
+              setPrompts((current) =>
+                current.some((prompt) => prompt.promptId === next.promptId)
+                  ? current
+                  : [...current, next],
+              );
+            },
+          ),
+        );
+        unlisteners.push(
+          await listenRuntimeEvent<AuthPromptDismissedEvent>(
+            "ssh-passphrase-prompt-dismissed",
+            (event) => {
+              setPrompts((current) =>
+                current.filter(
+                  (prompt) => prompt.promptId !== event.payload.promptId,
+                ),
+              );
+            },
+          ),
+        );
+        if (!mounted) {
+          for (const unlisten of unlisteners.toReversed()) {
+            unlisten();
+          }
+          unlisteners.length = 0;
+          return;
+        }
+        await setAuthPromptListenerReady({
+          kind: "sshPassphrase",
+          ready: true,
+        });
+      } catch (error) {
+        for (const unlisten of unlisteners.toReversed()) {
+          unlisten();
+        }
+        unlisteners.length = 0;
+        if (mounted) {
+          window.dispatchEvent(
+            new CustomEvent("artistic-git:error", { detail: error }),
+          );
+        }
+      }
+    })();
 
     return () => {
-      unlisten?.();
+      mounted = false;
+      for (const unlisten of unlisteners.toReversed()) {
+        unlisten();
+      }
+      unlisteners.length = 0;
+      void setAuthPromptListenerReady({
+        kind: "sshPassphrase",
+        ready: false,
+      }).catch(() => undefined);
     };
   }, []);
 
@@ -45,35 +114,40 @@ export function SshPassphrasePromptDialog() {
   }
 
   const request = prompt.request;
-  const submitDisabled = !passphrase || submitting;
+  const busy = busyAction !== null;
+  const submitDisabled = !passphrase || busy;
 
   const completePrompt = async (
     submission: Omit<SubmitSshPassphrasePromptRequest, "promptId">,
   ) => {
-    setSubmitting(true);
+    setBusyAction(submission.cancelled ? "cancel" : "submit");
     try {
       await submitSshPassphrasePrompt({
         promptId: prompt.promptId,
         ...submission,
       });
-      setPrompt(null);
+      setPrompts((current) =>
+        current.filter((item) => item.promptId !== prompt.promptId),
+      );
     } catch (error) {
       window.dispatchEvent(
         new CustomEvent("artistic-git:error", { detail: error }),
       );
-      setSubmitting(false);
+      setBusyAction(null);
     }
   };
 
   return (
     <DialogFrame
       className="max-w-md"
-      closeOnEscape={!submitting}
+      closeOnEscape={!busy}
       description={t("auth.ssh.description")}
+      dismissible={!busy}
       footer={
         <div className="flex items-center justify-end gap-2">
           <Button
-            disabled={submitting}
+            className="gap-2"
+            disabled={busy}
             onClick={() =>
               void completePrompt({
                 cancelled: true,
@@ -83,7 +157,12 @@ export function SshPassphrasePromptDialog() {
             type="button"
             variant="secondary"
           >
-            {t("actions.cancel")}
+            {busyAction === "cancel" ? (
+              <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+            ) : null}
+            {busyAction === "cancel"
+              ? t("actions.cancelling")
+              : t("actions.cancel")}
           </Button>
           <Button
             className="gap-2"
@@ -97,13 +176,19 @@ export function SshPassphrasePromptDialog() {
             }
             type="button"
           >
-            <KeyRound className="size-4" aria-hidden="true" />
-            {t("auth.ssh.submit")}
+            {busyAction === "submit" ? (
+              <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <KeyRound className="size-4" aria-hidden="true" />
+            )}
+            {busyAction === "submit"
+              ? t("auth.ssh.submitting")
+              : t("auth.ssh.submit")}
           </Button>
         </div>
       }
       onOpenChange={(open) => {
-        if (!open && !submitting) {
+        if (!open && !busy) {
           void completePrompt({ cancelled: true, remember: false });
         }
       }}
@@ -119,20 +204,23 @@ export function SshPassphrasePromptDialog() {
           />
         </label>
 
-        <label className="grid gap-1 text-sm">
-          <span className="font-medium">{t("auth.ssh.prompt")}</span>
-          <input
-            className="h-9 rounded-md border bg-muted px-3 text-sm"
-            readOnly
-            value={request.prompt}
-          />
-        </label>
+        {request.prompt ? (
+          <details className="text-sm text-muted-foreground">
+            <summary className="cursor-pointer font-medium text-foreground">
+              {t("dialogs.error.showDetails")}
+            </summary>
+            <p className="mt-2 break-words rounded-md border bg-muted px-3 py-2 font-mono text-xs">
+              {request.prompt}
+            </p>
+          </details>
+        ) : null}
 
         <label className="grid gap-1 text-sm">
           <span className="font-medium">{t("auth.ssh.passphrase")}</span>
           <input
             autoFocus
             className="h-9 rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            disabled={busy}
             onChange={(event) => setPassphrase(event.target.value)}
             type="password"
             value={passphrase}
@@ -144,6 +232,7 @@ export function SshPassphrasePromptDialog() {
             <input
               checked={remember}
               className="size-4 accent-primary"
+              disabled={busy}
               onChange={(event) => setRemember(event.target.checked)}
               type="checkbox"
             />

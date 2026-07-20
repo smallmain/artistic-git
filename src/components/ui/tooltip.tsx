@@ -2,6 +2,7 @@ import * as React from "react";
 import { createPortal } from "react-dom";
 
 import { calculateTooltipPosition } from "@/components/ui/tooltip-position";
+import { dialogOpenedEventName } from "@/lib/dialog-layer";
 import { cn } from "@/lib/utils";
 
 interface TooltipProps {
@@ -112,6 +113,19 @@ export function Tooltip({
   }, [content, isOpen, updatePosition]);
 
   React.useEffect(() => cancelPendingHoverClose, [cancelPendingHoverClose]);
+
+  React.useEffect(() => {
+    const handleDialogOpened = () => {
+      cancelPendingHoverClose();
+      setHasFocus(false);
+      setIsDismissed(true);
+      setIsTooltipHovered(false);
+      setIsTriggerHovered(false);
+    };
+    window.addEventListener(dialogOpenedEventName, handleDialogOpened);
+    return () =>
+      window.removeEventListener(dialogOpenedEventName, handleDialogOpened);
+  }, [cancelPendingHoverClose]);
 
   React.useEffect(() => {
     if (!isOpen) {

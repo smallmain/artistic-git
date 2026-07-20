@@ -2,6 +2,11 @@ import { Check, ChevronDown, GitBranch, Search } from "lucide-react";
 import * as React from "react";
 import { createPortal } from "react-dom";
 
+import {
+  DialogLayerContext,
+  dialogOpenedEventName,
+  type DialogOpenedEventDetail,
+} from "@/lib/dialog-layer";
 import { cn } from "@/lib/utils";
 
 const optionHeight = 36;
@@ -44,6 +49,7 @@ export function BranchSelect({
   "data-testid": testId,
   value,
 }: BranchSelectProps) {
+  const dialogOwnerId = React.useContext(DialogLayerContext);
   const generatedId = React.useId();
   const controlId = id ?? `${generatedId}-control`;
   const labelId = `${generatedId}-label`;
@@ -228,6 +234,22 @@ export function BranchSelect({
     return () => document.removeEventListener("pointerdown", handlePointerDown);
   }, [open]);
 
+  React.useEffect(() => {
+    if (!open) {
+      return;
+    }
+    const handleDialogOpened = (event: Event) => {
+      const openedDialogId = (event as CustomEvent<DialogOpenedEventDetail>)
+        .detail?.dialogId;
+      if (openedDialogId && openedDialogId !== dialogOwnerId) {
+        closeAndFocusTrigger();
+      }
+    };
+    window.addEventListener(dialogOpenedEventName, handleDialogOpened);
+    return () =>
+      window.removeEventListener(dialogOpenedEventName, handleDialogOpened);
+  }, [closeAndFocusTrigger, dialogOwnerId, open]);
+
   const moveActiveOption = (nextIndex: number) => {
     if (filteredOptions.length === 0) {
       return;
@@ -271,6 +293,7 @@ export function BranchSelect({
         }}
         ref={triggerRef}
         role="combobox"
+        title={selectedOption?.label ?? value}
         type="button"
         value={value}
       >
@@ -294,6 +317,8 @@ export function BranchSelect({
         ? createPortal(
             <div
               className="fixed z-[70] grid h-[278px] gap-2 rounded-md border bg-card p-2 text-card-foreground shadow-floating"
+              data-dialog-portal="true"
+              data-dialog-owner={dialogOwnerId ?? undefined}
               ref={popupRef}
               style={popupPosition}
             >

@@ -14,10 +14,12 @@ export interface HistoryAuthor {
 
 export interface HistoryChangedFile {
   path: string;
-  changeKind: "added" | "modified" | "deleted" | "renamed";
+  changeKind: "added" | "modified" | "deleted" | "renamed" | "copied";
   additions: number;
   deletions: number;
   oldPath?: string;
+  oldMode?: string;
+  newMode?: string;
   preview?: string;
 }
 
@@ -71,6 +73,7 @@ export interface HistoryRow {
 export interface HistoryBranch {
   name: string;
   current?: boolean;
+  revision?: string;
 }
 
 export type BranchFilterMode = "auto" | "all" | "custom";

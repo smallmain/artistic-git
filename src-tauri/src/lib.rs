@@ -3,6 +3,7 @@ use std::{
     env, fs,
     path::{Path, PathBuf},
     sync::{mpsc, Arc, Mutex},
+    time::Duration,
 };
 use tauri::{
     menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu},
@@ -19,6 +20,7 @@ const APP_HOMEPAGE: &str = "https://github.com/smallmain/artistic-git";
 const APP_CHANGELOG: &str = "https://github.com/smallmain/artistic-git/releases";
 const START_WINDOW_LABEL_PREFIX: &str = "start-";
 const REPOSITORY_WINDOW_LABEL_PREFIX: &str = "repo-";
+const AUTH_PROMPT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 struct LoggingState {
     _guard: artistic_git_core::logging::LoggingGuard,
@@ -39,6 +41,15 @@ struct SshPassphrasePromptState {
     registry: Arc<SshPassphrasePromptRegistry>,
 }
 
+struct AuthPromptWindowState {
+    router: Arc<AuthPromptWindowRouter>,
+}
+
+#[derive(Default)]
+struct AuthPromptWindowRouter {
+    operation_windows: Mutex<BTreeMap<String, String>>,
+}
+
 #[derive(Default)]
 struct HttpsCredentialPromptRegistry {
     inner: Mutex<HttpsCredentialPromptRegistryInner>,
@@ -52,13 +63,29 @@ struct SshPassphrasePromptRegistry {
 #[derive(Default)]
 struct HttpsCredentialPromptRegistryInner {
     next_id: u64,
-    pending: BTreeMap<String, mpsc::Sender<HttpsCredentialPromptResponse>>,
+    pending: BTreeMap<String, PendingHttpsCredentialPrompt>,
+    ready_windows: BTreeSet<String>,
 }
 
 #[derive(Default)]
 struct SshPassphrasePromptRegistryInner {
     next_id: u64,
-    pending: BTreeMap<String, mpsc::Sender<SshPassphrasePromptResponse>>,
+    pending: BTreeMap<String, PendingSshPassphrasePrompt>,
+    ready_windows: BTreeSet<String>,
+}
+
+struct PendingHttpsCredentialPrompt {
+    operation_id: String,
+    prompt_id: String,
+    sender: mpsc::Sender<HttpsCredentialPromptResponse>,
+    window_label: String,
+}
+
+struct PendingSshPassphrasePrompt {
+    operation_id: String,
+    prompt_id: String,
+    sender: mpsc::Sender<SshPassphrasePromptResponse>,
+    window_label: String,
 }
 
 enum HttpsCredentialPromptResponse {
@@ -75,29 +102,55 @@ enum SshPassphrasePromptResponse {
 struct TauriHttpsCredentialPromptSink {
     app: tauri::AppHandle,
     registry: Arc<HttpsCredentialPromptRegistry>,
+    router: Arc<AuthPromptWindowRouter>,
 }
 
 #[derive(Clone)]
 struct TauriSshPassphrasePromptSink {
     app: tauri::AppHandle,
     registry: Arc<SshPassphrasePromptRegistry>,
+    router: Arc<AuthPromptWindowRouter>,
 }
 
 impl artistic_git_app::https_auth::HttpsCredentialPromptSink for TauriHttpsCredentialPromptSink {
     fn prompt_https_credentials(
         &self,
+        _request: artistic_git_app::HttpsCredentialPromptRequest,
+    ) -> artistic_git_app::https_auth::HttpsCredentialPromptResult {
+        artistic_git_app::https_auth::HttpsCredentialPromptResult::Cancel
+    }
+
+    fn prompt_https_credentials_for_operation(
+        &self,
+        operation_id: &artistic_git_contracts::OperationId,
         request: artistic_git_app::HttpsCredentialPromptRequest,
     ) -> artistic_git_app::https_auth::HttpsCredentialPromptResult {
-        self.registry.prompt(&self.app, request)
+        let Some(window_label) = self.router.window_for_operation(operation_id) else {
+            return artistic_git_app::https_auth::HttpsCredentialPromptResult::Cancel;
+        };
+        self.registry
+            .prompt(&self.app, &window_label, operation_id, request)
     }
 }
 
 impl artistic_git_app::ssh_auth::SshPassphrasePromptSink for TauriSshPassphrasePromptSink {
     fn prompt_ssh_passphrase(
         &self,
+        _request: artistic_git_app::SshPassphrasePromptRequest,
+    ) -> artistic_git_app::ssh_auth::SshPassphrasePromptResult {
+        artistic_git_app::ssh_auth::SshPassphrasePromptResult::Cancel
+    }
+
+    fn prompt_ssh_passphrase_for_operation(
+        &self,
+        operation_id: &artistic_git_contracts::OperationId,
         request: artistic_git_app::SshPassphrasePromptRequest,
     ) -> artistic_git_app::ssh_auth::SshPassphrasePromptResult {
-        self.registry.prompt(&self.app, request)
+        let Some(window_label) = self.router.window_for_operation(operation_id) else {
+            return artistic_git_app::ssh_auth::SshPassphrasePromptResult::Cancel;
+        };
+        self.registry
+            .prompt(&self.app, &window_label, operation_id, request)
     }
 }
 
@@ -113,6 +166,12 @@ struct HttpsCredentialPromptEvent {
 struct SshPassphrasePromptEvent {
     prompt_id: String,
     request: artistic_git_app::SshPassphrasePromptRequest,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthPromptDismissedEvent {
+    prompt_id: String,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -134,10 +193,57 @@ struct SubmitSshPassphrasePromptRequest {
     cancelled: bool,
 }
 
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum AuthPromptKind {
+    HttpsCredential,
+    SshPassphrase,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthPromptListenerReadyRequest {
+    kind: AuthPromptKind,
+    ready: bool,
+}
+
+impl AuthPromptWindowRouter {
+    fn register(&self, operation_id: &artistic_git_contracts::OperationId, window_label: &str) {
+        if let Ok(mut operation_windows) = self.operation_windows.lock() {
+            operation_windows.insert(operation_id.as_str().to_owned(), window_label.to_owned());
+        }
+    }
+
+    fn unregister(&self, operation_id: &artistic_git_contracts::OperationId) {
+        if let Ok(mut operation_windows) = self.operation_windows.lock() {
+            operation_windows.remove(operation_id.as_str());
+        }
+    }
+
+    fn remove_window(&self, window_label: &str) {
+        if let Ok(mut operation_windows) = self.operation_windows.lock() {
+            operation_windows.retain(|_, label| label != window_label);
+        }
+    }
+
+    fn window_for_operation(
+        &self,
+        operation_id: &artistic_git_contracts::OperationId,
+    ) -> Option<String> {
+        self.operation_windows
+            .lock()
+            .ok()?
+            .get(operation_id.as_str())
+            .cloned()
+    }
+}
+
 impl HttpsCredentialPromptRegistry {
     fn prompt(
         &self,
         app: &tauri::AppHandle,
+        window_label: &str,
+        operation_id: &artistic_git_contracts::OperationId,
         request: artistic_git_app::HttpsCredentialPromptRequest,
     ) -> artistic_git_app::https_auth::HttpsCredentialPromptResult {
         let (tx, rx) = mpsc::channel();
@@ -148,9 +254,20 @@ impl HttpsCredentialPromptRegistry {
                     return artistic_git_app::https_auth::HttpsCredentialPromptResult::Cancel;
                 }
             };
+            if !inner.ready_windows.contains(window_label) {
+                return artistic_git_app::https_auth::HttpsCredentialPromptResult::Cancel;
+            }
             inner.next_id = inner.next_id.saturating_add(1);
             let prompt_id = format!("https-credential-{}", inner.next_id);
-            inner.pending.insert(prompt_id.clone(), tx);
+            inner.pending.insert(
+                prompt_id.clone(),
+                PendingHttpsCredentialPrompt {
+                    operation_id: operation_id.as_str().to_owned(),
+                    prompt_id: prompt_id.clone(),
+                    sender: tx,
+                    window_label: window_label.to_owned(),
+                },
+            );
             prompt_id
         };
 
@@ -158,29 +275,37 @@ impl HttpsCredentialPromptRegistry {
             prompt_id: prompt_id.clone(),
             request,
         };
-        if app.emit("https-credential-prompt", event).is_err() {
+        if app.get_webview_window(window_label).is_none()
+            || app
+                .emit_to(window_label, "https-credential-prompt", event)
+                .is_err()
+        {
             self.remove(&prompt_id);
             return artistic_git_app::https_auth::HttpsCredentialPromptResult::Cancel;
         }
 
-        match rx.recv() {
+        let result = match rx.recv_timeout(AUTH_PROMPT_RESPONSE_TIMEOUT) {
             Ok(HttpsCredentialPromptResponse::Submit(submission)) => {
                 artistic_git_app::https_auth::HttpsCredentialPromptResult::Submit(submission)
             }
-            Ok(HttpsCredentialPromptResponse::Cancel) | Err(_) => {
+            Ok(HttpsCredentialPromptResponse::Cancel) => {
                 artistic_git_app::https_auth::HttpsCredentialPromptResult::Cancel
             }
-        }
+            Err(_) => {
+                emit_auth_prompt_dismissed(
+                    app,
+                    window_label,
+                    "https-credential-prompt-dismissed",
+                    &prompt_id,
+                );
+                artistic_git_app::https_auth::HttpsCredentialPromptResult::Cancel
+            }
+        };
+        self.remove(&prompt_id);
+        result
     }
 
     fn submit(&self, request: SubmitHttpsCredentialPromptRequest) -> Result<(), String> {
-        let sender = self.remove(&request.prompt_id).ok_or_else(|| {
-            format!(
-                "HTTPS credential prompt {} is no longer active",
-                request.prompt_id
-            )
-        })?;
-
         let response = if request.cancelled {
             HttpsCredentialPromptResponse::Cancel
         } else {
@@ -206,13 +331,75 @@ impl HttpsCredentialPromptRegistry {
             )
         };
 
+        let sender = self.remove(&request.prompt_id).ok_or_else(|| {
+            format!(
+                "HTTPS credential prompt {} is no longer active",
+                request.prompt_id
+            )
+        })?;
+
         sender
             .send(response)
             .map_err(|_| "HTTPS credential prompt receiver was dropped".to_owned())
     }
 
+    fn set_window_ready(&self, app: &tauri::AppHandle, window_label: &str, ready: bool) {
+        let pending = {
+            let Ok(mut inner) = self.inner.lock() else {
+                return;
+            };
+            if ready {
+                inner.ready_windows.insert(window_label.to_owned());
+                Vec::new()
+            } else {
+                inner.ready_windows.remove(window_label);
+                take_https_prompts_matching(&mut inner.pending, |pending| {
+                    pending.window_label == window_label
+                })
+            }
+        };
+        for prompt in pending {
+            emit_auth_prompt_dismissed(
+                app,
+                &prompt.window_label,
+                "https-credential-prompt-dismissed",
+                &prompt.prompt_id,
+            );
+            let _ = prompt.sender.send(HttpsCredentialPromptResponse::Cancel);
+        }
+    }
+
+    fn cancel_operation(
+        &self,
+        app: &tauri::AppHandle,
+        operation_id: &artistic_git_contracts::OperationId,
+    ) {
+        let pending = {
+            let Ok(mut inner) = self.inner.lock() else {
+                return;
+            };
+            take_https_prompts_matching(&mut inner.pending, |pending| {
+                pending.operation_id == operation_id.as_str()
+            })
+        };
+        for prompt in pending {
+            emit_auth_prompt_dismissed(
+                app,
+                &prompt.window_label,
+                "https-credential-prompt-dismissed",
+                &prompt.prompt_id,
+            );
+            let _ = prompt.sender.send(HttpsCredentialPromptResponse::Cancel);
+        }
+    }
+
     fn remove(&self, prompt_id: &str) -> Option<mpsc::Sender<HttpsCredentialPromptResponse>> {
-        self.inner.lock().ok()?.pending.remove(prompt_id)
+        self.inner
+            .lock()
+            .ok()?
+            .pending
+            .remove(prompt_id)
+            .map(|pending| pending.sender)
     }
 }
 
@@ -220,6 +407,8 @@ impl SshPassphrasePromptRegistry {
     fn prompt(
         &self,
         app: &tauri::AppHandle,
+        window_label: &str,
+        operation_id: &artistic_git_contracts::OperationId,
         request: artistic_git_app::SshPassphrasePromptRequest,
     ) -> artistic_git_app::ssh_auth::SshPassphrasePromptResult {
         let (tx, rx) = mpsc::channel();
@@ -230,9 +419,20 @@ impl SshPassphrasePromptRegistry {
                     return artistic_git_app::ssh_auth::SshPassphrasePromptResult::Cancel;
                 }
             };
+            if !inner.ready_windows.contains(window_label) {
+                return artistic_git_app::ssh_auth::SshPassphrasePromptResult::Cancel;
+            }
             inner.next_id = inner.next_id.saturating_add(1);
             let prompt_id = format!("ssh-passphrase-{}", inner.next_id);
-            inner.pending.insert(prompt_id.clone(), tx);
+            inner.pending.insert(
+                prompt_id.clone(),
+                PendingSshPassphrasePrompt {
+                    operation_id: operation_id.as_str().to_owned(),
+                    prompt_id: prompt_id.clone(),
+                    sender: tx,
+                    window_label: window_label.to_owned(),
+                },
+            );
             prompt_id
         };
 
@@ -240,29 +440,37 @@ impl SshPassphrasePromptRegistry {
             prompt_id: prompt_id.clone(),
             request,
         };
-        if app.emit("ssh-passphrase-prompt", event).is_err() {
+        if app.get_webview_window(window_label).is_none()
+            || app
+                .emit_to(window_label, "ssh-passphrase-prompt", event)
+                .is_err()
+        {
             self.remove(&prompt_id);
             return artistic_git_app::ssh_auth::SshPassphrasePromptResult::Cancel;
         }
 
-        match rx.recv() {
+        let result = match rx.recv_timeout(AUTH_PROMPT_RESPONSE_TIMEOUT) {
             Ok(SshPassphrasePromptResponse::Submit(submission)) => {
                 artistic_git_app::ssh_auth::SshPassphrasePromptResult::Submit(submission)
             }
-            Ok(SshPassphrasePromptResponse::Cancel) | Err(_) => {
+            Ok(SshPassphrasePromptResponse::Cancel) => {
                 artistic_git_app::ssh_auth::SshPassphrasePromptResult::Cancel
             }
-        }
+            Err(_) => {
+                emit_auth_prompt_dismissed(
+                    app,
+                    window_label,
+                    "ssh-passphrase-prompt-dismissed",
+                    &prompt_id,
+                );
+                artistic_git_app::ssh_auth::SshPassphrasePromptResult::Cancel
+            }
+        };
+        self.remove(&prompt_id);
+        result
     }
 
     fn submit(&self, request: SubmitSshPassphrasePromptRequest) -> Result<(), String> {
-        let sender = self.remove(&request.prompt_id).ok_or_else(|| {
-            format!(
-                "SSH passphrase prompt {} is no longer active",
-                request.prompt_id
-            )
-        })?;
-
         let response = if request.cancelled {
             SshPassphrasePromptResponse::Cancel
         } else {
@@ -278,14 +486,119 @@ impl SshPassphrasePromptRegistry {
             )
         };
 
+        let sender = self.remove(&request.prompt_id).ok_or_else(|| {
+            format!(
+                "SSH passphrase prompt {} is no longer active",
+                request.prompt_id
+            )
+        })?;
+
         sender
             .send(response)
             .map_err(|_| "SSH passphrase prompt receiver was dropped".to_owned())
     }
 
-    fn remove(&self, prompt_id: &str) -> Option<mpsc::Sender<SshPassphrasePromptResponse>> {
-        self.inner.lock().ok()?.pending.remove(prompt_id)
+    fn set_window_ready(&self, app: &tauri::AppHandle, window_label: &str, ready: bool) {
+        let pending = {
+            let Ok(mut inner) = self.inner.lock() else {
+                return;
+            };
+            if ready {
+                inner.ready_windows.insert(window_label.to_owned());
+                Vec::new()
+            } else {
+                inner.ready_windows.remove(window_label);
+                take_ssh_prompts_matching(&mut inner.pending, |pending| {
+                    pending.window_label == window_label
+                })
+            }
+        };
+        for prompt in pending {
+            emit_auth_prompt_dismissed(
+                app,
+                &prompt.window_label,
+                "ssh-passphrase-prompt-dismissed",
+                &prompt.prompt_id,
+            );
+            let _ = prompt.sender.send(SshPassphrasePromptResponse::Cancel);
+        }
     }
+
+    fn cancel_operation(
+        &self,
+        app: &tauri::AppHandle,
+        operation_id: &artistic_git_contracts::OperationId,
+    ) {
+        let pending = {
+            let Ok(mut inner) = self.inner.lock() else {
+                return;
+            };
+            take_ssh_prompts_matching(&mut inner.pending, |pending| {
+                pending.operation_id == operation_id.as_str()
+            })
+        };
+        for prompt in pending {
+            emit_auth_prompt_dismissed(
+                app,
+                &prompt.window_label,
+                "ssh-passphrase-prompt-dismissed",
+                &prompt.prompt_id,
+            );
+            let _ = prompt.sender.send(SshPassphrasePromptResponse::Cancel);
+        }
+    }
+
+    fn remove(&self, prompt_id: &str) -> Option<mpsc::Sender<SshPassphrasePromptResponse>> {
+        self.inner
+            .lock()
+            .ok()?
+            .pending
+            .remove(prompt_id)
+            .map(|pending| pending.sender)
+    }
+}
+
+fn take_https_prompts_matching(
+    pending: &mut BTreeMap<String, PendingHttpsCredentialPrompt>,
+    matches: impl Fn(&PendingHttpsCredentialPrompt) -> bool,
+) -> Vec<PendingHttpsCredentialPrompt> {
+    let prompt_ids = pending
+        .iter()
+        .filter_map(|(prompt_id, prompt)| matches(prompt).then_some(prompt_id.clone()))
+        .collect::<Vec<_>>();
+    prompt_ids
+        .into_iter()
+        .filter_map(|prompt_id| pending.remove(&prompt_id))
+        .collect()
+}
+
+fn take_ssh_prompts_matching(
+    pending: &mut BTreeMap<String, PendingSshPassphrasePrompt>,
+    matches: impl Fn(&PendingSshPassphrasePrompt) -> bool,
+) -> Vec<PendingSshPassphrasePrompt> {
+    let prompt_ids = pending
+        .iter()
+        .filter_map(|(prompt_id, prompt)| matches(prompt).then_some(prompt_id.clone()))
+        .collect::<Vec<_>>();
+    prompt_ids
+        .into_iter()
+        .filter_map(|prompt_id| pending.remove(&prompt_id))
+        .collect()
+}
+
+fn emit_auth_prompt_dismissed(
+    app: &tauri::AppHandle,
+    window_label: &str,
+    event_name: &str,
+    prompt_id: &str,
+) {
+    let _ = app.emit_to(
+        window_label,
+        event_name,
+        AuthPromptDismissedEvent {
+            prompt_id: prompt_id.to_owned(),
+        },
+    );
 }
 
 #[derive(Default)]
@@ -377,6 +690,12 @@ struct NewWindowResponse {
     label: String,
 }
 
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NewWindowRequest {
+    initial_action: Option<String>,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AppMenuEvent {
@@ -431,8 +750,15 @@ fn window_context(
 fn new_project_window(
     app_handle: tauri::AppHandle,
     registry: State<'_, WindowRegistry>,
+    request: Option<NewWindowRequest>,
 ) -> artistic_git_contracts::AppResult<NewWindowResponse> {
-    create_start_window(&app_handle, &registry)
+    create_start_window(
+        &app_handle,
+        &registry,
+        request
+            .as_ref()
+            .and_then(|request| request.initial_action.as_deref()),
+    )
 }
 
 #[tauri::command]
@@ -616,13 +942,15 @@ fn open_log_dir(
         )
     })?;
 
-    artistic_git_app::open_log_dir(log_dir)
+    let mut response = artistic_git_app::open_log_dir(log_dir)?;
+    open_external_target(&response.path, "openLogDir")?;
+    response.opened = true;
+    Ok(response)
 }
 
 #[tauri::command]
 fn open_update_release_page() -> artistic_git_contracts::AppResult<()> {
-    open_url(APP_CHANGELOG);
-    Ok(())
+    open_external_target(APP_CHANGELOG, "openUpdateReleasePage")
 }
 
 #[tauri::command]
@@ -634,34 +962,62 @@ async fn open_repository(
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::OpenRepositoryResponse> {
     let repository_path = request.path.clone();
     let window_label = window.label().to_owned();
-    let backend = backend.inner().clone();
-    run_blocking_command("openRepository", move || {
-        backend.open_repository_with_progress(request, |event| {
+    let operation_id = request.operation_id.clone();
+    let operation_reservation = reserve_and_emit_operation_started(
+        &app_handle,
+        backend.inner(),
+        operation_id.as_ref(),
+        repository_path.as_str(),
+        window_label.as_str(),
+        "openRepository",
+        "Opening repository",
+    )?;
+    let worker_backend = backend.inner().clone();
+    let progress_app_handle = app_handle.clone();
+    let progress_repository_path = repository_path.clone();
+    let progress_window_label = window_label.clone();
+    let result = run_blocking_command("openRepository", move || {
+        let _operation_reservation = operation_reservation;
+        worker_backend.open_repository_with_progress(request, |event| {
             emit_operation_progress(
-                &app_handle,
+                &progress_app_handle,
                 event,
-                Some(repository_path.as_str()),
-                window_label.as_str(),
+                Some(progress_repository_path.as_str()),
+                progress_window_label.as_str(),
             );
         })
     })
-    .await
+    .await;
+    emit_operation_finished(
+        &app_handle,
+        operation_id.as_ref(),
+        repository_path.as_str(),
+        window_label.as_str(),
+        "Repository opened",
+    );
+    result
 }
 
 #[tauri::command]
 async fn probe_remote_repository(
+    app_handle: tauri::AppHandle,
+    window: tauri::Window,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::RemoteRepositoryProbeRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::RemoteRepositoryProbeResponse> {
+    let operation_id = request.operation_id.clone();
     let operation_reservation = backend
         .inner()
         .reserve_cancellable_operation(request.operation_id.as_ref(), "probeRemoteRepository")?;
+    register_auth_prompt_window(&app_handle, operation_id.as_ref(), window.label());
     let backend = backend.inner().clone();
-    run_blocking_command("probeRemoteRepository", move || {
+    let result = run_blocking_command("probeRemoteRepository", move || {
         let _operation_reservation = operation_reservation;
         backend.probe_remote_repository(request)
     })
-    .await
+    .await;
+    finish_auth_prompt_operation(&app_handle, operation_id.as_ref());
+    result
 }
 
 #[tauri::command]
@@ -711,9 +1067,11 @@ async fn clone_repository(
 
 #[tauri::command]
 async fn cancel_clone_repository(
+    app_handle: tauri::AppHandle,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::CancelCloneRepositoryRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::CancelCloneRepositoryResponse> {
+    cancel_auth_prompt_waiters(&app_handle, &request.operation_id);
     let backend = backend.inner().clone();
     run_blocking_command("cancelCloneRepository", move || {
         backend.cancel_clone_repository_and_wait(request)
@@ -723,9 +1081,11 @@ async fn cancel_clone_repository(
 
 #[tauri::command]
 async fn cancel_operation(
+    app_handle: tauri::AppHandle,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::CancelOperationRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::CancelOperationResponse> {
+    cancel_auth_prompt_waiters(&app_handle, &request.operation_id);
     let backend = backend.inner().clone();
     run_blocking_command("cancelOperation", move || {
         backend.cancel_operation_and_wait(request)
@@ -743,6 +1103,29 @@ async fn repository_summary(
         backend.repository_summary(request)
     })
     .await
+}
+
+#[tauri::command]
+async fn reset_bisect(
+    app_handle: tauri::AppHandle,
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::RepositoryPathRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::RepositorySummary> {
+    let repository_path = request.repository_path.clone();
+    let backend = backend.inner().clone();
+    let response =
+        run_blocking_command("resetBisect", move || backend.reset_bisect(request)).await?;
+    emit_repo_changed(
+        &app_handle,
+        repository_path,
+        vec![
+            artistic_git_contracts::RepoQueryKind::Summary,
+            artistic_git_contracts::RepoQueryKind::Branches,
+            artistic_git_contracts::RepoQueryKind::History,
+            artistic_git_contracts::RepoQueryKind::LocalChanges,
+        ],
+    );
+    Ok(response)
 }
 
 #[tauri::command]
@@ -825,6 +1208,10 @@ async fn sync_current_branch(
         "Sync complete",
     );
     let response = result?;
+    if response.status != artistic_git_contracts::SyncCurrentBranchStatus::Failed {
+        let fetch_state = backend.fetch_succeeded_event(&response.repository_path);
+        emit_fetch_state(&app_handle, &fetch_state);
+    }
     if let Some(conflict) = response.conflict.as_ref() {
         let _ = app_handle.emit("conflict-entered", conflict);
     }
@@ -884,6 +1271,10 @@ async fn sync_branch(
         "Sync complete",
     );
     let response = result?;
+    if response.status != artistic_git_contracts::SyncCurrentBranchStatus::Failed {
+        let fetch_state = backend.fetch_succeeded_event(&response.repository_path);
+        emit_fetch_state(&app_handle, &fetch_state);
+    }
     if let Some(conflict) = response.conflict.as_ref() {
         let _ = app_handle.emit("conflict-entered", conflict);
     }
@@ -942,6 +1333,8 @@ async fn sync_all_branches(
         "Sync complete",
     );
     let response = result?;
+    let fetch_state = backend.fetch_succeeded_event(&response.repository_path);
+    emit_fetch_state(&app_handle, &fetch_state);
     if let Some(conflict) = response.conflict.as_ref() {
         let _ = app_handle.emit("conflict-entered", conflict);
     }
@@ -977,10 +1370,10 @@ async fn accept_remote_history(
         "acceptRemoteHistory",
         "Accepting remote history",
     )?;
-    let backend = backend.inner().clone();
+    let worker_backend = backend.inner().clone();
     let result = run_blocking_command("acceptRemoteHistory", move || {
         let _operation_reservation = operation_reservation;
-        backend.accept_remote_history(request)
+        worker_backend.accept_remote_history(request)
     })
     .await;
     emit_operation_finished(
@@ -991,6 +1384,8 @@ async fn accept_remote_history(
         "Remote history accepted",
     );
     let response = result?;
+    let fetch_state = backend.fetch_succeeded_event(&response.repository_path);
+    emit_fetch_state(&app_handle, &fetch_state);
     if let Some(conflict) = response.conflict.as_ref() {
         let _ = app_handle.emit("conflict-entered", conflict);
     }
@@ -1282,7 +1677,7 @@ async fn create_branch(
         repository_path.as_str(),
         window_label.as_str(),
         "createBranch",
-        "Updating branch",
+        "Creating branch",
     )?;
     let backend = backend.inner().clone();
     let result = run_blocking_command("createBranch", move || {
@@ -1319,7 +1714,7 @@ async fn checkout_branch(
         repository_path.as_str(),
         window_label.as_str(),
         "checkoutBranch",
-        "Updating branch",
+        "Switching branch",
     )?;
     let backend = backend.inner().clone();
     let result = run_blocking_command("checkoutBranch", move || {
@@ -1356,7 +1751,7 @@ async fn delete_branch(
         repository_path.as_str(),
         window_label.as_str(),
         "deleteBranch",
-        "Updating branch",
+        "Deleting branch",
     )?;
     let backend = backend.inner().clone();
     let result = run_blocking_command("deleteBranch", move || {
@@ -1393,7 +1788,7 @@ async fn delete_safety_backup(
         repository_path.as_str(),
         window_label.as_str(),
         "deleteSafetyBackup",
-        "Deleting backup branch",
+        "Deleting safety backup",
     )?;
     let backend = backend.inner().clone();
     let result = run_blocking_command("deleteSafetyBackup", move || {
@@ -1483,7 +1878,7 @@ async fn create_stash(
         repository_path.as_str(),
         window_label.as_str(),
         "createStash",
-        "Updating stash",
+        "Creating stash",
     )?;
     let backend = backend.inner().clone();
     let result = run_blocking_command("createStash", move || {
@@ -1527,7 +1922,7 @@ async fn create_auto_stash(
         repository_path.as_str(),
         window_label.as_str(),
         "createAutoStash",
-        "Updating stash",
+        "Creating stash",
     )?;
     let backend = backend.inner().clone();
     let result = run_blocking_command("createAutoStash", move || {
@@ -1580,7 +1975,7 @@ async fn restore_stash(
         repository_path.as_str(),
         window_label.as_str(),
         "restoreStash",
-        "Updating stash",
+        "Applying stash",
     )?;
     let backend = backend.inner().clone();
     let result = run_blocking_command("restoreStash", move || {
@@ -1650,7 +2045,7 @@ async fn delete_stash(
         repository_path.as_str(),
         window_label.as_str(),
         "deleteStash",
-        "Updating stash",
+        "Deleting stash",
     )?;
     let backend = backend.inner().clone();
     let result = run_blocking_command("deleteStash", move || {
@@ -1707,6 +2102,38 @@ async fn search_log(
 }
 
 #[tauri::command]
+async fn commit_details(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::CommitDetailsRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::CommitDetailsResponse> {
+    let operation_id = request.operation_id.clone();
+    let operation_reservation =
+        backend.reserve_cancellable_operation(operation_id.as_ref(), "commitDetails")?;
+    let backend = backend.inner().clone();
+    run_blocking_command("commitDetails", move || {
+        let _operation_reservation = operation_reservation;
+        backend.commit_details(request)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn commit_file_detail(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::CommitFileDetailRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::CommitFileDetailResponse> {
+    let operation_id = request.operation_id.clone();
+    let operation_reservation =
+        backend.reserve_cancellable_operation(operation_id.as_ref(), "commitFileDetail")?;
+    let backend = backend.inner().clone();
+    run_blocking_command("commitFileDetail", move || {
+        let _operation_reservation = operation_reservation;
+        backend.commit_file_detail(request)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn list_conflicts(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::ConflictListRequest,
@@ -1741,7 +2168,7 @@ async fn select_conflict_side(
         repository_path.as_str(),
         window_label.as_str(),
         "selectConflictSide",
-        "Resolving conflicts",
+        "Applying conflict selection",
     )?;
     let worker_backend = backend.inner().clone();
     let result = run_blocking_command("selectConflictSide", move || {
@@ -2007,15 +2434,74 @@ async fn load_app_settings(
 }
 
 #[tauri::command]
+async fn list_recent_projects(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_app::RecentProjectsRequest,
+) -> artistic_git_contracts::AppResult<Vec<artistic_git_app::RecentProjectEntry>> {
+    let backend = backend.inner().clone();
+    run_blocking_command("listRecentProjects", move || {
+        backend.list_recent_projects(request)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn forget_recent_project(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_app::ForgetRecentProjectRequest,
+) -> artistic_git_contracts::AppResult<()> {
+    let backend = backend.inner().clone();
+    run_blocking_command("forgetRecentProject", move || {
+        backend.forget_recent_project(request)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn clear_recent_projects(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+) -> artistic_git_contracts::AppResult<()> {
+    let backend = backend.inner().clone();
+    run_blocking_command("clearRecentProjects", move || {
+        backend.clear_recent_projects()
+    })
+    .await
+}
+
+#[tauri::command]
 async fn save_app_settings(
+    app_handle: tauri::AppHandle,
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_app::SaveAppSettingsRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_core::config::AppSettings> {
     let backend = backend.inner().clone();
-    run_blocking_command("saveAppSettings", move || {
+    let settings = run_blocking_command("saveAppSettings", move || {
         backend.save_app_settings(request)
     })
-    .await
+    .await?;
+    match build_app_menu_for_language(&app_handle, resolved_menu_language(settings.language)) {
+        Ok(menu) => {
+            if let Err(error) = app_handle.set_menu(menu) {
+                emit_native_app_error(
+                    &app_handle,
+                    artistic_git_app::unexpected_command_error(
+                        format!("settings were saved, but the application menu could not be updated: {error}"),
+                        "saveAppSettings",
+                    ),
+                );
+            }
+        }
+        Err(error) => emit_native_app_error(
+            &app_handle,
+            artistic_git_app::unexpected_command_error(
+                format!(
+                    "settings were saved, but the application menu could not be rebuilt: {error}"
+                ),
+                "saveAppSettings",
+            ),
+        ),
+    }
+    Ok(settings)
 }
 
 #[tauri::command]
@@ -2150,6 +2636,28 @@ fn submit_ssh_passphrase_prompt(
     })
 }
 
+#[tauri::command]
+fn set_auth_prompt_listener_ready(
+    window: tauri::Window,
+    https_state: State<'_, HttpsCredentialPromptState>,
+    ssh_state: State<'_, SshPassphrasePromptState>,
+    request: AuthPromptListenerReadyRequest,
+) -> artistic_git_contracts::AppResult<()> {
+    match request.kind {
+        AuthPromptKind::HttpsCredential => https_state.registry.set_window_ready(
+            window.app_handle(),
+            window.label(),
+            request.ready,
+        ),
+        AuthPromptKind::SshPassphrase => {
+            ssh_state
+                .registry
+                .set_window_ready(window.app_handle(), window.label(), request.ready)
+        }
+    }
+    Ok(())
+}
+
 pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(handle_second_instance))
@@ -2188,13 +2696,22 @@ pub fn run() {
             app.manage(updater_runtime::UpdaterRuntimeState::default());
             let credential_prompts = Arc::new(HttpsCredentialPromptRegistry::default());
             let ssh_passphrase_prompts = Arc::new(SshPassphrasePromptRegistry::default());
+            let auth_prompt_router = Arc::new(AuthPromptWindowRouter::default());
             app.manage(HttpsCredentialPromptState {
                 registry: Arc::clone(&credential_prompts),
             });
             app.manage(SshPassphrasePromptState {
                 registry: Arc::clone(&ssh_passphrase_prompts),
             });
-            let backend = repository_backend(app, credential_prompts, ssh_passphrase_prompts)?;
+            app.manage(AuthPromptWindowState {
+                router: Arc::clone(&auth_prompt_router),
+            });
+            let backend = repository_backend(
+                app,
+                credential_prompts,
+                ssh_passphrase_prompts,
+                auth_prompt_router,
+            )?;
             app.manage(backend);
             app.manage(second_instance_dispatch_state(app.handle())?);
 
@@ -2220,6 +2737,7 @@ pub fn run() {
             cancel_clone_repository,
             cancel_operation,
             repository_summary,
+            reset_bisect,
             fetch_repository,
             sync_current_branch,
             sync_branch,
@@ -2252,6 +2770,8 @@ pub fn run() {
             delete_stash,
             log_page,
             search_log,
+            commit_details,
+            commit_file_detail,
             list_conflicts,
             conflict_detail,
             select_conflict_side,
@@ -2264,6 +2784,9 @@ pub fn run() {
             abort_revert,
             settings_snapshot,
             load_app_settings,
+            list_recent_projects,
+            forget_recent_project,
+            clear_recent_projects,
             save_app_settings,
             load_project_settings,
             save_project_settings,
@@ -2277,6 +2800,7 @@ pub fn run() {
             delete_https_credential,
             submit_https_credential_prompt,
             submit_ssh_passphrase_prompt,
+            set_auth_prompt_listener_ready,
             updater_runtime::check_for_updates,
             updater_runtime::update_install_gate,
             updater_runtime::install_ready_update
@@ -2305,7 +2829,108 @@ fn native_renderer_crash_hook_gate() -> &'static str {
     "native-webview-process-terminate-hook:unsupported:windows-linux:requires-tauri-driver-crash-injection-evidence"
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NativeMenuLanguage {
+    English,
+    Chinese,
+}
+
+struct NativeMenuLabels {
+    about: &'static str,
+    check_updates: &'static str,
+    settings: &'static str,
+    quit: &'static str,
+    file: &'static str,
+    new_window: &'static str,
+    open_project: &'static str,
+    clone_project: &'static str,
+    close_window: &'static str,
+    edit: &'static str,
+    undo: &'static str,
+    redo: &'static str,
+    cut: &'static str,
+    copy: &'static str,
+    paste: &'static str,
+    select_all: &'static str,
+    view: &'static str,
+    history: &'static str,
+    local_changes: &'static str,
+    toggle_theme: &'static str,
+    toggle_devtools: &'static str,
+    help: &'static str,
+    open_log_dir: &'static str,
+    changelog: &'static str,
+    homepage: &'static str,
+}
+
+const ENGLISH_MENU_LABELS: NativeMenuLabels = NativeMenuLabels {
+    about: "About Artistic Git",
+    check_updates: "Check for Updates...",
+    settings: "Settings...",
+    quit: "Quit Artistic Git",
+    file: "File",
+    new_window: "New Window",
+    open_project: "Open Project...",
+    clone_project: "Clone Project...",
+    close_window: "Close Window",
+    edit: "Edit",
+    undo: "Undo",
+    redo: "Redo",
+    cut: "Cut",
+    copy: "Copy",
+    paste: "Paste",
+    select_all: "Select All",
+    view: "View",
+    history: "History",
+    local_changes: "Local Changes",
+    toggle_theme: "Toggle Theme",
+    toggle_devtools: "Toggle Developer Tools",
+    help: "Help",
+    open_log_dir: "Open Log Directory",
+    changelog: "View Changelog",
+    homepage: "Project Homepage",
+};
+
+const CHINESE_MENU_LABELS: NativeMenuLabels = NativeMenuLabels {
+    about: "关于 Artistic Git",
+    check_updates: "检查更新...",
+    settings: "设置...",
+    quit: "退出 Artistic Git",
+    file: "文件",
+    new_window: "新建窗口",
+    open_project: "打开项目...",
+    clone_project: "克隆项目...",
+    close_window: "关闭窗口",
+    edit: "编辑",
+    undo: "撤销",
+    redo: "重做",
+    cut: "剪切",
+    copy: "复制",
+    paste: "粘贴",
+    select_all: "全选",
+    view: "视图",
+    history: "历史",
+    local_changes: "本地更改",
+    toggle_theme: "切换主题",
+    toggle_devtools: "切换开发者工具",
+    help: "帮助",
+    open_log_dir: "打开日志目录",
+    changelog: "查看更新记录",
+    homepage: "项目主页",
+};
+
 fn build_app_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    build_app_menu_for_language(app, initial_menu_language(app))
+}
+
+fn build_app_menu_for_language(
+    app: &tauri::AppHandle,
+    language: NativeMenuLanguage,
+) -> tauri::Result<Menu<tauri::Wry>> {
+    let labels = match language {
+        NativeMenuLanguage::Chinese => &CHINESE_MENU_LABELS,
+        NativeMenuLanguage::English => &ENGLISH_MENU_LABELS,
+    };
     let app_menu = Submenu::with_items(
         app,
         "Artistic Git",
@@ -2313,19 +2938,19 @@ fn build_app_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         &[
             &PredefinedMenuItem::about(
                 app,
-                Some("About Artistic Git"),
+                Some(labels.about),
                 Some(AboutMetadata {
                     name: Some("Artistic Git".to_owned()),
                     version: Some(env!("CARGO_PKG_VERSION").to_owned()),
                     website: Some(APP_HOMEPAGE.to_owned()),
-                    website_label: Some("Project Homepage".to_owned()),
+                    website_label: Some(labels.homepage.to_owned()),
                     ..AboutMetadata::default()
                 }),
             )?,
             &MenuItem::with_id(
                 app,
                 "check-updates",
-                "Check for Updates...",
+                labels.check_updates,
                 true,
                 None::<&str>,
             )?,
@@ -2333,33 +2958,45 @@ fn build_app_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
             &MenuItem::with_id(
                 app,
                 "open-settings",
-                "Settings...",
+                labels.settings,
                 true,
                 Some("CmdOrCtrl+,"),
             )?,
             &PredefinedMenuItem::separator(app)?,
-            &PredefinedMenuItem::quit(app, Some("Quit Artistic Git"))?,
+            &PredefinedMenuItem::quit(app, Some(labels.quit))?,
         ],
     )?;
     let file = Submenu::with_items(
         app,
-        "File",
+        labels.file,
         true,
         &[
-            &MenuItem::with_id(app, "new-window", "New Window", true, Some("CmdOrCtrl+N"))?,
+            &MenuItem::with_id(
+                app,
+                "new-window",
+                labels.new_window,
+                true,
+                Some("CmdOrCtrl+N"),
+            )?,
             &MenuItem::with_id(
                 app,
                 "open-project",
-                "Open Project...",
+                labels.open_project,
                 true,
                 Some("CmdOrCtrl+O"),
             )?,
-            &MenuItem::with_id(app, "clone-project", "Clone Project...", true, None::<&str>)?,
+            &MenuItem::with_id(
+                app,
+                "clone-project",
+                labels.clone_project,
+                true,
+                None::<&str>,
+            )?,
             &PredefinedMenuItem::separator(app)?,
             &MenuItem::with_id(
                 app,
                 "close-window",
-                "Close Window",
+                labels.close_window,
                 true,
                 Some("CmdOrCtrl+W"),
             )?,
@@ -2367,60 +3004,148 @@ fn build_app_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     )?;
     let edit = Submenu::with_items(
         app,
-        "Edit",
+        labels.edit,
         true,
         &[
-            &PredefinedMenuItem::undo(app, Some("Undo"))?,
-            &PredefinedMenuItem::redo(app, Some("Redo"))?,
+            &PredefinedMenuItem::undo(app, Some(labels.undo))?,
+            &PredefinedMenuItem::redo(app, Some(labels.redo))?,
             &PredefinedMenuItem::separator(app)?,
-            &PredefinedMenuItem::cut(app, Some("Cut"))?,
-            &PredefinedMenuItem::copy(app, Some("Copy"))?,
-            &PredefinedMenuItem::paste(app, Some("Paste"))?,
-            &PredefinedMenuItem::select_all(app, Some("Select All"))?,
+            &PredefinedMenuItem::cut(app, Some(labels.cut))?,
+            &PredefinedMenuItem::copy(app, Some(labels.copy))?,
+            &PredefinedMenuItem::paste(app, Some(labels.paste))?,
+            &PredefinedMenuItem::select_all(app, Some(labels.select_all))?,
         ],
     )?;
-    let view = Submenu::with_items(
-        app,
-        "View",
-        true,
-        &[
-            &MenuItem::with_id(app, "view-history", "History", true, None::<&str>)?,
-            &MenuItem::with_id(
-                app,
-                "view-local-changes",
-                "Local Changes",
-                true,
-                None::<&str>,
-            )?,
-            &PredefinedMenuItem::separator(app)?,
-            &MenuItem::with_id(app, "toggle-theme", "Toggle Theme", true, None::<&str>)?,
-            &MenuItem::with_id(
-                app,
-                "toggle-devtools",
-                "Toggle Developer Tools",
-                cfg!(debug_assertions),
-                None::<&str>,
-            )?,
-        ],
-    )?;
+    let view = build_view_menu(app, labels)?;
     let help = Submenu::with_items(
         app,
-        "Help",
+        labels.help,
         true,
         &[
-            &MenuItem::with_id(
-                app,
-                "open-log-dir",
-                "Open Log Directory",
-                true,
-                None::<&str>,
-            )?,
-            &MenuItem::with_id(app, "open-changelog", "View Changelog", true, None::<&str>)?,
-            &MenuItem::with_id(app, "open-homepage", "Project Homepage", true, None::<&str>)?,
+            &MenuItem::with_id(app, "open-log-dir", labels.open_log_dir, true, None::<&str>)?,
+            &MenuItem::with_id(app, "open-changelog", labels.changelog, true, None::<&str>)?,
+            &MenuItem::with_id(app, "open-homepage", labels.homepage, true, None::<&str>)?,
         ],
     )?;
 
     Menu::with_items(app, &[&app_menu, &file, &edit, &view, &help])
+}
+
+#[cfg(debug_assertions)]
+fn build_view_menu(
+    app: &tauri::AppHandle,
+    labels: &NativeMenuLabels,
+) -> tauri::Result<Submenu<tauri::Wry>> {
+    Submenu::with_items(
+        app,
+        labels.view,
+        true,
+        &[
+            &MenuItem::with_id(app, "view-history", labels.history, true, None::<&str>)?,
+            &MenuItem::with_id(
+                app,
+                "view-local-changes",
+                labels.local_changes,
+                true,
+                None::<&str>,
+            )?,
+            &PredefinedMenuItem::separator(app)?,
+            &MenuItem::with_id(app, "toggle-theme", labels.toggle_theme, true, None::<&str>)?,
+            &MenuItem::with_id(
+                app,
+                "toggle-devtools",
+                labels.toggle_devtools,
+                true,
+                None::<&str>,
+            )?,
+        ],
+    )
+}
+
+#[cfg(not(debug_assertions))]
+fn build_view_menu(
+    app: &tauri::AppHandle,
+    labels: &NativeMenuLabels,
+) -> tauri::Result<Submenu<tauri::Wry>> {
+    Submenu::with_items(
+        app,
+        labels.view,
+        true,
+        &[
+            &MenuItem::with_id(app, "view-history", labels.history, true, None::<&str>)?,
+            &MenuItem::with_id(
+                app,
+                "view-local-changes",
+                labels.local_changes,
+                true,
+                None::<&str>,
+            )?,
+            &PredefinedMenuItem::separator(app)?,
+            &MenuItem::with_id(app, "toggle-theme", labels.toggle_theme, true, None::<&str>)?,
+        ],
+    )
+}
+
+fn initial_menu_language(app: &tauri::AppHandle) -> NativeMenuLanguage {
+    let saved_language = app
+        .path()
+        .app_config_dir()
+        .ok()
+        .and_then(|directory| fs::read_to_string(directory.join("settings.json")).ok())
+        .and_then(|content| {
+            serde_json::from_str::<artistic_git_core::config::AppSettings>(&content).ok()
+        })
+        .map(|settings| settings.language)
+        .unwrap_or(artistic_git_core::config::LanguagePreference::System);
+    resolved_menu_language(saved_language)
+}
+
+fn resolved_menu_language(
+    preference: artistic_git_core::config::LanguagePreference,
+) -> NativeMenuLanguage {
+    match preference {
+        artistic_git_core::config::LanguagePreference::ZhCn => NativeMenuLanguage::Chinese,
+        artistic_git_core::config::LanguagePreference::EnUs => NativeMenuLanguage::English,
+        artistic_git_core::config::LanguagePreference::System => {
+            let is_chinese = system_primary_language()
+                .map(|value| value.to_ascii_lowercase().starts_with("zh"))
+                .unwrap_or(false);
+            if is_chinese {
+                NativeMenuLanguage::Chinese
+            } else {
+                NativeMenuLanguage::English
+            }
+        }
+    }
+}
+
+fn system_primary_language() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(output) = std::process::Command::new("/usr/bin/defaults")
+            .args(["read", "-g", "AppleLanguages"])
+            .output()
+        {
+            if output.status.success() {
+                let value = String::from_utf8_lossy(&output.stdout);
+                if let Some(language) = parse_apple_primary_language(&value) {
+                    return Some(language.to_owned());
+                }
+            }
+        }
+    }
+
+    ["LC_ALL", "LC_MESSAGES", "LANG"]
+        .into_iter()
+        .find_map(|name| env::var(name).ok().filter(|value| !value.trim().is_empty()))
+}
+
+#[cfg(target_os = "macos")]
+fn parse_apple_primary_language(value: &str) -> Option<&str> {
+    value.lines().find_map(|line| {
+        let language = line.trim().trim_end_matches(',').trim_matches('"');
+        (!language.is_empty() && language != "(" && language != ")").then_some(language)
+    })
 }
 
 fn handle_menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
@@ -2428,7 +3153,9 @@ fn handle_menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
     match id {
         "new-window" => {
             if let Some(registry) = app.try_state::<WindowRegistry>() {
-                let _ = create_start_window(app, &registry);
+                if let Err(error) = create_start_window(app, &registry, None) {
+                    emit_native_app_error(app, error);
+                }
             }
         }
         "close-window" => {
@@ -2443,14 +3170,26 @@ fn handle_menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
                         return;
                     }
                 }
-                let _ = window.close();
+                if let Err(error) = window.close() {
+                    emit_native_app_error(
+                        app,
+                        window_command_error(
+                            format!("failed to close current window: {error}"),
+                            "closeCurrentWindow",
+                        ),
+                    );
+                }
             }
         }
         "open-homepage" => {
-            open_url(APP_HOMEPAGE);
+            if let Err(error) = open_external_target(APP_HOMEPAGE, "openHomepage") {
+                emit_native_app_error(app, error);
+            }
         }
         "open-changelog" => {
-            open_url(APP_CHANGELOG);
+            if let Err(error) = open_external_target(APP_CHANGELOG, "openChangelog") {
+                emit_native_app_error(app, error);
+            }
         }
         "toggle-devtools" => {
             toggle_focused_devtools(app);
@@ -2462,9 +3201,33 @@ fn handle_menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
 fn emit_menu_event_to_focused_window(app: &tauri::AppHandle, id: &str) {
     let event = AppMenuEvent { id: id.to_owned() };
     if let Some(window) = focused_webview_window(app) {
-        let _ = window.emit(MENU_EVENT_NAME, event);
+        if let Err(error) = window.emit(MENU_EVENT_NAME, event) {
+            emit_native_app_error(
+                app,
+                window_command_error(
+                    format!("failed to deliver menu action {id}: {error}"),
+                    "appMenu",
+                ),
+            );
+        }
     } else {
-        let _ = app.emit(MENU_EVENT_NAME, event);
+        if let Err(error) = app.emit(MENU_EVENT_NAME, event) {
+            emit_native_app_error(
+                app,
+                window_command_error(
+                    format!("failed to deliver menu action {id}: {error}"),
+                    "appMenu",
+                ),
+            );
+        }
+    }
+}
+
+fn emit_native_app_error(app: &tauri::AppHandle, error: artistic_git_contracts::AppError) {
+    if let Some(window) = focused_webview_window(app) {
+        let _ = window.emit("app-error", error);
+    } else {
+        let _ = app.emit("app-error", error);
     }
 }
 
@@ -2491,9 +3254,15 @@ fn toggle_focused_devtools(app: &tauri::AppHandle) {
 fn create_start_window(
     app: &tauri::AppHandle,
     registry: &WindowRegistry,
+    initial_action: Option<&str>,
 ) -> artistic_git_contracts::AppResult<NewWindowResponse> {
     let label = next_start_window_label(registry)?;
-    tauri::WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html".into()))
+    let route = match initial_action {
+        Some("open") => "index.html?action=open",
+        Some("clone") => "index.html?action=clone",
+        _ => "index.html",
+    };
+    tauri::WebviewWindowBuilder::new(app, &label, WebviewUrl::App(route.into()))
         .title("Artistic Git")
         .inner_size(
             artistic_git_core::config::DEFAULT_WINDOW_WIDTH as f64,
@@ -2944,7 +3713,8 @@ fn process_second_instance(app: &tauri::AppHandle, dispatch: SecondInstanceDispa
     let SecondInstanceDispatch { args, cwd } = dispatch;
     let repository_path = repository_path_from_args(&args, Some(&cwd));
     if let Some(repository_path) = repository_path.clone() {
-        if open_second_instance_repository(app, repository_path).is_err() {
+        if let Err(error) = open_second_instance_repository(app, repository_path) {
+            emit_native_app_error(app, error);
             focus_or_create_start_window(app);
         }
     } else {
@@ -2970,12 +3740,23 @@ fn open_second_instance_repository(
         .ok_or_else(|| window_command_error("repository backend unavailable", "secondInstance"))?
         .inner()
         .clone();
-    let project_settings = backend
-        .load_project_settings(artistic_git_app::ProjectSettingsRequest { repository_path })?;
+    let opened = backend.open_repository(artistic_git_contracts::OpenRepositoryRequest {
+        path: repository_path,
+        tool_identity: None,
+        operation_id: None,
+    })?;
+    let project_settings =
+        backend.load_project_settings(artistic_git_app::ProjectSettingsRequest {
+            repository_path: opened.repository_path,
+        })?;
     let registry = app
         .try_state::<WindowRegistry>()
         .ok_or_else(|| window_command_error("window registry unavailable", "secondInstance"))?;
-    open_or_focus_repository_from_settings(app, &registry, project_settings).map(|_| ())
+    open_or_focus_repository_from_settings(app, &registry, project_settings)?;
+    for error in opened.non_fatal_errors {
+        emit_native_app_error(app, error);
+    }
+    Ok(())
 }
 
 fn open_or_focus_repository_from_settings(
@@ -3021,7 +3802,7 @@ fn focus_or_create_start_window(app: &tauri::AppHandle) {
     }
 
     if let Some(registry) = app.try_state::<WindowRegistry>() {
-        let _ = create_start_window(app, &registry);
+        let _ = create_start_window(app, &registry, None);
     }
 }
 
@@ -3050,6 +3831,15 @@ fn handle_window_event(window: &tauri::Window, event: &WindowEvent) {
         }
         WindowEvent::Destroyed => {
             let label = window.label().to_owned();
+            if let Some(state) = app.try_state::<HttpsCredentialPromptState>() {
+                state.registry.set_window_ready(app, &label, false);
+            }
+            if let Some(state) = app.try_state::<SshPassphrasePromptState>() {
+                state.registry.set_window_ready(app, &label, false);
+            }
+            if let Some(state) = app.try_state::<AuthPromptWindowState>() {
+                state.router.remove_window(&label);
+            }
             let mut next_update_prompt_label = None;
             let mut update_install_closing_windows = false;
             if let Some(registry) = app.try_state::<WindowRegistry>() {
@@ -3157,7 +3947,10 @@ fn encode_url_component(value: &str) -> String {
     encoded
 }
 
-fn open_url(url: &str) {
+fn open_external_target(
+    target: &str,
+    operation_name: &str,
+) -> artistic_git_contracts::AppResult<()> {
     #[cfg(target_os = "macos")]
     let mut command = std::process::Command::new("open");
     #[cfg(target_os = "windows")]
@@ -3169,7 +3962,12 @@ fn open_url(url: &str) {
     #[cfg(all(unix, not(target_os = "macos")))]
     let mut command = std::process::Command::new("xdg-open");
 
-    let _ = command.arg(url).spawn();
+    command.arg(target).spawn().map(|_| ()).map_err(|source| {
+        artistic_git_app::unexpected_command_error(
+            format!("failed to open {target}: {source}"),
+            operation_name,
+        )
+    })
 }
 
 fn window_command_error(
@@ -3201,6 +3999,7 @@ fn repository_backend(
     app: &tauri::App,
     credential_prompts: Arc<HttpsCredentialPromptRegistry>,
     ssh_passphrase_prompts: Arc<SshPassphrasePromptRegistry>,
+    auth_prompt_router: Arc<AuthPromptWindowRouter>,
 ) -> Result<artistic_git_app::RepositoryBackend, Box<dyn std::error::Error>> {
     let dist_root = git_dist_root(app)?;
     let storage_dirs = application_storage_dirs(app)?;
@@ -3233,10 +4032,12 @@ fn repository_backend(
         Arc::new(TauriHttpsCredentialPromptSink {
             app: app.handle().clone(),
             registry: credential_prompts,
+            router: Arc::clone(&auth_prompt_router),
         }),
         Arc::new(TauriSshPassphrasePromptSink {
             app: app.handle().clone(),
             registry: ssh_passphrase_prompts,
+            router: auth_prompt_router,
         }),
     ))
 }
@@ -3419,7 +4220,7 @@ fn emit_operation_progress(
     }
     event.window_label = Some(window_label.to_owned());
 
-    let _ = app_handle.emit("operation-progress", &event);
+    let _ = app_handle.emit_to(window_label, "operation-progress", &event);
 }
 
 fn emit_operation_started(
@@ -3458,6 +4259,7 @@ fn reserve_and_emit_operation_started(
     label: &'static str,
 ) -> artistic_git_contracts::AppResult<Option<artistic_git_app::CancellableOperationReservation>> {
     let reservation = backend.reserve_cancellable_operation(operation_id, operation_name)?;
+    register_auth_prompt_window(app_handle, operation_id, window_label);
     emit_operation_started(
         app_handle,
         operation_id,
@@ -3475,6 +4277,7 @@ fn emit_operation_finished(
     window_label: &str,
     label: impl Into<String>,
 ) {
+    finish_auth_prompt_operation(app_handle, operation_id);
     let Some(operation_id) = operation_id else {
         return;
     };
@@ -3492,6 +4295,45 @@ fn emit_operation_finished(
         Some(repository_path),
         window_label,
     );
+}
+
+fn register_auth_prompt_window(
+    app_handle: &tauri::AppHandle,
+    operation_id: Option<&artistic_git_contracts::OperationId>,
+    window_label: &str,
+) {
+    let (Some(operation_id), Some(state)) = (
+        operation_id,
+        app_handle.try_state::<AuthPromptWindowState>(),
+    ) else {
+        return;
+    };
+    state.router.register(operation_id, window_label);
+}
+
+fn finish_auth_prompt_operation(
+    app_handle: &tauri::AppHandle,
+    operation_id: Option<&artistic_git_contracts::OperationId>,
+) {
+    let Some(operation_id) = operation_id else {
+        return;
+    };
+    cancel_auth_prompt_waiters(app_handle, operation_id);
+    if let Some(state) = app_handle.try_state::<AuthPromptWindowState>() {
+        state.router.unregister(operation_id);
+    }
+}
+
+fn cancel_auth_prompt_waiters(
+    app_handle: &tauri::AppHandle,
+    operation_id: &artistic_git_contracts::OperationId,
+) {
+    if let Some(state) = app_handle.try_state::<HttpsCredentialPromptState>() {
+        state.registry.cancel_operation(app_handle, operation_id);
+    }
+    if let Some(state) = app_handle.try_state::<SshPassphrasePromptState>() {
+        state.registry.cancel_operation(app_handle, operation_id);
+    }
 }
 
 fn clone_repository_target_path(
@@ -3576,6 +4418,7 @@ mod tests {
                 "open_update_release_page",
                 "submit_https_credential_prompt",
                 "submit_ssh_passphrase_prompt",
+                "set_auth_prompt_listener_ready",
             ],
         );
         assert_only_allowlisted_commands_are_synchronous(
@@ -3719,6 +4562,26 @@ mod tests {
             encode_url_component("/Users/artist/Project A"),
             "%2FUsers%2Fartist%2FProject%20A"
         );
+    }
+
+    #[test]
+    fn window_menu_explicit_language_preferences_are_respected() {
+        assert!(matches!(
+            resolved_menu_language(artistic_git_core::config::LanguagePreference::ZhCn),
+            NativeMenuLanguage::Chinese
+        ));
+        assert!(matches!(
+            resolved_menu_language(artistic_git_core::config::LanguagePreference::EnUs),
+            NativeMenuLanguage::English
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn window_menu_uses_the_first_macos_language() {
+        let languages = "(\n    \"zh-Hans-CN\",\n    \"en-CN\"\n)\n";
+
+        assert_eq!(parse_apple_primary_language(languages), Some("zh-Hans-CN"));
     }
 
     #[test]

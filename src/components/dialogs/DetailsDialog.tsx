@@ -1,9 +1,10 @@
-import { Check, Copy } from "lucide-react";
+import { Copy } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { DialogFrame } from "@/components/dialogs/DialogFrame";
 import { Button } from "@/components/ui/button";
+import { showToast } from "@/lib/toast";
 
 interface DetailsDialogProps {
   "data-testid"?: string;
@@ -58,9 +59,7 @@ function DetailsDialogContent({
 }: Omit<DetailsDialogProps, "open">) {
   const { t } = useTranslation();
   const [detailsOpen, setDetailsOpen] = React.useState(false);
-  const [copyStatus, setCopyStatus] = React.useState<
-    "copied" | "failed" | null
-  >(null);
+  const [copyFailed, setCopyFailed] = React.useState(false);
   const detailsId = React.useId();
 
   const handleCopyDetails = async () => {
@@ -73,9 +72,14 @@ function DetailsDialogContent({
         throw new Error("Clipboard API is unavailable.");
       }
 
-      setCopyStatus("copied");
+      setCopyFailed(false);
+      showToast({
+        key: "details-copy-result",
+        message: t("dialogs.error.copied"),
+        tone: "success",
+      });
     } catch {
-      setCopyStatus("failed");
+      setCopyFailed(true);
     }
   };
 
@@ -110,19 +114,13 @@ function DetailsDialogContent({
           type="button"
           variant="ghost"
         >
-          {copyStatus === "copied" ? (
-            <Check className="size-4" aria-hidden="true" />
-          ) : (
-            <Copy className="size-4" aria-hidden="true" />
-          )}
+          <Copy className="size-4" aria-hidden="true" />
           {t("actions.copyDetails")}
         </Button>
         {extraActions}
-        {copyStatus ? (
+        {copyFailed ? (
           <span className="text-sm text-muted-foreground" role="status">
-            {copyStatus === "copied"
-              ? t("dialogs.error.copied")
-              : t("dialogs.error.copyFailed")}
+            {t("dialogs.error.copyFailed")}
           </span>
         ) : null}
       </div>

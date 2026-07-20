@@ -11,7 +11,7 @@ import type {
   OperationProgressEvent,
   RepoChangedEvent,
 } from "@/lib/ipc/generated";
-import { repoChangedQueryKeys, repoQueryKeys } from "@/lib/realtime/query-keys";
+import { repoChangedQueryKeys } from "@/lib/realtime/query-keys";
 
 type AppEventListener = typeof listenAppEvent;
 type RealtimeUnsubscribe = () => void;
@@ -38,23 +38,6 @@ export function invalidateRepoChangedQueries(
   );
 }
 
-export function invalidateFetchStateQueries(
-  queryClient: QueryClient,
-  event: FetchStateEvent,
-): Promise<unknown[]> {
-  if (event.state !== "idle") {
-    return Promise.resolve([]);
-  }
-
-  return Promise.all(
-    [
-      repoQueryKeys.summary(event.repositoryPath),
-      repoQueryKeys.branches(event.repositoryPath),
-      repoQueryKeys.history(event.repositoryPath),
-    ].map((queryKey) => queryClient.invalidateQueries({ queryKey })),
-  );
-}
-
 export async function installRealtimeEventBridge({
   listen = listenAppEvent,
   onConflictCleared,
@@ -65,48 +48,60 @@ export async function installRealtimeEventBridge({
   onRepoChanged,
   queryClient,
 }: RealtimeEventBridgeOptions): Promise<RealtimeUnsubscribe> {
-  const unlistenRepoChanged = await listen("repo-changed", (event) => {
-    const payload = event.payload as AppEventPayloads["repo-changed"];
+  const unlisteners: RealtimeUnsubscribe[] = [];
+  try {
+    unlisteners.push(
+      await listen("repo-changed", (event) => {
+        const payload = event.payload as AppEventPayloads["repo-changed"];
 
-    onRepoChanged?.(payload);
-    void invalidateRepoChangedQueries(queryClient, payload);
-  });
-  const unlistenConflictEntered = await listen("conflict-entered", (event) => {
-    const payload = event.payload as AppEventPayloads["conflict-entered"];
-
-    onConflictEntered?.(payload);
-  });
-  const unlistenConflictCleared = await listen("conflict-cleared", (event) => {
-    const payload = event.payload as AppEventPayloads["conflict-cleared"];
-
-    onConflictCleared?.(payload);
-  });
-  const unlistenFetchState = await listen("fetch-state", (event) => {
-    const payload = event.payload as AppEventPayloads["fetch-state"];
-
-    onFetchState?.(payload);
-    void invalidateFetchStateQueries(queryClient, payload);
-    window.dispatchEvent(
-      new CustomEvent("artistic-git:fetch-state", { detail: payload }),
+        onRepoChanged?.(payload);
+        void invalidateRepoChangedQueries(queryClient, payload);
+      }),
     );
-  });
-  const unlistenOperationProgress = await listen(
-    "operation-progress",
-    (event) => {
-      const payload = event.payload as AppEventPayloads["operation-progress"];
+    unlisteners.push(
+      await listen("conflict-entered", (event) => {
+        const payload = event.payload as AppEventPayloads["conflict-entered"];
 
-      if (operationProgressFilter && !operationProgressFilter(payload)) {
-        return;
-      }
-      onOperationProgress?.(payload);
-    },
-  );
+        onConflictEntered?.(payload);
+      }),
+    );
+    unlisteners.push(
+      await listen("conflict-cleared", (event) => {
+        const payload = event.payload as AppEventPayloads["conflict-cleared"];
+
+        onConflictCleared?.(payload);
+      }),
+    );
+    unlisteners.push(
+      await listen("fetch-state", (event) => {
+        const payload = event.payload as AppEventPayloads["fetch-state"];
+
+        onFetchState?.(payload);
+        window.dispatchEvent(
+          new CustomEvent("artistic-git:fetch-state", { detail: payload }),
+        );
+      }),
+    );
+    unlisteners.push(
+      await listen("operation-progress", (event) => {
+        const payload = event.payload as AppEventPayloads["operation-progress"];
+
+        if (operationProgressFilter && !operationProgressFilter(payload)) {
+          return;
+        }
+        onOperationProgress?.(payload);
+      }),
+    );
+  } catch (error) {
+    for (const unlisten of unlisteners.toReversed()) {
+      unlisten();
+    }
+    throw error;
+  }
 
   return () => {
-    unlistenRepoChanged();
-    unlistenConflictEntered();
-    unlistenConflictCleared();
-    unlistenFetchState();
-    unlistenOperationProgress();
+    for (const unlisten of unlisteners.toReversed()) {
+      unlisten();
+    }
   };
 }

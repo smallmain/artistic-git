@@ -473,6 +473,8 @@ pub struct ReviewModeState {
     pub auto_stash: Option<StashEntry>,
     pub pull_status: ReviewModePullStatus,
     pub pull_message: Option<String>,
+    #[serde(default)]
+    pub pull_error: Option<AppError>,
     pub has_remote_update: bool,
 }
 
@@ -750,6 +752,7 @@ pub struct ToolGitIdentity {
 pub struct OpenRepositoryRequest {
     pub path: String,
     pub tool_identity: Option<ToolGitIdentity>,
+    pub operation_id: Option<OperationId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -818,6 +821,8 @@ pub struct OpenRepositoryResponse {
     pub remote_mode: RepositoryRemoteMode,
     pub remotes: Vec<RepositoryRemote>,
     pub warnings: Vec<RepositoryOpenWarning>,
+    #[serde(default)]
+    pub non_fatal_errors: Vec<AppError>,
     pub health: RepositoryHealth,
     pub summary: RepositorySummary,
 }
@@ -910,6 +915,15 @@ pub struct RepositorySummary {
     pub is_detached: bool,
     pub is_unborn: bool,
     pub in_progress: bool,
+    #[serde(default)]
+    pub details: Option<RepositorySummaryDetails>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositorySummaryDetails {
+    pub health: RepositoryHealth,
+    pub remotes: Vec<RepositoryRemote>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -1443,6 +1457,8 @@ pub struct LogPageRequest {
     pub after: Option<String>,
     pub limit: Option<u16>,
     pub operation_id: Option<OperationId>,
+    #[serde(default)]
+    pub revisions: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -1455,6 +1471,8 @@ pub struct LogSearchRequest {
     pub after: Option<String>,
     pub limit: Option<u16>,
     pub operation_id: Option<OperationId>,
+    #[serde(default)]
+    pub revisions: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -1474,6 +1492,57 @@ pub struct CommitSummary {
     pub authored_at_unix_seconds: String,
     pub subject: String,
     pub refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitDetailsRequest {
+    pub repository_path: String,
+    pub oid: String,
+    pub limit: Option<u16>,
+    pub operation_id: Option<OperationId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitChangedFile {
+    pub path: String,
+    pub old_path: Option<String>,
+    pub old_mode: Option<String>,
+    pub new_mode: Option<String>,
+    pub change_kind: DiffChangeKind,
+    pub additions: u32,
+    pub deletions: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitDetailsResponse {
+    pub repository_path: String,
+    pub oid: String,
+    pub body: Option<String>,
+    pub body_truncated: bool,
+    pub files: Vec<CommitChangedFile>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitFileDetailRequest {
+    pub repository_path: String,
+    pub oid: String,
+    pub file: CommitChangedFile,
+    pub operation_id: Option<OperationId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitFileDetailResponse {
+    pub repository_path: String,
+    pub oid: String,
+    pub file: CommitChangedFile,
+    pub payload: DiffPayload,
+    pub diff: DiffContent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]

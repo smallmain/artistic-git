@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 
 interface ConfirmDialogProps {
   busy?: boolean;
+  busyLabel?: string;
   cancelLabel?: string;
   confirmLabel?: string;
   description: string;
@@ -19,6 +20,7 @@ interface ConfirmDialogProps {
 
 export function ConfirmDialog({
   busy = false,
+  busyLabel,
   cancelLabel,
   confirmLabel,
   description,
@@ -87,7 +89,7 @@ export function ConfirmDialog({
             role="status"
           >
             <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-            <span>{t("actions.processing")}</span>
+            <span>{busyLabel ?? t("actions.processing")}</span>
           </div>
         ) : null}
       </div>

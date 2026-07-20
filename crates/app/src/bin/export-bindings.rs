@@ -1,9 +1,10 @@
 use artistic_git_app::{
-    DeleteHttpsCredentialRequest, GenerateSshKeyRequest, GitignoreFileResponse, GitignoreRequest,
-    HealthResponse, HttpsCredentialEntry, HttpsCredentialListResponse, HttpsCredentialPromptReason,
-    HttpsCredentialPromptRequest, HttpsCredentialScope, IdentitySourcesResponse,
-    IdentityValidationRequest, IdentityValidationResponse, OpenLogDirResponse,
-    ProjectSettingsRequest, SaveAppSettingsRequest, SaveGitignoreRequest,
+    DeleteHttpsCredentialRequest, ForgetRecentProjectRequest, GenerateSshKeyRequest,
+    GitignoreFileResponse, GitignoreRequest, HealthResponse, HttpsCredentialEntry,
+    HttpsCredentialListResponse, HttpsCredentialPromptReason, HttpsCredentialPromptRequest,
+    HttpsCredentialScope, IdentitySourcesResponse, IdentityValidationRequest,
+    IdentityValidationResponse, OpenLogDirResponse, ProjectSettingsRequest, RecentProjectEntry,
+    RecentProjectsRequest, SaveAppSettingsRequest, SaveGitignoreRequest,
     SaveHttpsCredentialRequest, SaveProjectSettingsRequest, SettingsSnapshot, SshKeyStatus,
     SshPassphrasePromptRequest,
 };
@@ -13,10 +14,11 @@ use artistic_git_contracts::{
     BranchNameValidationRequest, BranchNameValidationResponse, BranchOperationResponse,
     CancelCloneRepositoryRequest, CancelCloneRepositoryResponse, CancelOperationRequest,
     CancelOperationResponse, CancelStashRestoreRequest, CancelStashRestoreResponse,
-    CheckoutBranchRequest, CloneRepositoryRequest, CloneRepositoryResponse, CommitRequest,
-    CommitResponse, ConflictCancelRequest, ConflictCancelResponse, ConflictCompleteRequest,
-    ConflictCompleteResponse, ConflictDetailResponse, ConflictFile, ConflictListRequest,
-    ConflictListResponse, ConflictPathRequest, ConflictSaveResolutionRequest,
+    CheckoutBranchRequest, CloneRepositoryRequest, CloneRepositoryResponse, CommitChangedFile,
+    CommitDetailsRequest, CommitDetailsResponse, CommitFileDetailRequest, CommitFileDetailResponse,
+    CommitRequest, CommitResponse, ConflictCancelRequest, ConflictCancelResponse,
+    ConflictCompleteRequest, ConflictCompleteResponse, ConflictDetailResponse, ConflictFile,
+    ConflictListRequest, ConflictListResponse, ConflictPathRequest, ConflictSaveResolutionRequest,
     ConflictSaveResolutionResponse, ConflictSelectSideRequest, ConflictSelectSideResponse,
     CreateAutoStashRequest, CreateBranchRequest, CreateStashRequest, CreateStashResponse,
     DeleteBranchRequest, DeleteSafetyBackupRequest, DeleteSafetyBackupResponse, DeleteStashRequest,
@@ -125,7 +127,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register::<LogPageRequest>()
         .register::<LogSearchRequest>()
         .register::<LogPageResponse>()
+        .register::<CommitChangedFile>()
+        .register::<CommitDetailsRequest>()
+        .register::<CommitDetailsResponse>()
+        .register::<CommitFileDetailRequest>()
+        .register::<CommitFileDetailResponse>()
+        .register::<artistic_git_contracts::RepositorySummaryDetails>()
         .register::<SettingsSnapshot>()
+        .register::<RecentProjectsRequest>()
+        .register::<RecentProjectEntry>()
+        .register::<ForgetRecentProjectRequest>()
         .register::<SaveAppSettingsRequest>()
         .register::<ProjectSettingsRequest>()
         .register::<SaveProjectSettingsRequest>()

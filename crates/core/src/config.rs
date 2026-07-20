@@ -218,7 +218,12 @@ impl Default for ProjectsDocument {
 
 impl ProjectsDocument {
     pub fn recent_projects(&self, limit: usize) -> Vec<ProjectSettings> {
-        let mut projects = self.projects.values().cloned().collect::<Vec<_>>();
+        let mut projects = self
+            .projects
+            .values()
+            .filter(|project| project.last_opened_at.is_some())
+            .cloned()
+            .collect::<Vec<_>>();
         projects.sort_by(|left, right| {
             right
                 .last_opened_at
@@ -371,6 +376,7 @@ pub enum ConfigChangeEvent {
         project_key: String,
         project: Option<ProjectSettings>,
     },
+    RecentProjectsChanged,
 }
 
 pub trait ConfigChangeSubscriber: Send + Sync + 'static {
@@ -451,6 +457,39 @@ impl ConfigActor {
             project_key,
             project: project.clone(),
         })?;
+        Ok(project)
+    }
+
+    pub fn forget_recent_project(
+        &self,
+        project_path: &str,
+    ) -> ConfigStoreResult<Option<ProjectSettings>> {
+        let project = self.store.forget_recent_project(project_path)?;
+        if project.is_some() {
+            self.broadcast(ConfigChangeEvent::RecentProjectsChanged)?;
+        }
+        Ok(project)
+    }
+
+    pub fn clear_recent_projects(&self) -> ConfigStoreResult<Vec<ProjectSettings>> {
+        let projects = self.store.clear_recent_projects()?;
+        if !projects.is_empty() {
+            self.broadcast(ConfigChangeEvent::RecentProjectsChanged)?;
+        }
+        Ok(projects)
+    }
+
+    pub fn mark_project_opened(
+        &self,
+        project_path: impl Into<String>,
+        timestamp: String,
+    ) -> ConfigStoreResult<ProjectSettings> {
+        let path = project_path.into();
+        let project = self.store.update_project(path.clone(), |project| {
+            project.path = path;
+            project.last_opened_at = Some(timestamp);
+        })?;
+        self.broadcast(ConfigChangeEvent::RecentProjectsChanged)?;
         Ok(project)
     }
 
@@ -564,6 +603,49 @@ impl ConfigStore {
         state.projects = next_projects;
 
         Ok(removed_project)
+    }
+
+    pub fn forget_recent_project(
+        &self,
+        project_path: &str,
+    ) -> ConfigStoreResult<Option<ProjectSettings>> {
+        let project_key = normalize_project_path_key(project_path)?;
+        let mut state = self.lock_state()?;
+        let Some(existing) = state.projects.projects.get(&project_key) else {
+            return Ok(None);
+        };
+        if existing.last_opened_at.is_none() {
+            return Ok(Some(existing.clone()));
+        }
+
+        let mut next_projects = state.projects.clone();
+        let project = next_projects
+            .projects
+            .get_mut(&project_key)
+            .expect("existing project key must remain present");
+        project.last_opened_at = None;
+        let updated_project = project.clone();
+        atomic_write_json(&self.paths.projects_path, &next_projects)?;
+        state.projects = next_projects;
+        Ok(Some(updated_project))
+    }
+
+    pub fn clear_recent_projects(&self) -> ConfigStoreResult<Vec<ProjectSettings>> {
+        let mut state = self.lock_state()?;
+        let mut next_projects = state.projects.clone();
+        let mut updated_projects = Vec::new();
+        for project in next_projects.projects.values_mut() {
+            if project.last_opened_at.take().is_some() {
+                updated_projects.push(project.clone());
+            }
+        }
+        if updated_projects.is_empty() {
+            return Ok(updated_projects);
+        }
+
+        atomic_write_json(&self.paths.projects_path, &next_projects)?;
+        state.projects = next_projects;
+        Ok(updated_projects)
     }
 
     pub fn flush(&self) -> ConfigStoreResult<()> {
@@ -1040,6 +1122,14 @@ mod tests {
             },
         );
         document.projects.insert(
+            "/repo/not-recent".to_owned(),
+            ProjectSettings {
+                path: "/repo/not-recent".to_owned(),
+                last_opened_at: None,
+                ..ProjectSettings::default()
+            },
+        );
+        document.projects.insert(
             "/repo/new".to_owned(),
             ProjectSettings {
                 path: "/repo/new".to_owned(),
@@ -1052,6 +1142,35 @@ mod tests {
 
         assert_eq!(recent.len(), 1);
         assert_eq!(recent[0].path, "/repo/new");
+    }
+
+    #[test]
+    fn forgetting_recent_projects_preserves_project_preferences() {
+        let temp_dir = tempdir().expect("create temp dir");
+        let paths = ConfigPaths::new(
+            temp_dir.path().join("settings.json"),
+            temp_dir.path().join("projects.json"),
+        );
+        let store = ConfigStore::load(paths).expect("load store");
+        store
+            .update_project("/repo/one", |project| {
+                project.display_name = Some("One".to_owned());
+                project.last_opened_at = Some("2026-02-01T00:00:00Z".to_owned());
+                project.sidebar.stashes_collapsed = true;
+            })
+            .expect("record project");
+
+        store
+            .forget_recent_project("/repo/one")
+            .expect("forget recent project");
+        let project = store
+            .project("/repo/one")
+            .expect("load project")
+            .expect("project remains");
+
+        assert_eq!(project.last_opened_at, None);
+        assert_eq!(project.display_name.as_deref(), Some("One"));
+        assert!(project.sidebar.stashes_collapsed);
     }
 
     #[test]

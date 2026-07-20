@@ -221,9 +221,9 @@ describe("DiffViewer", () => {
     );
 
     expect(screen.getByRole("status")).toHaveTextContent(
-      "Loading Git LFS content",
+      "Loading Git LFS content...",
     );
-    expect(screen.getByText("Loading")).toBeInTheDocument();
+    expect(screen.getByText("Loading...")).toBeInTheDocument();
 
     rerender(
       <AppProviders
@@ -244,10 +244,106 @@ describe("DiffViewer", () => {
       </AppProviders>,
     );
 
+    expect(
+      screen.getByRole("heading", {
+        name: "Git LFS content could not be loaded",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", {
+        name: "Git LFS old content fetch failed",
+      }),
+    ).not.toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent(
       "Git LFS old content fetch failed",
     );
     expect(screen.getByText("Download failed")).toBeInTheDocument();
+  });
+
+  it("explains permission-only changes and submodule lifecycle changes", () => {
+    const { rerender } = renderWithProviders(
+      <DiffViewer
+        content={{ kind: "moved" }}
+        payload={createPayload({
+          metadata: {
+            contentChanged: "false",
+            modeChanged: "true",
+            newMode: "100755",
+            oldMode: "100644",
+          },
+        })}
+        source="commitDetails"
+      />,
+    );
+
+    expect(screen.getByText("File permissions changed")).toBeInTheDocument();
+    expect(screen.getByText("100644 -> 100755")).toBeInTheDocument();
+
+    rerender(
+      <AppProviders
+        i18n={createI18n("en")}
+        initialLanguagePreference="en"
+        initialThemePreference="light"
+        queryClient={createAppQueryClient()}
+      >
+        <DiffViewer
+          content={{ kind: "text", newText: "new", oldText: "old" }}
+          payload={createPayload({
+            metadata: {
+              contentChanged: "true",
+              modeChanged: "true",
+              newMode: "100755",
+              oldMode: "100644",
+            },
+          })}
+          source="commitDetails"
+        />
+      </AppProviders>,
+    );
+    expect(screen.getByTitle("Permissions 100644 -> 100755")).toHaveTextContent(
+      "Permissions 100644 -> 100755",
+    );
+
+    const renderSubmodule = (changeKind: DiffPayload["changeKind"]) => (
+      <AppProviders
+        i18n={createI18n("en")}
+        initialLanguagePreference="en"
+        initialThemePreference="light"
+        queryClient={createAppQueryClient()}
+      >
+        <DiffViewer
+          content={{ kind: "moved" }}
+          payload={createPayload({
+            changeKind,
+            fileKind: "binary",
+            metadata: { submodule: "true" },
+            newPath: "deps/render-engine",
+          })}
+          source="commitDetails"
+        />
+      </AppProviders>
+    );
+
+    rerender(renderSubmodule("added"));
+    expect(
+      screen.getByText("Submodule deps/render-engine added"),
+    ).toBeInTheDocument();
+    rerender(renderSubmodule("deleted"));
+    expect(
+      screen.getByText("Submodule deps/render-engine deleted"),
+    ).toBeInTheDocument();
+    rerender(renderSubmodule("renamed"));
+    expect(
+      screen.getByText("Submodule moved to deps/render-engine"),
+    ).toBeInTheDocument();
+    rerender(renderSubmodule("copied"));
+    expect(
+      screen.getByText("Submodule copied to deps/render-engine"),
+    ).toBeInTheDocument();
+    rerender(renderSubmodule("modified"));
+    expect(
+      screen.getByText("Submodule deps/render-engine updated to a new version"),
+    ).toBeInTheDocument();
   });
 });
 

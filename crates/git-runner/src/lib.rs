@@ -11,7 +11,7 @@ use std::{
     path::{Component, Path, PathBuf},
     process::{Child, Command, ExitStatus, Stdio},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
         mpsc::{self, RecvTimeoutError},
         Arc, Mutex,
     },
@@ -1209,15 +1209,18 @@ fn appimage_library_path_for(distribution_root: &Path, appdir: &Path) -> Option<
 
 #[derive(Debug, Default)]
 pub struct OperationConcurrency {
-    write_busy: AtomicBool,
-    background_busy: AtomicBool,
+    state: AtomicU8,
 }
+
+const OPERATION_WRITE_BUSY: u8 = 1;
+const OPERATION_BACKGROUND_BUSY: u8 = 2;
 
 impl OperationConcurrency {
     pub fn busy_state(&self) -> Option<OperationBusy> {
-        if self.write_busy.load(Ordering::Acquire) {
+        let state = self.state.load(Ordering::Acquire);
+        if state & OPERATION_WRITE_BUSY != 0 {
             Some(OperationBusy::WriteBusy)
-        } else if self.background_busy.load(Ordering::Acquire) {
+        } else if state & OPERATION_BACKGROUND_BUSY != 0 {
             Some(OperationBusy::BackgroundBusy)
         } else {
             None
@@ -1225,10 +1228,21 @@ impl OperationConcurrency {
     }
 
     pub fn try_begin_write(&self) -> Result<WritePermit<'_>, OperationBusy> {
-        self.write_busy
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .map(|_| WritePermit { owner: self })
-            .map_err(|_| OperationBusy::WriteBusy)
+        let mut state = self.state.load(Ordering::Acquire);
+        loop {
+            if state & OPERATION_WRITE_BUSY != 0 {
+                return Err(OperationBusy::WriteBusy);
+            }
+            match self.state.compare_exchange_weak(
+                state,
+                state | OPERATION_WRITE_BUSY,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return Ok(WritePermit { owner: self }),
+                Err(next) => state = next,
+            }
+        }
     }
 
     pub fn try_begin_write_with_identity<'a>(
@@ -1244,32 +1258,47 @@ impl OperationConcurrency {
         Ok(permit)
     }
 
+    pub fn try_begin_exclusive_with_identity<'a>(
+        &'a self,
+        request: &WriteOperationRequest,
+        identity_hook: &dyn IdentityValidationHook,
+    ) -> Result<ExclusivePermit<'a>, BeginWriteError> {
+        let permit = self.try_begin_exclusive().map_err(BeginWriteError::Busy)?;
+        identity_hook
+            .validate_write_entry(request)
+            .map_err(BeginWriteError::Identity)?;
+
+        Ok(permit)
+    }
+
     pub fn begin_read(&self) -> ReadPermit<'_> {
         ReadPermit { _owner: self }
     }
 
     pub fn try_begin_background(&self) -> Result<BackgroundPermit<'_>, OperationBusy> {
-        if self.write_busy.load(Ordering::Acquire) {
-            return Err(OperationBusy::WriteBusy);
+        match self.state.compare_exchange(
+            0,
+            OPERATION_BACKGROUND_BUSY,
+            Ordering::Acquire,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => Ok(BackgroundPermit { owner: self }),
+            Err(state) if state & OPERATION_WRITE_BUSY != 0 => Err(OperationBusy::WriteBusy),
+            Err(_) => Err(OperationBusy::BackgroundBusy),
         }
-
-        self.background_busy
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .map(|_| BackgroundPermit { owner: self })
-            .map_err(|_| OperationBusy::BackgroundBusy)
     }
 
     pub fn try_begin_exclusive(&self) -> Result<ExclusivePermit<'_>, OperationBusy> {
-        self.write_busy
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .map_err(|_| OperationBusy::WriteBusy)?;
-
-        if self.background_busy.load(Ordering::Acquire) {
-            self.write_busy.store(false, Ordering::Release);
-            return Err(OperationBusy::BackgroundBusy);
+        match self.state.compare_exchange(
+            0,
+            OPERATION_WRITE_BUSY,
+            Ordering::Acquire,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => Ok(ExclusivePermit { owner: self }),
+            Err(state) if state & OPERATION_WRITE_BUSY != 0 => Err(OperationBusy::WriteBusy),
+            Err(_) => Err(OperationBusy::BackgroundBusy),
         }
-
-        Ok(ExclusivePermit { owner: self })
     }
 }
 
@@ -1332,7 +1361,9 @@ pub struct WritePermit<'a> {
 
 impl Drop for WritePermit<'_> {
     fn drop(&mut self) {
-        self.owner.write_busy.store(false, Ordering::Release);
+        self.owner
+            .state
+            .fetch_and(!OPERATION_WRITE_BUSY, Ordering::Release);
     }
 }
 
@@ -1348,7 +1379,9 @@ pub struct BackgroundPermit<'a> {
 
 impl Drop for BackgroundPermit<'_> {
     fn drop(&mut self) {
-        self.owner.background_busy.store(false, Ordering::Release);
+        self.owner
+            .state
+            .fetch_and(!OPERATION_BACKGROUND_BUSY, Ordering::Release);
     }
 }
 
@@ -1359,7 +1392,9 @@ pub struct ExclusivePermit<'a> {
 
 impl Drop for ExclusivePermit<'_> {
     fn drop(&mut self) {
-        self.owner.write_busy.store(false, Ordering::Release);
+        self.owner
+            .state
+            .fetch_and(!OPERATION_WRITE_BUSY, Ordering::Release);
     }
 }
 
@@ -2434,6 +2469,25 @@ mod tests {
         let _permit = concurrency
             .try_begin_write_with_identity(&request, &AllowIdentityValidation)
             .expect("default hook allows");
+    }
+
+    #[test]
+    fn exclusive_write_entry_rejects_existing_background_work() {
+        let concurrency = OperationConcurrency::default();
+        let request = WriteOperationRequest::new("commit");
+        let background = concurrency
+            .try_begin_background()
+            .expect("background starts");
+
+        let error = concurrency
+            .try_begin_exclusive_with_identity(&request, &AllowIdentityValidation)
+            .expect_err("background work blocks exclusive writes");
+        assert_eq!(error, BeginWriteError::Busy(OperationBusy::BackgroundBusy));
+
+        drop(background);
+        concurrency
+            .try_begin_exclusive_with_identity(&request, &AllowIdentityValidation)
+            .expect("exclusive write starts after background work");
     }
 
     #[test]

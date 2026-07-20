@@ -1,4 +1,5 @@
 use crate::auth_ipc::{AuthPromptDecision, InteractionPolicy};
+use artistic_git_contracts::OperationId;
 use artistic_git_core::keyring::{KeyringResult, KeyringVault, SshPassphraseKey};
 use artistic_git_git_runner::GitDistribution;
 use serde::Serialize;
@@ -243,6 +244,14 @@ pub trait SshPassphrasePromptSink: Send + Sync + 'static {
         &self,
         request: SshPassphrasePromptRequest,
     ) -> SshPassphrasePromptResult;
+
+    fn prompt_ssh_passphrase_for_operation(
+        &self,
+        _operation_id: &OperationId,
+        request: SshPassphrasePromptRequest,
+    ) -> SshPassphrasePromptResult {
+        self.prompt_ssh_passphrase(request)
+    }
 }
 
 #[derive(Debug, Default)]

@@ -10,7 +10,10 @@ use artistic_git_git_runner::{
 };
 use serde::Serialize;
 use specta::Type;
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 pub mod auth_ipc;
 pub mod branches;
@@ -98,10 +101,10 @@ pub use https_auth::{
 };
 pub use remote::{load_remote_settings, save_remote_settings};
 pub use repository::{
-    clone_repository, clone_repository_with_cancel, list_branches, list_local_changes,
-    list_stashes, local_change_detail, log_page_with_cancel, open_repository,
-    probe_remote_repository, repository_summary, search_log_with_cancel,
-    CancellableOperationReservation, RepositoryBackend,
+    clone_repository, clone_repository_with_cancel, commit_details, commit_file_detail,
+    list_branches, list_local_changes, list_stashes, local_change_detail, log_page_with_cancel,
+    open_repository, probe_remote_repository, repository_summary, reset_bisect,
+    search_log_with_cancel, CancellableOperationReservation, RepositoryBackend,
 };
 pub use restore::restore_changes;
 pub use revert::abort_revert;
@@ -110,12 +113,14 @@ pub use review::{
     review_mode_recovery, start_review_mode, sync_review_mode,
 };
 pub use settings::{
-    generate_ssh_key, identity_sources, load_app_settings, load_gitignore, load_project_settings,
+    clear_recent_projects, forget_recent_project, generate_ssh_key, identity_sources,
+    list_recent_projects, load_app_settings, load_gitignore, load_project_settings,
     save_app_settings, save_gitignore, save_project_settings, settings_snapshot, ssh_key_status,
-    validate_identity_for_write, GenerateSshKeyRequest, GitignoreFileResponse, GitignoreRequest,
-    IdentitySourcesResponse, IdentityValidationRequest, IdentityValidationResponse,
-    ProjectSettingsRequest, SaveAppSettingsRequest, SaveGitignoreRequest,
-    SaveProjectSettingsRequest, SettingsSnapshot, SshKeyStatus,
+    validate_identity_for_write, ForgetRecentProjectRequest, GenerateSshKeyRequest,
+    GitignoreFileResponse, GitignoreRequest, IdentitySourcesResponse, IdentityValidationRequest,
+    IdentityValidationResponse, ProjectSettingsRequest, RecentProjectEntry, RecentProjectsRequest,
+    SaveAppSettingsRequest, SaveGitignoreRequest, SaveProjectSettingsRequest, SettingsSnapshot,
+    SshKeyStatus,
 };
 pub use ssh_auth::SshPassphrasePromptRequest;
 pub use stash::{
@@ -341,6 +346,12 @@ pub fn open_log_dir(log_dir: impl Into<PathBuf>) -> AppResult<OpenLogDirResponse
             "openLogDir",
         )));
     }
+    fs::create_dir_all(&log_dir).map_err(|source| {
+        logged_app_error(AppError::unexpected(
+            format!("failed to create application log directory: {source}"),
+            "openLogDir",
+        ))
+    })?;
 
     Ok(OpenLogDirResponse {
         path: display_path(&log_dir),
@@ -432,11 +443,16 @@ mod tests {
     }
 
     #[test]
-    fn open_log_dir_reports_placeholder_without_side_effects() {
-        let response = open_log_dir("/tmp/artistic-git-logs").expect("open log dir placeholder");
+    fn open_log_dir_creates_the_directory_before_opening() {
+        let path =
+            std::env::temp_dir().join(format!("artistic-git-open-logs-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&path);
+        let response = open_log_dir(&path).expect("prepare log dir");
 
-        assert_eq!(response.path, "/tmp/artistic-git-logs");
+        assert_eq!(response.path, display_path(&path));
         assert!(!response.opened);
+        assert!(path.is_dir());
+        fs::remove_dir_all(path).expect("remove test log dir");
     }
 
     #[test]

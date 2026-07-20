@@ -6,20 +6,22 @@ use artistic_git_contracts::{
     BranchOperationResponse, BranchSummary, CancelCloneRepositoryRequest,
     CancelCloneRepositoryResponse, CancelOperationRequest, CancelOperationResponse,
     CancelStashRestoreRequest, CancelStashRestoreResponse, CheckoutBranchRequest,
-    CloneRepositoryRequest, CloneRepositoryResponse, CommitSummary, CreateAutoStashRequest,
-    CreateBranchRequest, CreateStashRequest, CreateStashResponse, DeleteBranchRequest,
-    DeleteSafetyBackupRequest, DeleteSafetyBackupResponse, DeleteStashRequest, DeleteStashResponse,
-    DiffAsset, DiffChangeKind, DiffContent, DiffFileKind, DiffPayload, FetchRepositoryRequest,
-    FetchRepositoryResponse, FetchStateEvent, GitCommandError, IndexLockInfo, LfsContentStatus,
-    LocalChange, LocalChangeDetailRequest, LocalChangeSubmodule, LocalChangesRenormalizeSuggestion,
-    LocalChangesResponse, LogPageRequest, LogPageResponse, LogSearchRequest, OpenRepositoryRequest,
-    OpenRepositoryResponse, OperationId, OperationProgressEvent, ProgressState,
-    RemoteRepositoryProbeRequest, RemoteRepositoryProbeResponse, RemoteSettingsResponse,
-    RenormalizePreviewRequest, RenormalizePreviewResponse, RepositoryHeadState, RepositoryHealth,
-    RepositoryMiddleState, RepositoryMiddleStateKind, RepositoryOpenWarning,
-    RepositoryOpenWarningKind, RepositoryPathRequest, RepositoryRemote, RepositoryRemoteMode,
-    RepositorySummary, RestoreStashRequest, RestoreStashResponse, SafetyBackupListResponse,
-    SaveRemoteSettingsRequest, StashDetailsRequest, StashDetailsResponse, StashListResponse,
+    CloneRepositoryRequest, CloneRepositoryResponse, CommitChangedFile, CommitDetailsRequest,
+    CommitDetailsResponse, CommitFileDetailRequest, CommitFileDetailResponse, CommitSummary,
+    CreateAutoStashRequest, CreateBranchRequest, CreateStashRequest, CreateStashResponse,
+    DeleteBranchRequest, DeleteSafetyBackupRequest, DeleteSafetyBackupResponse, DeleteStashRequest,
+    DeleteStashResponse, DiffAsset, DiffChangeKind, DiffContent, DiffFileKind, DiffPayload,
+    FetchRepositoryRequest, FetchRepositoryResponse, FetchStateEvent, GitCommandError,
+    IndexLockInfo, LfsContentStatus, LocalChange, LocalChangeDetailRequest, LocalChangeSubmodule,
+    LocalChangesRenormalizeSuggestion, LocalChangesResponse, LogPageRequest, LogPageResponse,
+    LogSearchRequest, OpenRepositoryRequest, OpenRepositoryResponse, OperationId,
+    OperationProgressEvent, ProgressState, RemoteRepositoryProbeRequest,
+    RemoteRepositoryProbeResponse, RemoteSettingsResponse, RenormalizePreviewRequest,
+    RenormalizePreviewResponse, RepositoryHeadState, RepositoryHealth, RepositoryMiddleState,
+    RepositoryMiddleStateKind, RepositoryOpenWarning, RepositoryOpenWarningKind,
+    RepositoryPathRequest, RepositoryRemote, RepositoryRemoteMode, RepositorySummary,
+    RestoreStashRequest, RestoreStashResponse, SafetyBackupListResponse, SaveRemoteSettingsRequest,
+    StashDetailsRequest, StashDetailsResponse, StashListResponse,
 };
 use artistic_git_core::config::{
     AppSettings, ConfigActor, GitUserSettings, ProjectSettings, WindowGeometry,
@@ -46,6 +48,10 @@ use std::{
 
 const DEFAULT_LOG_LIMIT: usize = 200;
 const MAX_LOG_LIMIT: usize = 200;
+const MAX_LOG_REVISIONS: usize = 20;
+const DEFAULT_COMMIT_DETAIL_FILE_LIMIT: usize = 1_000;
+const MAX_COMMIT_DETAIL_FILE_LIMIT: usize = 5_000;
+const MAX_COMMIT_BODY_BYTES: usize = 64 * 1024;
 const TOOL_WORKTREE_PREFIX: &str = "artistic-git-";
 const RENORMALIZE_SUGGESTION_THRESHOLD: usize = 1_000;
 const RENORMALIZE_SUGGESTION_MIN_MODIFIED_PERCENT: usize = 80;
@@ -364,7 +370,25 @@ impl RepositoryBackend {
     where
         F: Fn(OperationProgressEvent),
     {
-        open_repository_with_progress(&self.runner, self.config.as_ref(), request, progress)
+        let operation_id = request.operation_id.clone();
+        let auth_operation_id = operation_id.clone();
+        let repository_path = PathBuf::from(request.path.trim());
+        self.run_cancellable_operation(operation_id, "openRepository", || {
+            crate::git_ops::with_auth_runtime_for_operation(
+                self.auth_runtime.as_ref(),
+                crate::auth_ipc::InteractionPolicy::interactive(),
+                auth_operation_id,
+                Some(repository_path),
+                || {
+                    open_repository_with_progress(
+                        &self.runner,
+                        self.config.as_ref(),
+                        request,
+                        progress,
+                    )
+                },
+            )
+        })
     }
 
     pub fn clone_repository(
@@ -516,6 +540,15 @@ impl RepositoryBackend {
         repository_summary(&self.runner, request)
     }
 
+    pub fn reset_bisect(&self, request: RepositoryPathRequest) -> AppResult<RepositorySummary> {
+        let _permit = self
+            .runner
+            .operation_concurrency()
+            .try_begin_exclusive()
+            .map_err(reset_bisect_busy_error)?;
+        reset_bisect(&self.runner, request)
+    }
+
     pub fn fetch_started_event(&self, repository_path: &str) -> FetchStateEvent {
         self.fetch_states.started_event(repository_path)
     }
@@ -526,6 +559,10 @@ impl RepositoryBackend {
         message: impl Into<String>,
     ) -> FetchStateEvent {
         self.fetch_states.failed_event(repository_path, message)
+    }
+
+    pub fn fetch_succeeded_event(&self, repository_path: &str) -> FetchStateEvent {
+        self.fetch_states.success_event(repository_path)
     }
 
     pub fn fetch_repository(
@@ -909,6 +946,26 @@ impl RepositoryBackend {
         })
     }
 
+    pub fn commit_details(
+        &self,
+        request: CommitDetailsRequest,
+    ) -> AppResult<CommitDetailsResponse> {
+        let operation_id = request.operation_id.clone();
+        self.run_cancellable_operation(operation_id, "commitDetails", || {
+            commit_details(&self.runner, request)
+        })
+    }
+
+    pub fn commit_file_detail(
+        &self,
+        request: CommitFileDetailRequest,
+    ) -> AppResult<CommitFileDetailResponse> {
+        let operation_id = request.operation_id.clone();
+        self.run_cancellable_operation(operation_id, "commitFileDetail", || {
+            commit_file_detail(&self.runner, request)
+        })
+    }
+
     pub fn commit_changes(
         &self,
         request: artistic_git_contracts::CommitRequest,
@@ -968,6 +1025,24 @@ impl RepositoryBackend {
 
     pub fn load_app_settings(&self) -> AppResult<AppSettings> {
         crate::settings::load_app_settings(self.config.as_ref())
+    }
+
+    pub fn list_recent_projects(
+        &self,
+        request: crate::settings::RecentProjectsRequest,
+    ) -> AppResult<Vec<crate::settings::RecentProjectEntry>> {
+        crate::settings::list_recent_projects(self.config.as_ref(), request)
+    }
+
+    pub fn forget_recent_project(
+        &self,
+        request: crate::settings::ForgetRecentProjectRequest,
+    ) -> AppResult<()> {
+        crate::settings::forget_recent_project(self.config.as_ref(), request)
+    }
+
+    pub fn clear_recent_projects(&self) -> AppResult<()> {
+        crate::settings::clear_recent_projects(self.config.as_ref())
     }
 
     pub fn save_app_settings(
@@ -1068,7 +1143,10 @@ fn start_auth_runtime(
                     }
                 };
                 let prompt_sink = Arc::clone(&https_prompt_sink);
-                let mut prompter = move |request| prompt_sink.prompt_https_credentials(request);
+                let operation_id = context.operation_id.clone();
+                let mut prompter = move |request| {
+                    prompt_sink.prompt_https_credentials_for_operation(&operation_id, request)
+                };
                 match flow.handle_git_credential_request(
                     &credential,
                     context.interaction_policy,
@@ -1100,6 +1178,7 @@ fn start_auth_runtime(
                     &ssh_keyring,
                     ssh_prompt_sink.as_ref(),
                     context.interaction_policy,
+                    &context.operation_id,
                     remember_ssh_passphrase,
                     prompt,
                 )
@@ -1121,6 +1200,7 @@ fn handle_ssh_askpass_request(
     keyring: &KeyringVault,
     prompt_sink: &dyn crate::ssh_auth::SshPassphrasePromptSink,
     interaction_policy: crate::auth_ipc::InteractionPolicy,
+    operation_id: &OperationId,
     remember_ssh_passphrase: bool,
     prompt: String,
 ) -> artistic_git_helpers::HelperIpcResponse {
@@ -1138,7 +1218,8 @@ fn handle_ssh_askpass_request(
             key,
             prompt,
             remember_available,
-        } => match prompt_sink.prompt_ssh_passphrase(
+        } => match prompt_sink.prompt_ssh_passphrase_for_operation(
+            operation_id,
             crate::ssh_auth::SshPassphrasePromptRequest::new(&key, prompt, remember_available),
         ) {
             crate::ssh_auth::SshPassphrasePromptResult::Cancel => {
@@ -1231,7 +1312,10 @@ pub fn open_repository_with_progress<F>(
 where
     F: Fn(OperationProgressEvent),
 {
-    let operation_id = open_operation_id();
+    let operation_id = request
+        .operation_id
+        .clone()
+        .unwrap_or_else(open_operation_id);
     open_repository_impl(
         runner,
         config,
@@ -1279,16 +1363,28 @@ fn open_repository_impl(
         None
     };
 
+    let mut non_fatal_errors = Vec::new();
     clean_tool_worktree_residue(&git_common_dir);
     crate::sync::cleanup_sync_worktree_residue(runner, &root);
-    apply_tool_identity(
-        runner,
-        &root,
-        request.tool_identity.as_ref(),
-        "openRepository",
-    )?;
-    install_lfs_if_needed(runner, &root)?;
-    update_submodules_after_checkout(runner, &root, "openRepository", operation_id, progress)?;
+    if acquire_write_lock {
+        if let Err(error) = apply_tool_identity(
+            runner,
+            &root,
+            request.tool_identity.as_ref(),
+            "openRepository",
+        ) {
+            non_fatal_errors.push(error);
+        }
+    } else {
+        apply_tool_identity(
+            runner,
+            &root,
+            request.tool_identity.as_ref(),
+            "openRepository",
+        )?;
+        install_lfs_if_needed(runner, &root)?;
+        update_submodules_after_checkout(runner, &root, "openRepository", operation_id, progress)?;
+    }
 
     let remotes = list_remotes(runner, &root)?;
     let remote_mode = remote_mode(&remotes);
@@ -1297,6 +1393,7 @@ fn open_repository_impl(
         &root,
         remote_mode,
         remotes.iter().any(|remote| remote.is_origin),
+        &remotes,
         &health,
     );
     let warnings = open_warnings(&remotes, remote_mode, &health);
@@ -1304,17 +1401,12 @@ fn open_repository_impl(
     if let Some(config) = config {
         let path = display_path(&root);
         let timestamp = unix_now_seconds().to_string();
-        config
-            .update_project(path.clone(), |project| {
-                project.path = path.clone();
-                project.last_opened_at = Some(timestamp);
-            })
-            .map_err(|source| {
-                logged(AppError::unexpected(
-                    format!("failed to record recently opened repository: {source}"),
-                    "openRepository",
-                ))
-            })?;
+        if let Err(source) = config.mark_project_opened(path, timestamp) {
+            non_fatal_errors.push(logged(AppError::unexpected(
+                format!("failed to record recently opened repository: {source}"),
+                "openRepository",
+            )));
+        }
     }
 
     Ok(OpenRepositoryResponse {
@@ -1323,6 +1415,7 @@ fn open_repository_impl(
         remote_mode,
         remotes,
         warnings,
+        non_fatal_errors,
         health,
         summary,
     })
@@ -1421,8 +1514,7 @@ where
         &progress,
     )?;
     if cancel_token.is_cancelled() {
-        cleanup_clone_target(&target);
-        return Err(cancelled_error("cloneRepository"));
+        return Err(cancelled_clone_error_after_cleanup(&target));
     }
     if let Some(branch_name) = branch_name.as_deref() {
         let current_branch = git_stdout(
@@ -1434,15 +1526,16 @@ where
         match current_branch {
             Ok(current_branch) if current_branch.trim() == branch_name => {}
             Ok(_) => {
-                cleanup_clone_target(&target);
-                return Err(logged(AppError::expected(
-                    "selected branch is no longer available on the remote",
-                    "cloneRepository",
-                )));
+                return Err(clone_error_after_cleanup(
+                    &target,
+                    logged(AppError::expected(
+                        "selected branch is no longer available on the remote",
+                        "cloneRepository",
+                    )),
+                ));
             }
             Err(error) => {
-                cleanup_clone_target(&target);
-                return Err(error);
+                return Err(clone_error_after_cleanup(&target, error));
             }
         }
     }
@@ -1453,6 +1546,7 @@ where
         OpenRepositoryRequest {
             path: display_path(&target.path),
             tool_identity: request.tool_identity,
+            operation_id: operation_id.clone(),
         },
         operation_id.as_ref(),
         &progress,
@@ -1460,8 +1554,7 @@ where
     ) {
         Ok(repository) => repository,
         Err(error) => {
-            cleanup_clone_target(&target);
-            return Err(error);
+            return Err(clone_error_after_cleanup(&target, error));
         }
     };
 
@@ -1485,8 +1578,23 @@ pub fn repository_summary(
         &root,
         remote_mode(&remotes),
         remotes.iter().any(|remote| remote.is_origin),
+        &remotes,
         &health,
     ))
+}
+
+pub fn reset_bisect(
+    runner: &GitRunner,
+    request: RepositoryPathRequest,
+) -> AppResult<RepositorySummary> {
+    let root = canonical_repository_path(&request.repository_path, "resetBisect")?;
+    git_stdout(runner, Some(&root), ["bisect", "reset"], "resetBisect")?;
+    repository_summary(
+        runner,
+        RepositoryPathRequest {
+            repository_path: display_path(&root),
+        },
+    )
 }
 
 pub fn list_branches(
@@ -2101,11 +2209,11 @@ pub fn log_page_with_cancel(
         OsString::from("--parents"),
         OsString::from(format!("--max-count={}", limit + 1)),
         OsString::from(format!("--skip={skip}")),
+        OsString::from("--decorate-refs-exclude=refs/heads/backup/*"),
+        OsString::from("--decorate-refs-exclude=refs/remotes/*/backup/*"),
         OsString::from("--format=%H%x00%P%x00%an%x00%ae%x00%at%x00%s%x00%D%x1e"),
-        OsString::from("--branches"),
-        OsString::from("--tags"),
-        OsString::from("--remotes"),
     ];
+    append_log_revisions(&mut args, &request.revisions, "logPage")?;
 
     run_log_command(
         runner,
@@ -2131,6 +2239,8 @@ pub fn search_log_with_cancel(
         OsString::from("--parents"),
         OsString::from(format!("--max-count={}", limit + 1)),
         OsString::from(format!("--skip={skip}")),
+        OsString::from("--decorate-refs-exclude=refs/heads/backup/*"),
+        OsString::from("--decorate-refs-exclude=refs/remotes/*/backup/*"),
         OsString::from("--format=%H%x00%P%x00%an%x00%ae%x00%at%x00%s%x00%D%x1e"),
     ];
 
@@ -2145,9 +2255,7 @@ pub fn search_log_with_cancel(
     if let Some(pickaxe) = request.pickaxe.filter(|value| !value.is_empty()) {
         args.push(OsString::from(format!("-S{pickaxe}")));
     }
-    args.push(OsString::from("--branches"));
-    args.push(OsString::from("--tags"));
-    args.push(OsString::from("--remotes"));
+    append_log_revisions(&mut args, &request.revisions, "searchLog")?;
 
     run_log_command(
         runner,
@@ -2158,6 +2266,835 @@ pub fn search_log_with_cancel(
         "searchLog",
         cancel_token,
     )
+}
+
+pub fn commit_details(
+    runner: &GitRunner,
+    request: CommitDetailsRequest,
+) -> AppResult<CommitDetailsResponse> {
+    let operation_name = "commitDetails";
+    let root = canonical_repository_path(&request.repository_path, operation_name)?;
+    validate_commit_oid(runner, &root, &request.oid, operation_name)?;
+    let limit = request
+        .limit
+        .map(usize::from)
+        .unwrap_or(DEFAULT_COMMIT_DETAIL_FILE_LIMIT)
+        .clamp(1, MAX_COMMIT_DETAIL_FILE_LIMIT);
+
+    let body = git_stdout(
+        runner,
+        Some(&root),
+        [
+            "show".to_owned(),
+            "-s".to_owned(),
+            "--format=%b".to_owned(),
+            request.oid.clone(),
+        ],
+        operation_name,
+    )?;
+    let body = body.trim_end_matches(['\r', '\n']);
+    let (body, body_truncated) = truncate_utf8(body, MAX_COMMIT_BODY_BYTES);
+    let body = (!body.is_empty()).then_some(body);
+
+    let mut files = commit_changed_files(
+        runner,
+        &root,
+        &request.oid,
+        None,
+        limit.saturating_add(1),
+        operation_name,
+    )?;
+    let truncated = files.len() > limit;
+    files.truncate(limit);
+
+    Ok(CommitDetailsResponse {
+        repository_path: display_path(&root),
+        oid: request.oid,
+        body,
+        body_truncated,
+        files,
+        truncated,
+    })
+}
+
+pub fn commit_file_detail(
+    runner: &GitRunner,
+    request: CommitFileDetailRequest,
+) -> AppResult<CommitFileDetailResponse> {
+    let operation_name = "commitFileDetail";
+    let root = canonical_repository_path(&request.repository_path, operation_name)?;
+    validate_commit_oid(runner, &root, &request.oid, operation_name)?;
+    validate_commit_changed_file(&root, &request.file, operation_name)?;
+    let file = request.file;
+    let parent = commit_first_parent(runner, &root, &request.oid, operation_name)?;
+    let old_path = file.old_path.as_deref().unwrap_or(file.path.as_str());
+
+    if [file.old_mode.as_deref(), file.new_mode.as_deref()].contains(&Some("160000")) {
+        if let Some((payload, diff)) = historical_submodule_diff(
+            runner,
+            &root,
+            parent.as_deref(),
+            &request.oid,
+            &file,
+            operation_name,
+        )? {
+            return Ok(CommitFileDetailResponse {
+                repository_path: display_path(&root),
+                oid: request.oid,
+                file,
+                payload,
+                diff,
+            });
+        }
+    }
+
+    let old_revision_and_path = match file.change_kind {
+        DiffChangeKind::Added => None,
+        DiffChangeKind::Modified
+        | DiffChangeKind::Deleted
+        | DiffChangeKind::Renamed
+        | DiffChangeKind::Copied => parent.as_deref().map(|parent| (parent, old_path)),
+    };
+    let new_revision_and_path = match file.change_kind {
+        DiffChangeKind::Deleted => None,
+        DiffChangeKind::Added
+        | DiffChangeKind::Modified
+        | DiffChangeKind::Renamed
+        | DiffChangeKind::Copied => Some((request.oid.as_str(), file.path.as_str())),
+    };
+
+    let old_size = historical_blob_size(runner, &root, old_revision_and_path, operation_name)?;
+    let new_size = historical_blob_size(runner, &root, new_revision_and_path, operation_name)?;
+    let oversized = old_size.is_some_and(|size| size > OVERSIZED_TEXT_BYTES as u64)
+        || new_size.is_some_and(|size| size > OVERSIZED_TEXT_BYTES as u64);
+
+    let (payload, diff) = if oversized {
+        commit_file_oversized_diff(&file, old_size, new_size)
+    } else {
+        let old_content =
+            historical_blob_content(runner, &root, old_revision_and_path, operation_name)?;
+        let new_content =
+            historical_blob_content(runner, &root, new_revision_and_path, operation_name)?;
+        commit_file_diff(runner, &root, &file, old_content, new_content)?
+    };
+
+    Ok(CommitFileDetailResponse {
+        repository_path: display_path(&root),
+        oid: request.oid,
+        file,
+        payload,
+        diff,
+    })
+}
+
+fn validate_commit_oid(
+    runner: &GitRunner,
+    root: &Path,
+    oid: &str,
+    operation_name: &str,
+) -> AppResult<()> {
+    if !is_full_oid(oid) {
+        return Err(logged(AppError::expected(
+            "commit id is invalid",
+            operation_name,
+        )));
+    }
+    git_stdout(
+        runner,
+        Some(root),
+        ["cat-file", "-e", format!("{oid}^{{commit}}").as_str()],
+        operation_name,
+    )?;
+    Ok(())
+}
+
+fn validate_commit_file_path(root: &Path, path: &str, operation_name: &str) -> AppResult<()> {
+    if path.is_empty() || path.contains('\0') {
+        return Err(logged(AppError::expected(
+            "commit file path is invalid",
+            operation_name,
+        )));
+    }
+    repository_relative_path(root, path, operation_name)?;
+    Ok(())
+}
+
+fn validate_commit_changed_file(
+    root: &Path,
+    file: &CommitChangedFile,
+    operation_name: &str,
+) -> AppResult<()> {
+    validate_commit_file_path(root, &file.path, operation_name)?;
+    if let Some(old_path) = file.old_path.as_deref() {
+        validate_commit_file_path(root, old_path, operation_name)?;
+    }
+    for mode in [file.old_mode.as_deref(), file.new_mode.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        if mode.len() != 6 || !mode.bytes().all(|byte| matches!(byte, b'0'..=b'7')) {
+            return Err(logged(AppError::expected(
+                "commit file mode is invalid",
+                operation_name,
+            )));
+        }
+    }
+    if matches!(
+        file.change_kind,
+        DiffChangeKind::Renamed | DiffChangeKind::Copied
+    ) && file.old_path.is_none()
+    {
+        return Err(logged(AppError::expected(
+            "commit file source path is missing",
+            operation_name,
+        )));
+    }
+    Ok(())
+}
+
+fn truncate_utf8(value: &str, max_bytes: usize) -> (String, bool) {
+    if value.len() <= max_bytes {
+        return (value.to_owned(), false);
+    }
+
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    (value[..end].to_owned(), true)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CommitNumstat {
+    additions: u32,
+    deletions: u32,
+    old_path: Option<String>,
+    path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CommitRawChange {
+    new_mode: Option<String>,
+    old_mode: Option<String>,
+    old_path: Option<String>,
+    path: String,
+}
+
+fn commit_changed_files(
+    runner: &GitRunner,
+    root: &Path,
+    oid: &str,
+    path: Option<&str>,
+    max_entries: usize,
+    operation_name: &str,
+) -> AppResult<Vec<CommitChangedFile>> {
+    let parent = commit_first_parent(runner, root, oid, operation_name)?;
+    let status_output = git_stdout(
+        runner,
+        Some(root),
+        commit_diff_args(parent.as_deref(), oid, "--name-status", path),
+        operation_name,
+    )?;
+    let numstat_output = git_stdout(
+        runner,
+        Some(root),
+        commit_diff_args(parent.as_deref(), oid, "--numstat", path),
+        operation_name,
+    )?;
+    let raw_output = git_stdout(
+        runner,
+        Some(root),
+        commit_diff_args(parent.as_deref(), oid, "--raw", path),
+        operation_name,
+    )?;
+
+    let statuses = parse_commit_name_status(&status_output, max_entries, operation_name)?;
+    let stats = parse_commit_numstat(&numstat_output, max_entries, operation_name)?;
+    let raw_changes = parse_commit_raw_changes(&raw_output, max_entries, operation_name)?;
+    let mut stats_by_path = stats
+        .into_iter()
+        .map(|stat| ((stat.old_path.clone(), stat.path.clone()), stat))
+        .collect::<BTreeMap<_, _>>();
+    let mut raw_by_path = raw_changes
+        .into_iter()
+        .map(|change| ((change.old_path.clone(), change.path.clone()), change))
+        .collect::<BTreeMap<_, _>>();
+
+    Ok(statuses
+        .into_iter()
+        .map(|mut file| {
+            if let Some(stat) = stats_by_path.remove(&(file.old_path.clone(), file.path.clone())) {
+                file.additions = stat.additions;
+                file.deletions = stat.deletions;
+            }
+            if let Some(change) = raw_by_path.remove(&(file.old_path.clone(), file.path.clone())) {
+                file.old_mode = change.old_mode;
+                file.new_mode = change.new_mode;
+            }
+            file
+        })
+        .collect())
+}
+
+fn commit_first_parent(
+    runner: &GitRunner,
+    root: &Path,
+    oid: &str,
+    operation_name: &str,
+) -> AppResult<Option<String>> {
+    let output = git_stdout(
+        runner,
+        Some(root),
+        ["rev-list", "--parents", "-n", "1", oid],
+        operation_name,
+    )?;
+    Ok(output.split_whitespace().nth(1).map(ToOwned::to_owned))
+}
+
+fn commit_diff_args(
+    parent: Option<&str>,
+    oid: &str,
+    format: &str,
+    path: Option<&str>,
+) -> Vec<OsString> {
+    let mut args = if let Some(parent) = parent {
+        vec![
+            OsString::from("diff"),
+            OsString::from("--no-ext-diff"),
+            OsString::from("--find-renames"),
+            OsString::from(format),
+            OsString::from("-z"),
+            OsString::from(parent),
+            OsString::from(oid),
+        ]
+    } else {
+        vec![
+            OsString::from("diff-tree"),
+            OsString::from("--root"),
+            OsString::from("--no-commit-id"),
+            OsString::from("-r"),
+            OsString::from("--find-renames"),
+            OsString::from(format),
+            OsString::from("-z"),
+            OsString::from(oid),
+        ]
+    };
+    if let Some(path) = path {
+        args.push(OsString::from("--"));
+        args.push(crate::git_ops::literal_pathspec(path));
+    }
+    args
+}
+
+fn parse_commit_name_status(
+    output: &str,
+    max_entries: usize,
+    operation_name: &str,
+) -> AppResult<Vec<CommitChangedFile>> {
+    let mut fields = output.split('\0');
+    let mut files = Vec::new();
+    while let Some(status) = fields.next() {
+        if status.is_empty() {
+            continue;
+        }
+        let code = status.as_bytes().first().copied().unwrap_or_default();
+        let (old_path, path) = if matches!(code, b'R' | b'C') {
+            let old_path = fields.next().filter(|value| !value.is_empty());
+            let path = fields.next().filter(|value| !value.is_empty());
+            match (old_path, path) {
+                (Some(old_path), Some(path)) => (Some(old_path.to_owned()), path.to_owned()),
+                _ => return Err(invalid_commit_file_list(operation_name)),
+            }
+        } else {
+            let Some(path) = fields.next().filter(|value| !value.is_empty()) else {
+                return Err(invalid_commit_file_list(operation_name));
+            };
+            (None, path.to_owned())
+        };
+        let change_kind = match code {
+            b'A' => DiffChangeKind::Added,
+            b'D' => DiffChangeKind::Deleted,
+            b'R' => DiffChangeKind::Renamed,
+            b'C' => DiffChangeKind::Copied,
+            b'M' | b'T' => DiffChangeKind::Modified,
+            _ => return Err(invalid_commit_file_list(operation_name)),
+        };
+        files.push(CommitChangedFile {
+            path,
+            old_path,
+            old_mode: None,
+            new_mode: None,
+            change_kind,
+            additions: 0,
+            deletions: 0,
+        });
+        if files.len() >= max_entries {
+            break;
+        }
+    }
+    Ok(files)
+}
+
+fn parse_commit_numstat(
+    output: &str,
+    max_entries: usize,
+    operation_name: &str,
+) -> AppResult<Vec<CommitNumstat>> {
+    let mut fields = output.split('\0');
+    let mut stats = Vec::new();
+    while let Some(header) = fields.next() {
+        if header.is_empty() {
+            continue;
+        }
+        let mut parts = header.splitn(3, '\t');
+        let additions = parts
+            .next()
+            .map(parse_numstat_count)
+            .ok_or_else(|| invalid_commit_file_list(operation_name))?;
+        let deletions = parts
+            .next()
+            .map(parse_numstat_count)
+            .ok_or_else(|| invalid_commit_file_list(operation_name))?;
+        let path_field = parts
+            .next()
+            .ok_or_else(|| invalid_commit_file_list(operation_name))?;
+        let (old_path, path) = if path_field.is_empty() {
+            let old_path = fields.next().filter(|value| !value.is_empty());
+            let path = fields.next().filter(|value| !value.is_empty());
+            match (old_path, path) {
+                (Some(old_path), Some(path)) => (Some(old_path.to_owned()), path.to_owned()),
+                _ => return Err(invalid_commit_file_list(operation_name)),
+            }
+        } else {
+            (None, path_field.to_owned())
+        };
+        stats.push(CommitNumstat {
+            additions,
+            deletions,
+            old_path,
+            path,
+        });
+        if stats.len() >= max_entries {
+            break;
+        }
+    }
+    Ok(stats)
+}
+
+fn parse_commit_raw_changes(
+    output: &str,
+    max_entries: usize,
+    operation_name: &str,
+) -> AppResult<Vec<CommitRawChange>> {
+    let mut fields = output.split('\0');
+    let mut changes = Vec::new();
+    while let Some(header) = fields.next() {
+        if header.is_empty() {
+            continue;
+        }
+        let Some(header) = header.strip_prefix(':') else {
+            return Err(invalid_commit_file_list(operation_name));
+        };
+        let mut header_fields = header.split_whitespace();
+        let old_mode = header_fields
+            .next()
+            .ok_or_else(|| invalid_commit_file_list(operation_name))?;
+        let new_mode = header_fields
+            .next()
+            .ok_or_else(|| invalid_commit_file_list(operation_name))?;
+        header_fields
+            .next()
+            .ok_or_else(|| invalid_commit_file_list(operation_name))?;
+        header_fields
+            .next()
+            .ok_or_else(|| invalid_commit_file_list(operation_name))?;
+        let status = header_fields
+            .next()
+            .ok_or_else(|| invalid_commit_file_list(operation_name))?;
+        let code = status.as_bytes().first().copied().unwrap_or_default();
+        let (old_path, path) = if matches!(code, b'R' | b'C') {
+            let old_path = fields.next().filter(|value| !value.is_empty());
+            let path = fields.next().filter(|value| !value.is_empty());
+            match (old_path, path) {
+                (Some(old_path), Some(path)) => (Some(old_path.to_owned()), path.to_owned()),
+                _ => return Err(invalid_commit_file_list(operation_name)),
+            }
+        } else {
+            let Some(path) = fields.next().filter(|value| !value.is_empty()) else {
+                return Err(invalid_commit_file_list(operation_name));
+            };
+            (None, path.to_owned())
+        };
+        changes.push(CommitRawChange {
+            new_mode: normalize_git_mode(new_mode),
+            old_mode: normalize_git_mode(old_mode),
+            old_path,
+            path,
+        });
+        if changes.len() >= max_entries {
+            break;
+        }
+    }
+    Ok(changes)
+}
+
+fn normalize_git_mode(mode: &str) -> Option<String> {
+    (mode != "000000").then(|| mode.to_owned())
+}
+
+fn parse_numstat_count(value: &str) -> u32 {
+    value
+        .parse::<u64>()
+        .unwrap_or_default()
+        .min(u32::MAX as u64) as u32
+}
+
+fn invalid_commit_file_list(operation_name: &str) -> AppError {
+    logged(AppError::expected(
+        "Git returned an invalid commit file list",
+        operation_name,
+    ))
+}
+
+fn historical_blob_size(
+    runner: &GitRunner,
+    root: &Path,
+    revision_and_path: Option<(&str, &str)>,
+    operation_name: &str,
+) -> AppResult<Option<u64>> {
+    let Some((revision, path)) = revision_and_path else {
+        return Ok(None);
+    };
+    let spec = format!("{revision}:{path}");
+    let output = git_stdout(
+        runner,
+        Some(root),
+        ["cat-file".to_owned(), "-s".to_owned(), spec],
+        operation_name,
+    )?;
+    output.trim().parse().map(Some).map_err(|_| {
+        logged(AppError::expected(
+            "Git returned an invalid historical file size",
+            operation_name,
+        ))
+    })
+}
+
+fn historical_blob_content(
+    runner: &GitRunner,
+    root: &Path,
+    revision_and_path: Option<(&str, &str)>,
+    operation_name: &str,
+) -> AppResult<Option<Vec<u8>>> {
+    revision_and_path
+        .map(|(revision, path)| git_blob_at_rev_path(runner, root, revision, path, operation_name))
+        .transpose()
+}
+
+fn historical_submodule_diff(
+    runner: &GitRunner,
+    root: &Path,
+    parent: Option<&str>,
+    oid: &str,
+    file: &CommitChangedFile,
+    operation_name: &str,
+) -> AppResult<Option<(DiffPayload, DiffContent)>> {
+    let old_path = file.old_path.as_deref().unwrap_or(file.path.as_str());
+    let old_gitlink = match file.change_kind {
+        DiffChangeKind::Added => None,
+        DiffChangeKind::Modified
+        | DiffChangeKind::Deleted
+        | DiffChangeKind::Renamed
+        | DiffChangeKind::Copied => parent
+            .map(|parent| gitlink_at_tree(runner, root, parent, old_path, operation_name))
+            .transpose()?
+            .flatten(),
+    };
+    let new_gitlink = match file.change_kind {
+        DiffChangeKind::Deleted => None,
+        DiffChangeKind::Added
+        | DiffChangeKind::Modified
+        | DiffChangeKind::Renamed
+        | DiffChangeKind::Copied => gitlink_at_tree(runner, root, oid, &file.path, operation_name)?,
+    };
+    if old_gitlink.is_none() && new_gitlink.is_none() {
+        return Ok(None);
+    }
+
+    let mut metadata = commit_file_metadata(file);
+    metadata.insert("submodule".to_owned(), "true".to_owned());
+    if let Some(old_gitlink) = old_gitlink {
+        metadata.insert("oldOid".to_owned(), old_gitlink.oid);
+    }
+    if let Some(new_gitlink) = new_gitlink {
+        metadata.insert("newOid".to_owned(), new_gitlink.oid);
+    }
+
+    Ok(Some((
+        DiffPayload {
+            old_path: file.old_path.clone(),
+            new_path: file.path.clone(),
+            change_kind: file.change_kind,
+            file_kind: DiffFileKind::Binary,
+            lfs_lock: None,
+            metadata,
+        },
+        DiffContent::Moved { message: None },
+    )))
+}
+
+fn commit_file_oversized_diff(
+    file: &CommitChangedFile,
+    old_size: Option<u64>,
+    new_size: Option<u64>,
+) -> (DiffPayload, DiffContent) {
+    let mut metadata = commit_file_metadata(file);
+    metadata.insert(
+        "previewLimitBytes".to_owned(),
+        OVERSIZED_TEXT_BYTES.to_string(),
+    );
+    metadata.insert("previewDeferred".to_owned(), "true".to_owned());
+    metadata.insert("oversized".to_owned(), "true".to_owned());
+    if let Some(size) = old_size {
+        metadata.insert("oldBytes".to_owned(), size.to_string());
+    }
+    if let Some(size) = new_size {
+        metadata.insert("newBytes".to_owned(), size.to_string());
+    }
+    (
+        DiffPayload {
+            old_path: file.old_path.clone(),
+            new_path: file.path.clone(),
+            change_kind: file.change_kind,
+            file_kind: deferred_large_file_kind(&file.path),
+            lfs_lock: None,
+            metadata,
+        },
+        DiffContent::Deferred { message: None },
+    )
+}
+
+fn commit_file_diff(
+    runner: &GitRunner,
+    root: &Path,
+    file: &CommitChangedFile,
+    old_content: Option<Vec<u8>>,
+    new_content: Option<Vec<u8>>,
+) -> AppResult<(DiffPayload, DiffContent)> {
+    if let Some((oid, size)) = [old_content.as_deref(), new_content.as_deref()]
+        .into_iter()
+        .flatten()
+        .filter_map(parse_lfs_pointer)
+        .find(|pointer| pointer.size > OVERSIZED_TEXT_BYTES as u64)
+        .map(|pointer| (pointer.oid, pointer.size))
+    {
+        let mut metadata = commit_file_metadata(file);
+        metadata.insert("lfsOid".to_owned(), oid);
+        metadata.insert("lfsSize".to_owned(), size.to_string());
+        metadata.insert("oversized".to_owned(), "true".to_owned());
+        metadata.insert("previewDeferred".to_owned(), "true".to_owned());
+        metadata.insert(
+            "previewLimitBytes".to_owned(),
+            OVERSIZED_TEXT_BYTES.to_string(),
+        );
+        return Ok((
+            DiffPayload {
+                old_path: file.old_path.clone(),
+                new_path: file.path.clone(),
+                change_kind: file.change_kind,
+                file_kind: DiffFileKind::LfsPointer,
+                lfs_lock: None,
+                metadata,
+            },
+            DiffContent::Deferred {
+                message: Some(format!(
+                    "Git LFS content is {size} bytes, above the {} byte preview limit",
+                    OVERSIZED_TEXT_BYTES
+                )),
+            },
+        ));
+    }
+
+    let mut contents = LocalChangeContents {
+        old_content,
+        new_content,
+        ..LocalChangeContents::default()
+    };
+    for (side, content) in [
+        (DiffSide::Old, contents.old_content.as_deref()),
+        (DiffSide::New, contents.new_content.as_deref()),
+    ] {
+        let Some(content) = content else {
+            continue;
+        };
+        match display_content_for_side(
+            runner,
+            root,
+            &file.path,
+            side,
+            content,
+            LocalChangeLoadPolicy::Historical,
+        )? {
+            Ok(resolved) => {
+                match side {
+                    DiffSide::Old => contents.old_display_content = Some(resolved.content),
+                    DiffSide::New => contents.new_display_content = Some(resolved.content),
+                }
+                contents.lfs_pointer_seen |= resolved.lfs_pointer;
+            }
+            Err(issue) => {
+                contents.lfs_pointer_seen = true;
+                contents.lfs_issue = Some(issue);
+            }
+        }
+    }
+    let mut probe = DiffFileProbe::new(file.path.clone(), core_change_kind(file.change_kind));
+    probe.old_path = file.old_path.clone().map(Into::into);
+    probe.old_content = contents.old_content.as_deref();
+    probe.new_content = contents.new_content.as_deref();
+    probe.old_display_content = contents.old_display_content.as_deref();
+    probe.new_display_content = contents.new_display_content.as_deref();
+    probe.changed_lines = file.additions.saturating_add(file.deletions) as usize;
+
+    let classification = classify_diff_file(probe);
+    let file_kind = contract_file_kind(classification.file_kind);
+    let mut metadata = classification.metadata;
+    metadata.extend(commit_file_metadata(file));
+    let content_changed = contents.old_content != contents.new_content;
+    metadata.insert("contentChanged".to_owned(), content_changed.to_string());
+    if contents.lfs_pointer_seen {
+        metadata.insert(
+            "lfsFetchStatus".to_owned(),
+            match contents.lfs_issue.as_ref().map(|issue| issue.status) {
+                Some(LfsContentStatus::Missing) => "missing",
+                Some(LfsContentStatus::Error) => "error",
+                Some(LfsContentStatus::Loading) => "loading",
+                None => "local",
+            }
+            .to_owned(),
+        );
+    }
+    if let Some(issue) = contents.lfs_issue.take() {
+        metadata.insert("lfsResolved".to_owned(), "false".to_owned());
+        let payload = DiffPayload {
+            old_path: classification.old_path,
+            new_path: classification.new_path,
+            change_kind: file.change_kind,
+            file_kind: DiffFileKind::LfsPointer,
+            lfs_lock: None,
+            metadata,
+        };
+        return Ok((
+            payload,
+            DiffContent::LfsPointer {
+                status: issue.status,
+                message: issue.message,
+            },
+        ));
+    }
+    let payload = DiffPayload {
+        old_path: classification.old_path,
+        new_path: classification.new_path,
+        change_kind: file.change_kind,
+        file_kind,
+        lfs_lock: None,
+        metadata,
+    };
+    let diff = if !content_changed && commit_file_mode_changed(file) {
+        DiffContent::Moved { message: None }
+    } else {
+        diff_content_for_kind(file_kind, &payload, &contents)
+    };
+    Ok((payload, diff))
+}
+
+fn commit_file_metadata(file: &CommitChangedFile) -> BTreeMap<String, String> {
+    let mut metadata = BTreeMap::from([
+        ("additions".to_owned(), file.additions.to_string()),
+        ("deletions".to_owned(), file.deletions.to_string()),
+        (
+            "contentChanged".to_owned(),
+            (file.change_kind != DiffChangeKind::Renamed
+                || file.additions > 0
+                || file.deletions > 0)
+                .to_string(),
+        ),
+    ]);
+    if let Some(old_mode) = file.old_mode.as_ref() {
+        metadata.insert("oldMode".to_owned(), old_mode.clone());
+    }
+    if let Some(new_mode) = file.new_mode.as_ref() {
+        metadata.insert("newMode".to_owned(), new_mode.clone());
+    }
+    if commit_file_mode_changed(file) {
+        metadata.insert("modeChanged".to_owned(), "true".to_owned());
+    }
+    metadata
+}
+
+fn commit_file_mode_changed(file: &CommitChangedFile) -> bool {
+    matches!(
+        (file.old_mode.as_deref(), file.new_mode.as_deref()),
+        (Some(old_mode), Some(new_mode)) if old_mode != new_mode
+    )
+}
+
+fn append_log_revisions(
+    args: &mut Vec<OsString>,
+    revisions: &[String],
+    operation_name: &str,
+) -> AppResult<()> {
+    if revisions.is_empty() {
+        args.push(OsString::from("--exclude=backup/*"));
+        args.push(OsString::from("--branches"));
+        args.push(OsString::from("--tags"));
+        args.push(OsString::from("--exclude=*/backup/*"));
+        args.push(OsString::from("--remotes"));
+        return Ok(());
+    }
+
+    if revisions.len() > MAX_LOG_REVISIONS {
+        return Err(logged(AppError::expected(
+            "too many history revisions were requested",
+            operation_name,
+        )));
+    }
+
+    let mut unique = BTreeSet::new();
+    for revision in revisions {
+        if !is_safe_history_revision(revision) {
+            return Err(logged(AppError::expected(
+                "history revision is invalid",
+                operation_name,
+            )));
+        }
+        if unique.insert(revision) {
+            args.push(OsString::from(revision));
+        }
+    }
+    args.push(OsString::from("--"));
+    Ok(())
+}
+
+fn is_safe_history_revision(revision: &str) -> bool {
+    let Some(name) = revision
+        .strip_prefix("refs/heads/")
+        .or_else(|| revision.strip_prefix("refs/remotes/"))
+    else {
+        return false;
+    };
+
+    !name.is_empty()
+        && !name.ends_with(['.', '/'])
+        && !name.contains("..")
+        && !name.contains("@{")
+        && !name.contains("//")
+        && !name.chars().any(|character| {
+            character.is_control() || character.is_whitespace() || "~^:?*[\\".contains(character)
+        })
+        && name.split('/').all(|component| {
+            !component.is_empty() && !component.starts_with('.') && !component.ends_with(".lock")
+        })
 }
 
 fn validate_remote_repository_url<'a>(url: &'a str, operation_name: &str) -> AppResult<&'a str> {
@@ -2350,8 +3287,7 @@ where
     let repository_path = display_path(&target.path);
 
     if cancel_token.is_cancelled() {
-        cleanup_clone_target(target);
-        return Err(cancelled_error(OPERATION));
+        return Err(cancelled_clone_error_after_cleanup(target));
     }
 
     emit_clone_progress(
@@ -2419,16 +3355,17 @@ where
                 }
                 discard_output_reader(&mut stdout_reader);
                 discard_output_reader(&mut stderr_reader);
-                cleanup_clone_target(target);
-                return Err(cancelled_error(OPERATION));
+                return Err(cancelled_clone_error_after_cleanup(target));
             }
             Ok(None) => thread::sleep(Duration::from_millis(20)),
             Err(source) => {
                 let _ = crate::git_ops::terminate_child_process_tree(&mut child);
                 discard_output_reader(&mut stdout_reader);
                 discard_output_reader(&mut stderr_reader);
-                cleanup_clone_target(target);
-                return Err(spawn_error(&plan, source, OPERATION));
+                return Err(clone_error_after_cleanup(
+                    target,
+                    spawn_error(&plan, source, OPERATION),
+                ));
             }
         }
     };
@@ -2452,8 +3389,7 @@ where
         Ok(output) => output,
         Err(error) => {
             discard_output_reader(&mut stderr_reader);
-            cleanup_clone_target(target);
-            return Err(error);
+            return Err(clone_error_after_cleanup(target, error));
         }
     };
     let stderr = match collect_output_reader(
@@ -2467,8 +3403,7 @@ where
     ) {
         Ok(output) => output,
         Err(error) => {
-            cleanup_clone_target(target);
-            return Err(error);
+            return Err(clone_error_after_cleanup(target, error));
         }
     };
     drain_clone_progress(
@@ -2504,8 +3439,7 @@ fn handle_clone_output(
         Ok(())
     } else {
         let error = command_failure(plan, output, "cloneRepository");
-        cleanup_clone_target(target);
-        Err(error)
+        Err(clone_error_after_cleanup(target, error))
     }
 }
 
@@ -3139,9 +4073,36 @@ fn emit_operation_progress<F>(
     });
 }
 
-fn cleanup_clone_target(target: &CloneTarget) {
+fn cleanup_clone_target(target: &CloneTarget) -> AppResult<()> {
     if target.path.is_dir() {
-        let _ = fs::remove_dir_all(&target.path);
+        fs::remove_dir_all(&target.path).map_err(|source| {
+            logged(AppError::unexpected(
+                format!(
+                    "failed to remove incomplete clone directory {}: {source}",
+                    display_path(&target.path)
+                ),
+                "cloneRepositoryCleanup",
+            ))
+        })?;
+    }
+    Ok(())
+}
+
+fn clone_error_after_cleanup(target: &CloneTarget, mut error: AppError) -> AppError {
+    if let Err(cleanup_error) = cleanup_clone_target(target) {
+        error.summary = format!(
+            "{}; the incomplete clone directory could not be removed: {}",
+            error.summary, cleanup_error.summary
+        );
+        return logged(error);
+    }
+    error
+}
+
+fn cancelled_clone_error_after_cleanup(target: &CloneTarget) -> AppError {
+    match cleanup_clone_target(target) {
+        Ok(()) => cancelled_error("cloneRepository"),
+        Err(error) => error,
     }
 }
 
@@ -3159,6 +4120,14 @@ fn open_busy_error(error: OperationBusy) -> AppError {
         OperationBusy::BackgroundBusy => "a background operation is already in progress",
     };
     logged(AppError::expected(summary, "openRepository"))
+}
+
+fn reset_bisect_busy_error(error: OperationBusy) -> AppError {
+    let summary = match error {
+        OperationBusy::WriteBusy => "another write operation is already in progress",
+        OperationBusy::BackgroundBusy => "a background operation is already in progress",
+    };
+    logged(AppError::expected(summary, "resetBisect"))
 }
 
 fn operation_registry_error(operation_name: &str) -> AppError {
@@ -3623,6 +4592,7 @@ fn build_summary(
     root: &Path,
     remote_mode: RepositoryRemoteMode,
     has_origin: bool,
+    remotes: &[RepositoryRemote],
     health: &RepositoryHealth,
 ) -> RepositorySummary {
     let (current_branch, head_oid, is_detached, is_unborn) = match &health.head {
@@ -3642,6 +4612,10 @@ fn build_summary(
         is_detached,
         is_unborn,
         in_progress: !health.middle_states.is_empty() || health.index_lock.is_some(),
+        details: Some(artistic_git_contracts::RepositorySummaryDetails {
+            health: health.clone(),
+            remotes: remotes.to_vec(),
+        }),
     }
 }
 
@@ -3894,6 +4868,7 @@ fn local_change_kind(index_status: &str, worktree_status: &str) -> DiffChangeKin
 enum LocalChangeLoadPolicy {
     Batch,
     Detail,
+    Historical,
 }
 
 impl LocalChangeLoadPolicy {
@@ -3901,6 +4876,7 @@ impl LocalChangeLoadPolicy {
         match self {
             Self::Batch => "listLocalChanges",
             Self::Detail => "localChangeDetail",
+            Self::Historical => "commitFileDetail",
         }
     }
 
@@ -4133,8 +5109,9 @@ fn local_change_preview_placeholder(
         "previewLimitBytes".to_owned(),
         OVERSIZED_TEXT_BYTES.to_string(),
     );
-    if deferred {
-        metadata.insert("previewDeferred".to_owned(), "true".to_owned());
+    metadata.insert("previewDeferred".to_owned(), "true".to_owned());
+    if !deferred {
+        metadata.insert("oversized".to_owned(), "true".to_owned());
     }
     if let Some(size) = sizes.old_size {
         metadata.insert("oldBytes".to_owned(), size.to_string());
@@ -4151,17 +5128,81 @@ fn local_change_preview_placeholder(
             file_kind: if deferred {
                 DiffFileKind::Deferred
             } else {
-                DiffFileKind::OversizedText
+                deferred_large_file_kind(path)
             },
             lfs_lock: None,
             metadata,
         },
-        if deferred {
-            DiffContent::Deferred { message: None }
-        } else {
-            DiffContent::OversizedText { message: None }
-        },
+        DiffContent::Deferred { message: None },
     )
+}
+
+fn deferred_large_file_kind(path: &str) -> DiffFileKind {
+    let path = Path::new(path);
+    let extension = path
+        .extension()
+        .and_then(OsStr::to_str)
+        .map(str::to_ascii_lowercase);
+    if matches!(
+        extension.as_deref(),
+        Some("png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "svg")
+    ) {
+        return DiffFileKind::Image;
+    }
+    if matches!(
+        extension.as_deref(),
+        Some(
+            "txt"
+                | "md"
+                | "markdown"
+                | "rs"
+                | "ts"
+                | "tsx"
+                | "js"
+                | "jsx"
+                | "json"
+                | "yaml"
+                | "yml"
+                | "toml"
+                | "xml"
+                | "html"
+                | "css"
+                | "scss"
+                | "less"
+                | "sh"
+                | "bash"
+                | "zsh"
+                | "py"
+                | "go"
+                | "java"
+                | "kt"
+                | "kts"
+                | "c"
+                | "cc"
+                | "cpp"
+                | "h"
+                | "hpp"
+                | "cs"
+                | "swift"
+                | "rb"
+                | "php"
+                | "sql"
+                | "csv"
+                | "tsv"
+                | "ini"
+                | "cfg"
+                | "conf"
+        )
+    ) {
+        return DiffFileKind::OversizedText;
+    }
+    if matches!(
+        path.file_name().and_then(OsStr::to_str),
+        Some(".gitignore" | ".gitattributes" | ".editorconfig")
+    ) {
+        return DiffFileKind::OversizedText;
+    }
+    DiffFileKind::Binary
 }
 
 fn local_change_diff(
@@ -5552,6 +6593,35 @@ mod tests {
     };
     use std::{io::Write, sync::Mutex};
 
+    #[cfg(unix)]
+    #[test]
+    fn clone_cleanup_failure_is_reported_with_the_remaining_path() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = TestTempDir::new("ag-clone-cleanup-failure").expect("temp");
+        let parent = temp.path().join("parent");
+        let path = parent.join("incomplete");
+        fs::create_dir_all(&path).expect("create incomplete clone");
+        let original_permissions = fs::metadata(&parent)
+            .expect("parent metadata")
+            .permissions();
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o500))
+            .expect("make parent read-only");
+        let target = CloneTarget {
+            directory_name: OsString::from("incomplete"),
+            parent: parent.clone(),
+            path: path.clone(),
+        };
+
+        let result = cleanup_clone_target(&target);
+        fs::set_permissions(&parent, original_permissions).expect("restore parent permissions");
+        let error = result.expect_err("cleanup should report permission failure");
+
+        assert_eq!(error.context.operation_name, "cloneRepositoryCleanup");
+        assert!(error.summary.contains(&display_path(&path)));
+        assert!(path.exists());
+    }
+
     #[test]
     fn cancellable_operation_registry_cancels_registered_token() {
         let registry = Arc::new(CancellableOperationRegistry::default());
@@ -5603,6 +6673,29 @@ mod tests {
         );
         assert_eq!(payload.file_kind, DiffFileKind::Deferred);
         assert!(matches!(diff, DiffContent::Deferred { .. }));
+
+        for (path, expected_kind) in [
+            ("large.png", DiffFileKind::Image),
+            ("archive.zip", DiffFileKind::Binary),
+            ("notes.txt", DiffFileKind::OversizedText),
+        ] {
+            let (payload, diff) = local_change_preview_placeholder(
+                path,
+                None,
+                DiffChangeKind::Added,
+                "?",
+                "?",
+                LocalChangePreviewSizes {
+                    new_expected: true,
+                    new_size: Some((OVERSIZED_TEXT_BYTES + 1) as u64),
+                    ..LocalChangePreviewSizes::default()
+                },
+                false,
+            );
+            assert_eq!(payload.file_kind, expected_kind);
+            assert_eq!(payload.metadata["oversized"], "true");
+            assert!(matches!(diff, DiffContent::Deferred { .. }));
+        }
     }
 
     #[test]
@@ -6025,6 +7118,33 @@ mod tests {
         (runner, temp)
     }
 
+    #[cfg(unix)]
+    fn commit_detail_counting_runner(oid: &str, parent: &str) -> (GitRunner, TestTempDir, PathBuf) {
+        let temp = TestTempDir::new("ag-commit-detail-count").expect("temp");
+        let manifest = git_dist_manifest_fixture();
+        write_git_dist_manifest(temp.path(), &manifest).expect("manifest");
+        let command_log = temp.path().join("commands.log");
+        let unix_git = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> {log}\ncase \" $* \" in\n  *\" rev-list \"*) printf '{oid} {parent}\\n' ;;\n  *\" cat-file -s \"*) printf '4\\n' ;;\n  *\" show \"*\"{parent}:tracked.txt\"*) printf 'old\\n' ;;\n  *\" show \"*) printf 'new\\n' ;;\nesac\n",
+            log = shell_quote(&command_log),
+        );
+        write_executable_script(
+            &temp.path().join(&manifest.paths.git_executable),
+            &unix_git,
+            "@echo off\r\nexit /b 1\r\n",
+        )
+        .expect("git");
+        write_executable_file(&temp.path().join(&manifest.paths.git_lfs_executable))
+            .expect("git-lfs");
+        write_executable_file(&temp.path().join(&manifest.paths.credential_helper))
+            .expect("credential helper");
+        write_executable_file(&temp.path().join(&manifest.paths.ssh_askpass)).expect("ssh askpass");
+        let distribution = GitDistribution::from_manifest(temp.path().to_path_buf(), manifest)
+            .expect("distribution");
+        let runner = GitRunner::from_distribution(distribution, temp.path().join("home"));
+        (runner, temp, command_log)
+    }
+
     fn lfs_policy_runner() -> (GitRunner, TestTempDir, PathBuf) {
         let temp = TestTempDir::new("ag-local-change-lfs-policy").expect("temp");
         let manifest = git_dist_manifest_fixture();
@@ -6157,6 +7277,7 @@ mod tests {
             &vault,
             &sink,
             crate::auth_ipc::InteractionPolicy::interactive(),
+            &OperationId::new("ssh-test-interactive"),
             true,
             "Enter passphrase for key '/Users/me/.ssh/id_ed25519':".to_owned(),
         );
@@ -6197,6 +7318,7 @@ mod tests {
             &vault,
             &sink,
             crate::auth_ipc::InteractionPolicy::background_non_interactive(),
+            &OperationId::new("ssh-test-cached"),
             false,
             "Enter passphrase for key '/Users/me/.ssh/id_ed25519':".to_owned(),
         );
@@ -6222,6 +7344,7 @@ mod tests {
             &vault,
             &sink,
             crate::auth_ipc::InteractionPolicy::background_non_interactive(),
+            &OperationId::new("ssh-test-background"),
             false,
             "Enter passphrase for key '/Users/me/.ssh/id_ed25519':".to_owned(),
         );
@@ -6248,6 +7371,7 @@ mod tests {
             &vault,
             &sink,
             crate::auth_ipc::InteractionPolicy::interactive(),
+            &OperationId::new("ssh-test-cancel"),
             false,
             "Enter passphrase for key '/Users/me/.ssh/id_ed25519':".to_owned(),
         );
@@ -6307,6 +7431,7 @@ mod tests {
             &runner,
             None,
             OpenRepositoryRequest {
+                operation_id: None,
                 path: display_path(&repo.path.join("nested")),
                 tool_identity: None,
             },
@@ -6877,7 +8002,7 @@ mod tests {
     }
 
     #[test]
-    fn open_repository_initializes_submodules_and_emits_progress() {
+    fn opening_existing_repository_does_not_modify_submodules() {
         let (runner, _dist_temp) = real_runner();
         allow_file_protocol_for_local_submodule_fixtures(&runner);
         let child = TestRepo::new(&runner);
@@ -6904,21 +8029,22 @@ mod tests {
             &runner,
             None,
             OpenRepositoryRequest {
+                operation_id: Some(OperationId::new("open-existing-submodule")),
                 path: display_path(&repo.path),
                 tool_identity: None,
             },
             |event| events.borrow_mut().push(event),
         )
-        .expect("open repository with submodule");
+        .expect("open existing repository with submodule");
 
-        assert!(repo.path.join("deps/lib/tracked.txt").exists());
+        assert!(!repo.path.join("deps/lib/tracked.txt").exists());
         let labels = events
             .borrow()
             .iter()
             .map(|event| event.label.clone())
             .collect::<Vec<_>>();
-        assert!(labels.iter().any(|label| label == "Updating submodules"));
-        assert!(labels.iter().any(|label| label == "Submodules ready"));
+        assert!(!labels.iter().any(|label| label == "Updating submodules"));
+        assert!(!labels.iter().any(|label| label == "Submodules ready"));
         assert!(events.borrow().iter().all(|event| !event.cancellable));
     }
 
@@ -7138,6 +8264,7 @@ mod tests {
             &runner,
             None,
             OpenRepositoryRequest {
+                operation_id: None,
                 path: display_path(&repo.path),
                 tool_identity: None,
             },
@@ -7158,6 +8285,7 @@ mod tests {
             &runner,
             None,
             OpenRepositoryRequest {
+                operation_id: None,
                 path: display_path(&repo.path),
                 tool_identity: None,
             },
@@ -7169,6 +8297,53 @@ mod tests {
             RepositoryHeadState::Unborn { .. }
         ));
         assert!(response.health.index_lock.is_some());
+    }
+
+    #[test]
+    fn resets_bisect_with_the_repository_write_lock() {
+        let (runner, _dist_temp) = real_runner();
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        repo.write("tracked.txt", "second\n");
+        repo.git(["add", "."]);
+        repo.git(["commit", "-m", "second"]);
+        repo.git(["bisect", "start"]);
+        repo.git(["bisect", "bad"]);
+        repo.git(["bisect", "good", "HEAD~1"]);
+        let request = RepositoryPathRequest {
+            repository_path: display_path(&repo.path),
+        };
+        let before = repository_summary(&runner, request.clone()).expect("bisect summary");
+        assert!(before
+            .details
+            .as_ref()
+            .expect("summary details")
+            .health
+            .middle_states
+            .iter()
+            .any(|state| state.kind == RepositoryMiddleStateKind::Bisect));
+
+        let backend = RepositoryBackend::new(runner.clone(), None);
+        let background = runner
+            .operation_concurrency()
+            .try_begin_background()
+            .expect("hold background lock");
+        let busy = backend
+            .reset_bisect(request.clone())
+            .expect_err("background operation must block reset");
+        assert!(busy.summary.contains("background operation"));
+        drop(background);
+
+        let after = backend.reset_bisect(request).expect("reset bisect");
+        assert!(!after.in_progress);
+        assert!(after
+            .details
+            .as_ref()
+            .expect("summary details")
+            .health
+            .middle_states
+            .is_empty());
+        assert!(!repo.path.join(".git/BISECT_LOG").exists());
     }
 
     #[test]
@@ -7352,7 +8527,8 @@ mod tests {
             change.payload.metadata["newBytes"],
             (OVERSIZED_TEXT_BYTES + 1).to_string()
         );
-        assert!(matches!(change.diff, DiffContent::OversizedText { .. }));
+        assert_eq!(change.payload.metadata["oversized"], "true");
+        assert!(matches!(change.diff, DiffContent::Deferred { .. }));
     }
 
     #[test]
@@ -7559,6 +8735,7 @@ size 16\n"
             &runner,
             None,
             OpenRepositoryRequest {
+                operation_id: None,
                 path: display_path(linked.path()),
                 tool_identity: None,
             },
@@ -7579,6 +8756,7 @@ size 16\n"
             &runner,
             None,
             OpenRepositoryRequest {
+                operation_id: None,
                 path: display_path(&repo.path),
                 tool_identity: None,
             },
@@ -7612,6 +8790,7 @@ size 16\n"
             &runner,
             None,
             OpenRepositoryRequest {
+                operation_id: None,
                 path: display_path(&repo.path),
                 tool_identity: None,
             },
@@ -7642,6 +8821,7 @@ size 16\n"
             &runner,
             None,
             OpenRepositoryRequest {
+                operation_id: None,
                 path: display_path(&repo.path),
                 tool_identity: Some(artistic_git_contracts::ToolGitIdentity {
                     name: Some("Artistic Git".to_owned()),
@@ -7688,6 +8868,7 @@ size 16\n"
                 after: None,
                 limit: Some(1),
                 operation_id: None,
+                revisions: Vec::new(),
             },
             &CancelToken::new(),
         )
@@ -7702,6 +8883,7 @@ size 16\n"
                 after: None,
                 limit: Some(200),
                 operation_id: None,
+                revisions: Vec::new(),
             },
             &CancelToken::new(),
         )
@@ -7712,6 +8894,645 @@ size 16\n"
         assert!(log.next_after.is_some());
         assert_eq!(search.commits.len(), 1);
         assert_eq!(search.commits[0].subject, "second searchable commit");
+    }
+
+    #[test]
+    fn loads_real_commit_details_and_selected_file_content() {
+        let (runner, _dist_temp) = real_runner();
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        repo.git(["mv", "tracked.txt", "renamed.txt"]);
+        repo.write("added.txt", "new file\n");
+        repo.git(["add", "."]);
+        repo.git([
+            "commit",
+            "-m",
+            "rename and add",
+            "-m",
+            "A useful commit body for the details panel.",
+        ]);
+        let oid = repo.git_output(["rev-parse", "HEAD"]).trim().to_owned();
+
+        let details = commit_details(
+            &runner,
+            CommitDetailsRequest {
+                repository_path: display_path(&repo.path),
+                oid: oid.clone(),
+                limit: Some(5_000),
+                operation_id: None,
+            },
+        )
+        .expect("commit details");
+
+        assert_eq!(
+            details.body.as_deref(),
+            Some("A useful commit body for the details panel.")
+        );
+        assert!(!details.body_truncated);
+        assert!(!details.truncated);
+        assert!(details.files.iter().any(|file| {
+            file.path == "renamed.txt"
+                && file.old_path.as_deref() == Some("tracked.txt")
+                && file.change_kind == DiffChangeKind::Renamed
+        }));
+        assert!(details.files.iter().any(|file| {
+            file.path == "added.txt"
+                && file.change_kind == DiffChangeKind::Added
+                && file.additions == 1
+        }));
+
+        let added = commit_file_detail(
+            &runner,
+            CommitFileDetailRequest {
+                repository_path: display_path(&repo.path),
+                oid: oid.clone(),
+                file: repo.changed_file_at(&oid, "added.txt"),
+                operation_id: None,
+            },
+        )
+        .expect("added file detail");
+        assert_eq!(added.payload.change_kind, DiffChangeKind::Added);
+        assert!(matches!(
+            added.diff,
+            DiffContent::Text {
+                old_text: None,
+                new_text: Some(ref value),
+                ..
+            } if value == "new file\n"
+        ));
+
+        let renamed = commit_file_detail(
+            &runner,
+            CommitFileDetailRequest {
+                repository_path: display_path(&repo.path),
+                oid: oid.clone(),
+                file: repo.changed_file_at(&oid, "renamed.txt"),
+                operation_id: None,
+            },
+        )
+        .expect("renamed file detail");
+        assert_eq!(renamed.payload.old_path.as_deref(), Some("tracked.txt"));
+        assert!(matches!(renamed.diff, DiffContent::Moved { .. }));
+    }
+
+    #[test]
+    fn loads_root_commit_details_without_a_parent() {
+        let (runner, _dist_temp) = real_runner();
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        let oid = repo.git_output(["rev-parse", "HEAD"]).trim().to_owned();
+
+        let details = commit_details(
+            &runner,
+            CommitDetailsRequest {
+                repository_path: display_path(&repo.path),
+                oid: oid.clone(),
+                limit: Some(5_000),
+                operation_id: None,
+            },
+        )
+        .expect("root details");
+        assert_eq!(details.files.len(), 1);
+        assert_eq!(details.files[0].path, "tracked.txt");
+        assert_eq!(details.files[0].change_kind, DiffChangeKind::Added);
+
+        let file = commit_file_detail(
+            &runner,
+            CommitFileDetailRequest {
+                repository_path: display_path(&repo.path),
+                oid: oid.clone(),
+                file: details.files[0].clone(),
+                operation_id: None,
+            },
+        )
+        .expect("root file detail");
+        assert!(matches!(
+            file.diff,
+            DiffContent::Text {
+                old_text: None,
+                new_text: Some(ref value),
+                ..
+            } if value == "one\n"
+        ));
+    }
+
+    #[test]
+    fn loads_historical_submodule_pointer_without_reading_it_as_a_blob() {
+        let (runner, _dist_temp) = real_runner();
+        let source = TestRepo::new(&runner);
+        source.init_with_commit();
+        let source_oid = source.git_output(["rev-parse", "HEAD"]).trim().to_owned();
+        let source_path = display_path(&source.path);
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        repo.git([
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            source_path.as_str(),
+            "module",
+        ]);
+        repo.git(["commit", "-am", "add submodule"]);
+        let oid = repo.git_output(["rev-parse", "HEAD"]).trim().to_owned();
+
+        let detail = commit_file_detail(
+            &runner,
+            CommitFileDetailRequest {
+                repository_path: display_path(&repo.path),
+                oid: oid.clone(),
+                file: repo.changed_file_at(&oid, "module"),
+                operation_id: None,
+            },
+        )
+        .expect("submodule detail");
+
+        assert_eq!(detail.payload.file_kind, DiffFileKind::Binary);
+        assert_eq!(
+            detail.payload.metadata.get("submodule").map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(
+            detail.payload.metadata.get("newOid").map(String::as_str),
+            Some(source_oid.as_str())
+        );
+        assert!(matches!(detail.diff, DiffContent::Moved { .. }));
+    }
+
+    #[test]
+    fn explains_mode_only_commit_changes() {
+        let (runner, _dist_temp) = real_runner();
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        repo.git(["update-index", "--chmod=+x", "tracked.txt"]);
+        repo.git(["commit", "-m", "make tracked file executable"]);
+        let oid = repo.git_output(["rev-parse", "HEAD"]).trim().to_owned();
+
+        let details = commit_details(
+            &runner,
+            CommitDetailsRequest {
+                repository_path: display_path(&repo.path),
+                oid: oid.clone(),
+                limit: Some(5_000),
+                operation_id: None,
+            },
+        )
+        .expect("mode-only details");
+        let file = details
+            .files
+            .iter()
+            .find(|file| file.path == "tracked.txt")
+            .expect("mode-only file");
+        assert_eq!(file.old_mode.as_deref(), Some("100644"));
+        assert_eq!(file.new_mode.as_deref(), Some("100755"));
+        assert_eq!(file.additions, 0);
+        assert_eq!(file.deletions, 0);
+
+        let detail = commit_file_detail(
+            &runner,
+            CommitFileDetailRequest {
+                repository_path: display_path(&repo.path),
+                oid: oid.clone(),
+                file: file.clone(),
+                operation_id: None,
+            },
+        )
+        .expect("mode-only file detail");
+        assert_eq!(detail.payload.metadata["modeChanged"], "true");
+        assert_eq!(detail.payload.metadata["contentChanged"], "false");
+        assert_eq!(detail.payload.metadata["oldMode"], "100644");
+        assert_eq!(detail.payload.metadata["newMode"], "100755");
+        assert!(matches!(detail.diff, DiffContent::Moved { .. }));
+
+        repo.write("tracked.txt", "two\n");
+        repo.git(["add", "tracked.txt"]);
+        repo.git(["update-index", "--chmod=-x", "tracked.txt"]);
+        repo.git(["commit", "-m", "change content and remove executable bit"]);
+        let content_and_mode_oid = repo.git_output(["rev-parse", "HEAD"]).trim().to_owned();
+        let content_and_mode = commit_file_detail(
+            &runner,
+            CommitFileDetailRequest {
+                repository_path: display_path(&repo.path),
+                oid: content_and_mode_oid.clone(),
+                file: repo.changed_file_at(&content_and_mode_oid, "tracked.txt"),
+                operation_id: None,
+            },
+        )
+        .expect("content and mode file detail");
+        assert_eq!(content_and_mode.payload.metadata["modeChanged"], "true");
+        assert_eq!(content_and_mode.payload.metadata["contentChanged"], "true");
+        assert!(matches!(content_and_mode.diff, DiffContent::Text { .. }));
+    }
+
+    #[test]
+    fn historical_lfs_uses_local_objects_and_reports_missing_objects() {
+        let (runner, _dist_temp) = real_runner();
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        let old_oid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let new_oid = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let missing_oid = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        let old_content = b"old LFS text\n";
+        let new_content = b"new LFS text\n";
+        let old_pointer = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{old_oid}\nsize {}\n",
+            old_content.len()
+        );
+        let new_pointer = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{new_oid}\nsize {}\n",
+            new_content.len()
+        );
+        repo.write("asset.dat", &old_pointer);
+        repo.write_lfs_object(old_oid, old_content);
+        repo.git(["add", "asset.dat"]);
+        repo.git(["commit", "-m", "add LFS pointer"]);
+        repo.write("asset.dat", &new_pointer);
+        repo.write_lfs_object(new_oid, new_content);
+        repo.git(["add", "asset.dat"]);
+        repo.git(["commit", "-m", "update LFS pointer"]);
+        let available_oid = repo.git_output(["rev-parse", "HEAD"]).trim().to_owned();
+
+        let available = commit_file_detail(
+            &runner,
+            CommitFileDetailRequest {
+                repository_path: display_path(&repo.path),
+                oid: available_oid.clone(),
+                file: repo.changed_file_at(&available_oid, "asset.dat"),
+                operation_id: None,
+            },
+        )
+        .expect("available historical LFS detail");
+        assert_eq!(available.payload.file_kind, DiffFileKind::Text);
+        assert_eq!(available.payload.metadata["lfsResolved"], "true");
+        assert_eq!(available.payload.metadata["lfsFetchStatus"], "local");
+        assert!(matches!(
+            available.diff,
+            DiffContent::Text {
+                old_text: Some(ref old),
+                new_text: Some(ref new),
+                ..
+            } if old == "old LFS text\n" && new == "new LFS text\n"
+        ));
+
+        let missing_pointer = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{missing_oid}\nsize 12\n"
+        );
+        repo.write("asset.dat", &missing_pointer);
+        repo.git(["add", "asset.dat"]);
+        repo.git(["commit", "-m", "reference missing LFS object"]);
+        let missing_commit = repo.git_output(["rev-parse", "HEAD"]).trim().to_owned();
+        let missing = commit_file_detail(
+            &runner,
+            CommitFileDetailRequest {
+                repository_path: display_path(&repo.path),
+                oid: missing_commit.clone(),
+                file: repo.changed_file_at(&missing_commit, "asset.dat"),
+                operation_id: None,
+            },
+        )
+        .expect("missing historical LFS detail");
+        assert_eq!(missing.payload.file_kind, DiffFileKind::LfsPointer);
+        assert_eq!(missing.payload.metadata["lfsFetchStatus"], "missing");
+        assert_eq!(missing.payload.metadata["lfsResolved"], "false");
+        assert!(matches!(
+            missing.diff,
+            DiffContent::LfsPointer {
+                status: LfsContentStatus::Missing,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn historical_lfs_uses_local_image_objects() {
+        let (runner, _dist_temp) = real_runner();
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        let image_oid = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+        let png = [
+            0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0, 0, 0, 13, b'I', b'H', b'D', b'R',
+            0, 0, 0, 3, 0, 0, 0, 4,
+        ];
+        let pointer = format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{image_oid}\nsize {}\n",
+            png.len()
+        );
+        repo.write("asset.png", &pointer);
+        repo.write_lfs_object(image_oid, &png);
+        repo.git(["add", "asset.png"]);
+        repo.git(["commit", "-m", "add LFS image"]);
+        let oid = repo.git_output(["rev-parse", "HEAD"]).trim().to_owned();
+
+        let detail = commit_file_detail(
+            &runner,
+            CommitFileDetailRequest {
+                repository_path: display_path(&repo.path),
+                oid: oid.clone(),
+                file: repo.changed_file_at(&oid, "asset.png"),
+                operation_id: None,
+            },
+        )
+        .expect("historical LFS image detail");
+
+        assert_eq!(detail.payload.file_kind, DiffFileKind::Image);
+        assert_eq!(detail.payload.metadata["lfsResolved"], "true");
+        assert_eq!(detail.payload.metadata["lfsFetchStatus"], "local");
+        assert!(matches!(
+            detail.diff,
+            DiffContent::Image {
+                old_image: None,
+                new_image: Some(_),
+            }
+        ));
+    }
+
+    #[test]
+    fn defers_large_historical_assets_without_calling_them_large_text() {
+        let (runner, _dist_temp) = real_runner();
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        fs::write(
+            repo.path.join("large.png"),
+            vec![b'x'; OVERSIZED_TEXT_BYTES + 1],
+        )
+        .expect("large image fixture");
+        repo.git(["add", "large.png"]);
+        repo.git(["commit", "-m", "add large image"]);
+        let oid = repo.git_output(["rev-parse", "HEAD"]).trim().to_owned();
+
+        let detail = commit_file_detail(
+            &runner,
+            CommitFileDetailRequest {
+                repository_path: display_path(&repo.path),
+                oid: oid.clone(),
+                file: repo.changed_file_at(&oid, "large.png"),
+                operation_id: None,
+            },
+        )
+        .expect("large image detail");
+
+        assert_eq!(detail.payload.file_kind, DiffFileKind::Image);
+        assert_eq!(detail.payload.metadata["previewDeferred"], "true");
+        assert!(matches!(detail.diff, DiffContent::Deferred { .. }));
+        assert_eq!(
+            deferred_large_file_kind("archive.zip"),
+            DiffFileKind::Binary
+        );
+        assert_eq!(
+            deferred_large_file_kind("notes.txt"),
+            DiffFileKind::OversizedText
+        );
+    }
+
+    #[test]
+    fn commit_file_detail_rejects_paths_outside_the_repository() {
+        let (runner, _dist_temp) = real_runner();
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        let oid = repo.git_output(["rev-parse", "HEAD"]).trim().to_owned();
+
+        let error = commit_file_detail(
+            &runner,
+            CommitFileDetailRequest {
+                repository_path: display_path(&repo.path),
+                oid,
+                file: CommitChangedFile {
+                    path: "../outside.txt".to_owned(),
+                    old_path: None,
+                    old_mode: None,
+                    new_mode: Some("100644".to_owned()),
+                    change_kind: DiffChangeKind::Added,
+                    additions: 1,
+                    deletions: 0,
+                },
+                operation_id: None,
+            },
+        )
+        .expect_err("path traversal must be rejected");
+
+        assert_eq!(
+            error.summary,
+            "repository path must stay inside the repository"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn selected_commit_file_detail_does_not_rescan_the_full_commit() {
+        let oid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let parent = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let (runner, temp, command_log) = commit_detail_counting_runner(oid, parent);
+        let repository = temp.path().join("repo");
+        fs::create_dir_all(&repository).expect("repository fixture");
+
+        let detail = commit_file_detail(
+            &runner,
+            CommitFileDetailRequest {
+                repository_path: display_path(&repository),
+                oid: oid.to_owned(),
+                file: CommitChangedFile {
+                    path: "tracked.txt".to_owned(),
+                    old_path: None,
+                    old_mode: Some("100644".to_owned()),
+                    new_mode: Some("100644".to_owned()),
+                    change_kind: DiffChangeKind::Modified,
+                    additions: 1,
+                    deletions: 1,
+                },
+                operation_id: None,
+            },
+        )
+        .expect("selected file detail");
+
+        assert!(matches!(detail.diff, DiffContent::Text { .. }));
+        let commands = fs::read_to_string(command_log).expect("command log");
+        assert_eq!(commands.lines().count(), 6);
+        assert!(!commands.contains(" diff "));
+        assert!(!commands.contains("diff-tree"));
+        assert!(!commands.contains("name-status"));
+        assert!(!commands.contains("numstat"));
+    }
+
+    #[test]
+    fn commit_file_list_parsers_stop_at_the_requested_bound() {
+        let statuses = parse_commit_name_status(
+            "M\0one.txt\0A\0two.txt\0D\0three.txt\0",
+            2,
+            "testCommitDetails",
+        )
+        .expect("statuses");
+        let stats = parse_commit_numstat(
+            "1\t2\tone.txt\x003\t0\ttwo.txt\x000\t4\tthree.txt\x00",
+            2,
+            "testCommitDetails",
+        )
+        .expect("numstat");
+        let raw = parse_commit_raw_changes(
+            ":100644 100755 aaaaaaa bbbbbbb M\0one.txt\0:000000 100644 0000000 ccccccc A\0two.txt\0",
+            2,
+            "testCommitDetails",
+        )
+        .expect("raw changes");
+
+        assert_eq!(statuses.len(), 2);
+        assert_eq!(stats.len(), 2);
+        assert_eq!(raw[0].old_mode.as_deref(), Some("100644"));
+        assert_eq!(raw[0].new_mode.as_deref(), Some("100755"));
+        assert_eq!(raw[1].old_mode, None);
+    }
+
+    #[test]
+    fn history_revisions_follow_branch_reachability() {
+        let (runner, _dist_temp) = real_runner();
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        repo.git(["switch", "-c", "feature/lookdev"]);
+        repo.write("feature.txt", "feature\n");
+        repo.git(["add", "."]);
+        repo.git(["commit", "-m", "feature branch work"]);
+        repo.git(["switch", "main"]);
+        repo.write("main.txt", "main\n");
+        repo.git(["add", "."]);
+        repo.git(["commit", "-m", "main branch work"]);
+
+        let log = log_page_with_cancel(
+            &runner,
+            LogPageRequest {
+                repository_path: display_path(&repo.path),
+                after: None,
+                limit: Some(200),
+                operation_id: None,
+                revisions: vec!["refs/heads/feature/lookdev".to_owned()],
+            },
+            &CancelToken::new(),
+        )
+        .expect("feature history");
+        let subjects = log
+            .commits
+            .iter()
+            .map(|commit| commit.subject.as_str())
+            .collect::<Vec<_>>();
+        assert!(subjects.contains(&"feature branch work"));
+        assert!(subjects.contains(&"initial"));
+        assert!(!subjects.contains(&"main branch work"));
+
+        let search = search_log_with_cancel(
+            &runner,
+            LogSearchRequest {
+                repository_path: display_path(&repo.path),
+                grep: Some("branch work".to_owned()),
+                author: None,
+                pickaxe: None,
+                after: None,
+                limit: Some(200),
+                operation_id: None,
+                revisions: vec!["refs/heads/feature/lookdev".to_owned()],
+            },
+            &CancelToken::new(),
+        )
+        .expect("feature history search");
+        assert_eq!(search.commits.len(), 1);
+        assert_eq!(search.commits[0].subject, "feature branch work");
+    }
+
+    #[test]
+    fn history_revisions_reject_revision_expressions() {
+        let (runner, _dist_temp) = real_runner();
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+
+        let error = log_page_with_cancel(
+            &runner,
+            LogPageRequest {
+                repository_path: display_path(&repo.path),
+                after: None,
+                limit: Some(200),
+                operation_id: None,
+                revisions: vec!["refs/heads/main..refs/heads/other".to_owned()],
+            },
+            &CancelToken::new(),
+        )
+        .expect_err("revision expression must be rejected");
+
+        assert_eq!(error.summary, "history revision is invalid");
+    }
+
+    #[test]
+    fn history_revisions_reject_oversized_custom_selections() {
+        let (runner, _dist_temp) = real_runner();
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        let revisions = (0..=MAX_LOG_REVISIONS)
+            .map(|index| format!("refs/heads/branch-{index}"))
+            .collect();
+
+        let error = log_page_with_cancel(
+            &runner,
+            LogPageRequest {
+                repository_path: display_path(&repo.path),
+                after: None,
+                limit: Some(200),
+                operation_id: None,
+                revisions,
+            },
+            &CancelToken::new(),
+        )
+        .expect_err("large custom branch selections must be rejected");
+
+        assert_eq!(error.summary, "too many history revisions were requested");
+    }
+
+    #[test]
+    fn all_history_excludes_internal_safety_backup_refs() {
+        let (runner, _dist_temp) = real_runner();
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        repo.git(["switch", "-c", "backup/hidden"]);
+        repo.write("backup-only.txt", "internal backup commit\n");
+        repo.git(["add", "."]);
+        repo.git(["commit", "-m", "internal safety backup only"]);
+        repo.git(["switch", "main"]);
+        repo.git(["branch", "backup/current"]);
+
+        let log = log_page_with_cancel(
+            &runner,
+            LogPageRequest {
+                repository_path: display_path(&repo.path),
+                after: None,
+                limit: Some(200),
+                operation_id: None,
+                revisions: Vec::new(),
+            },
+            &CancelToken::new(),
+        )
+        .expect("all history");
+
+        assert!(log.commits.iter().any(|commit| commit.subject == "initial"));
+        assert!(!log
+            .commits
+            .iter()
+            .any(|commit| commit.subject == "internal safety backup only"));
+        assert!(!log.commits.iter().any(|commit| commit
+            .refs
+            .iter()
+            .any(|reference| reference.contains("backup/"))));
+
+        let search = search_log_with_cancel(
+            &runner,
+            LogSearchRequest {
+                repository_path: display_path(&repo.path),
+                grep: Some("internal safety backup only".to_owned()),
+                author: None,
+                pickaxe: None,
+                after: None,
+                limit: Some(200),
+                operation_id: None,
+                revisions: Vec::new(),
+            },
+            &CancelToken::new(),
+        )
+        .expect("all history search");
+        assert!(search.commits.is_empty());
     }
 
     #[test]
@@ -7740,6 +9561,7 @@ size 16\n"
                 after: None,
                 limit: Some(200),
                 operation_id: Some(log_operation_id),
+                revisions: Vec::new(),
             })
             .expect_err("cancelled log page");
         assert_eq!(log_error.summary, "operation cancelled");
@@ -7766,6 +9588,7 @@ size 16\n"
                 after: None,
                 limit: Some(200),
                 operation_id: Some(search_operation_id),
+                revisions: Vec::new(),
             })
             .expect_err("cancelled search log");
         assert_eq!(search_error.summary, "operation cancelled");
@@ -7851,6 +9674,23 @@ size 16\n"
 
         fn read(&self, relative: &str) -> String {
             fs::read_to_string(self.path.join(relative)).expect("read file")
+        }
+
+        fn changed_file_at(&self, oid: &str, path: &str) -> CommitChangedFile {
+            commit_details(
+                &self.runner,
+                CommitDetailsRequest {
+                    repository_path: display_path(&self.path),
+                    oid: oid.to_owned(),
+                    limit: Some(5_000),
+                    operation_id: None,
+                },
+            )
+            .expect("commit details for selected file")
+            .files
+            .into_iter()
+            .find(|file| file.path == path)
+            .expect("selected commit file")
         }
 
         fn write_lfs_object(&self, oid: &str, contents: &[u8]) {

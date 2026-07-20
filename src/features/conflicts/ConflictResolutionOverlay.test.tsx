@@ -50,6 +50,126 @@ afterEach(() => {
 });
 
 describe("ConflictResolutionOverlay", () => {
+  it("can finish an operation after all conflicted files are gone", async () => {
+    const api = createApi({
+      listConflicts: vi.fn(async () => ({
+        files: [],
+        operation: mergeOperation,
+      })),
+    });
+
+    renderWithProviders(
+      <ConflictResolutionOverlay
+        api={api}
+        event={createEvent([])}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getAllByText(
+        "No conflicted files remain. Continue to finish the Git operation.",
+      ).length,
+    ).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "Finish resolving" }));
+
+    await waitFor(() =>
+      expect(api.completeConflictResolution).toHaveBeenCalledWith({
+        operationId: "op-conflict",
+        paths: [],
+        repositoryPath: "/repo/art",
+      }),
+    );
+  });
+
+  it("uses a user-facing title instead of the backend operation name", () => {
+    const file = createFile({ status: "unresolved" });
+
+    renderWithProviders(
+      <ConflictResolutionOverlay
+        api={createApi()}
+        event={createEvent([file], { operationName: "commitChanges" })}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByRole("heading", { name: "Resolve conflicts" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("commitChanges")).not.toBeInTheDocument();
+  });
+
+  it("keeps keyboard focus inside the conflict workflow", () => {
+    const api = createApi({
+      listConflicts: vi.fn(async () => ({
+        files: [],
+        operation: mergeOperation,
+      })),
+    });
+
+    renderWithProviders(
+      <>
+        <button type="button">Background action</button>
+        <ConflictResolutionOverlay
+          api={api}
+          event={createEvent([])}
+          onClose={vi.fn()}
+        />
+      </>,
+    );
+
+    const overlay = screen.getByRole("dialog", { name: "Resolve conflicts" });
+    const finishButton = within(overlay).getByRole("button", {
+      name: "Finish resolving",
+    });
+    expect(overlay).toHaveFocus();
+
+    fireEvent.keyDown(document, { key: "Tab" });
+    expect(finishButton).toHaveFocus();
+
+    screen.getByRole("button", { name: "Background action" }).focus();
+    expect(finishButton).toHaveFocus();
+  });
+
+  it("describes a running conflict action as in progress", async () => {
+    const file = createFile({ status: "unresolved" });
+    let resolveSave!: (value: { file: ConflictFile }) => void;
+    const pendingSave = new Promise<{ file: ConflictFile }>((resolve) => {
+      resolveSave = resolve;
+    });
+    const api = createApi({
+      conflictDetail: vi.fn(async () => createTextDetail(file)),
+      saveConflictResolution: vi.fn(() => pendingSave),
+    });
+
+    renderWithProviders(
+      <ConflictResolutionOverlay
+        api={api}
+        event={createEvent([file])}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const hunk = await screen.findByLabelText("Conflict at line 2");
+    fireEvent.click(
+      within(hunk).getByRole("button", { name: "Use current changes here" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(
+      await screen.findByText("Saving conflict resolution..."),
+    ).toBeInTheDocument();
+
+    await act(async () => {
+      resolveSave({ file: resolvedFile(file) });
+    });
+    await waitFor(() =>
+      expect(
+        screen.queryByText("Saving conflict resolution..."),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
   it("paginates a file with thousands of conflict groups", async () => {
     const file = createFile({ status: "unresolved" });
     const hunks = Array.from({ length: 2_000 }, (_, index) => ({
@@ -510,7 +630,9 @@ describe("ConflictResolutionOverlay", () => {
       within(conflictList).getByText("src/slow.txt").closest("button")!,
     );
 
-    expect(await screen.findByText("Loading conflict details")).toBeVisible();
+    expect(
+      await screen.findByText("Loading conflict details..."),
+    ).toBeVisible();
     expect(screen.queryByLabelText("Resolved file content")).toBeNull();
 
     fireEvent.click(
@@ -681,7 +803,12 @@ describe("ConflictResolutionOverlay", () => {
     fireEvent.click(screen.getByTestId("conflict-use-own"));
 
     await waitFor(() => {
-      expect(screen.getByText("checkout failed")).toBeVisible();
+      expect(
+        screen.getByText(
+          "The conflict operation did not complete. Open the error details for diagnostic information.",
+        ),
+      ).toBeVisible();
+      expect(screen.queryByText("checkout failed")).not.toBeInTheDocument();
       expect(handleError).toHaveBeenCalledTimes(1);
     });
     expect((handleError.mock.calls[0]![0] as CustomEvent).detail).toBe(source);
@@ -742,7 +869,14 @@ describe("ConflictResolutionOverlay", () => {
       await act(async () => rejectSelection(source));
 
       await waitFor(() => {
-        expect(screen.getByText("conflict cleanup failed")).toBeVisible();
+        expect(
+          screen.getByText(
+            "The conflict operation did not complete. Open the error details for diagnostic information.",
+          ),
+        ).toBeVisible();
+        expect(
+          screen.queryByText("conflict cleanup failed"),
+        ).not.toBeInTheDocument();
         expect(handleError).toHaveBeenCalledTimes(1);
       });
       expect((handleError.mock.calls[0]![0] as CustomEvent).detail).toBe(
@@ -836,6 +970,9 @@ describe("ConflictResolutionOverlay", () => {
     expect(
       within(cancelDialog).queryByRole("button", { name: "Close" }),
     ).not.toBeInTheDocument();
+    expect(within(cancelDialog).getByRole("status")).toHaveTextContent(
+      "Cancelling conflict resolution...",
+    );
     fireEvent.keyDown(document, { key: "Escape" });
     expect(cancelDialog).toBeInTheDocument();
     expect(onCancelClose).not.toHaveBeenCalled();

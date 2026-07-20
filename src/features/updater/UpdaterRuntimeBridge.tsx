@@ -11,6 +11,7 @@ import type {
   UpdateInstallGateResponse,
   UpdateStatusEvent,
 } from "@/lib/ipc/update-types";
+import { reportDesktopRuntimeError } from "@/lib/runtime-errors";
 import { useWindowStore } from "@/store/window-store";
 
 import { isDevelopmentRuntime } from "./development-runtime";
@@ -25,6 +26,12 @@ const noReadyUpdateGate: UpdateInstallGateResponse = {
   blocked: true,
   message: "no downloaded update is ready to install",
   reason: "noReadyUpdate",
+};
+
+const unavailableInstallGate: UpdateInstallGateResponse = {
+  blocked: true,
+  message: "unable to confirm whether the update can be installed",
+  reason: "gateUnavailable",
 };
 
 let nextInstallGateRequestId = 0;
@@ -62,6 +69,7 @@ export function UpdaterRuntimeBridge() {
   const dismissedPromptRequestIdRef = React.useRef(
     updatePromptDismissedRequestId,
   );
+  const installGateErrorReportedRef = React.useRef(false);
   const installInFlightRef = React.useRef(false);
   const updateStatusRef = React.useRef(updateStatus);
   const windowLabelRef = React.useRef(windowLabel);
@@ -113,23 +121,32 @@ export function UpdaterRuntimeBridge() {
   const refreshInstallGate = React.useCallback(async () => {
     const frontendGate = frontendInstallGate();
     if (frontendGate) {
+      installGateErrorReportedRef.current = false;
       setUpdateInstallGate(frontendGate);
       return frontendGate;
     }
 
     const windowGate = await queryWindowInstallGate(windowLabelRef.current);
     if (windowGate) {
+      installGateErrorReportedRef.current = false;
       setUpdateInstallGate(windowGate);
       return windowGate;
     }
 
     try {
       const gate = await updateInstallGate();
+      installGateErrorReportedRef.current = false;
       setUpdateInstallGate(gate);
       return gate;
-    } catch {
-      setUpdateInstallGate(noReadyUpdateGate);
-      return noReadyUpdateGate;
+    } catch (error) {
+      if (!installGateErrorReportedRef.current) {
+        installGateErrorReportedRef.current = true;
+        window.dispatchEvent(
+          new CustomEvent("artistic-git:error", { detail: error }),
+        );
+      }
+      setUpdateInstallGate(unavailableInstallGate);
+      return unavailableInstallGate;
     }
   }, [frontendInstallGate, setUpdateInstallGate]);
 
@@ -160,8 +177,8 @@ export function UpdaterRuntimeBridge() {
           resolvedUnlisten();
         }
       })
-      .catch(() => {
-        // Browser-only tests and previews do not have a Tauri event runtime.
+      .catch((error) => {
+        reportDesktopRuntimeError(error);
       });
 
     return () => {
@@ -202,8 +219,8 @@ export function UpdaterRuntimeBridge() {
           resolvedUnlisten();
         }
       })
-      .catch(() => {
-        // Browser-only tests and previews do not have a Tauri event runtime.
+      .catch((error) => {
+        reportDesktopRuntimeError(error);
       });
 
     return () => {
@@ -220,6 +237,9 @@ export function UpdaterRuntimeBridge() {
   React.useEffect(() => {
     const handleManualCheck = () => {
       void checkForUpdates({ source: "manual" }).catch((error) => {
+        window.dispatchEvent(
+          new CustomEvent("artistic-git:error", { detail: error }),
+        );
         const status = failedUpdateStatus(
           error,
           "manual",
@@ -249,10 +269,14 @@ export function UpdaterRuntimeBridge() {
           return installReadyUpdate();
         })
         .catch((error) => {
+          window.dispatchEvent(
+            new CustomEvent("artistic-git:error", { detail: error }),
+          );
           const status = failedUpdateStatus(
             error,
             "manual",
             windowLabelRef.current,
+            "install",
           );
           setUpdateStatus(status);
           setUpdatePromptDismissedRequestId(null);
@@ -338,8 +362,7 @@ function isStatusForCurrentWindow(
 ): boolean {
   return (
     !event.targetWindowLabel ||
-    !windowLabel ||
-    event.targetWindowLabel === windowLabel
+    (windowLabel !== null && event.targetWindowLabel === windowLabel)
   );
 }
 
@@ -371,15 +394,17 @@ function failedUpdateStatus(
   error: unknown,
   source: UpdateCheckSource,
   windowLabel: string | null,
+  failureStage: "check" | "install" = "check",
 ): UpdateStatusEvent {
   return {
-    requestId: `${source}-update-check-failed`,
+    requestId: `${source}-update-${failureStage}-failed`,
     source,
     targetWindowLabel: windowLabel,
     status: {
       message: errorMessage(error),
       state: "failed",
       visible: source === "manual",
+      failureStage,
     },
   };
 }

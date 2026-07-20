@@ -9,7 +9,6 @@ import type {
   RepoChangedEvent,
 } from "@/lib/ipc/generated";
 import {
-  invalidateFetchStateQueries,
   installRealtimeEventBridge,
   invalidateRepoChangedQueries,
   repoChangedQueryKeys,
@@ -53,47 +52,6 @@ describe("realtime query invalidation", () => {
     expect(invalidateQueries).toHaveBeenNthCalledWith(2, {
       queryKey: ["repository", "/repo/art", "stashes"],
     });
-  });
-
-  it("invalidates repository summary, branches, and history when fetch recovers", async () => {
-    const queryClient = new QueryClient();
-    const invalidateQueries = vi
-      .spyOn(queryClient, "invalidateQueries")
-      .mockResolvedValue();
-
-    await invalidateFetchStateQueries(queryClient, {
-      lastSuccessAt: "1760000000",
-      message: null,
-      repositoryPath: "/repo/art",
-      state: "idle",
-    });
-
-    expect(invalidateQueries).toHaveBeenCalledTimes(3);
-    expect(invalidateQueries).toHaveBeenNthCalledWith(1, {
-      queryKey: ["repository", "/repo/art", "summary"],
-    });
-    expect(invalidateQueries).toHaveBeenNthCalledWith(2, {
-      queryKey: ["repository", "/repo/art", "branches"],
-    });
-    expect(invalidateQueries).toHaveBeenNthCalledWith(3, {
-      queryKey: ["repository", "/repo/art", "history"],
-    });
-  });
-
-  it("does not invalidate repository data for offline fetch-state events", async () => {
-    const queryClient = new QueryClient();
-    const invalidateQueries = vi
-      .spyOn(queryClient, "invalidateQueries")
-      .mockResolvedValue();
-
-    await invalidateFetchStateQueries(queryClient, {
-      lastSuccessAt: "1760000000",
-      message: "offline",
-      repositoryPath: "/repo/art",
-      state: "offline",
-    });
-
-    expect(invalidateQueries).not.toHaveBeenCalled();
   });
 
   it("subscribes to repository, conflict, fetch, and operation events", async () => {
@@ -181,6 +139,9 @@ describe("realtime query invalidation", () => {
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: ["repository", "/repo/art", "summary"],
     });
+    expect(invalidateQueries).toHaveBeenCalledTimes(
+      payload.changedQueries.length,
+    );
 
     unsubscribe();
 
@@ -227,5 +188,25 @@ describe("realtime query invalidation", () => {
 
     expect(onOperationProgress).toHaveBeenCalledTimes(1);
     expect(onOperationProgress).toHaveBeenCalledWith(ownProgress);
+  });
+
+  it("cleans up earlier listeners when a later subscription fails", async () => {
+    const queryClient = new QueryClient();
+    const firstUnlisten = vi.fn();
+    const secondUnlisten = vi.fn();
+    const listenError = new Error("conflict-cleared listener failed");
+    const listen = vi
+      .fn()
+      .mockResolvedValueOnce(firstUnlisten)
+      .mockResolvedValueOnce(secondUnlisten)
+      .mockRejectedValueOnce(listenError);
+
+    await expect(
+      installRealtimeEventBridge({ listen, queryClient }),
+    ).rejects.toBe(listenError);
+
+    expect(listen).toHaveBeenCalledTimes(3);
+    expect(firstUnlisten).toHaveBeenCalledTimes(1);
+    expect(secondUnlisten).toHaveBeenCalledTimes(1);
   });
 });

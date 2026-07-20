@@ -13,6 +13,7 @@ import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createI18n } from "@/i18n/i18n";
+import { ToastViewport } from "@/components/ui/toast-viewport";
 import {
   createWindowStore,
   WindowStoreProvider,
@@ -26,10 +27,12 @@ const commandMocks = vi.hoisted(() => ({
   cancelCloneRepository: vi.fn(),
   cancelOperation: vi.fn(),
   cloneRepository: vi.fn(),
+  clearRecentProjects: vi.fn(),
   closeCurrentWindow: vi.fn(),
   openRepository: vi.fn(),
   openRepositoryWindow: vi.fn(),
   openLogDir: vi.fn(),
+  forgetRecentProject: vi.fn(),
   probeRemoteRepository: vi.fn(),
   saveAppSettings: vi.fn(),
   setWindowCloseGuard: vi.fn(),
@@ -68,12 +71,16 @@ function renderWithStore(
   ui: ReactElement,
   initialState?: Partial<WindowStoreState>,
 ) {
-  const store = createWindowStore(initialState);
+  const store = createWindowStore({
+    recentProjectsRuntime: { status: "ready", error: null },
+    ...initialState,
+  });
 
   render(
     <I18nextProvider i18n={createI18n("en")}>
       <WindowStoreProvider enableRealtimeEvents={false} store={store}>
         {ui}
+        <ToastViewport />
       </WindowStoreProvider>
     </I18nextProvider>,
   );
@@ -112,6 +119,28 @@ async function emitCloneCancellableProgress() {
   });
 }
 
+async function emitOperationProgress(
+  operationId: string,
+  label: string,
+  cancellable = false,
+) {
+  await waitFor(() => expect(eventMocks.listeners.length).toBeGreaterThan(0));
+  await act(async () => {
+    for (const listener of eventMocks.listeners) {
+      listener({
+        payload: {
+          cancellable,
+          label,
+          operationId,
+          progress: { kind: "indeterminate" },
+          repositoryPath: null,
+          windowLabel: null,
+        },
+      });
+    }
+  });
+}
+
 beforeEach(() => {
   window.localStorage.clear();
   vi.clearAllMocks();
@@ -136,6 +165,8 @@ beforeEach(() => {
   commandMocks.cancelPendingWindowExit.mockResolvedValue(undefined);
   commandMocks.cancelOperation.mockResolvedValue({ cancelled: true });
   commandMocks.closeCurrentWindow.mockResolvedValue(undefined);
+  commandMocks.clearRecentProjects.mockResolvedValue(undefined);
+  commandMocks.forgetRecentProject.mockResolvedValue(undefined);
   commandMocks.setWindowCloseGuard.mockResolvedValue(undefined);
   dialogMocks.open.mockResolvedValue("/projects");
   commandMocks.saveAppSettings.mockImplementation(
@@ -162,7 +193,35 @@ afterEach(() => {
 });
 
 describe("StartScreen open repository close guard", () => {
-  it("guards an in-flight repository open as wait-only on close requests", async () => {
+  it("renders only the configured number of recent projects", () => {
+    renderWithStore(<StartScreen />, {
+      appSettings: { recentProjectLimit: 3 },
+      recentProjects: Array.from({ length: 8 }, (_, index) => ({
+        displayName: `Project ${index}`,
+        path: `/projects/project-${index}`,
+      })),
+    });
+
+    expect(screen.getByText("Project 0")).toBeVisible();
+    expect(screen.getByText("Project 2")).toBeVisible();
+    expect(screen.queryByText("Project 3")).not.toBeInTheDocument();
+  });
+
+  it("keeps the final submodule event in an opening state", async () => {
+    commandMocks.openRepository.mockReturnValue(new Promise(() => undefined));
+    renderWithStore(<StartScreen />);
+
+    chooseRepositoryDirectory();
+    await waitFor(() => expect(commandMocks.openRepository).toHaveBeenCalled());
+    const operationId =
+      commandMocks.openRepository.mock.calls[0][0].operationId;
+    await emitOperationProgress(operationId, "Submodules ready");
+
+    expect(screen.getByText("Finishing opening the project...")).toBeVisible();
+    expect(screen.queryByText("Submodules ready")).not.toBeInTheDocument();
+  });
+
+  it("cancels an in-flight repository open before closing", async () => {
     commandMocks.openRepository.mockImplementation(
       () => new Promise(() => undefined),
     );
@@ -177,6 +236,7 @@ describe("StartScreen open repository close guard", () => {
     });
     await waitFor(() =>
       expect(commandMocks.openRepository).toHaveBeenCalledWith({
+        operationId: expect.stringMatching(/^open-repository-/),
         path: "/selected/art-project",
         toolIdentity: null,
       }),
@@ -192,21 +252,23 @@ describe("StartScreen open repository close guard", () => {
       name: "Close window?",
     });
     expect(dialog).toHaveTextContent(
-      "This operation cannot be safely canceled yet. Wait for it to finish, then close again.",
+      "Closing will cancel the remaining work; any changes already written to the repository may remain.",
     );
-    expect(
-      within(dialog).queryByRole("button", { name: "Close and recover" }),
-    ).not.toBeInTheDocument();
-
     fireEvent.click(
-      within(dialog).getByRole("button", { name: "Keep waiting" }),
+      within(dialog).getByRole("button", { name: "Cancel and close" }),
     );
 
-    expect(commandMocks.closeCurrentWindow).not.toHaveBeenCalled();
-    expect(commandMocks.cancelCloneRepository).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(commandMocks.cancelOperation).toHaveBeenCalledWith({
+        operationId: commandMocks.openRepository.mock.calls[0][0].operationId,
+      }),
+    );
+    await waitFor(() =>
+      expect(commandMocks.closeCurrentWindow).toHaveBeenCalledTimes(1),
+    );
   });
 
-  it("cancels pending app quit when a repository open must keep waiting", async () => {
+  it("cancels pending app quit when the recovery dialog is dismissed", async () => {
     commandMocks.openRepository.mockImplementation(
       () => new Promise(() => undefined),
     );
@@ -222,7 +284,7 @@ describe("StartScreen open repository close guard", () => {
     fireEvent.click(
       within(
         await screen.findByRole("dialog", { name: "Close window?" }),
-      ).getByRole("button", { name: "Keep waiting" }),
+      ).getByRole("button", { name: "Cancel" }),
     );
 
     expect(commandMocks.cancelPendingWindowExit).toHaveBeenCalledTimes(1);
@@ -302,14 +364,74 @@ describe("StartScreen open repository close guard", () => {
 
     await waitFor(() =>
       expect(commandMocks.openRepository).toHaveBeenCalledWith({
+        operationId: expect.stringMatching(/^open-repository-/),
         path: "/projects/menu-repository",
         toolIdentity: null,
       }),
     );
   });
+
+  it("keeps a validated repository ready when opening its window fails", async () => {
+    const routeError = structuredAppError("window creation failed");
+    commandMocks.openRepository.mockResolvedValue(
+      openRepositoryResponse("/selected/art-project"),
+    );
+    commandMocks.openRepositoryWindow
+      .mockRejectedValueOnce(routeError)
+      .mockResolvedValueOnce({
+        action: "useCurrent",
+        label: "main",
+        repositoryPath: "/selected/art-project",
+      });
+    const store = renderWithStore(<StartScreen />);
+
+    chooseRepositoryDirectory();
+
+    const routeAlert = await screen.findByRole("alert");
+    expect(routeAlert).toHaveTextContent("/selected/art-project");
+    expect(routeAlert).toHaveTextContent("window could not be opened");
+    expect(commandMocks.openRepository).toHaveBeenCalledTimes(1);
+    expect(store.getState().activeRepositoryPath).toBeNull();
+
+    fireEvent.click(
+      within(routeAlert).getByRole("button", { name: "Open project" }),
+    );
+    await waitFor(() =>
+      expect(store.getState().activeRepositoryPath).toBe(
+        "/selected/art-project",
+      ),
+    );
+    expect(commandMocks.openRepository).toHaveBeenCalledTimes(1);
+    expect(commandMocks.openRepositoryWindow).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("StartScreen clone flow", () => {
+  it("keeps the final clone event in an in-progress state", async () => {
+    commandMocks.cloneRepository.mockReturnValue(new Promise(() => undefined));
+    renderWithStore(<StartScreen />, {
+      appSettings: { paths: { lastCloneParentDir: "/projects" } },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Clone Project" }));
+    const dialog = screen.getByRole("dialog", { name: "Clone Project" });
+    await enterCloneUrl(dialog, "https://github.com/studio/art-project.git");
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Clone Project" }),
+    );
+    await waitFor(() =>
+      expect(commandMocks.cloneRepository).toHaveBeenCalled(),
+    );
+    const operationId =
+      commandMocks.cloneRepository.mock.calls[0][0].operationId;
+    await emitOperationProgress(operationId, "Clone complete");
+
+    expect(within(dialog).getByText("Finishing clone...")).toBeVisible();
+    expect(
+      within(dialog).queryByText("Clone complete"),
+    ).not.toBeInTheDocument();
+  });
+
   it("shows automatic repository checking before the debounce elapses", async () => {
     vi.useFakeTimers();
     try {
@@ -399,6 +521,48 @@ describe("StartScreen clone flow", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("reports a completed clone separately when only window opening fails", async () => {
+    commandMocks.cloneRepository.mockResolvedValue({
+      repository: openRepositoryResponse("/projects/art-project"),
+    });
+    commandMocks.openRepositoryWindow
+      .mockRejectedValueOnce(structuredAppError("window creation failed"))
+      .mockResolvedValueOnce({
+        action: "useCurrent",
+        label: "main",
+        repositoryPath: "/projects/art-project",
+      });
+    const store = renderWithStore(<StartScreen />, {
+      appSettings: { paths: { lastCloneParentDir: "/projects" } },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Clone Project" }));
+    const dialog = screen.getByRole("dialog", { name: "Clone Project" });
+    await enterCloneUrl(dialog, "https://github.com/studio/art-project.git");
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Clone Project" }),
+    );
+
+    expect(
+      await within(dialog).findByText("Project cloned successfully"),
+    ).toBeVisible();
+    expect(dialog).toHaveTextContent(
+      "The project was cloned to /projects/art-project, but its window could not be opened.",
+    );
+    expect(commandMocks.cloneRepository).toHaveBeenCalledTimes(1);
+    expect(store.getState().activeRepositoryPath).toBeNull();
+
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Open project" }),
+    );
+    await waitFor(() =>
+      expect(store.getState().activeRepositoryPath).toBe(
+        "/projects/art-project",
+      ),
+    );
+    expect(commandMocks.cloneRepository).toHaveBeenCalledTimes(1);
+  });
+
   it("shows clone errors inside the dialog", async () => {
     const cloneError = {
       operation: "clone repository",
@@ -423,7 +587,7 @@ describe("StartScreen clone flow", () => {
     );
 
     expect(await within(dialog).findByRole("alert")).toHaveTextContent(
-      "target directory already exists",
+      "Clone failed.",
     );
     expect(within(dialog).getByLabelText("Branch to clone")).toHaveValue(
       "develop",
@@ -664,11 +828,14 @@ describe("StartScreen clone flow", () => {
   });
 
   it("confirms and cancels an in-flight clone", async () => {
+    let rejectClone: (reason: unknown) => void = () => undefined;
     commandMocks.cancelCloneRepository.mockResolvedValue({ cancelled: true });
     commandMocks.cloneRepository.mockImplementation(
-      () => new Promise(() => undefined),
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectClone = reject;
+        }),
     );
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     renderWithStore(<StartScreen />, {
       appSettings: { paths: { lastCloneParentDir: "/projects" } },
     });
@@ -690,12 +857,26 @@ describe("StartScreen clone flow", () => {
     await emitCloneCancellableProgress();
     expect(cancelButton).toBeEnabled();
     fireEvent.click(cancelButton);
+    const confirmation = await screen.findByRole("dialog", {
+      name: "Cancel clone?",
+    });
+    fireEvent.click(
+      within(confirmation).getByRole("button", { name: "Cancel clone" }),
+    );
 
     await waitFor(() => {
       expect(commandMocks.cancelCloneRepository).toHaveBeenCalledWith({
         operationId: commandMocks.cloneRepository.mock.calls[0][0].operationId,
       });
     });
+    await act(async () => rejectClone(cancelledAppError()));
+    expect(await screen.findByTestId("app-toast")).toHaveTextContent(
+      "Clone cancelled.",
+    );
+    expect(within(dialog).queryByRole("alert")).not.toBeInTheDocument();
+    expect(
+      within(dialog).getByRole("button", { name: "Clone Project" }),
+    ).toBeEnabled();
   });
 
   it("keeps a real clone failure visible after cancellation was requested", async () => {
@@ -708,7 +889,6 @@ describe("StartScreen clone flow", () => {
         }),
     );
     commandMocks.cancelCloneRepository.mockResolvedValue({ cancelled: true });
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     const dispatchEvent = vi.spyOn(window, "dispatchEvent");
     renderWithStore(<StartScreen />, {
       appSettings: { paths: { lastCloneParentDir: "/projects" } },
@@ -724,6 +904,11 @@ describe("StartScreen clone flow", () => {
     fireEvent.click(
       within(dialog).getByRole("button", { name: "Cancel clone" }),
     );
+    fireEvent.click(
+      within(
+        await screen.findByRole("dialog", { name: "Cancel clone?" }),
+      ).getByRole("button", { name: "Cancel clone" }),
+    );
     await waitFor(() =>
       expect(commandMocks.cancelCloneRepository).toHaveBeenCalledTimes(1),
     );
@@ -731,7 +916,7 @@ describe("StartScreen clone flow", () => {
     await act(async () => rejectClone(cloneError));
 
     expect(await within(dialog).findByRole("alert")).toHaveTextContent(
-      "clone cleanup failed",
+      "Clone failed.",
     );
     const errorEvent = dispatchEvent.mock.calls
       .map(([event]) => event)
@@ -755,7 +940,6 @@ describe("StartScreen clone flow", () => {
           rejectClone = reject;
         }),
     );
-    const confirmSpy = vi.spyOn(window, "confirm");
     renderWithStore(<StartScreen />, {
       appSettings: { paths: { lastCloneParentDir: "/projects" } },
     });
@@ -787,6 +971,10 @@ describe("StartScreen clone flow", () => {
       within(closeDialog).getByRole("button", { name: "Close and recover" }),
     );
 
+    expect(await within(closeDialog).findByRole("status")).toHaveTextContent(
+      "Recovering changes and closing...",
+    );
+
     await waitFor(() =>
       expect(commandMocks.cancelCloneRepository).toHaveBeenCalledWith({
         operationId: commandMocks.cloneRepository.mock.calls[0][0].operationId,
@@ -801,7 +989,6 @@ describe("StartScreen clone flow", () => {
     await waitFor(() =>
       expect(commandMocks.closeCurrentWindow).toHaveBeenCalledTimes(1),
     );
-    expect(confirmSpy).not.toHaveBeenCalled();
   });
 
   it("cancels pending app quit when a guarded clone close prompt is dismissed", async () => {
@@ -863,6 +1050,7 @@ function openRepositoryResponse(repositoryPath: string) {
       repositoryPath,
     },
     warnings: [],
+    nonFatalErrors: [],
   };
 }
 

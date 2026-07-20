@@ -5,9 +5,11 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { listen, type EventCallback } from "@tauri-apps/api/event";
-import type { ReactElement } from "react";
+import { useContext, type ReactElement } from "react";
+import { createPortal } from "react-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App";
@@ -15,10 +17,12 @@ import { AppProviders } from "./AppProviders";
 import { ConfirmDialog } from "./components/dialogs/ConfirmDialog";
 import { CrashDetailsDialog } from "./components/dialogs/CrashDetailsDialog";
 import { ErrorDetailsDialog } from "./components/dialogs/ErrorDetailsDialog";
+import { DialogFrame } from "./components/dialogs/DialogFrame";
 import { AppErrorBoundary } from "./components/layout/AppErrorBoundary";
 import { createI18n } from "./i18n/i18n";
 import type { LanguagePreference } from "./i18n/resources";
 import type { AppError } from "./lib/ipc/generated";
+import { DialogLayerContext, dialogOpenedEventName } from "./lib/dialog-layer";
 import { createAppQueryClient } from "./lib/query/client";
 import type { WindowStoreState } from "./store/window-store";
 import type { ThemePreference } from "./theme/ThemeProvider";
@@ -26,13 +30,25 @@ import type { ThemePreference } from "./theme/ThemeProvider";
 const commandMocks = vi.hoisted(() => ({
   acknowledgeRendererCrash: vi.fn(),
   closeCurrentWindow: vi.fn(),
+  clearRecentProjects: vi.fn(),
+  forgetRecentProject: vi.fn(),
+  listRecentProjects: vi.fn(),
   newProjectWindow: vi.fn(),
   openLogDir: vi.fn(),
   registerWindowRepository: vi.fn(),
   saveAppSettings: vi.fn(),
+  setAuthPromptListenerReady: vi.fn(),
   settingsSnapshot: vi.fn(),
   windowContext: vi.fn(),
 }));
+const coreMocks = vi.hoisted(() => ({
+  isTauri: vi.fn(() => false),
+}));
+
+vi.mock("@tauri-apps/api/core", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@tauri-apps/api/core")>();
+  return { ...actual, isTauri: coreMocks.isTauri };
+});
 
 const tauriEventListeners = new Map<string, EventCallback<unknown>>();
 
@@ -42,10 +58,14 @@ vi.mock("@/lib/ipc/commands", async (importOriginal) => {
     ...actual,
     acknowledgeRendererCrash: commandMocks.acknowledgeRendererCrash,
     closeCurrentWindow: commandMocks.closeCurrentWindow,
+    clearRecentProjects: commandMocks.clearRecentProjects,
+    forgetRecentProject: commandMocks.forgetRecentProject,
+    listRecentProjects: commandMocks.listRecentProjects,
     newProjectWindow: commandMocks.newProjectWindow,
     openLogDir: commandMocks.openLogDir,
     registerWindowRepository: commandMocks.registerWindowRepository,
     saveAppSettings: commandMocks.saveAppSettings,
+    setAuthPromptListenerReady: commandMocks.setAuthPromptListenerReady,
     settingsSnapshot: commandMocks.settingsSnapshot,
     windowContext: commandMocks.windowContext,
   };
@@ -70,7 +90,12 @@ function renderWithProviders(
       i18n={createI18n("en")}
       initialLanguagePreference={initialLanguagePreference}
       initialThemePreference={initialThemePreference}
-      initialWindowState={initialWindowState}
+      initialWindowState={{
+        settingsRuntime: { status: "ready", error: null },
+        recentProjectsRuntime: { status: "ready", error: null },
+        windowRuntime: { status: "ready", error: null },
+        ...initialWindowState,
+      }}
       queryClient={createAppQueryClient()}
     >
       {ui}
@@ -84,6 +109,7 @@ beforeEach(() => {
   document.documentElement.removeAttribute("data-theme");
   document.documentElement.style.colorScheme = "";
   vi.clearAllMocks();
+  coreMocks.isTauri.mockReturnValue(false);
   tauriEventListeners.clear();
   vi.mocked(listen).mockImplementation(async (name, handler) => {
     tauriEventListeners.set(name, handler as EventCallback<unknown>);
@@ -91,6 +117,9 @@ beforeEach(() => {
   });
   commandMocks.acknowledgeRendererCrash.mockResolvedValue(undefined);
   commandMocks.closeCurrentWindow.mockResolvedValue(undefined);
+  commandMocks.clearRecentProjects.mockResolvedValue(undefined);
+  commandMocks.forgetRecentProject.mockResolvedValue(undefined);
+  commandMocks.listRecentProjects.mockResolvedValue([]);
   commandMocks.newProjectWindow.mockResolvedValue({ label: "start-1" });
   commandMocks.openLogDir.mockResolvedValue({ opened: false, path: "/logs" });
   commandMocks.registerWindowRepository.mockResolvedValue({
@@ -100,6 +129,7 @@ beforeEach(() => {
   commandMocks.saveAppSettings.mockImplementation(({ settings }) =>
     Promise.resolve(settings),
   );
+  commandMocks.setAuthPromptListenerReady.mockResolvedValue(undefined);
   commandMocks.settingsSnapshot.mockResolvedValue({
     appVersion: "0.2.5",
     identitySources: {
@@ -107,7 +137,7 @@ beforeEach(() => {
       globalGitconfigPath: null,
       settings: { email: null, name: null },
     },
-    settings: {},
+    settings: { onboarding: { onboarded: true } },
     sshKey: {
       exists: false,
       privateKeyPath: null,
@@ -127,22 +157,111 @@ afterEach(() => {
 });
 
 describe("App", () => {
-  it("renders the start screen with recent project actions", () => {
+  it("shows startup progress until runtime settings and window context are ready", async () => {
+    let resolveSettings!: (value: unknown) => void;
+    let resolveWindowContext!: (value: unknown) => void;
+    commandMocks.settingsSnapshot.mockReturnValue(
+      new Promise((resolve) => {
+        resolveSettings = resolve;
+      }),
+    );
+    commandMocks.windowContext.mockReturnValue(
+      new Promise((resolve) => {
+        resolveWindowContext = resolve;
+      }),
+    );
+
     renderWithProviders(<App />, {
       initialWindowState: {
-        recentProjects: [
-          {
-            displayName: "Environment Art",
-            path: "/Users/artist/Projects/Environment Art",
-          },
-          {
-            displayName: "Moved Project",
-            missing: true,
-            path: "/Users/artist/Projects/Moved",
-          },
-        ],
+        settingsRuntime: { status: "loading", error: null },
+        windowRuntime: { status: "loading", error: null },
       },
     });
+
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Starting Artistic Git...",
+    );
+
+    await act(async () => {
+      resolveSettings({
+        appVersion: "0.2.5",
+        identitySources: {
+          globalGitconfig: { email: null, name: null },
+          globalGitconfigPath: null,
+          settings: { email: null, name: null },
+        },
+        settings: { onboarding: { onboarded: true } },
+        sshKey: {
+          exists: false,
+          privateKeyPath: null,
+          publicKey: null,
+          publicKeyPath: null,
+        },
+      });
+      resolveWindowContext({
+        label: "main",
+        pendingCrash: null,
+        repositoryPath: null,
+      });
+    });
+
+    expect(
+      await screen.findByRole("button", { name: "Open Project" }),
+    ).toBeInTheDocument();
+  });
+
+  it("reports window context failures in the desktop runtime", async () => {
+    const contextError = {
+      operation: "windowContext",
+      stderr: "window registry unavailable",
+      summary: "Unable to load window context",
+    };
+    coreMocks.isTauri.mockReturnValue(true);
+    commandMocks.windowContext.mockRejectedValue(contextError);
+
+    renderWithProviders(<App />);
+
+    const dialog = await screen.findByRole("dialog", {
+      name: "Error Details",
+    });
+    expect(dialog).toHaveTextContent("Unable to load window context");
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Show technical details" }),
+    );
+    expect(dialog).toHaveTextContent("window registry unavailable");
+  });
+
+  it("keeps browser previews usable when window context is unavailable", async () => {
+    commandMocks.windowContext.mockRejectedValue(new Error("No Tauri"));
+
+    renderWithProviders(<App />);
+
+    await waitFor(() => expect(commandMocks.windowContext).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("renders the start screen with recent project actions", async () => {
+    const recentProjects = [
+      {
+        displayName: "Environment Art",
+        path: "/Users/artist/Projects/Environment Art",
+      },
+      {
+        displayName: "Moved Project",
+        missing: true,
+        path: "/Users/artist/Projects/Moved",
+      },
+    ];
+    commandMocks.listRecentProjects.mockResolvedValue(recentProjects);
+    renderWithProviders(<App />, {
+      initialWindowState: {
+        recentProjects,
+      },
+    });
+
+    await waitFor(() =>
+      expect(commandMocks.listRecentProjects).toHaveBeenCalled(),
+    );
 
     expect(
       screen.getByRole("heading", { name: "Artistic Git" }),
@@ -158,18 +277,35 @@ describe("App", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Remove from list" }));
 
-    expect(screen.queryByText("Moved Project")).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByText("Moved Project")).not.toBeInTheDocument(),
+    );
 
     fireEvent.click(
       screen.getByRole("button", { name: "Clear recent projects" }),
     );
 
     expect(
-      screen.getByText("Repositories you open will appear here."),
+      await screen.findByText("Repositories you open will appear here."),
     ).toBeInTheDocument();
   });
 
   it("routes first-run windows to the onboarding placeholder", async () => {
+    commandMocks.settingsSnapshot.mockResolvedValueOnce({
+      appVersion: "0.2.5",
+      identitySources: {
+        globalGitconfig: { email: null, name: null },
+        globalGitconfigPath: null,
+        settings: { email: null, name: null },
+      },
+      settings: { onboarding: { onboarded: false } },
+      sshKey: {
+        exists: false,
+        privateKeyPath: null,
+        publicKey: null,
+        publicKeyPath: null,
+      },
+    });
     renderWithProviders(<App />, {
       initialWindowState: { onboarded: false },
     });
@@ -178,10 +314,14 @@ describe("App", () => {
       screen.getByRole("heading", { name: "Setup Wizard" }),
     ).toBeInTheDocument();
     expect(
-      screen.getByText(/move Artistic Git to \/Applications/),
+      screen.getByText(
+        "Set the author details attached to commits and configure SSH access.",
+      ),
     ).toBeInTheDocument();
 
-    const skipButton = await screen.findByRole("button", { name: "Skip" });
+    const skipButton = await screen.findByRole("button", {
+      name: "Set up later",
+    });
     await waitFor(() => expect(skipButton).toBeEnabled());
     fireEvent.click(skipButton);
 
@@ -191,6 +331,21 @@ describe("App", () => {
   });
 
   it("blocks repeated setup completion while settings are saving", async () => {
+    commandMocks.settingsSnapshot.mockResolvedValueOnce({
+      appVersion: "0.2.5",
+      identitySources: {
+        globalGitconfig: { email: null, name: null },
+        globalGitconfigPath: null,
+        settings: { email: null, name: null },
+      },
+      settings: { onboarding: { onboarded: false } },
+      sshKey: {
+        exists: false,
+        privateKeyPath: null,
+        publicKey: null,
+        publicKeyPath: null,
+      },
+    });
     let finishSave: (() => void) | undefined;
     commandMocks.saveAppSettings.mockImplementation(
       ({ settings }) =>
@@ -202,7 +357,9 @@ describe("App", () => {
       initialWindowState: { onboarded: false },
     });
 
-    const skipButton = await screen.findByRole("button", { name: "Skip" });
+    const skipButton = await screen.findByRole("button", {
+      name: "Set up later",
+    });
     await waitFor(() => expect(skipButton).toBeEnabled());
     fireEvent.click(skipButton);
     fireEvent.click(skipButton);
@@ -255,7 +412,9 @@ describe("App", () => {
       target: { value: "nope" },
     });
 
-    expect(screen.getAllByText("No matching items").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Loading branches...").length).toBeGreaterThan(
+      0,
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Branches" }));
 
@@ -325,6 +484,90 @@ describe("App", () => {
     expect(screen.getByLabelText("Search history")).toHaveFocus();
   });
 
+  it("persists theme changes triggered from the native app menu", async () => {
+    renderWithProviders(<App />, {
+      initialWindowState: {
+        activeRepositoryPath: "/repo/art-project",
+        appSettings: {
+          appearance: { theme: "light" },
+          onboarding: { onboarded: true },
+        },
+      },
+    });
+
+    await waitFor(() => expect(tauriEventListeners.has("app-menu")).toBe(true));
+    await act(async () => {
+      tauriEventListeners.get("app-menu")?.({
+        event: "app-menu",
+        id: 1,
+        payload: { id: "toggle-theme" },
+      });
+    });
+
+    await waitFor(() =>
+      expect(commandMocks.saveAppSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          openRepositoryPaths: ["/repo/art-project"],
+          settings: expect.objectContaining({
+            appearance: expect.objectContaining({ theme: "dark" }),
+          }),
+        }),
+      ),
+    );
+  });
+
+  it("blocks background navigation and search during a modal workflow", async () => {
+    const handleViewTab = vi.fn();
+    window.addEventListener("artistic-git:view-tab", handleViewTab);
+    renderWithProviders(
+      <>
+        <App />
+        <input aria-label="Background search" data-app-search="current" />
+        <DialogFrame
+          description="A protected workflow is active."
+          onOpenChange={vi.fn()}
+          title="Protected workflow"
+        >
+          <button type="button">Continue workflow</button>
+        </DialogFrame>
+      </>,
+    );
+
+    await waitFor(() => expect(tauriEventListeners.has("app-menu")).toBe(true));
+    await act(async () => {
+      tauriEventListeners.get("app-menu")?.({
+        event: "app-menu",
+        id: 1,
+        payload: { id: "open-settings" },
+      });
+      tauriEventListeners.get("app-menu")?.({
+        event: "app-menu",
+        id: 2,
+        payload: { id: "view-local-changes" },
+      });
+      tauriEventListeners.get("app-menu")?.({
+        event: "app-menu",
+        id: 3,
+        payload: { id: "clone-project" },
+      });
+    });
+    fireEvent.keyDown(window, { key: "o", metaKey: true });
+    fireEvent.keyDown(window, { key: "f", metaKey: true });
+
+    expect(
+      screen.queryByRole("dialog", { name: "Settings" }),
+    ).not.toBeInTheDocument();
+    expect(handleViewTab).not.toHaveBeenCalled();
+    expect(commandMocks.newProjectWindow).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Background search")).not.toHaveFocus();
+    expect(
+      screen.getByText(
+        "Close the current dialog or finish the current operation before navigating elsewhere.",
+      ),
+    ).toBeInTheDocument();
+    window.removeEventListener("artistic-git:view-tab", handleViewTab);
+  });
+
   it("opens global error and crash dialogs from window events", async () => {
     renderWithProviders(<App />);
 
@@ -367,6 +610,72 @@ describe("App", () => {
     );
     expect(dialog).toHaveTextContent('"command": [');
     expect(dialog).toHaveTextContent('"stderr": "conflict"');
+  });
+
+  it("queues concurrent errors instead of replacing the visible details", async () => {
+    renderWithProviders(<App />);
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:error", {
+          detail: { stderr: "first details", summary: "First failure" },
+        }),
+      );
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:error", {
+          detail: { stderr: "second details", summary: "Second failure" },
+        }),
+      );
+    });
+
+    let dialog = screen.getByRole("dialog", { name: "Error Details" });
+    expect(dialog).toHaveTextContent("First failure");
+    expect(dialog).not.toHaveTextContent("Second failure");
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+
+    dialog = await screen.findByRole("dialog", { name: "Error Details" });
+    expect(dialog).toHaveTextContent("Second failure");
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Show technical details" }),
+    );
+    expect(dialog).toHaveTextContent("second details");
+  });
+
+  it("preserves nested error causes in technical details", () => {
+    const original = createAppError();
+    const wrapped = new Error("Could not cancel cloning", { cause: original });
+
+    renderWithProviders(
+      <ErrorDetailsDialog error={wrapped} onOpenChange={vi.fn()} open />,
+    );
+
+    const dialog = screen.getByRole("dialog", { name: "Error Details" });
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Show technical details" }),
+    );
+    expect(dialog).toHaveTextContent('"cause": {');
+    expect(dialog).toHaveTextContent('"stderr": "conflict"');
+  });
+
+  it("preserves structured crash details and handles circular values", async () => {
+    const crash = createAppError() as AppError & { self?: unknown };
+    crash.self = crash;
+    renderWithProviders(<App />);
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:crash", { detail: crash }),
+      );
+    });
+
+    const dialog = screen.getByRole("dialog", { name: "Crash Details" });
+    expect(dialog).toHaveTextContent("Merge failed");
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Show technical details" }),
+    );
+    expect(dialog).toHaveTextContent('"stderr": "conflict"');
+    expect(dialog).toHaveTextContent('"self": "[Circular]"');
   });
 
   it("registers global auth prompt listeners", async () => {
@@ -568,7 +877,7 @@ describe("ErrorDetailsDialog", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("closes with Escape and opens the log directory", () => {
+  it("closes with Escape and opens the log directory", async () => {
     const onOpenChange = vi.fn();
     const onOpenLogDir = vi.fn();
 
@@ -582,10 +891,148 @@ describe("ErrorDetailsDialog", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Open log folder" }));
-    expect(onOpenLogDir).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(onOpenLogDir).toHaveBeenCalledTimes(1));
 
     fireEvent.keyDown(document, { key: "Escape" });
     expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("keeps the original details and appends log directory failures", async () => {
+    const logError = {
+      operation: "openLogDir",
+      stderr: "permission denied",
+      summary: "Could not open logs",
+    };
+
+    renderWithProviders(
+      <ErrorDetailsDialog
+        error={createAppError()}
+        onOpenChange={vi.fn()}
+        onOpenLogDir={() => {
+          throw logError;
+        }}
+        open
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Open log folder" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The log folder could not be opened",
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Show technical details" }),
+    );
+    expect(screen.getByText(/"originalError":/)).toBeInTheDocument();
+    expect(screen.getByText(/"stderr": "conflict"/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/"stderr": "permission denied"/),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("DialogFrame", () => {
+  it("hides dismissal controls while the dialog is non-dismissible", () => {
+    const onOpenChange = vi.fn();
+    renderWithProviders(
+      <DialogFrame
+        description="A request is still running."
+        dismissible={false}
+        onOpenChange={onOpenChange}
+        title="Busy dialog"
+      >
+        <button type="button">Pending action</button>
+      </DialogFrame>,
+    );
+
+    const dialog = screen.getByRole("dialog", { name: "Busy dialog" });
+    expect(
+      within(dialog).queryByRole("button", { name: "Close" }),
+    ).not.toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onOpenChange).not.toHaveBeenCalled();
+    expect(dialog).toBeInTheDocument();
+  });
+
+  it("lets only the topmost dialog handle Escape", () => {
+    const onFirstOpenChange = vi.fn();
+    const onSecondOpenChange = vi.fn();
+
+    renderWithProviders(
+      <>
+        <DialogFrame
+          description="First dialog"
+          onOpenChange={onFirstOpenChange}
+          title="First"
+        >
+          <button type="button">First action</button>
+        </DialogFrame>
+        <DialogFrame
+          description="Second dialog"
+          onOpenChange={onSecondOpenChange}
+          title="Second"
+        >
+          <button type="button">Second action</button>
+        </DialogFrame>
+      </>,
+    );
+
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    expect(onFirstOpenChange).not.toHaveBeenCalled();
+    expect(onSecondOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("announces new modal layers and only permits portals owned by the top dialog", () => {
+    const onDialogOpened = vi.fn();
+    window.addEventListener(dialogOpenedEventName, onDialogOpened);
+
+    function PortalButtons() {
+      const dialogOwnerId = useContext(DialogLayerContext);
+      return createPortal(
+        <>
+          <button
+            data-dialog-owner={dialogOwnerId ?? undefined}
+            data-dialog-portal="true"
+            type="button"
+          >
+            Owned portal action
+          </button>
+          <button
+            data-dialog-owner="another-dialog"
+            data-dialog-portal="true"
+            type="button"
+          >
+            Foreign portal action
+          </button>
+        </>,
+        document.body,
+      );
+    }
+
+    try {
+      renderWithProviders(
+        <DialogFrame
+          description="Layer ownership"
+          onOpenChange={vi.fn()}
+          title="Owned dialog"
+        >
+          <button type="button">Dialog action</button>
+          <PortalButtons />
+        </DialogFrame>,
+      );
+
+      expect(onDialogOpened).toHaveBeenCalledTimes(1);
+      const ownedPortal = screen.getByRole("button", {
+        name: "Owned portal action",
+      });
+      ownedPortal.focus();
+      expect(ownedPortal).toHaveFocus();
+
+      screen.getByRole("button", { name: "Foreign portal action" }).focus();
+      expect(screen.getByRole("button", { name: "Close" })).toHaveFocus();
+    } finally {
+      window.removeEventListener(dialogOpenedEventName, onDialogOpened);
+    }
   });
 });
 
@@ -602,7 +1049,7 @@ describe("CrashDetailsDialog", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Restart app" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reload window" }));
 
     expect(onRestart).toHaveBeenCalledTimes(1);
   });

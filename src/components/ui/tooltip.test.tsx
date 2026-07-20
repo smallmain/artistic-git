@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { calculateTooltipPosition } from "@/components/ui/tooltip-position";
 import { Tooltip } from "@/components/ui/tooltip";
+import { dialogOpenedEventName } from "@/lib/dialog-layer";
 
 describe("tooltip positioning", () => {
   afterEach(() => {
@@ -125,6 +126,33 @@ describe("tooltip positioning", () => {
 
     fireEvent.blur(button);
     expect(tooltip).toHaveAttribute("data-state", "closed");
+  });
+
+  it("dismisses when a modal dialog opens", async () => {
+    render(
+      <Tooltip content="Background tooltip">
+        {({ describedBy }) => (
+          <button aria-describedby={describedBy}>Background trigger</button>
+        )}
+      </Tooltip>,
+    );
+
+    const button = screen.getByRole("button", { name: "Background trigger" });
+    const tooltip = screen.getByRole("tooltip", {
+      name: "Background tooltip",
+    });
+    fireEvent.focus(button);
+    await waitFor(() => expect(tooltip).toHaveAttribute("data-state", "open"));
+
+    window.dispatchEvent(
+      new CustomEvent(dialogOpenedEventName, {
+        detail: { dialogId: "settings-dialog" },
+      }),
+    );
+
+    await waitFor(() =>
+      expect(tooltip).toHaveAttribute("data-state", "closed"),
+    );
   });
 });
 
