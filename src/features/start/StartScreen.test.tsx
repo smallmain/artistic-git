@@ -654,7 +654,7 @@ describe("StartScreen clone flow", () => {
     });
 
     expect(
-      await within(dialog).findByText("Downloading LFS objects"),
+      await within(dialog).findByText("Downloading LFS objects..."),
     ).toBeInTheDocument();
     expect(within(dialog).getByText("42%")).toBeInTheDocument();
 

@@ -5,6 +5,7 @@ import {
   ChevronRight,
   FileText,
   History,
+  Info,
   Loader2,
   Trash2,
   X,
@@ -24,6 +25,7 @@ import { ConfirmDialog } from "@/components/dialogs/ConfirmDialog";
 import { DialogFrame } from "@/components/dialogs/DialogFrame";
 import { Button } from "@/components/ui/button";
 import { BranchSelect } from "@/components/ui/branch-select";
+import { IconButton } from "@/components/ui/icon-button";
 import {
   ConflictResolutionOverlay,
   type ConflictResolutionApi,
@@ -116,6 +118,7 @@ type SyncStatusTranslator = (
 const stashDetailsFilePageSize = 200;
 const safetyBackupPageSize = 100;
 const largeFileWarningPageSize = 100;
+const syncResultToastDurationMs = 5_000;
 
 interface RepositoryShellProps {
   repositoryPath: string;
@@ -160,7 +163,9 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   const [syncFeedback, setSyncFeedback] = React.useState<SyncFeedback | null>(
     null,
   );
-  const [syncStatus, setSyncStatus] = React.useState<string | null>(null);
+  const [syncResultToast, setSyncResultToast] = React.useState<string | null>(
+    null,
+  );
   const [historyWriteBusy, setHistoryWriteBusy] = React.useState(false);
   const [safetyBackupBusy, setSafetyBackupBusy] = React.useState(false);
   const [reviewBusy, setReviewBusy] = React.useState(false);
@@ -601,26 +606,24 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   const busyLabel = activeOperation
     ? operationLabel(activeOperation.label, t)
     : fetchBusy
-      ? t("repository.sync")
+      ? t("repository.refreshing")
       : syncBusy
-        ? t("repository.sync")
-        : syncStatus
-          ? syncStatus
-          : commitBusy
-            ? t("localChanges.commitBusy")
-            : restoreBusy
-              ? t("localChanges.restoreBusy")
-              : branchActionBusy
-                ? t("repository.branchBusy")
-                : safetyBackupBusy
-                  ? t("repository.safetyBackupBusy")
-                  : stashActionBusy
-                    ? t("repository.stashBusy")
-                    : historyWriteBusy
-                      ? t("history.revert.busy")
-                      : reviewBusy
-                        ? t("review.busy")
-                        : t("repository.ready");
+        ? t("repository.syncBusy")
+        : commitBusy
+          ? t("localChanges.commitBusy")
+          : restoreBusy
+            ? t("localChanges.restoreBusy")
+            : branchActionBusy
+              ? t("repository.branchBusy")
+              : safetyBackupBusy
+                ? t("repository.safetyBackupBusy")
+                : stashActionBusy
+                  ? t("repository.stashBusy")
+                  : historyWriteBusy
+                    ? t("history.revert.busy")
+                    : reviewBusy
+                      ? t("review.busy")
+                      : t("repository.ready");
   const selectedCommitPaths = React.useMemo(
     () => pathsForChangeIds(commitIds ?? [], localChanges),
     [commitIds, localChanges],
@@ -739,7 +742,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         }
         setConflictEntered(conflict);
       }
-      setSyncStatus(formatSyncAllStatus(response, t));
+      setSyncResultToast(formatSyncAllStatus(response, t));
       setSyncFeedback(response.allUpToDate ? { kind: "all" } : null);
     },
     [setConflictEntered, t],
@@ -768,7 +771,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         }
         setConflictEntered(conflict);
       }
-      setSyncStatus(formatSyncBranchStatus(response, t));
+      setSyncResultToast(formatSyncBranchStatus(response, t));
     },
     [setConflictEntered, t],
   );
@@ -780,7 +783,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
 
     setSyncBusy(true);
     setSyncFeedback(null);
-    setSyncStatus(null);
+    setSyncResultToast(null);
     try {
       const operationId = createRepositoryOperationId("sync-all");
       const response = await syncAllBranches({
@@ -825,7 +828,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
 
       setSyncBusy(true);
       setSyncFeedback(null);
-      setSyncStatus(null);
+      setSyncResultToast(null);
       try {
         const operationId = createRepositoryOperationId("sync-branch");
         const response = await syncBranch({
@@ -1119,6 +1122,20 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       window.clearTimeout(timeout);
     };
   }, [syncFeedback]);
+
+  React.useEffect(() => {
+    if (!syncResultToast) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      setSyncResultToast(null);
+    }, syncResultToastDurationMs);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [syncResultToast]);
 
   React.useEffect(() => {
     if (
@@ -2222,6 +2239,12 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
           }
         }}
       />
+      {syncResultToast ? (
+        <SyncResultToast
+          message={syncResultToast}
+          onDismiss={() => setSyncResultToast(null)}
+        />
+      ) : null}
     </main>
   );
 }
@@ -2293,7 +2316,7 @@ function operationLabel(label: string, t: (key: string) => string): string {
     case "Syncing":
     case "Accepting remote history":
     case "Syncing review mode":
-      return t("repository.sync");
+      return t("repository.syncBusy");
     case "Updating branch":
     case "Deleting backup branch":
       return t("repository.branchBusy");
@@ -2302,7 +2325,7 @@ function operationLabel(label: string, t: (key: string) => string): string {
     case "Starting review mode":
     case "Exiting review mode":
     case "Recovering review mode":
-      return t("repository.reviewMode");
+      return t("review.busy");
     case "Committing changes":
       return t("localChanges.commitBusy");
     case "Restoring changes":
@@ -2314,7 +2337,7 @@ function operationLabel(label: string, t: (key: string) => string): string {
     case "Downloading submodule LFS objects":
       return t("repository.downloadingSubmoduleLfs");
     case "Submodules ready":
-      return t("repository.submodulesReady");
+      return t("repository.operationFinishing");
     case "Downloading LFS objects":
       return t("start.cloneProgressLfs");
     case "Checking out files":
@@ -2322,12 +2345,45 @@ function operationLabel(label: string, t: (key: string) => string): string {
     case "Cloning submodules":
       return t("start.cloneProgressSubmodules");
     case "Clone complete":
-      return t("start.cloneProgressComplete");
+      return t("repository.operationFinishing");
     case "Cloning repository":
       return t("start.cloneProgressClone");
     default:
-      return label;
+      return t("repository.operationBusy");
   }
+}
+
+function SyncResultToast({
+  message,
+  onDismiss,
+}: {
+  message: string;
+  onDismiss: () => void;
+}) {
+  const { t } = useTranslation();
+
+  return (
+    <div
+      aria-live="polite"
+      className="fixed bottom-4 right-4 z-40 flex max-h-[min(24rem,calc(100vh-2rem))] w-[min(28rem,calc(100vw-2rem))] items-start gap-3 overflow-y-auto rounded-lg border bg-card p-3 text-sm text-card-foreground shadow-floating"
+      data-testid="sync-result-toast"
+      role="status"
+    >
+      <Info className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+      <p className="min-w-0 flex-1 whitespace-pre-wrap break-words">
+        {message}
+      </p>
+      <IconButton
+        className="-mr-1 -mt-1 shrink-0"
+        label={t("actions.close")}
+        onClick={onDismiss}
+        type="button"
+        variant="ghost"
+      >
+        <X className="size-4" aria-hidden="true" />
+      </IconButton>
+    </div>
+  );
 }
 
 function createRepositoryOperationId(prefix: string): string {

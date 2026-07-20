@@ -300,7 +300,8 @@ describe("App", () => {
       },
     });
 
-    expect(screen.getByText("Fetching branches")).toBeInTheDocument();
+    expect(screen.getByText("Working...")).toBeInTheDocument();
+    expect(screen.queryByText("Fetching branches")).not.toBeInTheDocument();
     expect(screen.queryByText("feature/material-library")).toBeNull();
   });
 

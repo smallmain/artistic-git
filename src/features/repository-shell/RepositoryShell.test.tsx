@@ -1948,6 +1948,32 @@ describe("RepositoryShell close guard", () => {
 });
 
 describe("RepositoryShell branch flow", () => {
+  it("uses an explicit in-progress label for an active sync operation", async () => {
+    const activeOperation: OperationProgressEvent = {
+      cancellable: false,
+      label: "Syncing",
+      operationId: "sync-label-test",
+      progress: { kind: "indeterminate" },
+      repositoryPath: "/repo/art",
+      windowLabel: "repo-1",
+    };
+
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />, {
+      operationsById: {
+        [activeOperation.operationId]: activeOperation,
+      },
+      windowLabel: "repo-1",
+    });
+
+    const header = screen
+      .getByTestId("repository-shell")
+      .querySelector("section > header");
+    expect(header).not.toBeNull();
+    expect(
+      await within(header as HTMLElement).findByText("Syncing..."),
+    ).toBeInTheDocument();
+  });
+
   it("keeps repository controls responsive during a background fetch", async () => {
     commandMocks.fetchRepository.mockReturnValueOnce(
       new Promise(() => undefined),
@@ -1958,6 +1984,7 @@ describe("RepositoryShell branch flow", () => {
     await waitFor(() =>
       expect(commandMocks.fetchRepository).toHaveBeenCalledTimes(1),
     );
+    expect(await screen.findByText("Refreshing...")).toBeInTheDocument();
     expect(
       await screen.findByRole("button", { name: "Review Mode" }),
     ).toBeEnabled();
@@ -2287,6 +2314,7 @@ describe("RepositoryShell branch flow", () => {
   });
 
   it("batch syncs tracked branches from the project sync button", async () => {
+    const timeoutSpy = vi.spyOn(window, "setTimeout");
     mockBranchList();
     commandMocks.syncAllBranches.mockResolvedValueOnce({
       allUpToDate: false,
@@ -2318,24 +2346,50 @@ describe("RepositoryShell branch flow", () => {
       repositoryPath: "/repo/art",
       stashRecovery: null,
     });
-    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+    try {
+      renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
 
-    const syncButtons = await screen.findAllByRole("button", {
-      name: "Sync",
-    });
-    fireEvent.click(syncButtons[0]);
+      const syncButtons = await screen.findAllByRole("button", {
+        name: "Sync",
+      });
+      fireEvent.click(syncButtons[0]);
 
-    await waitFor(() =>
-      expect(commandMocks.syncAllBranches).toHaveBeenCalledWith({
-        operationId: expect.stringMatching(/^sync-all-/),
-        repositoryPath: "/repo/art",
-      }),
-    );
-    expect(
-      await screen.findByText(
+      await waitFor(() =>
+        expect(commandMocks.syncAllBranches).toHaveBeenCalledWith({
+          operationId: expect.stringMatching(/^sync-all-/),
+          repositoryPath: "/repo/art",
+        }),
+      );
+      const toast = await screen.findByTestId("sync-result-toast");
+      expect(toast).toHaveTextContent(
         "main: synced · release updated from main: synced",
-      ),
-    ).toBeInTheDocument();
+      );
+      expect(timeoutSpy).toHaveBeenCalledWith(expect.any(Function), 5_000);
+
+      const header = screen
+        .getByTestId("repository-shell")
+        .querySelector("section > header");
+      expect(header).not.toBeNull();
+      await waitFor(() =>
+        expect(within(header as HTMLElement).getByText("Ready")).toBeVisible(),
+      );
+      expect(
+        within(header as HTMLElement).queryByText(
+          "main: synced · release updated from main: synced",
+        ),
+      ).not.toBeInTheDocument();
+
+      const toastTimer = timeoutSpy.mock.calls
+        .filter(([, delay]) => delay === 5_000)
+        .at(-1);
+      expect(toastTimer).toBeDefined();
+      await act(async () => {
+        (toastTimer?.[0] as () => void)();
+      });
+      expect(screen.queryByTestId("sync-result-toast")).not.toBeInTheDocument();
+    } finally {
+      timeoutSpy.mockRestore();
+    }
   });
 
   it("summarizes batch sync failures and attention items", async () => {
@@ -2415,6 +2469,10 @@ describe("RepositoryShell branch flow", () => {
         name: "All syncable branches are up to date",
       }),
     ).toBeInTheDocument();
+    const toast = await screen.findByTestId("sync-result-toast");
+    expect(toast).toHaveTextContent("All syncable branches are up to date");
+    fireEvent.click(within(toast).getByRole("button", { name: "Close" }));
+    expect(screen.queryByTestId("sync-result-toast")).not.toBeInTheDocument();
   });
 
   it("syncs only the selected branch from a branch row action", async () => {
