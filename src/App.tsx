@@ -19,12 +19,13 @@ import {
   registerWindowRepository,
   windowContext,
 } from "@/lib/ipc/commands";
+import type { AppError } from "@/lib/ipc/generated";
 import { useWindowStore } from "@/store/window-store";
 import { useTheme } from "@/theme/ThemeProvider";
 
 export function App() {
   const [globalError, setGlobalError] = React.useState<
-    Error | string | null
+    AppError | Error | string | null
   >(null);
   const [globalCrash, setGlobalCrash] = React.useState<
     Error | string | CrashDialogPayload | null
@@ -241,11 +242,13 @@ function GlobalSettingsModal() {
 
 interface GlobalErrorDialogsProps {
   crash: Error | string | CrashDialogPayload | null;
-  error: Error | string | null;
+  error: AppError | Error | string | null;
   setCrash: React.Dispatch<
     React.SetStateAction<Error | string | CrashDialogPayload | null>
   >;
-  setError: React.Dispatch<React.SetStateAction<Error | string | null>>;
+  setError: React.Dispatch<
+    React.SetStateAction<AppError | Error | string | null>
+  >;
 }
 
 function GlobalErrorDialogs({
@@ -315,12 +318,16 @@ function GlobalErrorDialogs({
   );
 }
 
-function normalizeThrowable(value: unknown): Error | string {
+function normalizeThrowable(value: unknown): AppError | Error | string {
   if (value instanceof Error) {
     return value;
   }
 
   if (typeof value === "string") {
+    return value;
+  }
+
+  if (isAppError(value)) {
     return value;
   }
 
@@ -341,7 +348,19 @@ function normalizeCrash(value: unknown): CrashDialogPayload | Error | string {
     return value;
   }
 
-  return normalizeThrowable(value);
+  const normalized = normalizeThrowable(value);
+  return isAppError(normalized) ? normalized.summary : normalized;
+}
+
+function isAppError(value: unknown): value is AppError {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "category" in value &&
+    "summary" in value &&
+    typeof value.summary === "string" &&
+    "context" in value
+  );
 }
 
 function isCrashDialogPayload(value: unknown): value is CrashDialogPayload {

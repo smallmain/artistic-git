@@ -297,6 +297,24 @@ describe("App", () => {
     expect(screen.getByRole("dialog")).toHaveTextContent("Renderer crashed");
   });
 
+  it("preserves structured details in global error dialogs", async () => {
+    renderWithProviders(<App />);
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:error", { detail: createAppError() }),
+      );
+    });
+
+    const dialog = screen.getByRole("dialog", { name: "Error Details" });
+    expect(dialog).toHaveTextContent("Merge failed");
+    fireEvent.click(
+      screen.getByRole("button", { name: "Show technical details" }),
+    );
+    expect(dialog).toHaveTextContent('"command": [');
+    expect(dialog).toHaveTextContent('"stderr": "conflict"');
+  });
+
   it("registers global auth prompt listeners", async () => {
     renderWithProviders(<App />);
 

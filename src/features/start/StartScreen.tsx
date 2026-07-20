@@ -45,7 +45,6 @@ import {
 import { useWindowStore } from "@/store/window-store";
 import { WindowCloseGuard } from "@/features/window-close-guard/WindowCloseGuard";
 
-const pickerFallbackPath = "/Users/artist/Projects/Environment Art";
 const cloneParentStorageKey = "artistic-git:last-clone-parent-dir";
 const cloneProbeDebounceMs = 400;
 
@@ -68,7 +67,6 @@ type CloneRemoteState =
 
 export function StartScreen() {
   const { t } = useTranslation();
-  const fileInputRef = React.useRef<HTMLInputElement | null>(null);
   const recentProjects = useWindowStore((state) => state.recentProjects);
   const appSettings = useWindowStore((state) => state.appSettings);
   const openSettings = useWindowStore((state) => state.openSettings);
@@ -87,6 +85,10 @@ export function StartScreen() {
   const [missingProject, setMissingProject] = React.useState<string | null>(
     null,
   );
+  const [isChoosingOpenRepository, setIsChoosingOpenRepository] =
+    React.useState(false);
+  const choosingOpenRepositoryRef = React.useRef(false);
+  const openingRepositoryRef = React.useRef(false);
   const [openingPath, setOpeningPath] = React.useState<string | null>(null);
   const [cloneDialogOpen, setCloneDialogOpen] = React.useState(false);
   const cloneDialogOpenRef = React.useRef(false);
@@ -179,6 +181,10 @@ export function StartScreen() {
   );
   const handleOpenRepository = React.useCallback(
     async (path: string) => {
+      if (openingRepositoryRef.current) {
+        return;
+      }
+      openingRepositoryRef.current = true;
       setOpeningPath(path);
       setOpenProgress({
         cancellable: false,
@@ -199,12 +205,42 @@ export function StartScreen() {
           new CustomEvent("artistic-git:error", { detail: error }),
         );
       } finally {
+        openingRepositoryRef.current = false;
         setOpeningPath(null);
         setOpenProgress(null);
       }
     },
     [appSettings, routeRepository],
   );
+  const handleChooseOpenRepository = React.useCallback(async () => {
+    if (
+      choosingOpenRepositoryRef.current ||
+      openingRepositoryRef.current ||
+      isCloning ||
+      cloneDialogOpenRef.current
+    ) {
+      return;
+    }
+    choosingOpenRepositoryRef.current = true;
+    setIsChoosingOpenRepository(true);
+    try {
+      const selected = await openDialog({
+        directory: true,
+        multiple: false,
+        title: t("start.openRepositoryDirectoryTitle"),
+      });
+      if (typeof selected === "string" && selected.trim()) {
+        await handleOpenRepository(selected);
+      }
+    } catch (error) {
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:error", { detail: error }),
+      );
+    } finally {
+      choosingOpenRepositoryRef.current = false;
+      setIsChoosingOpenRepository(false);
+    }
+  }, [handleOpenRepository, isCloning, t]);
   const handleCloneRepository = React.useCallback(async () => {
     const parentDirectory = cloneParentDirectory.trim();
     const operationId = createOperationId();
@@ -463,10 +499,15 @@ export function StartScreen() {
 
   React.useEffect(() => {
     const openProject = () => {
-      fileInputRef.current?.click();
+      void handleChooseOpenRepository();
     };
     const cloneProject = () => {
-      if (cloneDialogOpenRef.current) {
+      if (
+        cloneDialogOpenRef.current ||
+        choosingOpenRepositoryRef.current ||
+        openingRepositoryRef.current ||
+        isCloning
+      ) {
         return;
       }
       cloneDialogOpenRef.current = true;
@@ -487,34 +528,13 @@ export function StartScreen() {
       window.removeEventListener("artistic-git:open-project", openProject);
       window.removeEventListener("artistic-git:clone-project", cloneProject);
     };
-  }, [appSettings]);
+  }, [appSettings, handleChooseOpenRepository, isCloning]);
 
   return (
     <main
       className="flex min-h-screen bg-background text-foreground"
       data-testid="start-screen"
     >
-      <input
-        aria-hidden="true"
-        className="hidden"
-        onChange={(event) => {
-          const firstFile = event.currentTarget.files?.[0];
-          const relativePath =
-            firstFile &&
-            "webkitRelativePath" in firstFile &&
-            typeof firstFile.webkitRelativePath === "string"
-              ? firstFile.webkitRelativePath
-              : "";
-          const directoryName = relativePath.split("/")[0];
-
-          void handleOpenRepository(
-            directoryName ? `/selected/${directoryName}` : pickerFallbackPath,
-          );
-        }}
-        ref={fileInputRef}
-        type="file"
-      />
-
       <div className="mx-auto grid min-h-screen w-full max-w-6xl grid-cols-[320px_1fr] gap-10 px-8 py-10">
         <section className="flex min-w-0 flex-col justify-between">
           <div>
@@ -536,10 +556,10 @@ export function StartScreen() {
               <Button
                 className="h-12 justify-start gap-3 px-4"
                 data-testid="start-open-project"
-                disabled={openingPath !== null || isCloning}
-                onClick={() => {
-                  fileInputRef.current?.click();
-                }}
+                disabled={
+                  isChoosingOpenRepository || openingPath !== null || isCloning
+                }
+                onClick={() => void handleChooseOpenRepository()}
                 size="lg"
                 type="button"
               >
@@ -549,7 +569,9 @@ export function StartScreen() {
               <Button
                 className="h-12 justify-start gap-3 px-4"
                 data-testid="start-clone-project"
-                disabled={openingPath !== null || isCloning}
+                disabled={
+                  isChoosingOpenRepository || openingPath !== null || isCloning
+                }
                 onClick={() => {
                   cloneDialogOpenRef.current = true;
                   setCloneParentDirectory((current) =>
@@ -641,7 +663,11 @@ export function StartScreen() {
 
                           void handleOpenRepository(project.path);
                         }}
-                        disabled={openingPath !== null || isCloning}
+                        disabled={
+                          isChoosingOpenRepository ||
+                          openingPath !== null ||
+                          isCloning
+                        }
                         type="button"
                       >
                         <FolderGit2

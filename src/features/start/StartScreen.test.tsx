@@ -136,6 +136,11 @@ describe("StartScreen open repository close guard", () => {
 
     chooseRepositoryDirectory();
 
+    expect(dialogMocks.open).toHaveBeenCalledWith({
+      directory: true,
+      multiple: false,
+      title: "Choose a Git repository root folder",
+    });
     await waitFor(() =>
       expect(commandMocks.openRepository).toHaveBeenCalledWith({
         path: "/selected/art-project",
@@ -174,6 +179,11 @@ describe("StartScreen open repository close guard", () => {
     renderWithStore(<StartScreen />);
 
     chooseRepositoryDirectory();
+    await waitFor(() =>
+      expect(commandMocks.setWindowCloseGuard).toHaveBeenCalledWith({
+        active: true,
+      }),
+    );
     await emitWindowCloseBlocked({ reason: "quit" });
     fireEvent.click(
       within(
@@ -183,6 +193,85 @@ describe("StartScreen open repository close guard", () => {
 
     expect(commandMocks.cancelPendingWindowExit).toHaveBeenCalledTimes(1);
     expect(commandMocks.closeCurrentWindow).not.toHaveBeenCalled();
+  });
+
+  it("does nothing when repository folder selection is cancelled", async () => {
+    dialogMocks.open.mockResolvedValueOnce(null);
+    renderWithStore(<StartScreen />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open Project" }));
+
+    await waitFor(() => expect(dialogMocks.open).toHaveBeenCalledTimes(1));
+    expect(commandMocks.openRepository).not.toHaveBeenCalled();
+  });
+
+  it("prevents duplicate repository folder pickers", async () => {
+    let resolvePicker: (path: string | null) => void = () => undefined;
+    dialogMocks.open.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolvePicker = resolve;
+        }),
+    );
+    renderWithStore(<StartScreen />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open Project" }));
+    act(() => {
+      window.dispatchEvent(new Event("artistic-git:open-project"));
+      window.dispatchEvent(new Event("artistic-git:clone-project"));
+    });
+
+    expect(dialogMocks.open).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Open Project" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Clone Project" }),
+    ).toBeDisabled();
+    expect(
+      screen.queryByRole("dialog", { name: "Clone Project" }),
+    ).not.toBeInTheDocument();
+
+    await act(async () => {
+      resolvePicker(null);
+    });
+    expect(screen.getByRole("button", { name: "Open Project" })).toBeEnabled();
+  });
+
+  it("reports repository folder picker errors without losing details", async () => {
+    const pickerError = new Error("native folder picker unavailable");
+    const handleAppError = vi.fn();
+    dialogMocks.open.mockRejectedValueOnce(pickerError);
+    window.addEventListener("artistic-git:error", handleAppError);
+    renderWithStore(<StartScreen />);
+
+    try {
+      fireEvent.click(screen.getByRole("button", { name: "Open Project" }));
+
+      await waitFor(() => expect(handleAppError).toHaveBeenCalledTimes(1));
+      expect((handleAppError.mock.calls[0][0] as CustomEvent).detail).toBe(
+        pickerError,
+      );
+    } finally {
+      window.removeEventListener("artistic-git:error", handleAppError);
+    }
+  });
+
+  it("uses the native repository folder picker from the app menu", async () => {
+    commandMocks.openRepository.mockImplementation(
+      () => new Promise(() => undefined),
+    );
+    dialogMocks.open.mockResolvedValueOnce("/projects/menu-repository");
+    renderWithStore(<StartScreen />);
+
+    act(() => {
+      window.dispatchEvent(new Event("artistic-git:open-project"));
+    });
+
+    await waitFor(() =>
+      expect(commandMocks.openRepository).toHaveBeenCalledWith({
+        path: "/projects/menu-repository",
+        toolIdentity: null,
+      }),
+    );
   });
 });
 
@@ -668,14 +757,7 @@ async function enterCloneUrl(dialog: HTMLElement, url: string) {
   await within(dialog).findByLabelText("Branch to clone");
 }
 
-function chooseRepositoryDirectory(relativePath = "art-project/.git/config") {
-  const input = document.querySelector<HTMLInputElement>('input[type="file"]');
-  expect(input).not.toBeNull();
-  const file = new File([""], "config");
-  Object.defineProperty(file, "webkitRelativePath", {
-    configurable: true,
-    value: relativePath,
-  });
-
-  fireEvent.change(input!, { target: { files: [file] } });
+function chooseRepositoryDirectory(path = "/selected/art-project") {
+  dialogMocks.open.mockResolvedValueOnce(path);
+  fireEvent.click(screen.getByRole("button", { name: "Open Project" }));
 }

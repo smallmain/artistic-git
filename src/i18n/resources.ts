@@ -287,6 +287,7 @@ export const resources = {
         cloneProbeRetry: "Check again",
         cloneUrl: "Repository URL",
         cloneUrlPlaceholder: "https://github.com/studio/project.git",
+        openRepositoryDirectoryTitle: "Choose a Git repository root folder",
         missingProject:
           "{{path}} was deleted or moved. Remove it from the recent projects list?",
         openingRepository: "Opening repository",
@@ -968,6 +969,7 @@ export const resources = {
         cloneProbeRetry: "重新检查",
         cloneUrl: "仓库地址",
         cloneUrlPlaceholder: "https://github.com/studio/project.git",
+        openRepositoryDirectoryTitle: "选择 Git 仓库根目录",
         missingProject: "{{path}} 已删除或移动。是否从最近项目列表移除？",
         openingRepository: "正在打开仓库",
         openOnboarding: "打开设置向导",
