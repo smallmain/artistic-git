@@ -623,11 +623,19 @@ fn open_repository(
 }
 
 #[tauri::command]
-fn probe_remote_repository(
+async fn probe_remote_repository(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_contracts::RemoteRepositoryProbeRequest,
 ) -> artistic_git_contracts::AppResult<artistic_git_contracts::RemoteRepositoryProbeResponse> {
-    backend.probe_remote_repository(request)
+    let backend = backend.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || backend.probe_remote_repository(request))
+        .await
+        .map_err(|error| {
+            artistic_git_app::unexpected_command_error(
+                format!("remote repository probe worker failed: {error}"),
+                "probeRemoteRepository",
+            )
+        })?
 }
 
 #[tauri::command]

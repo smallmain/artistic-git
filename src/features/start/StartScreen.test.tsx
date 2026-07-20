@@ -276,6 +276,36 @@ describe("StartScreen open repository close guard", () => {
 });
 
 describe("StartScreen clone flow", () => {
+  it("shows automatic repository checking before the debounce elapses", async () => {
+    vi.useFakeTimers();
+    try {
+      renderWithStore(<StartScreen />);
+      fireEvent.click(screen.getByRole("button", { name: "Clone Project" }));
+      const dialog = screen.getByRole("dialog", { name: "Clone Project" });
+
+      fireEvent.change(within(dialog).getByLabelText("Repository URL"), {
+        target: { value: "https://example.test/studio/project.git" },
+      });
+
+      expect(
+        within(dialog).getByText("Checking repository and branches..."),
+      ).toBeInTheDocument();
+      expect(commandMocks.probeRemoteRepository).not.toHaveBeenCalled();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(399);
+      });
+      expect(commandMocks.probeRemoteRepository).not.toHaveBeenCalled();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(commandMocks.probeRemoteRepository).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("infers the directory name and opens the cloned repository", async () => {
     commandMocks.cloneRepository.mockResolvedValue({
       repository: openRepositoryResponse("/projects/art-project"),
@@ -747,6 +777,9 @@ async function enterCloneUrl(dialog: HTMLElement, url: string) {
   fireEvent.change(within(dialog).getByLabelText("Repository URL"), {
     target: { value: url },
   });
+  expect(
+    within(dialog).getByText("Checking repository and branches..."),
+  ).toBeInTheDocument();
   await waitFor(() => {
     expect(commandMocks.probeRemoteRepository).toHaveBeenLastCalledWith({
       interactive: false,

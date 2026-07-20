@@ -377,7 +377,7 @@ export function StartScreen() {
       setCloneUrl(url);
       setCloneError(null);
       setCloneBranch("");
-      setCloneRemoteState({ kind: "idle" });
+      setCloneRemoteState(cloneRemoteStateForUrl(url));
       setCloneProbeDetails(null);
       setCloneProbeInteractive(false);
       if (!cloneDirectoryNameTouched) {
@@ -399,8 +399,6 @@ export function StartScreen() {
       if (disposed) {
         return;
       }
-      setCloneRemoteState({ kind: "checking", url });
-      setCloneBranch("");
       operationId = createOperationId("clone-probe");
       void probeRemoteRepository({
         interactive: cloneProbeInteractive,
@@ -517,7 +515,7 @@ export function StartScreen() {
       setCloneDialogOpen(true);
       setCloneError(null);
       setCloneBranch("");
-      setCloneRemoteState({ kind: "idle" });
+      setCloneRemoteState(cloneRemoteStateForUrl(cloneUrl));
       setCloneProbeInteractive(false);
     };
 
@@ -528,7 +526,7 @@ export function StartScreen() {
       window.removeEventListener("artistic-git:open-project", openProject);
       window.removeEventListener("artistic-git:clone-project", cloneProject);
     };
-  }, [appSettings, handleChooseOpenRepository, isCloning]);
+  }, [appSettings, cloneUrl, handleChooseOpenRepository, isCloning]);
 
   return (
     <main
@@ -582,7 +580,7 @@ export function StartScreen() {
                   setCloneDialogOpen(true);
                   setCloneError(null);
                   setCloneBranch("");
-                  setCloneRemoteState({ kind: "idle" });
+                  setCloneRemoteState(cloneRemoteStateForUrl(cloneUrl));
                   setCloneProbeInteractive(false);
                 }}
                 size="lg"
@@ -1248,6 +1246,11 @@ function writeStoredCloneParentDirectory(path: string): void {
 
 function createOperationId(prefix = "clone"): string {
   return `${prefix}-${globalThis.crypto?.randomUUID?.() ?? Date.now().toString(36)}`;
+}
+
+function cloneRemoteStateForUrl(url: string): CloneRemoteState {
+  const trimmedUrl = url.trim();
+  return trimmedUrl ? { kind: "checking", url: trimmedUrl } : { kind: "idle" };
 }
 
 function progressPercent(progress: ProgressState | undefined): number | null {

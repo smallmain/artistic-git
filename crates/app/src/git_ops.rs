@@ -3,7 +3,8 @@ use artistic_git_git_runner::{CancelToken, GitCommandPlan, GitRunner};
 use std::{
     cell::RefCell,
     ffi::OsString,
-    fs, io,
+    fs,
+    io::{self, Read},
     path::{Component, Path, PathBuf},
     process::{Command, Output, Stdio},
     thread,
@@ -366,23 +367,78 @@ fn command_output(
     let mut child = command
         .spawn()
         .map_err(|source| spawn_error(plan, source, operation_name))?;
+    let mut stdout_reader = child.stdout.take().map(spawn_command_output_reader);
+    let mut stderr_reader = child.stderr.take().map(spawn_command_output_reader);
 
-    loop {
+    let status = loop {
         if cancel_token.is_cancelled() {
             let _ = child.kill();
             let _ = child.wait();
+            discard_command_output(&mut stdout_reader);
+            discard_command_output(&mut stderr_reader);
             return Err(cancelled_error(operation_name));
         }
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(status)) => break status,
             Ok(None) => thread::sleep(Duration::from_millis(20)),
-            Err(source) => return Err(spawn_error(plan, source, operation_name)),
+            Err(source) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                discard_command_output(&mut stdout_reader);
+                discard_command_output(&mut stderr_reader);
+                return Err(spawn_error(plan, source, operation_name));
+            }
         }
-    }
+    };
 
-    child
-        .wait_with_output()
-        .map_err(|source| spawn_error(plan, source, operation_name))
+    let stdout = collect_command_output(stdout_reader, "stdout", operation_name)?;
+    let stderr = collect_command_output(stderr_reader, "stderr", operation_name)?;
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+type CommandOutputReader = thread::JoinHandle<io::Result<Vec<u8>>>;
+
+fn spawn_command_output_reader<R>(mut reader: R) -> CommandOutputReader
+where
+    R: Read + Send + 'static,
+{
+    thread::spawn(move || {
+        let mut output = Vec::new();
+        reader.read_to_end(&mut output)?;
+        Ok(output)
+    })
+}
+
+fn collect_command_output(
+    reader: Option<CommandOutputReader>,
+    stream_name: &str,
+    operation_name: &str,
+) -> AppResult<Vec<u8>> {
+    let Some(reader) = reader else {
+        return Ok(Vec::new());
+    };
+
+    match reader.join() {
+        Ok(Ok(output)) => Ok(output),
+        Ok(Err(source)) => Err(logged(AppError::unexpected(
+            format!("failed to read git {stream_name}: {source}"),
+            operation_name,
+        ))),
+        Err(_) => Err(logged(AppError::unexpected(
+            format!("git {stream_name} reader thread panicked"),
+            operation_name,
+        ))),
+    }
+}
+
+fn discard_command_output(reader: &mut Option<CommandOutputReader>) {
+    // A Git hook or transport child can outlive the Git process while retaining
+    // the pipe. Detach the reader so cancellation never waits on that child.
+    reader.take();
 }
 
 fn active_cancel_token() -> Option<CancelToken> {
@@ -458,9 +514,13 @@ mod tests {
         AUTH_INVOCATION_ID_ENV, AUTH_OPERATION_ID_ENV, AUTH_SOCKET_ENV, AUTH_TOKEN_ENV,
     };
     use artistic_git_test_support::{
-        git_dist_manifest_fixture, write_executable_file, write_git_dist_manifest, TestTempDir,
+        git_dist_manifest_fixture, write_executable_file, write_executable_script,
+        write_git_dist_manifest, TestTempDir,
     };
-    use std::{ffi::OsStr, sync::Arc};
+    use std::{
+        ffi::OsStr,
+        sync::{mpsc, Arc},
+    };
 
     #[test]
     fn auth_context_injects_helper_config_and_ipc_environment() {
@@ -572,6 +632,35 @@ mod tests {
             )
             .expect_err("auth operation should be cleaned up after the scope");
         assert!(matches!(error, AuthIpcError::UnknownOperation(_)));
+    }
+
+    #[test]
+    fn cancellable_command_drains_large_output_before_process_exit() {
+        let (runner, temp) = fake_runner();
+        let manifest = git_dist_manifest_fixture();
+        write_executable_script(
+            &temp.path().join(&manifest.paths.git_executable),
+            "#!/bin/sh\ni=0\nwhile [ $i -lt 20000 ]; do\n  printf 'refs/heads/branch-%s\\n' \"$i\"\n  i=$((i + 1))\ndone\n",
+            "@echo off\r\nfor /L %%i in (1,1,20000) do @echo refs/heads/branch-%%i\r\n",
+        )
+        .expect("write large-output git");
+        let cancel_token = CancelToken::new();
+        let (result_tx, result_rx) = mpsc::channel();
+
+        thread::spawn(move || {
+            let result = with_cancel_token_for_operation(&cancel_token, || {
+                git_stdout(&runner, None, ["ls-remote"], "largeOutputTest")
+            });
+            let _ = result_tx.send(result);
+            drop(temp);
+        });
+
+        let output = result_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("large command output should not fill the pipe")
+            .expect("large command output");
+        assert!(output.len() > 256 * 1024);
+        assert!(output.contains("refs/heads/branch-19999"));
     }
 
     fn fake_runner() -> (GitRunner, TestTempDir) {
