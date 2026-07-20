@@ -47,7 +47,6 @@ import {
   createMockHistorySearchSource,
   type HistorySearchSource,
 } from "./history-search";
-import { mockHistoryBranches, mockHistoryRows } from "./fixtures";
 import type {
   BranchFilterMode,
   GraphAnchor,
@@ -208,19 +207,23 @@ function compareCommitSummaryTime(
 }
 
 export function HistoryWorkbench({
-  branches = mockHistoryBranches,
+  branches = [],
   gravatarEnabled = false,
   hasRemote = true,
   historyRepositoryPath = null,
-  now = "2026-07-07T06:30:00Z",
+  now,
   onBeforeRevert,
   onRevertAutoStash,
   onRevertStashRecovery,
   onWriteBusyChange,
-  rows = mockHistoryRows,
+  rows = [],
   searchSource,
 }: HistoryWorkbenchProps) {
   const { t } = useTranslation();
+  const effectiveNow = React.useMemo(
+    () => now ?? new Date().toISOString(),
+    [now],
+  );
   const [branchMode, setBranchMode] = React.useState<BranchFilterMode>("auto");
   const [selectedBranches, setSelectedBranches] = React.useState<Set<string>>(
     () => new Set(),
@@ -379,7 +382,10 @@ export function HistoryWorkbench({
     );
   }, [backendHistoryEnabled, backendSearchQuery.data]);
 
-  const effectiveRows = backendRows ?? rows;
+  const effectiveRows = React.useMemo(
+    () => (backendHistoryEnabled ? (backendRows ?? []) : rows),
+    [backendHistoryEnabled, backendRows, rows],
+  );
   const activeSearchRows = React.useMemo(() => {
     if (backendHistoryEnabled) {
       return effectiveSearchTerm ? (backendSearchRows ?? []) : null;
@@ -556,7 +562,7 @@ export function HistoryWorkbench({
               <HistoryCommitRow
                 gravatarEnabled={gravatarEnabled}
                 key={row.commit.id}
-                now={now}
+                now={effectiveNow}
                 onSelect={setSelectedCommitId}
                 row={row}
                 style={{
@@ -593,7 +599,7 @@ export function HistoryWorkbench({
         commit={selectedCommit}
         gravatarEnabled={gravatarEnabled}
         hasRemote={hasRemote}
-        now={now}
+        now={effectiveNow}
         onBeforeRevert={onBeforeRevert}
         onOpenChange={(open) => {
           if (!open) {

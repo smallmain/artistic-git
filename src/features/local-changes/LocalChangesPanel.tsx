@@ -676,7 +676,7 @@ function ContextMenu({
         <GitCommit className="size-4" aria-hidden="true" />
         {onStash
           ? t("localChanges.stashSelected", { count: ids.length })
-          : t("localChanges.stashPlaceholder")}
+          : t("localChanges.stashUnavailable")}
       </button>
       <button
         className={cn(
@@ -693,7 +693,7 @@ function ContextMenu({
         <Undo2 className="size-4" aria-hidden="true" />
         {onRestore
           ? t("localChanges.restoreSelected", { count: ids.length })
-          : t("localChanges.revertPlaceholder")}
+          : t("localChanges.restoreUnavailable")}
       </button>
     </div>
   );

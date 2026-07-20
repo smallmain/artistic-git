@@ -70,19 +70,20 @@ describe("DiffViewer", () => {
       />,
     );
 
-    expect(screen.getByLabelText("Diff viewer")).toHaveAttribute(
+    expect(screen.getByLabelText("File comparison")).toHaveAttribute(
       "data-diff-source",
       "commitDetails",
     );
     expect(screen.getByText("old")).toBeInTheDocument();
     expect(screen.getByText("new")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Inline diff" }));
-
-    expect(screen.getByRole("button", { name: "Inline diff" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
+    fireEvent.click(
+      screen.getByRole("button", { name: "Single-column comparison" }),
     );
+
+    expect(
+      screen.getByRole("button", { name: "Single-column comparison" }),
+    ).toHaveAttribute("aria-pressed", "true");
   });
 
   it("delegates text rendering to the CodeMirror adapter seam", () => {
@@ -137,7 +138,9 @@ describe("DiffViewer", () => {
       </AppProviders>,
     );
 
-    expect(screen.getByText("File is too large to render")).toBeInTheDocument();
+    expect(
+      screen.getByText("File is too large to preview"),
+    ).toBeInTheDocument();
 
     rerender(
       <AppProviders
@@ -202,7 +205,7 @@ describe("DiffViewer", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(
       "Git LFS old content fetch failed",
     );
-    expect(screen.getByText("Fetch failed")).toBeInTheDocument();
+    expect(screen.getByText("Download failed")).toBeInTheDocument();
   });
 });
 

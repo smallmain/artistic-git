@@ -293,7 +293,7 @@ describe("UpdaterRuntimeBridge", () => {
     ).toBeInTheDocument();
     expect(
       screen.getByText(
-        "Version 0.2.0 is available. This installation needs a fresh download from GitHub Releases.",
+        "Version 0.2.0 is available. Download it from GitHub Releases to update this installation.",
       ),
     ).toBeInTheDocument();
     expect(
@@ -306,7 +306,9 @@ describe("UpdaterRuntimeBridge", () => {
     window.dispatchEvent(new CustomEvent("artistic-git:install-update"));
     expect(bridgeMocks.installReadyUpdate).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole("button", { name: "Open Releases" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open GitHub Releases" }),
+    );
     expect(bridgeMocks.openUpdateReleasePage).toHaveBeenCalled();
   });
 
@@ -567,7 +569,7 @@ describe("UpdaterRuntimeBridge", () => {
 
     expect(
       await screen.findByText(
-        "Finish the active window operation before restarting to install the update.",
+        "Finish or cancel the current task before restarting to install the update.",
       ),
     ).toBeInTheDocument();
     expect(

@@ -802,7 +802,7 @@ function OptionalActionButton({
           ? t("repository.busyTooltip")
           : onClick
             ? label
-            : (disabledTooltip ?? t("repository.disabledWrite"))
+            : (disabledTooltip ?? t("repository.actionUnavailable"))
       }
       type="button"
       variant="ghost"

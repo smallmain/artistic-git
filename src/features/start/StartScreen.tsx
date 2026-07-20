@@ -444,7 +444,7 @@ export function StartScreen() {
               onClick={() => {
                 setOnboarded(false);
               }}
-              tooltip={t("start.openOnboardingPlaceholder")}
+              tooltip={t("start.openOnboardingTooltip")}
               type="button"
               variant="ghost"
             >
@@ -715,7 +715,7 @@ function CloneRepositoryDialog({
               data-testid="clone-url-input"
               id={urlId}
               onChange={(event) => onUrlChange(event.currentTarget.value)}
-              placeholder="https://github.com/studio/art.git"
+              placeholder={t("start.cloneUrlPlaceholder")}
               type="text"
               value={url}
             />
@@ -733,7 +733,7 @@ function CloneRepositoryDialog({
                 onChange={(event) =>
                   onParentDirectoryChange(event.currentTarget.value)
                 }
-                placeholder="/Users/artist/Projects"
+                placeholder={t("start.cloneParentDirectoryPlaceholder")}
                 readOnly
                 type="text"
                 value={parentDirectory}
@@ -761,7 +761,7 @@ function CloneRepositoryDialog({
               onChange={(event) =>
                 onDirectoryNameChange(event.currentTarget.value)
               }
-              placeholder="art"
+              placeholder={t("start.cloneDirectoryNamePlaceholder")}
               type="text"
               value={directoryName}
             />

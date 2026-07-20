@@ -138,9 +138,13 @@ describe("App", () => {
 
     expect(screen.queryByText("Moved Project")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Clear history" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Clear recent projects" }),
+    );
 
-    expect(screen.getByText(/Project history will appear/)).toBeInTheDocument();
+    expect(
+      screen.getByText("Repositories you open will appear here."),
+    ).toBeInTheDocument();
   });
 
   it("routes first-run windows to the onboarding placeholder", () => {
@@ -162,7 +166,7 @@ describe("App", () => {
     ).toBeInTheDocument();
   });
 
-  it("renders the repository shell, warning bar, tabs, and branch focus", () => {
+  it("renders the repository shell without leaking demo repository data", () => {
     renderWithProviders(<App />, {
       initialWindowState: {
         activeRepositoryPath: "/repo/art-project",
@@ -174,26 +178,17 @@ describe("App", () => {
     ).toBeGreaterThan(0);
     expect(
       screen.getByRole("button", { name: /Local Changes/ }),
-    ).toHaveTextContent("4");
-    expect(screen.getByText(/Focused on main/)).toBeInTheDocument();
-
-    fireEvent.click(
-      screen.getByRole("button", { name: /feature\/material-library/ }),
-    );
-
-    expect(
-      screen.getByText(/Focused on feature\/material-library/),
-    ).toBeInTheDocument();
+    ).not.toHaveTextContent("4");
+    expect(screen.queryByText("feature/material-library")).toBeNull();
+    expect(screen.queryByText("Merge color pipeline preview")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: /Local Changes/ }));
 
     expect(
       screen.getByLabelText("Search files and contents"),
     ).toBeInTheDocument();
-    expect(
-      screen.getAllByText("src/preview/render-preview.ts").length,
-    ).toBeGreaterThan(0);
-    expect(screen.getByLabelText("Diff viewer")).toBeInTheDocument();
+    expect(screen.queryByText("src/preview/render-preview.ts")).toBeNull();
+    expect(screen.queryByLabelText("File comparison")).toBeNull();
   });
 
   it("filters and collapses sidebar sections", () => {
@@ -207,7 +202,7 @@ describe("App", () => {
       target: { value: "nope" },
     });
 
-    expect(screen.getByText("No matching items")).toBeInTheDocument();
+    expect(screen.getAllByText("No matching items").length).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByRole("button", { name: "Branches" }));
 
@@ -235,7 +230,7 @@ describe("App", () => {
     ).toContain('"widthPx":380');
   });
 
-  it("shows operation progress and busy write tooltips", () => {
+  it("shows operation progress while repository data is loading", () => {
     renderWithProviders(<App />, {
       initialWindowState: {
         activeRepositoryPath: "/repo/art-project",
@@ -253,9 +248,7 @@ describe("App", () => {
     });
 
     expect(screen.getByText("Fetching branches")).toBeInTheDocument();
-    expect(
-      screen.getAllByText("An operation is running").length,
-    ).toBeGreaterThan(0);
+    expect(screen.queryByText("feature/material-library")).toBeNull();
   });
 
   it("dispatches window shortcuts and focuses the active search", async () => {

@@ -48,6 +48,7 @@ const commandMocks = vi.hoisted(() => ({
   listLocalChanges: vi.fn(),
   listSafetyBackups: vi.fn(),
   listStashes: vi.fn(),
+  logPage: vi.fn(),
   loadProjectSettings: vi.fn(),
   previewRenormalize: vi.fn(),
   repositorySummary: vi.fn(),
@@ -279,6 +280,7 @@ beforeEach(() => {
     truncated: false,
   });
   commandMocks.listStashes.mockResolvedValue({ stashes: [] });
+  commandMocks.logPage.mockResolvedValue({ commits: [], nextAfter: null });
   commandMocks.cancelConflictResolution.mockResolvedValue({
     aborted: "merge",
   });
@@ -446,6 +448,34 @@ afterEach(() => {
   cleanup();
 });
 
+describe("RepositoryShell loading state", () => {
+  it("does not show demo repository content while queries are pending", async () => {
+    const pendingRequest = new Promise<never>(() => undefined);
+    commandMocks.listBranches.mockReturnValue(pendingRequest);
+    commandMocks.listLocalChanges.mockReturnValue(pendingRequest);
+    commandMocks.listStashes.mockReturnValue(pendingRequest);
+    commandMocks.logPage.mockReturnValue(pendingRequest);
+
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    await waitFor(() => {
+      expect(commandMocks.listBranches).toHaveBeenCalled();
+      expect(commandMocks.listLocalChanges).toHaveBeenCalled();
+      expect(commandMocks.listStashes).toHaveBeenCalled();
+      expect(commandMocks.logPage).toHaveBeenCalled();
+    });
+
+    expect(screen.queryByText("feature/material-library")).toBeNull();
+    expect(screen.queryByText("WIP material polish")).toBeNull();
+    expect(screen.queryByText("Merge color pipeline preview")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /Local Changes/ }));
+
+    expect(screen.queryByText("src/preview/render-preview.ts")).toBeNull();
+    expect(screen.queryByLabelText("File comparison")).toBeNull();
+  });
+});
+
 describe("RepositoryShell session preferences", () => {
   it("restores and saves the project local changes view mode", async () => {
     commandMocks.loadProjectSettings.mockResolvedValueOnce({
@@ -594,10 +624,12 @@ describe("RepositoryShell session preferences", () => {
     fireEvent.click(
       await screen.findByRole("button", { name: /Local Changes/ }),
     );
-    expect(await screen.findByText("Many files changed")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Many files changed unexpectedly"),
+    ).toBeInTheDocument();
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Preview renormalization" }),
+      screen.getByRole("button", { name: "Review affected files" }),
     );
 
     await waitFor(() =>
@@ -607,7 +639,7 @@ describe("RepositoryShell session preferences", () => {
       }),
     );
     expect(
-      await screen.findByText("Preview found 1 paths: src/renormalized.ts"),
+      await screen.findByText("Affected files: 1. src/renormalized.ts"),
     ).toBeInTheDocument();
   });
 });
@@ -1308,12 +1340,12 @@ describe("RepositoryShell branch flow", () => {
     renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
 
     const dialog = await openCreateBranchDialog("main");
-    const baseSelect = within(dialog).getByLabelText("Base branch");
+    const baseSelect = within(dialog).getByLabelText("Starting branch");
     expect(baseSelect).toHaveValue("main");
     fireEvent.change(baseSelect, { target: { value: "concept-pass" } });
     expect(baseSelect).toHaveValue("concept-pass");
     expect(dialog).toHaveTextContent(
-      "Remote-only branch. Creating from it will create a local tracking branch.",
+      "This branch exists only on the remote. A local copy will be created automatically.",
     );
 
     fireEvent.change(within(dialog).getByLabelText("Branch name"), {
@@ -1424,7 +1456,9 @@ describe("RepositoryShell branch flow", () => {
     const dialog = await openCheckoutBranchDialog("feature/lookdev");
 
     expect(
-      within(dialog).getByRole("radio", { name: /Move changes with me/ }),
+      within(dialog).getByRole("radio", {
+        name: /Keep changes on the new branch/,
+      }),
     ).toBeChecked();
     fireEvent.click(
       within(dialog).getByRole("radio", { name: /Discard local changes/ }),
@@ -1450,7 +1484,7 @@ describe("RepositoryShell branch flow", () => {
       await screen.findByRole("button", { name: /Local Changes/ }),
     );
     await screen.findAllByText("src/app.ts");
-    fireEvent.click(screen.getByLabelText("Toggle src/app.ts"));
+    fireEvent.click(screen.getByLabelText("Select or deselect src/app.ts"));
 
     const checkoutDialog = await openCheckoutBranchDialog("feature/lookdev");
     fireEvent.click(
@@ -1490,7 +1524,7 @@ describe("RepositoryShell branch flow", () => {
 
     const dialog = await openDeleteBranchDialog("feature/lookdev");
     expect(dialog).toHaveTextContent(
-      "Contains 2 unmerged commits; deleting it will lose them.",
+      "Unmerged commits: 2. Deleting the branch will lose them.",
     );
     const remoteCheckbox = within(dialog).getByRole("checkbox", {
       name: "Delete remote branch",
@@ -1613,7 +1647,9 @@ describe("RepositoryShell branch flow", () => {
       }),
     );
     expect(
-      await screen.findByText("main: success · release -> main: success"),
+      await screen.findByText(
+        "main: synced · release updated from main: synced",
+      ),
     ).toBeInTheDocument();
   });
 
@@ -1669,7 +1705,7 @@ describe("RepositoryShell branch flow", () => {
 
     expect(
       await screen.findByText(
-        "main: success · feature/oops: failed (Needs manual cleanup.) · stable -> release: needs attention (Target branch was deleted.)",
+        "main: synced · feature/oops: failed (Needs manual cleanup.) · stable updated from release: action needed (Target branch was deleted.)",
       ),
     ).toBeInTheDocument();
   });
@@ -1844,7 +1880,7 @@ describe("RepositoryShell branch flow", () => {
       name: "Remote history changed",
     });
     expect(dialog).toHaveTextContent(
-      "Local commits that were already pushed are no longer in remote history.",
+      "Some commits you previously pushed are no longer there.",
     );
     expect(dialog).toHaveTextContent("localab");
     expect(dialog).toHaveTextContent("remotea");
@@ -1926,7 +1962,7 @@ describe("RepositoryShell commit flow", () => {
       const dialog = await openCommitDialog();
 
       expect(
-        within(dialog).getByText("2 files will be committed."),
+        within(dialog).getByText("Files to commit: 2."),
       ).toBeInTheDocument();
       const pushCheckbox = within(dialog).getByRole("checkbox", {
         name: "Push immediately",
@@ -2047,12 +2083,12 @@ describe("RepositoryShell commit flow", () => {
 
     expect(
       await within(dialog).findByText(
-        "Files over 50 MB are not covered by LFS rules.",
+        "Some files are larger than 50 MB and aren't managed by Git LFS.",
       ),
     ).toBeInTheDocument();
     fireEvent.click(
       within(dialog).getByRole("button", {
-        name: "Track with LFS and continue",
+        name: "Manage with Git LFS and continue",
       }),
     );
 
@@ -2140,11 +2176,11 @@ describe("RepositoryShell restore flow", () => {
     const dialog = await openRestoreDialog("assets/texture.png");
 
     expect(within(dialog).getByRole("alert")).toHaveTextContent(
-      "This action cannot be undone.",
+      "Artistic Git can't undo this action.",
     );
     expect(
       within(dialog).getAllByText(
-        "1 selected files will be restored after their current versions are moved to the system trash.",
+        "Selected files: 1. Current copies will be moved to Trash before the Git versions are restored.",
       ).length,
     ).toBeGreaterThan(0);
 
@@ -2183,7 +2219,7 @@ async function openCreateBranchDialog(
   }
   fireEvent.contextMenu(await findSidebarText(baseBranchName));
   fireEvent.click(
-    screen.getByRole("menuitem", { name: "Create new branch from base" }),
+    screen.getByRole("menuitem", { name: "Create new branch from here" }),
   );
 
   return screen.getByRole("dialog", { name: "Create branch" });

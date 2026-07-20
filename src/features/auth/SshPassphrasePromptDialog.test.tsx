@@ -72,7 +72,7 @@ describe("SshPassphrasePromptDialog", () => {
       "/Users/me/.ssh/id_ed25519",
     );
     expect(
-      screen.getByLabelText("Remember passphrase in secure storage"),
+      screen.getByLabelText("Remember securely on this device"),
     ).toBeChecked();
 
     fireEvent.change(screen.getByLabelText("Passphrase"), {
@@ -117,7 +117,7 @@ describe("SshPassphrasePromptDialog", () => {
       }),
     ).toBeInTheDocument();
     expect(
-      screen.queryByLabelText("Remember passphrase in secure storage"),
+      screen.queryByLabelText("Remember securely on this device"),
     ).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));

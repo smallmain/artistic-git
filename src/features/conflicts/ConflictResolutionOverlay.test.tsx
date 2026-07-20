@@ -70,14 +70,16 @@ describe("ConflictResolutionOverlay", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: "Complete" })).toBeDisabled();
-    const editor = await screen.findByLabelText("Resolution content");
+    expect(
+      screen.getByRole("button", { name: "Finish resolving" }),
+    ).toBeDisabled();
+    const editor = await screen.findByLabelText("Resolved file content");
     expect(editor).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
 
     const hunk = screen.getByLabelText("Conflict at line 2");
-    expect(within(hunk).getByText("Own section")).toBeInTheDocument();
-    expect(within(hunk).getByText("Other section")).toBeInTheDocument();
+    expect(within(hunk).getByText("Current changes")).toBeInTheDocument();
+    expect(within(hunk).getByText("Incoming changes")).toBeInTheDocument();
     expect(within(hunk).getByText("own line")).toBeInTheDocument();
     expect(within(hunk).getByText("other line")).toBeInTheDocument();
     expect(
@@ -89,7 +91,7 @@ describe("ConflictResolutionOverlay", () => {
     );
 
     fireEvent.click(
-      within(hunk).getByRole("button", { name: "Use own section" }),
+      within(hunk).getByRole("button", { name: "Use current changes here" }),
     );
 
     expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
@@ -105,7 +107,9 @@ describe("ConflictResolutionOverlay", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Complete" })).toBeEnabled();
+      expect(
+        screen.getByRole("button", { name: "Finish resolving" }),
+      ).toBeEnabled();
     });
   });
 
@@ -130,11 +134,13 @@ describe("ConflictResolutionOverlay", () => {
       />,
     );
 
-    const editor = await screen.findByLabelText("Resolution content");
+    const editor = await screen.findByLabelText("Resolved file content");
     editResolutionContent(editor, "before\nmanual\n<<<<<<< HEAD\nafter\n");
 
     expect(
-      await screen.findByText("Conflict markers remain in the resolution."),
+      await screen.findByText(
+        "Remove the remaining conflict markers before continuing.",
+      ),
     ).toBeVisible();
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
 
@@ -248,9 +254,11 @@ describe("ConflictResolutionOverlay", () => {
       />,
     );
 
-    expect(await screen.findByText(/Binary conflicts can only/)).toBeVisible();
     expect(
-      screen.queryByLabelText("Resolution content"),
+      await screen.findByText("For binary files, choose one complete version."),
+    ).toBeVisible();
+    expect(
+      screen.queryByLabelText("Resolved file content"),
     ).not.toBeInTheDocument();
     expect(screen.getAllByText("Type")).toHaveLength(2);
     expect(screen.getAllByText("Size")).toHaveLength(2);
@@ -258,15 +266,16 @@ describe("ConflictResolutionOverlay", () => {
     expect(screen.getAllByText("image/png")).toHaveLength(2);
     expect(screen.getByText("512 byte")).toBeInTheDocument();
     expect(screen.getByText("Unavailable")).toBeInTheDocument();
-    expect(screen.getByRole("img", { name: "Own version" })).toHaveAttribute(
-      "src",
-      "data:image/png;base64,AAAA",
-    );
+    expect(
+      screen.getByRole("img", { name: "Current version" }),
+    ).toHaveAttribute("src", "data:image/png;base64,AAAA");
 
-    const ownSide = screen.getByText("Own version").closest("section");
+    const ownSide = screen.getByText("Current version").closest("section");
     expect(ownSide).not.toBeNull();
     fireEvent.click(
-      within(ownSide as HTMLElement).getByRole("button", { name: "Choose" }),
+      within(ownSide as HTMLElement).getByRole("button", {
+        name: "Choose version",
+      }),
     );
 
     await waitFor(() => {
@@ -313,7 +322,7 @@ describe("ConflictResolutionOverlay", () => {
       await screen.findAllByText("deps/lib/src/conflict.ts"),
     ).not.toHaveLength(0);
     expect(
-      within(screen.getByLabelText("Diff viewer")).getByText(
+      within(screen.getByLabelText("File comparison")).getByText(
         "deps/lib/src/conflict.ts",
       ),
     ).toBeInTheDocument();
@@ -326,7 +335,7 @@ describe("ConflictResolutionOverlay", () => {
 
     const hunk = screen.getByLabelText("Conflict at line 2");
     fireEvent.click(
-      within(hunk).getByRole("button", { name: "Use own section" }),
+      within(hunk).getByRole("button", { name: "Use current changes here" }),
     );
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
@@ -339,7 +348,9 @@ describe("ConflictResolutionOverlay", () => {
       });
     });
 
-    fireEvent.click(screen.getAllByRole("button", { name: "Use own" })[0]);
+    const useCurrentVersion = screen.getByTestId("conflict-use-own");
+    expect(useCurrentVersion).toHaveTextContent("Use current version");
+    fireEvent.click(useCurrentVersion);
 
     await waitFor(() => {
       expect(api.selectConflictSide).toHaveBeenCalledWith({
@@ -349,7 +360,7 @@ describe("ConflictResolutionOverlay", () => {
       });
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Complete" }));
+    fireEvent.click(screen.getByRole("button", { name: "Finish resolving" }));
 
     await waitFor(() => {
       expect(api.completeConflictResolution).toHaveBeenCalledWith({
@@ -383,8 +394,8 @@ describe("ConflictResolutionOverlay", () => {
       />,
     );
 
-    expect(await screen.findByLabelText("Resolution content")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "Complete" }));
+    expect(await screen.findByLabelText("Resolved file content")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Finish resolving" }));
 
     await waitFor(() => {
       expect(completeApi.completeConflictResolution).toHaveBeenCalledWith({

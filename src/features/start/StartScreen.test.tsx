@@ -193,7 +193,7 @@ describe("StartScreen clone flow", () => {
       target: { value: "https://github.com/studio/art-project.git" },
     });
 
-    expect(within(dialog).getByLabelText("Directory name")).toHaveValue(
+    expect(within(dialog).getByLabelText("Project folder name")).toHaveValue(
       "art-project",
     );
 
@@ -241,9 +241,7 @@ describe("StartScreen clone flow", () => {
     });
     fireEvent.click(within(dialog).getByRole("button", { name: "Choose" }));
     await waitFor(() => {
-      expect(
-        within(dialog).getByLabelText("Target parent directory"),
-      ).toHaveValue("/projects");
+      expect(within(dialog).getByLabelText("Save in")).toHaveValue("/projects");
     });
     fireEvent.click(
       within(dialog).getByRole("button", { name: "Clone Project" }),

@@ -1,5 +1,4 @@
 export { LocalChangesPanel } from "./LocalChangesPanel";
-export { demoLocalChanges } from "./fixtures";
 export {
   buildChangeTree,
   collectTreeItemIds,

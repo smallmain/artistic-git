@@ -110,9 +110,7 @@ describe("LocalChangesPanel", () => {
 
     fireEvent.contextMenu(screen.getAllByText("src/main.ts")[0]);
 
-    const menu = screen
-      .getByText("Revert changes (coming later)")
-      .closest("div");
+    const menu = screen.getByText("Restore changes unavailable").closest("div");
     expect(menu).not.toBeNull();
     expect(
       within(menu as HTMLElement).getByText("Check selected (1)"),
@@ -126,7 +124,7 @@ describe("LocalChangesPanel", () => {
       <LocalChangesPanel
         changes={createChanges()}
         onPreviewRenormalize={onPreviewRenormalize}
-        renormalizePreviewStatus="Preview found 1 paths: src/main.ts"
+        renormalizePreviewStatus="Affected files: 1. src/main.ts"
         renormalizeSuggestion={{
           modifiedChanges: 1_000,
           samplePaths: ["src/main.ts"],
@@ -136,11 +134,13 @@ describe("LocalChangesPanel", () => {
       />,
     );
 
-    expect(screen.getByText("Many files changed")).toBeInTheDocument();
+    expect(
+      screen.getByText("Many files changed unexpectedly"),
+    ).toBeInTheDocument();
     expect(screen.getAllByText("src/main.ts").length).toBeGreaterThan(0);
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Preview renormalization" }),
+      screen.getByRole("button", { name: "Review affected files" }),
     );
 
     expect(onPreviewRenormalize).toHaveBeenCalled();
@@ -165,12 +165,14 @@ describe("LocalChangesPanel", () => {
       target: { value: "deps/lib" },
     });
 
-    expect(screen.getAllByText("deps/lib/src/shader.ts").length).toBeGreaterThan(
-      0,
-    );
+    expect(
+      screen.getAllByText("deps/lib/src/shader.ts").length,
+    ).toBeGreaterThan(0);
     expect(screen.queryByText("src/main.ts")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByLabelText("Toggle deps/lib/src/shader.ts"));
+    fireEvent.click(
+      screen.getByLabelText("Select or deselect deps/lib/src/shader.ts"),
+    );
     expect(onCheckedChange).toHaveBeenLastCalledWith(["4"]);
 
     fireEvent.click(screen.getByRole("button", { name: "Tree view" }));

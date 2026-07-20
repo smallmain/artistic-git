@@ -121,17 +121,19 @@ describe("SettingsModal", () => {
     );
 
     const intervalInput = await screen.findByLabelText(
-      "Fetch interval (seconds)",
+      "Check interval (seconds)",
     );
     fireEvent.change(intervalInput, { target: { value: "9" } });
 
     await waitFor(() =>
       expect(
-        screen.getByText("Fetch interval must be between 10 and 3600 seconds."),
+        screen.getByText(
+          "The check interval must be between 10 and 3600 seconds.",
+        ),
       ).toBeInTheDocument(),
     );
     expect(
-      screen.getByRole("button", { name: "Save fetch settings" }),
+      screen.getByRole("button", { name: "Save update check settings" }),
     ).toBeDisabled();
   });
 
@@ -151,14 +153,12 @@ describe("SettingsModal", () => {
       </TestProviders>,
     );
 
-    const originInput = await screen.findByLabelText("Origin URL");
+    const originInput = await screen.findByLabelText("Remote repository URL");
     fireEvent.change(originInput, { target: { value: "" } });
     fireEvent.click(screen.getByRole("button", { name: "Save remote" }));
 
     expect(
-      await screen.findByText(
-        "Save again to remove origin from this repository.",
-      ),
+      await screen.findByText("Select Remove origin to confirm disconnection."),
     ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Remove origin" }));
@@ -204,7 +204,7 @@ describe("SettingsModal", () => {
 
     expect(
       await screen.findAllByText(
-        "Automatic tracking rules cannot form a cycle.",
+        "These rules create an update loop. Change one of the selected branches.",
       ),
     ).toHaveLength(2);
 
@@ -233,7 +233,7 @@ describe("SettingsModal", () => {
     );
 
     expect(
-      await screen.findByText("Target branch was deleted."),
+      await screen.findByText("The selected update source no longer exists."),
     ).toBeInTheDocument();
     const saveButtons = screen.getAllByRole("button", {
       name: "Save project settings",
@@ -263,13 +263,13 @@ describe("SettingsModal", () => {
 
     fireEvent.click(
       await screen.findByRole("button", {
-        name: "Add automatic tracking rule",
+        name: "Add automatic branch update",
       }),
     );
-    fireEvent.change(screen.getByLabelText("Source origin branch"), {
+    fireEvent.change(screen.getByLabelText("Branch to update"), {
       target: { value: "design" },
     });
-    fireEvent.change(screen.getByLabelText("Target origin branch"), {
+    fireEvent.change(screen.getByLabelText("Get updates from"), {
       target: { value: "release" },
     });
 
@@ -314,14 +314,20 @@ describe("SettingsModal", () => {
     );
 
     expect(await screen.findByText("github.com")).toBeInTheDocument();
-    expect(screen.getByText("alice - Host credential")).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "Forget credential" }));
     expect(
-      await screen.findByText("Select the credential again to forget it."),
+      screen.getByText("alice - All repositories on this host"),
     ).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Confirm forget" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Remove saved credential" }),
+    );
+    expect(
+      await screen.findByText(
+        "Select Remove saved credential again to confirm.",
+      ),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Confirm removal" }));
 
     await waitFor(() =>
       expect(commandMocks.deleteHttpsCredential).toHaveBeenCalledWith({
@@ -331,7 +337,7 @@ describe("SettingsModal", () => {
         scope: "host",
       }),
     );
-    expect(await screen.findByText("Credential forgotten")).toBeInTheDocument();
+    expect(await screen.findByText("Credential removed")).toBeInTheDocument();
     expect(
       screen.getByText("No HTTPS credentials are saved."),
     ).toBeInTheDocument();
@@ -386,7 +392,9 @@ describe("SettingsModal", () => {
       }),
     );
     expect(await screen.findByText("Credential saved")).toBeInTheDocument();
-    expect(screen.getByText("bob - Host credential")).toBeInTheDocument();
+    expect(
+      screen.getByText("bob - All repositories on this host"),
+    ).toBeInTheDocument();
   });
 
   it("persists the SSH passphrase remember setting", async () => {

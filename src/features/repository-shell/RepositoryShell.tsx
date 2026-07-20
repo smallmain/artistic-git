@@ -25,7 +25,6 @@ import {
 } from "@/features/conflicts";
 import { HistoryWorkbench } from "@/features/history/HistoryWorkbench";
 import {
-  demoLocalChanges,
   LocalChangesPanel,
   type LocalChangeItem,
 } from "@/features/local-changes";
@@ -107,48 +106,6 @@ type SyncStatusTranslator = (
   key: string,
   options?: Record<string, unknown>,
 ) => string;
-
-const demoBranches: BranchListItem[] = [
-  {
-    ahead: 2,
-    behind: 0,
-    current: true,
-    latestCommitId: "d8f31aa",
-    name: "main",
-  },
-  {
-    ahead: 0,
-    behind: 3,
-    latestCommitId: "2a8bb32",
-    name: "feature/material-library",
-  },
-  {
-    ahead: 1,
-    behind: 1,
-    latestCommitId: "78d02ef",
-    name: "review/shot-014-lighting",
-  },
-  {
-    ahead: 0,
-    behind: 2,
-    latestCommitId: "893ab14",
-    name: "concept-pass",
-    remoteOnly: true,
-  },
-];
-
-const demoStashes: StashListItem[] = [
-  {
-    id: "stash@{0}",
-    name: "Auto Stash before review",
-    timeLabel: "2h",
-  },
-  {
-    id: "stash@{1}",
-    name: "WIP material polish",
-    timeLabel: "1d",
-  },
-];
 
 interface RepositoryShellProps {
   repositoryPath: string;
@@ -234,9 +191,8 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   const [localChangeCheckedIds, setLocalChangeCheckedIds] = React.useState<
     string[]
   >([]);
-  const [focusedBranch, setFocusedBranch] = React.useState<BranchListItem>(
-    demoBranches[0],
-  );
+  const [focusedBranch, setFocusedBranch] =
+    React.useState<BranchListItem | null>(null);
   const summaryQuery = useQuery({
     queryFn: () => repositorySummary({ repositoryPath }),
     queryKey: repoQueryKeys.summary(repositoryPath),
@@ -271,8 +227,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     retry: false,
   });
   const branches = React.useMemo(
-    () =>
-      branchesQuery.data?.branches.map(mapBranchSummaryToItem) ?? demoBranches,
+    () => branchesQuery.data?.branches.map(mapBranchSummaryToItem) ?? [],
     [branchesQuery.data],
   );
   const historyBranches = React.useMemo(
@@ -287,13 +242,11 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     () =>
       stashesQuery.data?.stashes.map((stash) =>
         mapStashEntryToItem(stash, formatters.formatRelativeTime),
-      ) ?? demoStashes,
+      ) ?? [],
     [formatters.formatRelativeTime, stashesQuery.data],
   );
   const localChanges = React.useMemo(
-    () =>
-      localChangesQuery.data?.changes.map(mapLocalChangeToItem) ??
-      demoLocalChanges,
+    () => localChangesQuery.data?.changes.map(mapLocalChangeToItem) ?? [],
     [localChangesQuery.data],
   );
   const renormalizeSuggestion =
@@ -316,9 +269,9 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   );
   const effectiveFocusedBranch = React.useMemo(
     () =>
-      branches.some((branch) => branch.name === focusedBranch.name)
-        ? focusedBranch
-        : (currentBranch ?? focusedBranch),
+      branches.find((branch) => branch.name === focusedBranch?.name) ??
+      currentBranch ??
+      null,
     [branches, currentBranch, focusedBranch],
   );
   const operations = useWindowStore((state) => state.operationsById);
@@ -461,7 +414,8 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       branchName:
         summaryQuery.data?.currentBranch ??
         currentBranch?.name ??
-        effectiveFocusedBranch.name,
+        effectiveFocusedBranch?.name ??
+        "",
       hasRemote: summaryQuery.data?.hasOrigin ?? false,
       path: repositoryPath,
       projectName:
@@ -470,7 +424,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     }),
     [
       currentBranch?.name,
-      effectiveFocusedBranch.name,
+      effectiveFocusedBranch?.name,
       repositoryPath,
       summaryQuery.data,
       t,
@@ -1801,12 +1755,14 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         <div className="min-h-0 flex-1 overflow-hidden p-4">
           {activeTab === "history" ? (
             <div className="flex h-full min-h-0 flex-col gap-3">
-              <div className="shrink-0 rounded-md border bg-card px-3 py-2 text-sm text-muted-foreground">
-                {t("repository.focusedBranch", {
-                  branch: effectiveFocusedBranch.name,
-                  commit: effectiveFocusedBranch.latestCommitId,
-                })}
-              </div>
+              {effectiveFocusedBranch ? (
+                <div className="shrink-0 rounded-md border bg-card px-3 py-2 text-sm text-muted-foreground">
+                  {t("repository.focusedBranch", {
+                    branch: effectiveFocusedBranch.name,
+                    commit: effectiveFocusedBranch.latestCommitId,
+                  })}
+                </div>
+              ) : null}
               <div className="min-h-0 flex-1 overflow-auto">
                 <HistoryWorkbench
                   branches={historyBranches}

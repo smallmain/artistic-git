@@ -118,6 +118,42 @@ const gitInvariantTokens = [
   },
 ];
 
+const developerFacingCopyPatterns = [
+  {
+    label: "development phase",
+    pattern: /\bphase\s+\d+[a-z]?\b/i,
+  },
+  {
+    label: "placeholder copy",
+    pattern: /\bplaceholder\b/i,
+  },
+  {
+    label: "future implementation copy",
+    pattern: /\b(?:coming|implemented)\s+(?:in|later)\b/i,
+  },
+  {
+    label: "implementation terminology",
+    pattern:
+      /\b(?:diff engine|future integrations?|shared confirmation dialog base|status tokens?|virtualized)\b/i,
+  },
+  {
+    label: "开发阶段",
+    pattern: /(?:\d+[A-Z]?\s*阶段|本阶段)/,
+  },
+  {
+    label: "占位文案",
+    pattern: /占位/,
+  },
+  {
+    label: "未来实现文案",
+    pattern: /(?:后续(?:阶段)?实现|后续集成)/,
+  },
+  {
+    label: "实现术语",
+    pattern: /(?:共享确认弹窗基座|状态令牌|虚拟化|路由|后端|引擎|接入)/,
+  },
+];
+
 const findings = [];
 const counters = {
   frontendFiles: 0,
@@ -127,6 +163,7 @@ const counters = {
 };
 
 const resourceAudit = await auditResourceShape();
+auditUserFacingResourceCopy(resourceAudit.languageLeaves);
 await auditTranslationKeyUsage(resourceAudit.leafKeys);
 await auditFrontendSourceText();
 await auditUiSourceText();
@@ -163,7 +200,7 @@ async function auditResourceShape() {
       label: "resource shape",
       message: "Could not find an object literal export named resources.",
     });
-    return { leafKeys: new Map() };
+    return { languageLeaves: new Map(), leafKeys: new Map() };
   }
 
   const enTranslation = getNestedObject(resources, ["en", "translation"]);
@@ -175,13 +212,46 @@ async function auditResourceShape() {
       label: "resource shape",
       message: "Could not find both en.translation and zh-CN.translation.",
     });
-    return { leafKeys: new Map() };
+    return { languageLeaves: new Map(), leafKeys: new Map() };
   }
 
   compareResourceObjects(enTranslation, zhTranslation, []);
   const leafKeys = collectResourceLeaves(enTranslation, []);
+  const languageLeaves = new Map([
+    ["en", leafKeys],
+    ["zh-CN", collectResourceLeaves(zhTranslation, [])],
+  ]);
   counters.resourceKeys = leafKeys.size;
-  return { leafKeys };
+  return { languageLeaves, leafKeys };
+}
+
+function auditUserFacingResourceCopy(languageLeaves) {
+  for (const [language, leaves] of languageLeaves) {
+    for (const [key, node] of leaves) {
+      if (!isStaticStringNode(node)) {
+        continue;
+      }
+
+      if (
+        key.startsWith("dialogs.error.") ||
+        key.startsWith("dialogs.crash.")
+      ) {
+        continue;
+      }
+
+      const value = staticStringText(node);
+      for (const { label, pattern } of developerFacingCopyPatterns) {
+        if (!pattern.test(value)) {
+          continue;
+        }
+
+        addNodeFinding(node.getSourceFile(), node, {
+          label: `developer-facing ${language} copy`,
+          message: `Translation "${key}" contains ${label}; describe what the user can do instead.`,
+        });
+      }
+    }
+  }
 }
 
 async function auditTranslationKeyUsage(resourceLeafKeys) {

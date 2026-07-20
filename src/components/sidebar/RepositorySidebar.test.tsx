@@ -54,7 +54,7 @@ describe("RepositorySidebar", () => {
     fireEvent.contextMenu(screen.getByText("feature/lookdev"));
     fireEvent.click(
       screen.getByRole("menuitem", {
-        name: "Create new branch from base",
+        name: "Create new branch from here",
       }),
     );
     expect(onCreateBranchFromBase).toHaveBeenCalledWith(
@@ -105,7 +105,7 @@ describe("RepositorySidebar", () => {
       screen.getByRole("menuitem", { name: "Switch branch" }),
     ).toBeDisabled();
     expect(
-      screen.getByRole("menuitem", { name: "Create new branch from base" }),
+      screen.getByRole("menuitem", { name: "Create new branch from here" }),
     ).toBeDisabled();
     expect(
       screen.getByRole("menuitem", { name: "Delete branch" }),

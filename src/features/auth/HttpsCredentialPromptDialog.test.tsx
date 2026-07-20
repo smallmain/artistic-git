@@ -72,7 +72,7 @@ describe("HttpsCredentialPromptDialog", () => {
       }),
     ).toBeInTheDocument();
     expect(screen.getByLabelText("Username")).toHaveValue("alice");
-    fireEvent.change(screen.getByLabelText("Token"), {
+    fireEvent.change(screen.getByLabelText("Access token"), {
       target: { value: "new-token" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));

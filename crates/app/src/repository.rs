@@ -2593,7 +2593,7 @@ fn open_warnings(
     match health.head {
         RepositoryHeadState::Detached { .. } => warnings.push(warning(
             RepositoryOpenWarningKind::DetachedHead,
-            "当前处于游离 HEAD 状态，可新建分支或切换到已有分支。",
+            "当前未处于任何分支，可新建分支或切换到已有分支。",
         )),
         RepositoryHeadState::Unborn { .. } => warnings.push(warning(
             RepositoryOpenWarningKind::UnbornHead,
@@ -2605,13 +2605,13 @@ fn open_warnings(
     if !health.middle_states.is_empty() {
         warnings.push(warning(
             RepositoryOpenWarningKind::OperationInProgress,
-            "检测到外部 Git 操作中间态，请完成或放弃恢复后继续。",
+            "检测到尚未完成的合并、变基或撤销操作，请先完成或取消。",
         ));
     }
     if health.index_lock.is_some() {
         warnings.push(warning(
             RepositoryOpenWarningKind::IndexLockPresent,
-            "检测到 .git/index.lock 残留；不会自动删除，需确认没有 Git 进程运行后手动处理。",
+            "项目可能仍被其他 Git 工具占用。确认没有 Git 操作运行后，请手动删除 .git/index.lock。",
         ));
     }
 
@@ -2738,7 +2738,7 @@ fn inspect_index_lock(git_common_dir: &Path) -> Option<IndexLockInfo> {
     Some(IndexLockInfo {
         path: display_path(&path),
         age_seconds: age_seconds.min(u64::from(u32::MAX)) as u32,
-        warning: "index.lock 可能表示仍有 Git 进程在运行；Artistic Git 永不自动清除该文件。"
+        warning: "项目可能仍被其他 Git 工具占用。确认没有 Git 操作运行后，可手动删除 index.lock。"
             .to_owned(),
     })
 }

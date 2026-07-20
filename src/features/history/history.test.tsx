@@ -88,7 +88,6 @@ describe("history search", () => {
       "8b43f0e",
       "71cfb9a",
       "d4512aa",
-      "6df1253",
     ]);
     expect(results[0].searchMatches).toEqual(["message", "content"]);
   });
@@ -116,6 +115,37 @@ describe("history avatars", () => {
 });
 
 describe("HistoryWorkbench", () => {
+  it("does not show fixture rows while backend history is loading", () => {
+    logPageMock.mockReturnValue(new Promise<never>(() => undefined));
+
+    renderWithProviders(
+      <HistoryWorkbench
+        historyRepositoryPath="/repo/art"
+        rows={mockHistoryRows}
+      />,
+    );
+
+    expect(logPageMock).toHaveBeenCalledWith({
+      after: null,
+      limit: 200,
+      repositoryPath: "/repo/art",
+    });
+    expect(screen.queryByText("Merge color pipeline preview")).toBeNull();
+    expect(screen.queryByText("Create initial scene layout")).toBeNull();
+  });
+
+  it("uses the current time when no relative-time base is provided", () => {
+    vi.setSystemTime(new Date("2026-07-08T05:12:00Z"));
+
+    const { container } = renderWithProviders(
+      <HistoryWorkbench rows={mockHistoryRows} />,
+    );
+
+    expect(
+      container.querySelector('time[datetime="2026-07-07T05:12:00Z"]'),
+    ).toHaveTextContent("yesterday");
+  });
+
   it("loads repository history pages when scrolling near the end", async () => {
     vi.useRealTimers();
     const firstPageCommit = createCommitSummary({
@@ -220,9 +250,9 @@ describe("HistoryWorkbench", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("Author match")).toBeInTheDocument();
     expect(screen.getByText("Content match")).toBeInTheDocument();
-    expect(screen.getByText("message")).toBeInTheDocument();
+    expect(screen.getByText("commit message")).toBeInTheDocument();
     expect(screen.getByText("author")).toBeInTheDocument();
-    expect(screen.getByText("content")).toBeInTheDocument();
+    expect(screen.getByText("file content")).toBeInTheDocument();
     expect(searchLogMock).toHaveBeenCalledWith({
       after: null,
       author: null,
@@ -264,7 +294,7 @@ describe("HistoryWorkbench", () => {
 
     fireEvent.click(screen.getByText("Tag release candidate assets"));
     expect(screen.getByText("Copy hash")).toBeInTheDocument();
-    expect(screen.getByLabelText("Diff viewer")).toBeInTheDocument();
+    expect(screen.getByLabelText("File comparison")).toBeInTheDocument();
   });
 
   it("debounces search, shows loading, and renders de-duplicated results", async () => {
@@ -326,7 +356,7 @@ describe("HistoryWorkbench", () => {
     ).toBeChecked();
     expect(
       within(dialog).getByText(
-        "This uses git revert and does not rewrite history.",
+        "Existing commit history will remain unchanged.",
       ),
     ).toBeInTheDocument();
 
@@ -344,7 +374,7 @@ describe("HistoryWorkbench", () => {
     });
     expect(
       screen.getByText(
-        "Created Revert: Refine branch filter interactions at abc1234.",
+        "Revert commit created: Revert: Refine branch filter interactions (abc1234).",
       ),
     ).toBeInTheDocument();
   });
@@ -499,7 +529,7 @@ describe("HistoryWorkbench", () => {
       screen.getByRole("button", { name: "Revert commit" }),
     ).toBeDisabled();
     expect(
-      screen.getByText("Merge commits cannot be reverted."),
+      screen.getByText("Reverting merge commits isn't supported."),
     ).toBeInTheDocument();
     expect(revertCommitMock).not.toHaveBeenCalled();
   });
