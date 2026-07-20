@@ -830,7 +830,9 @@ describe("RepositoryShell review mode", () => {
 
     const overlay = await screen.findByRole("dialog", { name: "Review mode" });
     expect(overlay).toHaveTextContent("Latest remote work");
-    expect(overlay).toHaveTextContent("could not resolve host");
+    expect(
+      screen.getByRole("tooltip", { name: "could not resolve host" }),
+    ).toBeInTheDocument();
     expect(errorListener).not.toHaveBeenCalled();
 
     window.removeEventListener("artistic-git:error", errorListener);
