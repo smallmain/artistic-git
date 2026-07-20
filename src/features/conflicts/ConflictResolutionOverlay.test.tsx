@@ -50,6 +50,56 @@ afterEach(() => {
 });
 
 describe("ConflictResolutionOverlay", () => {
+  it("paginates a file with thousands of conflict groups", async () => {
+    const file = createFile({ status: "unresolved" });
+    const hunks = Array.from({ length: 2_000 }, (_, index) => ({
+      endLine: index + 1,
+      endOffset: 0,
+      id: index,
+      otherText: `incoming ${index}`,
+      ownText: `current ${index}`,
+      startLine: index + 1,
+      startOffset: 0,
+    }));
+    const api = createApi({
+      conflictDetail: vi.fn(async () => ({
+        detail: {
+          currentText: "",
+          hunks,
+          kind: "text" as const,
+          language: "ts",
+          otherText: "",
+          ownText: "",
+        },
+        file,
+      })),
+      listConflicts: vi.fn(async () => ({
+        files: [file],
+        operation: mergeOperation,
+      })),
+    });
+
+    renderWithProviders(
+      <ConflictResolutionOverlay
+        api={api}
+        event={createEvent([file])}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await screen.findByLabelText("Resolved file content");
+    const list = screen.getByTestId("conflict-hunk-list");
+    expect(within(list).getAllByTestId("conflict-hunk-card")).toHaveLength(50);
+    expect(screen.getByText("Conflict group page 1 of 40")).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Next conflict group page" }),
+    );
+
+    expect(screen.getByLabelText("Conflict at line 51")).toBeInTheDocument();
+    expect(within(list).getAllByTestId("conflict-hunk-card")).toHaveLength(50);
+  });
+
   it("gates save and complete while text hunks remain unresolved", async () => {
     const file = createFile({ status: "unresolved" });
     const api = createApi({

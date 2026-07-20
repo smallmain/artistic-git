@@ -115,6 +115,7 @@ type SyncStatusTranslator = (
 ) => string;
 const stashDetailsFilePageSize = 200;
 const safetyBackupPageSize = 100;
+const largeFileWarningPageSize = 100;
 
 interface RepositoryShellProps {
   repositoryPath: string;
@@ -3159,32 +3160,12 @@ function CommitChangesDialog({
       ) : null}
 
       {largeFileWarning ? (
-        <div className="space-y-3 rounded-md border bg-warning/10 p-3 text-sm">
-          <p className="font-medium">
-            {t("localChanges.largeFilesTitle", {
-              threshold: largeFileWarning.thresholdMb,
-            })}
-          </p>
-          <ul className="max-h-32 overflow-auto text-muted-foreground">
-            {largeFileWarning.files.map((file) => (
-              <li className="truncate" key={file.path}>
-                {file.path}
-              </li>
-            ))}
-          </ul>
-          <div className="flex flex-wrap gap-2">
-            <Button onClick={onTrackWithLfs} type="button" variant="secondary">
-              {t("localChanges.trackWithLfs")}
-            </Button>
-            <Button
-              onClick={onCommitNormally}
-              type="button"
-              variant="secondary"
-            >
-              {t("localChanges.commitNormally")}
-            </Button>
-          </div>
-        </div>
+        <LargeFileWarningPanel
+          files={largeFileWarning.files}
+          onCommitNormally={onCommitNormally}
+          onTrackWithLfs={onTrackWithLfs}
+          thresholdMb={largeFileWarning.thresholdMb}
+        />
       ) : null}
 
       {gpgFailure ? (
@@ -3203,6 +3184,91 @@ function CommitChangesDialog({
         </div>
       ) : null}
     </DialogFrame>
+  );
+}
+
+function LargeFileWarningPanel({
+  files,
+  onCommitNormally,
+  onTrackWithLfs,
+  thresholdMb,
+}: {
+  files: LargeFileWarning[];
+  onCommitNormally: () => void;
+  onTrackWithLfs: () => void;
+  thresholdMb: number;
+}) {
+  const { t } = useTranslation();
+  const [pageIndex, setPageIndex] = React.useState(0);
+  const pageCount = Math.max(
+    1,
+    Math.ceil(files.length / largeFileWarningPageSize),
+  );
+  const currentPageIndex = Math.min(pageIndex, pageCount - 1);
+  const visibleFiles = files.slice(
+    currentPageIndex * largeFileWarningPageSize,
+    (currentPageIndex + 1) * largeFileWarningPageSize,
+  );
+
+  return (
+    <div className="space-y-3 rounded-md border bg-warning/10 p-3 text-sm">
+      <p className="font-medium">
+        {t("localChanges.largeFilesTitle", { threshold: thresholdMb })}
+      </p>
+      <ul className="max-h-32 overflow-auto text-muted-foreground">
+        {visibleFiles.map((file) => (
+          <li
+            className="truncate"
+            data-testid="large-file-warning-item"
+            key={file.path}
+          >
+            {file.path}
+          </li>
+        ))}
+      </ul>
+      {pageCount > 1 ? (
+        <div className="flex items-center justify-between gap-2">
+          <Button
+            aria-label={t("localChanges.previousLargeFilesPage")}
+            disabled={currentPageIndex === 0}
+            onClick={() => setPageIndex(Math.max(0, currentPageIndex - 1))}
+            size="icon"
+            title={t("localChanges.previousLargeFilesPage")}
+            type="button"
+            variant="ghost"
+          >
+            <ChevronLeft aria-hidden="true" className="size-4" />
+          </Button>
+          <span className="text-xs text-muted-foreground">
+            {t("localChanges.largeFilesPage", {
+              page: currentPageIndex + 1,
+              total: pageCount,
+            })}
+          </span>
+          <Button
+            aria-label={t("localChanges.nextLargeFilesPage")}
+            disabled={currentPageIndex >= pageCount - 1}
+            onClick={() =>
+              setPageIndex(Math.min(pageCount - 1, currentPageIndex + 1))
+            }
+            size="icon"
+            title={t("localChanges.nextLargeFilesPage")}
+            type="button"
+            variant="ghost"
+          >
+            <ChevronRight aria-hidden="true" className="size-4" />
+          </Button>
+        </div>
+      ) : null}
+      <div className="flex flex-wrap gap-2">
+        <Button onClick={onTrackWithLfs} type="button" variant="secondary">
+          {t("localChanges.trackWithLfs")}
+        </Button>
+        <Button onClick={onCommitNormally} type="button" variant="secondary">
+          {t("localChanges.commitNormally")}
+        </Button>
+      </div>
+    </div>
   );
 }
 

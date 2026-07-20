@@ -2811,7 +2811,11 @@ describe("RepositoryShell commit flow", () => {
 
   it("continues a large-file commit with LFS after the warning", async () => {
     commandMocks.commitChanges.mockResolvedValueOnce({
-      largeFiles: [{ path: "assets/texture.png", sizeBytes: "52428801" }],
+      largeFiles: Array.from({ length: 250 }, (_, index) => ({
+        path:
+          index === 0 ? "assets/texture.png" : `assets/texture-${index}.png`,
+        sizeBytes: "52428801",
+      })),
       status: "largeFilesNeedDecision",
       thresholdMb: 50,
     });
@@ -2828,6 +2832,19 @@ describe("RepositoryShell commit flow", () => {
         "Some files are larger than 50 MB and aren't managed by Git LFS.",
       ),
     ).toBeInTheDocument();
+    expect(
+      within(dialog).getAllByTestId("large-file-warning-item"),
+    ).toHaveLength(100);
+    expect(
+      within(dialog).getByText("Large file page 1 of 3"),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Next large file page" }),
+    );
+    expect(
+      within(dialog).getAllByTestId("large-file-warning-item"),
+    ).toHaveLength(100);
+    expect(within(dialog).getByText("assets/texture-100.png")).toBeVisible();
     fireEvent.click(
       within(dialog).getByRole("button", {
         name: "Manage with Git LFS and continue",

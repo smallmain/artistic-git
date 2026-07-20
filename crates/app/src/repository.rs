@@ -61,6 +61,7 @@ const OUTPUT_READER_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 const LFS_RULE_SCAN_ENTRY_LIMIT: usize = 100_000;
 const LFS_ATTRIBUTES_READ_LIMIT: usize = 64 * 1024;
 const BRANCH_LIST_ENTRY_LIMIT: usize = 5_000;
+const BRANCH_REF_QUERY_LIMIT: usize = BRANCH_LIST_ENTRY_LIMIT + 1;
 const REMOTE_BRANCH_LIST_ENTRY_LIMIT: usize = 5_000;
 const WORKTREE_GITDIR_FILE_LIMIT_BYTES: usize = 64 * 1024;
 const CANCEL_COMPLETION_TIMEOUT: Duration = Duration::from_secs(60);
@@ -1494,15 +1495,32 @@ pub fn list_branches(
 ) -> AppResult<BranchListResponse> {
     let root = canonical_repository_path(&request.repository_path, "listBranches")?;
     let current_branch = current_branch_name(runner, &root, "listBranches").ok();
-    let output = git_stdout(
+    let query_limit = format!("--count={BRANCH_REF_QUERY_LIMIT}");
+    let local_output = git_stdout(
         runner,
         Some(&root),
         [
             "for-each-ref",
+            query_limit.as_str(),
+            "--exclude=refs/heads/backup/*",
             "--sort=-committerdate",
+            "--sort=-HEAD",
             "--format=%(refname)%00%(objectname)%00%(committerdate:unix)%00%(upstream:short)%00%(upstream:track,nobracket)",
             "refs/heads",
-            "refs/remotes",
+        ],
+        "listBranches",
+    )?;
+    let remote_output = git_stdout(
+        runner,
+        Some(&root),
+        [
+            "for-each-ref",
+            query_limit.as_str(),
+            "--exclude=refs/remotes/origin/backup/*",
+            "--exclude=refs/remotes/origin/HEAD",
+            "--sort=-committerdate",
+            "--format=%(refname)%00%(objectname)%00%(committerdate:unix)%00%(upstream:short)%00%(upstream:track,nobracket)",
+            "refs/remotes/origin",
         ],
         "listBranches",
     )?;
@@ -1514,8 +1532,10 @@ pub fn list_branches(
     {
         merged.insert(current_branch.clone(), BranchAccumulator::default());
     }
-    let mut truncated = false;
-    for line in output.lines() {
+    let local_query_truncated = local_output.lines().count() >= BRANCH_REF_QUERY_LIMIT;
+    let remote_query_truncated = remote_output.lines().count() >= BRANCH_REF_QUERY_LIMIT;
+    let mut truncated = local_query_truncated || remote_query_truncated;
+    for line in local_output.lines().chain(remote_output.lines()) {
         let parts = line.split('\0').collect::<Vec<_>>();
         if parts.len() < 5 {
             continue;
@@ -1531,10 +1551,6 @@ pub fn list_branches(
             if local.starts_with("backup/") {
                 continue;
             }
-            if !merged.contains_key(local) && merged.len() > BRANCH_LIST_ENTRY_LIMIT {
-                truncated = true;
-                continue;
-            }
             let entry = merged.entry(local.to_owned()).or_default();
             entry.local_oid = oid;
             entry.local_time = commit_time;
@@ -1544,13 +1560,20 @@ pub fn list_branches(
             if remote == "HEAD" || remote.starts_with("backup/") {
                 continue;
             }
-            if !merged.contains_key(remote) && merged.len() > BRANCH_LIST_ENTRY_LIMIT {
-                truncated = true;
-                continue;
-            }
             let entry = merged.entry(remote.to_owned()).or_default();
             entry.remote_oid = oid;
             entry.remote_time = commit_time;
+        }
+    }
+
+    if remote_query_truncated {
+        if let Some(current_branch) = current_branch.as_deref() {
+            if let Some(entry) = merged.get_mut(current_branch) {
+                if entry.remote_oid.is_none() {
+                    let remote_ref = format!("refs/remotes/origin/{current_branch}");
+                    entry.remote_oid = exact_ref_oid(runner, &root, &remote_ref)?;
+                }
+            }
         }
     }
 
@@ -3636,7 +3659,7 @@ fn branch_summary(
         (None, None) => BranchExistence::LocalOnly,
     };
     let current = current_branch == Some(short_name.as_str());
-    let (ahead, behind) = branch_ahead_behind(runner, root, &short_name, &entry)?;
+    let (ahead, behind) = branch_ahead_behind(runner, root, &short_name, current, &entry)?;
     let head_oid = entry.local_oid.clone().or(entry.remote_oid.clone());
     let latest_commit_unix_seconds = entry.local_time.or(entry.remote_time);
 
@@ -3653,23 +3676,50 @@ fn branch_summary(
     })
 }
 
+fn exact_ref_oid(runner: &GitRunner, root: &Path, refname: &str) -> AppResult<Option<String>> {
+    let (plan, output) = crate::git_ops::run_git_raw(
+        runner,
+        Some(root),
+        ["show-ref", "--hash", "--verify", refname],
+        "listBranches",
+    )?;
+    if output.status.success() {
+        return Ok(
+            empty_to_none(String::from_utf8_lossy(&output.stdout).trim()).map(str::to_owned),
+        );
+    }
+    if matches!(output.status.code(), Some(1) | Some(128)) {
+        return Ok(None);
+    }
+
+    Err(crate::git_ops::command_failure(
+        &plan,
+        output,
+        "listBranches",
+    ))
+}
+
 fn branch_ahead_behind(
     runner: &GitRunner,
     root: &Path,
     short_name: &str,
+    current: bool,
     entry: &BranchAccumulator,
 ) -> AppResult<(u32, u32)> {
-    if entry.local_oid.is_none() || entry.remote_oid.is_none() {
+    if entry.local_oid.is_none() {
         return Ok((0, 0));
     }
 
-    let matching_upstream_track = entry
+    let upstream_track = entry
         .upstream
         .as_deref()
-        .filter(|upstream| upstream.strip_prefix("origin/") == Some(short_name))
         .and(entry.upstream_track.as_deref());
-    if let Some(counts) = matching_upstream_track.and_then(parse_upstream_track) {
+    if let Some(counts) = upstream_track.and_then(parse_upstream_track) {
         return Ok(counts);
+    }
+
+    if !current || entry.remote_oid.is_none() {
+        return Ok((0, 0));
     }
 
     let spec = format!("{short_name}...origin/{short_name}");
@@ -6055,20 +6105,35 @@ mod tests {
     }
 
     #[test]
-    fn branch_summary_reuses_matching_upstream_tracking_counts() {
+    fn branch_summary_reuses_upstream_tracking_counts() {
         let (runner, temp) = fake_runner();
         let entry = BranchAccumulator {
             local_oid: Some("local".to_owned()),
-            remote_oid: Some("remote".to_owned()),
             upstream: Some("origin/feature/gallery".to_owned()),
             upstream_track: Some("ahead 8, behind 3".to_owned()),
             ..BranchAccumulator::default()
         };
 
         assert_eq!(
-            branch_ahead_behind(&runner, temp.path(), "feature/gallery", &entry)
+            branch_ahead_behind(&runner, temp.path(), "feature/gallery", false, &entry,)
                 .expect("tracking counts"),
             (8, 3)
+        );
+    }
+
+    #[test]
+    fn branch_summary_does_not_scan_non_current_divergence_without_an_upstream() {
+        let (runner, temp) = fake_runner();
+        let entry = BranchAccumulator {
+            local_oid: Some("local".to_owned()),
+            remote_oid: Some("remote".to_owned()),
+            ..BranchAccumulator::default()
+        };
+
+        assert_eq!(
+            branch_ahead_behind(&runner, temp.path(), "feature/gallery", false, &entry)
+                .expect("bounded divergence"),
+            (0, 0)
         );
     }
 
@@ -7148,6 +7213,61 @@ mod tests {
             .iter()
             .any(|branch| branch.short_name.starts_with("backup/")));
         assert!(!branches.truncated);
+    }
+
+    #[test]
+    fn bounds_branch_ref_enumeration_before_building_summaries() {
+        let (runner, _dist_temp) = real_runner();
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        let old_head = repo.git_output(["rev-parse", "HEAD"]).trim().to_owned();
+        repo.git(["branch", "current-old"]);
+        repo.write("tracked.txt", "newer\n");
+        repo.git(["add", "."]);
+        repo.git(["commit", "-m", "newer refs"]);
+        let newer_head = repo.git_output(["rev-parse", "HEAD"]).trim().to_owned();
+        repo.git(["checkout", "current-old"]);
+        let mut packed_refs = "# pack-refs with: peeled fully-peeled sorted\n".to_owned();
+        for index in 0..=BRANCH_LIST_ENTRY_LIMIT {
+            packed_refs.push_str(&format!("{newer_head} refs/heads/backup/perf-{index:05}\n"));
+        }
+        for index in 0..=BRANCH_LIST_ENTRY_LIMIT {
+            packed_refs.push_str(&format!("{newer_head} refs/heads/perf-{index:05}\n"));
+        }
+        packed_refs.push_str(&format!("{old_head} refs/remotes/origin/current-old\n"));
+        for index in 0..=BRANCH_LIST_ENTRY_LIMIT {
+            packed_refs.push_str(&format!(
+                "{newer_head} refs/remotes/origin/perf-{index:05}\n"
+            ));
+        }
+        fs::write(repo.path.join(".git/packed-refs"), packed_refs).expect("packed refs");
+
+        let response = list_branches(
+            &runner,
+            RepositoryPathRequest {
+                repository_path: display_path(&repo.path),
+            },
+        )
+        .expect("bounded branches");
+
+        assert!(response.truncated);
+        assert_eq!(response.branches.len(), BRANCH_LIST_ENTRY_LIMIT);
+        let current = response
+            .branches
+            .iter()
+            .find(|branch| branch.current)
+            .expect("current branch retained");
+        assert_eq!(current.short_name, "current-old");
+        assert_eq!(current.head_oid.as_deref(), Some(old_head.as_str()));
+        assert_eq!(current.existence, BranchExistence::LocalAndRemote);
+        assert!(response
+            .branches
+            .iter()
+            .any(|branch| branch.short_name.starts_with("perf-")));
+        assert!(!response
+            .branches
+            .iter()
+            .any(|branch| branch.short_name.starts_with("backup/")));
     }
 
     #[test]

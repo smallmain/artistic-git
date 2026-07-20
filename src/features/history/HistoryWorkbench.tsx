@@ -70,6 +70,12 @@ const graphLaneWidth = 18;
 const graphLeftPadding = 14;
 const historyPageSize = 200;
 const loadMoreThresholdPx = rowHeight * 4;
+const loadMoreFooterHeight = 48;
+const branchFilterRowHeight = 36;
+const branchFilterViewportHeight = 216;
+const commitRefRowHeight = 32;
+const commitRefViewportHeight = 224;
+const maxVisibleCommitRefs = 6;
 type RevertUnavailableReason = RevertDisabledReason | "missingRepository";
 
 interface HistoryWorkbenchProps {
@@ -486,7 +492,6 @@ export function HistoryWorkbench({
   const fetchNextPage = effectiveSearchTerm
     ? backendSearchQuery.fetchNextPage
     : historyQuery.fetchNextPage;
-  const scrollContainerRef = React.useRef<HTMLDivElement>(null);
   const pageLoadGateRef = React.useRef({ key: "", pending: false });
   const pageLoadKey = effectiveSearchTerm
     ? `search:${effectiveSearchTerm}`
@@ -504,44 +509,47 @@ export function HistoryWorkbench({
       ? historyQuery.fetchNextPage()
       : historyQuery.refetch());
   };
+  const requestNextPage = React.useCallback(() => {
+    if (
+      !backendHistoryEnabled ||
+      !canLoadMore ||
+      isFetchingNextPage ||
+      historyLoadError
+    ) {
+      return;
+    }
+
+    if (pageLoadGateRef.current.key !== pageLoadKey) {
+      pageLoadGateRef.current = { key: pageLoadKey, pending: false };
+    }
+    if (pageLoadGateRef.current.pending) {
+      return;
+    }
+
+    pageLoadGateRef.current.pending = true;
+    const releaseGate = () => {
+      if (pageLoadGateRef.current.key === pageLoadKey) {
+        pageLoadGateRef.current.pending = false;
+      }
+    };
+    void fetchNextPage().then(releaseGate, releaseGate);
+  }, [
+    backendHistoryEnabled,
+    canLoadMore,
+    fetchNextPage,
+    historyLoadError,
+    isFetchingNextPage,
+    pageLoadKey,
+  ]);
   const maybeLoadNextPage = React.useCallback(
     (element: HTMLElement) => {
-      if (
-        !backendHistoryEnabled ||
-        !canLoadMore ||
-        isFetchingNextPage ||
-        historyLoadError
-      ) {
-        return;
-      }
-
-      if (pageLoadGateRef.current.key !== pageLoadKey) {
-        pageLoadGateRef.current = { key: pageLoadKey, pending: false };
-      }
-      if (pageLoadGateRef.current.pending) {
-        return;
-      }
-
       const remaining =
         element.scrollHeight - element.scrollTop - element.clientHeight;
       if (remaining <= loadMoreThresholdPx) {
-        pageLoadGateRef.current.pending = true;
-        const releaseGate = () => {
-          if (pageLoadGateRef.current.key === pageLoadKey) {
-            pageLoadGateRef.current.pending = false;
-          }
-        };
-        void fetchNextPage().then(releaseGate, releaseGate);
+        requestNextPage();
       }
     },
-    [
-      backendHistoryEnabled,
-      canLoadMore,
-      fetchNextPage,
-      historyLoadError,
-      isFetchingNextPage,
-      pageLoadKey,
-    ],
+    [requestNextPage],
   );
   const handleScroll = React.useCallback<React.UIEventHandler<HTMLDivElement>>(
     (event) => {
@@ -550,12 +558,10 @@ export function HistoryWorkbench({
     },
     [maybeLoadNextPage, virtual],
   );
-  React.useEffect(() => {
-    const element = scrollContainerRef.current;
-    if (element) {
-      maybeLoadNextPage(element);
-    }
-  }, [maybeLoadNextPage, visibleRows.length]);
+  const historyContentHeight = Math.max(
+    virtual.totalSize,
+    canLoadMore ? viewportHeight - loadMoreFooterHeight : 0,
+  );
   const selectedCommit =
     selectedCommitId === null
       ? null
@@ -686,10 +692,9 @@ export function HistoryWorkbench({
         className="relative flex-1 overflow-auto"
         data-testid="history-scroll-viewport"
         onScroll={handleScroll}
-        ref={scrollContainerRef}
         style={{ height: viewportHeight }}
       >
-        <div className="relative" style={{ height: virtual.totalSize }}>
+        <div className="relative" style={{ height: historyContentHeight }}>
           {virtual.items.map((item) => {
             const row = visibleRows[item.index];
             return (
@@ -719,10 +724,22 @@ export function HistoryWorkbench({
           </div>
         ) : null}
         {visibleRows.length === 0 && !historyLoadError ? (
-          <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
+          <div className="absolute inset-0 flex items-center justify-center px-4 pb-14 text-center text-sm text-muted-foreground">
             {isInitialHistoryLoading
               ? t("history.loading")
               : t("history.empty")}
+          </div>
+        ) : null}
+        {canLoadMore && !isFetchingNextPage && !historyLoadError ? (
+          <div className="relative z-10 flex h-12 items-center justify-center border-t bg-card/95">
+            <Button
+              data-testid="history-load-more"
+              onClick={requestNextPage}
+              type="button"
+              variant="secondary"
+            >
+              {t("history.loadMore")}
+            </Button>
           </div>
         ) : null}
       </div>
@@ -764,6 +781,16 @@ function BranchFilter({
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = React.useState(false);
+  const [query, setQuery] = React.useState("");
+  const deferredQuery = React.useDeferredValue(query);
+  const filteredBranches = React.useMemo(() => {
+    const normalizedQuery = deferredQuery.trim().toLocaleLowerCase();
+    return normalizedQuery
+      ? branches.filter((branch) =>
+          branch.name.toLocaleLowerCase().includes(normalizedQuery),
+        )
+      : branches;
+  }, [branches, deferredQuery]);
   const label =
     mode === "all"
       ? t("history.filters.all")
@@ -776,7 +803,10 @@ function BranchFilter({
       <Button
         className="gap-2"
         onClick={() => {
-          setOpen((value) => !value);
+          if (open) {
+            setQuery("");
+          }
+          setOpen(!open);
         }}
         type="button"
         variant="secondary"
@@ -804,29 +834,106 @@ function BranchFilter({
             }}
           />
           <div className="my-2 border-t" />
-          {branches.map((branch) => (
-            <FilterOption
-              checked={selectedBranches.has(branch.name)}
-              key={branch.name}
-              label={
-                branch.current
-                  ? `${branch.name} • ${t("history.filters.current")}`
-                  : branch.name
-              }
-              onSelect={() => {
-                const next = new Set(selectedBranches);
-                if (next.has(branch.name)) {
-                  next.delete(branch.name);
-                } else {
-                  next.add(branch.name);
-                }
-                onSelectedBranchesChange(next);
-                onModeChange(next.size === 0 ? "auto" : "custom");
-              }}
+          <label className="relative flex items-center">
+            <Search
+              aria-hidden="true"
+              className="pointer-events-none absolute left-2.5 size-4 text-muted-foreground"
             />
-          ))}
+            <input
+              aria-label={t("history.filters.search")}
+              className="h-9 w-full rounded-md border bg-background pl-8 pr-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder={t("history.filters.searchPlaceholder")}
+              value={query}
+            />
+          </label>
+          <div className="mt-2">
+            {filteredBranches.length > 0 ? (
+              <VirtualBranchFilterOptions
+                branches={filteredBranches}
+                onModeChange={onModeChange}
+                onSelectedBranchesChange={onSelectedBranchesChange}
+                selectedBranches={selectedBranches}
+              />
+            ) : (
+              <p className="px-2 py-3 text-sm text-muted-foreground">
+                {t("history.filters.noResults")}
+              </p>
+            )}
+          </div>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function VirtualBranchFilterOptions({
+  branches,
+  onModeChange,
+  onSelectedBranchesChange,
+  selectedBranches,
+}: {
+  branches: HistoryBranch[];
+  onModeChange: (mode: BranchFilterMode) => void;
+  onSelectedBranchesChange: (selected: Set<string>) => void;
+  selectedBranches: Set<string>;
+}) {
+  const { t } = useTranslation();
+  const virtual = useVirtualWindow({
+    count: branches.length,
+    estimateSize: branchFilterRowHeight,
+    overscan: 4,
+    viewportHeight: branchFilterViewportHeight,
+  });
+  const height = Math.min(virtual.totalSize, branchFilterViewportHeight);
+
+  return (
+    <div
+      aria-label={t("history.filters.branches")}
+      aria-multiselectable="true"
+      className="overflow-auto"
+      data-testid="history-branch-filter-viewport"
+      onScroll={virtual.onScroll}
+      role="listbox"
+      style={{ height }}
+    >
+      <div className="relative" style={{ height: virtual.totalSize }}>
+        {virtual.items.map((item) => {
+          const branch = branches[item.index];
+          return (
+            <div
+              className="absolute left-0 right-0"
+              key={branch.name}
+              style={{
+                height: item.size,
+                transform: `translateY(${item.start}px)`,
+              }}
+            >
+              <FilterOption
+                checked={selectedBranches.has(branch.name)}
+                label={
+                  branch.current
+                    ? `${branch.name} • ${t("history.filters.current")}`
+                    : branch.name
+                }
+                onSelect={() => {
+                  const next = new Set(selectedBranches);
+                  if (next.has(branch.name)) {
+                    next.delete(branch.name);
+                  } else {
+                    next.add(branch.name);
+                  }
+                  onSelectedBranchesChange(next);
+                  onModeChange(next.size === 0 ? "auto" : "custom");
+                }}
+                optionCount={branches.length}
+                optionIndex={item.index}
+                testId="history-branch-filter-option"
+              />
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -835,15 +942,27 @@ function FilterOption({
   checked,
   label,
   onSelect,
+  optionCount,
+  optionIndex,
+  testId,
 }: {
   checked: boolean;
   label: string;
   onSelect: () => void;
+  optionCount?: number;
+  optionIndex?: number;
+  testId?: string;
 }) {
+  const isOption = optionIndex !== undefined && optionCount !== undefined;
   return (
     <button
+      aria-posinset={isOption ? optionIndex + 1 : undefined}
+      aria-selected={isOption ? checked : undefined}
+      aria-setsize={isOption ? optionCount : undefined}
       className="flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-sm hover:bg-accent"
+      data-testid={testId}
       onClick={onSelect}
+      role={isOption ? "option" : undefined}
       type="button"
     >
       <span className="flex size-4 items-center justify-center rounded border">
@@ -870,6 +989,8 @@ function HistoryCommitRow({
   const { t } = useTranslation();
   const formatters = useLocalizedFormatters();
   const { commit } = row;
+  const visibleRefs = commit.refs.slice(0, maxVisibleCommitRefs);
+  const hiddenRefCount = commit.refs.length - visibleRefs.length;
 
   return (
     <button
@@ -895,9 +1016,27 @@ function HistoryCommitRow({
             </span>
           </span>
           <span className="mt-1 flex min-w-0 items-center gap-1.5">
-            {commit.refs.map((ref) => (
-              <RefBadge key={`${ref.type}:${ref.name}`} refItem={ref} />
+            {visibleRefs.map((ref, index) => (
+              <RefBadge
+                key={`${ref.type}:${ref.name}:${index}`}
+                refItem={ref}
+              />
             ))}
+            {hiddenRefCount > 0 ? (
+              <Tooltip
+                content={t("history.moreRefs", { count: hiddenRefCount })}
+              >
+                {({ describedBy }) => (
+                  <span
+                    aria-describedby={describedBy}
+                    className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground"
+                    data-testid="history-ref-overflow"
+                  >
+                    +{hiddenRefCount}
+                  </span>
+                )}
+              </Tooltip>
+            ) : null}
             {commit.searchMatches?.map((match) => (
               <span
                 className="rounded bg-warning/20 px-1.5 py-0.5 text-[11px] text-foreground"
@@ -972,6 +1111,7 @@ function RefBadge({ refItem }: { refItem: HistoryCommit["refs"][number] }) {
         "inline-flex max-w-44 items-center gap-1 truncate rounded px-1.5 py-0.5 text-[11px] font-medium",
         isTag ? "bg-warning/20 text-foreground" : "bg-sync/15 text-foreground",
       )}
+      data-testid="history-ref-badge"
     >
       {isTag ? (
         <Tag className="size-3 shrink-0" />
@@ -980,6 +1120,123 @@ function RefBadge({ refItem }: { refItem: HistoryCommit["refs"][number] }) {
       )}
       <span className="truncate">{refItem.name}</span>
     </span>
+  );
+}
+
+function CommitRefsBrowser({ refs }: { refs: HistoryCommit["refs"] }) {
+  const { t } = useTranslation();
+  const [open, setOpen] = React.useState(false);
+  const [query, setQuery] = React.useState("");
+  const deferredQuery = React.useDeferredValue(query);
+  const filteredRefs = React.useMemo(() => {
+    const normalizedQuery = deferredQuery.trim().toLocaleLowerCase();
+    return normalizedQuery
+      ? refs.filter((ref) =>
+          ref.name.toLocaleLowerCase().includes(normalizedQuery),
+        )
+      : refs;
+  }, [deferredQuery, refs]);
+
+  if (refs.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="relative mt-2 w-fit">
+      <Button
+        aria-expanded={open}
+        className="h-7 gap-1.5 px-2 text-xs"
+        onClick={() => {
+          if (open) {
+            setQuery("");
+          }
+          setOpen(!open);
+        }}
+        type="button"
+        variant="ghost"
+      >
+        <GitBranch aria-hidden="true" className="size-3.5" />
+        {t("history.refs.count", { count: refs.length })}
+        <ChevronDown aria-hidden="true" className="size-3.5" />
+      </Button>
+      {open ? (
+        <div className="absolute left-0 top-8 z-30 w-80 rounded-md border bg-card p-2 shadow-floating">
+          <label className="relative flex items-center">
+            <Search
+              aria-hidden="true"
+              className="pointer-events-none absolute left-2.5 size-4 text-muted-foreground"
+            />
+            <input
+              aria-label={t("history.refs.search")}
+              className="h-9 w-full rounded-md border bg-background pl-8 pr-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder={t("history.refs.searchPlaceholder")}
+              value={query}
+            />
+          </label>
+          <div className="mt-2">
+            {filteredRefs.length > 0 ? (
+              <VirtualCommitRefList refs={filteredRefs} />
+            ) : (
+              <p className="px-2 py-3 text-sm text-muted-foreground">
+                {t("history.refs.noResults")}
+              </p>
+            )}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function VirtualCommitRefList({ refs }: { refs: HistoryCommit["refs"] }) {
+  const { t } = useTranslation();
+  const virtual = useVirtualWindow({
+    count: refs.length,
+    estimateSize: commitRefRowHeight,
+    overscan: 4,
+    viewportHeight: commitRefViewportHeight,
+  });
+  const height = Math.min(virtual.totalSize, commitRefViewportHeight);
+
+  return (
+    <div
+      aria-label={t("history.refs.list")}
+      className="overflow-auto"
+      onScroll={virtual.onScroll}
+      role="list"
+      style={{ height }}
+    >
+      <div className="relative" style={{ height: virtual.totalSize }}>
+        {virtual.items.map((item) => {
+          const ref = refs[item.index];
+          const isTag = ref.type === "tag";
+          return (
+            <div
+              aria-posinset={item.index + 1}
+              aria-setsize={refs.length}
+              className="absolute left-0 right-0 flex items-center gap-2 px-2 text-sm"
+              data-testid="history-detail-ref-item"
+              key={`${ref.type}:${ref.name}:${item.index}`}
+              role="listitem"
+              style={{
+                height: item.size,
+                transform: `translateY(${item.start}px)`,
+              }}
+            >
+              {isTag ? (
+                <Tag aria-hidden="true" className="size-3.5 shrink-0" />
+              ) : (
+                <GitBranch aria-hidden="true" className="size-3.5 shrink-0" />
+              )}
+              <span className="min-w-0 flex-1 truncate" title={ref.name}>
+                {ref.name}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -1247,6 +1504,7 @@ function CommitDetailPanel({
                     {commit.body}
                   </p>
                 ) : null}
+                <CommitRefsBrowser refs={commit.refs} />
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-2">

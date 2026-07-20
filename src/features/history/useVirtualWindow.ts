@@ -26,11 +26,12 @@ export function useVirtualWindow({
 }): VirtualWindow {
   const [scrollTop, setScrollTop] = React.useState(0);
   const totalSize = count * estimateSize;
-  const startIndex = Math.max(
-    0,
-    Math.floor(scrollTop / estimateSize) - overscan,
-  );
   const visibleCount = Math.ceil(viewportHeight / estimateSize) + overscan * 2;
+  const requestedStart = Math.floor(scrollTop / estimateSize) - overscan;
+  const startIndex = Math.min(
+    Math.max(0, requestedStart),
+    Math.max(0, count - visibleCount),
+  );
   const endIndex = Math.min(count, startIndex + visibleCount);
 
   const items = React.useMemo(

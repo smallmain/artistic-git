@@ -114,6 +114,27 @@ afterEach(() => {
 });
 
 describe("SettingsModal", () => {
+  it("loads repository branches only when project settings are opened", async () => {
+    render(
+      <TestProviders initialWindowState={{ activeRepositoryPath: "/repo/art" }}>
+        <SettingsModal onOpenChange={vi.fn()} open />
+      </TestProviders>,
+    );
+
+    await screen.findByRole("button", {
+      name: "Save update check settings",
+    });
+    expect(commandMocks.listBranches).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Project" }));
+
+    await screen.findByLabelText("Remote repository URL");
+    expect(commandMocks.listBranches).toHaveBeenCalledTimes(1);
+    expect(commandMocks.listBranches).toHaveBeenCalledWith({
+      repositoryPath: "/repo/art",
+    });
+  });
+
   it("shows interval validation and disables saving when fetch interval is out of range", async () => {
     render(
       <TestProviders>
@@ -403,6 +424,35 @@ describe("SettingsModal", () => {
     expect(
       screen.getByText("No HTTPS credentials are saved."),
     ).toBeInTheDocument();
+  });
+
+  it("paginates large saved credential lists", async () => {
+    commandMocks.listHttpsCredentials.mockResolvedValue({
+      credentials: Array.from({ length: 120 }, (_, index) => ({
+        host: `git-${index}.example.test`,
+        path: null,
+        protocol: "https",
+        scope: "host" as const,
+        username: `user-${index}`,
+      })),
+    });
+
+    render(
+      <TestProviders>
+        <SettingsModal onOpenChange={vi.fn()} open />
+      </TestProviders>,
+    );
+
+    await screen.findByText("git-0.example.test");
+    expect(screen.getAllByTestId("https-credential-item")).toHaveLength(50);
+    expect(screen.getByText("Credential page 1 of 3")).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Next credential page" }),
+    );
+
+    expect(screen.getByText("git-50.example.test")).toBeInTheDocument();
+    expect(screen.getAllByTestId("https-credential-item")).toHaveLength(50);
   });
 
   it("edits saved HTTPS credentials without exposing the existing token", async () => {

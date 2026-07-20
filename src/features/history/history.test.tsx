@@ -271,6 +271,8 @@ describe("HistoryWorkbench", () => {
     expect(
       await screen.findByText("Initial backend history page"),
     ).toBeInTheDocument();
+    expect(logPageMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("history-load-more")).toBeInTheDocument();
     expect(logPageMock).toHaveBeenCalledWith({
       after: null,
       limit: 200,
@@ -620,6 +622,82 @@ describe("HistoryWorkbench", () => {
 
     expect(screen.getByText("Commit 4999")).toBeInTheDocument();
     expect(screen.getAllByTestId("history-commit-row").length).toBeLessThan(30);
+  });
+
+  it("keeps the branch filter bounded with thousands of branches", async () => {
+    const branches = Array.from({ length: 5_000 }, (_, index) => ({
+      current: index === 0,
+      name: `branch-${index}`,
+    }));
+    renderWithProviders(
+      <HistoryWorkbench branches={branches} rows={mockHistoryRows} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Auto/ }));
+
+    const viewport = screen.getByTestId("history-branch-filter-viewport");
+    expect(
+      within(viewport).getAllByTestId("history-branch-filter-option").length,
+    ).toBeLessThan(30);
+
+    fireEvent.scroll(viewport, {
+      target: { scrollTop: 5_000 * 36 - 216 },
+    });
+
+    expect(screen.getByText("branch-4999")).toBeInTheDocument();
+    expect(
+      within(viewport).getAllByTestId("history-branch-filter-option").length,
+    ).toBeLessThan(30);
+
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText("Search branches"), {
+        target: { value: "branch-4999" },
+      });
+    });
+    expect(
+      within(viewport).getAllByTestId("history-branch-filter-option"),
+    ).toHaveLength(1);
+    const searchedOption = screen.getByRole("option", { name: "branch-4999" });
+    expect(searchedOption).toBeVisible();
+    fireEvent.click(searchedOption);
+    expect(searchedOption).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("bounds reference badges for a commit with thousands of refs", async () => {
+    const refs = Array.from({ length: 5_000 }, (_, index) => ({
+      name: index === 0 ? "main" : `branch-${index}`,
+      type: "branch" as const,
+    }));
+    const row = {
+      ...mockHistoryRows[0],
+      commit: { ...mockHistoryRows[0].commit, refs },
+    };
+
+    renderWithProviders(<HistoryWorkbench rows={[row]} />);
+
+    expect(screen.getAllByTestId("history-ref-badge")).toHaveLength(6);
+    expect(screen.getByTestId("history-ref-overflow")).toHaveTextContent(
+      "+4994",
+    );
+
+    fireEvent.click(screen.getByText(row.commit.message));
+    fireEvent.click(
+      screen.getByRole("button", { name: "5000 branches or tags" }),
+    );
+    expect(
+      screen.getAllByTestId("history-detail-ref-item").length,
+    ).toBeLessThan(30);
+
+    await act(async () => {
+      fireEvent.change(
+        screen.getByRole("textbox", {
+          name: "Search commit branches and tags",
+        }),
+        { target: { value: "branch-4999" } },
+      );
+    });
+    expect(screen.getAllByTestId("history-detail-ref-item")).toHaveLength(1);
+    expect(screen.getByText("branch-4999")).toBeInTheDocument();
   });
 
   it("filters branches and opens the commit detail panel", () => {

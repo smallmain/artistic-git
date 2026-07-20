@@ -76,6 +76,7 @@ const defaultApi: ConflictResolutionApi = {
 };
 
 const CONFLICT_FILE_PAGE_SIZE = 200;
+const CONFLICT_HUNK_PAGE_SIZE = 50;
 let conflictOperationSequence = 0;
 
 interface ConflictDetailRequestState {
@@ -900,6 +901,7 @@ function TextConflictDetail({
     Record<number, ConflictSide>
   >({});
   const [manualContent, setManualContent] = React.useState(detail.currentText);
+  const [hunkPageIndex, setHunkPageIndex] = React.useState(0);
 
   const automaticContent = React.useMemo(
     () => applyHunkSelections(detail, selections),
@@ -914,6 +916,15 @@ function TextConflictDetail({
     : detail.hunks.filter((hunk) => !selections[hunk.id]).length;
   const markersRemain = containsConflictMarkers(content);
   const saveDisabled = saving || pendingHunks > 0 || markersRemain;
+  const hunkPageCount = Math.max(
+    1,
+    Math.ceil(detail.hunks.length / CONFLICT_HUNK_PAGE_SIZE),
+  );
+  const currentHunkPageIndex = Math.min(hunkPageIndex, hunkPageCount - 1);
+  const visibleHunks = detail.hunks.slice(
+    currentHunkPageIndex * CONFLICT_HUNK_PAGE_SIZE,
+    (currentHunkPageIndex + 1) * CONFLICT_HUNK_PAGE_SIZE,
+  );
 
   const payload: DiffPayload = {
     changeKind: "modified",
@@ -1017,27 +1028,72 @@ function TextConflictDetail({
           />
         </div>
         <div className="flex min-h-0 flex-col border-l">
-          <div className="grid max-h-80 shrink-0 gap-2 overflow-auto border-b p-3">
-            {detail.hunks.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                {t("conflicts.noHunks")}
-              </p>
-            ) : (
-              detail.hunks.map((hunk) => (
-                <ConflictHunkCard
-                  hunk={hunk}
-                  key={hunk.id}
-                  onSelect={(side) =>
-                    setSelections((current) => ({
-                      ...current,
-                      [hunk.id]: side,
-                    }))
+          <div className="flex max-h-80 shrink-0 flex-col border-b">
+            <div
+              className="grid min-h-0 flex-1 gap-2 overflow-auto p-3"
+              data-testid="conflict-hunk-list"
+            >
+              {detail.hunks.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  {t("conflicts.noHunks")}
+                </p>
+              ) : (
+                visibleHunks.map((hunk) => (
+                  <ConflictHunkCard
+                    hunk={hunk}
+                    key={hunk.id}
+                    onSelect={(side) =>
+                      setSelections((current) => ({
+                        ...current,
+                        [hunk.id]: side,
+                      }))
+                    }
+                    selectedSide={selections[hunk.id]}
+                    sideLabels={sideLabels}
+                  />
+                ))
+              )}
+            </div>
+            {hunkPageCount > 1 ? (
+              <div className="flex shrink-0 items-center justify-between gap-2 border-t p-2">
+                <Button
+                  aria-label={t("conflicts.previousHunkPage")}
+                  data-testid="conflict-previous-hunk-page"
+                  disabled={currentHunkPageIndex === 0}
+                  onClick={() =>
+                    setHunkPageIndex(Math.max(0, currentHunkPageIndex - 1))
                   }
-                  selectedSide={selections[hunk.id]}
-                  sideLabels={sideLabels}
-                />
-              ))
-            )}
+                  size="icon"
+                  title={t("conflicts.previousHunkPage")}
+                  type="button"
+                  variant="ghost"
+                >
+                  <ChevronLeft aria-hidden="true" className="size-4" />
+                </Button>
+                <span className="text-xs text-muted-foreground">
+                  {t("conflicts.hunkPage", {
+                    page: currentHunkPageIndex + 1,
+                    total: hunkPageCount,
+                  })}
+                </span>
+                <Button
+                  aria-label={t("conflicts.nextHunkPage")}
+                  data-testid="conflict-next-hunk-page"
+                  disabled={currentHunkPageIndex >= hunkPageCount - 1}
+                  onClick={() =>
+                    setHunkPageIndex(
+                      Math.min(hunkPageCount - 1, currentHunkPageIndex + 1),
+                    )
+                  }
+                  size="icon"
+                  title={t("conflicts.nextHunkPage")}
+                  type="button"
+                  variant="ghost"
+                >
+                  <ChevronRight aria-hidden="true" className="size-4" />
+                </Button>
+              </div>
+            ) : null}
           </div>
           <ManualResolutionEditor
             label={t("conflicts.resolutionContent")}
@@ -1162,6 +1218,7 @@ function ConflictHunkCard({
     <section
       aria-label={t("conflicts.hunkLabel", { line: hunk.startLine })}
       className="overflow-hidden rounded-md border bg-card"
+      data-testid="conflict-hunk-card"
     >
       <header className="border-b bg-muted/35 px-3 py-2">
         <p className="text-xs font-medium text-muted-foreground">

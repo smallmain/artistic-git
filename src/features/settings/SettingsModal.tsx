@@ -1,5 +1,7 @@
 import {
   Check,
+  ChevronLeft,
+  ChevronRight,
   Clipboard,
   Cloud,
   Download,
@@ -121,6 +123,7 @@ const sections: Array<{
   },
 ];
 const maxAutoTrackingRules = 100;
+const httpsCredentialPageSize = 50;
 
 export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
   const { t } = useTranslation();
@@ -165,7 +168,7 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
   const [projectLoadResolvedPath, setProjectLoadResolvedPath] = React.useState<
     string | null
   >(null);
-  const [loadingCredentials, setLoadingCredentials] = React.useState(open);
+  const [loadingCredentials, setLoadingCredentials] = React.useState(false);
   const [savingSettings, setSavingSettings] = React.useState(false);
   const [savingProject, setSavingProject] = React.useState(false);
   const [savingGitignore, setSavingGitignore] = React.useState(false);
@@ -231,6 +234,17 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
         }
       });
 
+    return () => {
+      active = false;
+    };
+  }, [open, setAppSettings, setAppVersion]);
+
+  React.useEffect(() => {
+    if (!open || section !== "general") {
+      return;
+    }
+
+    let active = true;
     void Promise.resolve().then(() => {
       if (active) {
         setLoadingCredentials(true);
@@ -261,10 +275,10 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
     return () => {
       active = false;
     };
-  }, [open, setAppSettings, setAppVersion]);
+  }, [open, section]);
 
   React.useEffect(() => {
-    if (!open || !activeRepositoryPath) {
+    if (!open || !activeRepositoryPath || section !== "project") {
       return;
     }
 
@@ -324,7 +338,7 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
     return () => {
       active = false;
     };
-  }, [activeRepositoryPath, open, setProjectSettings]);
+  }, [activeRepositoryPath, open, section, setProjectSettings]);
 
   if (!open) {
     return null;
@@ -362,8 +376,10 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
   const operationBusy =
     updateInstallInProgress ||
     loading ||
-    (Boolean(activeRepositoryPath) && (loadingProject || !projectScopeReady)) ||
-    loadingCredentials ||
+    (section === "project" &&
+      Boolean(activeRepositoryPath) &&
+      (loadingProject || !projectScopeReady)) ||
+    (section === "general" && loadingCredentials) ||
     mutationBusy;
 
   const beginMutation = () => {
@@ -994,6 +1010,19 @@ function GeneralSettings({
   sshKey: SshKeyStatus | null;
 }) {
   const { t } = useTranslation();
+  const [credentialPageIndex, setCredentialPageIndex] = React.useState(0);
+  const credentialPageCount = Math.max(
+    1,
+    Math.ceil(credentials.length / httpsCredentialPageSize),
+  );
+  const currentCredentialPageIndex = Math.min(
+    credentialPageIndex,
+    credentialPageCount - 1,
+  );
+  const visibleCredentials = credentials.slice(
+    currentCredentialPageIndex * httpsCredentialPageSize,
+    (currentCredentialPageIndex + 1) * httpsCredentialPageSize,
+  );
 
   return (
     <section className="space-y-6">
@@ -1108,12 +1137,13 @@ function GeneralSettings({
         </div>
         {credentials.length > 0 ? (
           <div className="space-y-2">
-            {credentials.map((credential) => {
+            {visibleCredentials.map((credential) => {
               const key = httpsCredentialKey(credential);
               const armed = credentialRemoveArmed === key;
               return (
                 <div
                   className="flex items-center justify-between gap-3 rounded-md border bg-background px-3 py-2"
+                  data-testid="https-credential-item"
                   key={key}
                 >
                   <div className="min-w-0">
@@ -1155,6 +1185,51 @@ function GeneralSettings({
                 </div>
               );
             })}
+            {credentialPageCount > 1 ? (
+              <div className="flex items-center justify-between gap-2 pt-1">
+                <Button
+                  aria-label={t("settings.general.previousCredentialsPage")}
+                  disabled={currentCredentialPageIndex === 0}
+                  onClick={() =>
+                    setCredentialPageIndex(
+                      Math.max(0, currentCredentialPageIndex - 1),
+                    )
+                  }
+                  size="icon"
+                  title={t("settings.general.previousCredentialsPage")}
+                  type="button"
+                  variant="ghost"
+                >
+                  <ChevronLeft aria-hidden="true" className="size-4" />
+                </Button>
+                <span className="text-xs text-muted-foreground">
+                  {t("settings.general.credentialsPage", {
+                    page: currentCredentialPageIndex + 1,
+                    total: credentialPageCount,
+                  })}
+                </span>
+                <Button
+                  aria-label={t("settings.general.nextCredentialsPage")}
+                  disabled={
+                    currentCredentialPageIndex >= credentialPageCount - 1
+                  }
+                  onClick={() =>
+                    setCredentialPageIndex(
+                      Math.min(
+                        credentialPageCount - 1,
+                        currentCredentialPageIndex + 1,
+                      ),
+                    )
+                  }
+                  size="icon"
+                  title={t("settings.general.nextCredentialsPage")}
+                  type="button"
+                  variant="ghost"
+                >
+                  <ChevronRight aria-hidden="true" className="size-4" />
+                </Button>
+              </div>
+            ) : null}
           </div>
         ) : (
           <p className="rounded-md border border-dashed bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
