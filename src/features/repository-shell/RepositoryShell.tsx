@@ -2477,7 +2477,10 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         <div className="min-h-0 flex-1 overflow-hidden p-4">
           {activeTab === "history" ? (
             <div className="flex h-full min-h-0 flex-col gap-3">
-              <div className="min-h-0 flex-1 overflow-auto">
+              <div
+                className="min-h-0 flex-1 overflow-hidden"
+                data-testid="history-workbench-container"
+              >
                 <HistoryWorkbench
                   activeBranchName={effectiveHistoryBranchName}
                   branches={historyBranchesForWorkbench}

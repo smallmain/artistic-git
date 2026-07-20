@@ -424,9 +424,12 @@ export function RepositorySidebar({
         </div>
       </section>
 
-      <section className="flex shrink-0 items-center gap-2 border-b px-3 py-2">
+      <section
+        className="shrink-0 border-b px-3 py-2"
+        data-testid="sidebar-review-action"
+      >
         <button
-          className="flex h-9 flex-1 items-center justify-center gap-2 rounded-md bg-[linear-gradient(135deg,hsl(var(--review-cyan-start)),hsl(var(--review-cyan-end)))] px-3 text-sm font-medium text-white shadow-sm hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-60"
+          className="flex h-9 w-full items-center justify-center gap-2 rounded-md bg-[linear-gradient(135deg,hsl(var(--review-cyan-start)),hsl(var(--review-cyan-end)))] px-3 text-sm font-medium text-white shadow-sm hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-60"
           disabled={busy || !onReviewMode}
           onClick={(event) => onReviewMode?.(event.currentTarget)}
           title={
@@ -437,10 +440,18 @@ export function RepositorySidebar({
           <History className="size-4" aria-hidden="true" />
           {t("repository.reviewMode")}
         </button>
+      </section>
+
+      <section
+        className="flex shrink-0 items-center border-b px-3 py-2"
+        data-testid="sidebar-settings-action"
+      >
         <IconButton
+          className="size-9"
           label={t("actions.openSettings")}
           onClick={onOpenSettings}
-          tooltip={t("repository.moreActions")}
+          tooltip={t("actions.openSettings")}
+          tooltipPlacement="vertical"
           type="button"
           variant="ghost"
         >
@@ -842,7 +853,13 @@ function BranchRow({
       data-testid="branch-row"
       onContextMenu={(event) => {
         event.preventDefault();
-        setMenuAnchor(mainButtonRef.current ?? event.currentTarget);
+        const returnFocusTo = mainButtonRef.current ?? event.currentTarget;
+        const anchorRect = returnFocusTo.getBoundingClientRect();
+        setMenuAnchor({
+          returnFocusTo,
+          x: event.clientX || anchorRect.left + 16,
+          y: event.clientY || anchorRect.top + 16,
+        });
       }}
       style={style}
     >
@@ -883,7 +900,10 @@ function BranchRow({
           </Tooltip>
         ) : null}
       </button>
-      <div className="absolute right-1 top-1 hidden items-center gap-0.5 rounded bg-card group-hover:flex group-focus-within:flex">
+      <div
+        className="absolute right-1 top-1 hidden items-center gap-0.5 rounded-md border border-border/60 bg-background/80 p-0.5 shadow-sm backdrop-blur-sm group-hover:flex group-focus-within:flex"
+        data-testid="branch-hover-actions"
+      >
         {hasRemote ? (
           <OptionalActionButton
             busy={busy}
@@ -922,8 +942,13 @@ function BranchRow({
           aria-haspopup="menu"
           className="size-7"
           label={t("repository.moreActions")}
-          onClick={(event) => setMenuAnchor(event.currentTarget)}
+          onClick={(event) =>
+            setMenuAnchor((current) =>
+              current === null ? event.currentTarget : null,
+            )
+          }
           tooltip={t("repository.moreActions")}
+          tooltipPlacement="vertical"
           variant="ghost"
         >
           <MoreHorizontal className="size-3.5" aria-hidden="true" />
@@ -1079,6 +1104,7 @@ function OptionalActionButton({
 
   return (
     <IconButton
+      className="size-7"
       disabled={busy || !onClick}
       label={label}
       onClick={onClick}
@@ -1089,6 +1115,7 @@ function OptionalActionButton({
             ? label
             : (disabledTooltip ?? t("repository.actionUnavailable"))
       }
+      tooltipPlacement="vertical"
       type="button"
       variant="ghost"
     >

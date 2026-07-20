@@ -10,12 +10,23 @@ export interface IconButtonProps extends Omit<
   children: React.ReactNode;
   label: string;
   tooltip?: string;
+  tooltipPlacement?: "auto" | "vertical";
 }
 
 export const IconButton = React.forwardRef<HTMLButtonElement, IconButtonProps>(
-  ({ children, className, label, tooltip = label, ...props }, ref) => {
+  (
+    {
+      children,
+      className,
+      label,
+      tooltip = label,
+      tooltipPlacement = "auto",
+      ...props
+    },
+    ref,
+  ) => {
     return (
-      <Tooltip content={tooltip}>
+      <Tooltip content={tooltip} placement={tooltipPlacement}>
         {({ describedBy }) => (
           <Button
             aria-describedby={describedBy}

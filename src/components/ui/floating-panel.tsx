@@ -167,13 +167,13 @@ export function FloatingPanel({
       }
     };
 
-    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("pointerdown", handlePointerDown, true);
     document.addEventListener("keydown", handleKeyDown, true);
     window.addEventListener(dialogOpenedEventName, handleDialogOpened);
     window.addEventListener("resize", handleViewportChange);
     window.addEventListener("scroll", handleViewportChange, true);
     return () => {
-      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("pointerdown", handlePointerDown, true);
       document.removeEventListener("keydown", handleKeyDown, true);
       window.removeEventListener(dialogOpenedEventName, handleDialogOpened);
       window.removeEventListener("resize", handleViewportChange);

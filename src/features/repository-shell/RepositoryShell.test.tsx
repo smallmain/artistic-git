@@ -598,6 +598,21 @@ afterEach(() => {
 });
 
 describe("RepositoryShell loading state", () => {
+  it("keeps scrolling inside the commit history frame", async () => {
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    await waitFor(() => {
+      const container = screen.getByTestId("history-workbench-container");
+      const frame = screen.getByTestId("history-frame");
+      const viewport = screen.getByTestId("history-scroll-viewport");
+
+      expect(container).toHaveClass("overflow-hidden");
+      expect(container).not.toHaveClass("overflow-auto");
+      expect(container).toContainElement(frame);
+      expect(frame).toContainElement(viewport);
+    });
+  });
+
   it("does not show demo repository content while queries are pending", async () => {
     const pendingRequest = new Promise<never>(() => undefined);
     commandMocks.listBranches.mockReturnValue(pendingRequest);

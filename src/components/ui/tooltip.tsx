@@ -9,6 +9,7 @@ interface TooltipProps {
   children: (props: { describedBy: string }) => React.ReactNode;
   className?: string;
   content: React.ReactNode;
+  placement?: "auto" | "vertical";
   tooltipClassName?: string;
 }
 
@@ -16,6 +17,7 @@ export function Tooltip({
   children,
   className,
   content,
+  placement = "auto",
   tooltipClassName,
 }: TooltipProps) {
   const tooltipId = React.useId();
@@ -64,6 +66,7 @@ export function Tooltip({
       trigger.getBoundingClientRect(),
       tooltip.getBoundingClientRect(),
       { height: window.innerHeight, width: window.innerWidth },
+      { placement },
     );
 
     setPosition((currentPosition) =>
@@ -73,7 +76,7 @@ export function Tooltip({
         ? currentPosition
         : nextPosition,
     );
-  }, []);
+  }, [placement]);
 
   React.useLayoutEffect(() => {
     if (!isOpen) {

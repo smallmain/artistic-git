@@ -34,6 +34,51 @@ afterEach(() => {
 });
 
 describe("RepositorySidebar", () => {
+  it("keeps review mode and icon-only settings in separate action areas", () => {
+    renderSidebar({});
+
+    const reviewButton = screen.getByRole("button", { name: "Review Mode" });
+    const settingsButton = screen.getByRole("button", {
+      name: "Open settings",
+    });
+    const reviewArea = screen.getByTestId("sidebar-review-action");
+    const settingsArea = screen.getByTestId("sidebar-settings-action");
+
+    expect(reviewArea).not.toBe(settingsArea);
+    expect(reviewArea).toContainElement(reviewButton);
+    expect(settingsArea).toContainElement(settingsButton);
+    expect(reviewButton).toHaveClass("w-full");
+    expect(settingsButton).toHaveClass("size-9");
+    expect(settingsButton).not.toHaveTextContent("Settings");
+  });
+
+  it("renders branch actions in a translucent group", () => {
+    renderSidebar({});
+
+    const actionGroups = screen.getAllByTestId("branch-hover-actions");
+    expect(actionGroups[0]).toHaveClass("bg-background/80", "backdrop-blur-sm");
+  });
+
+  it("opens branch context menus outside the list and dismisses them elsewhere", () => {
+    renderSidebar({});
+
+    fireEvent.contextMenu(screen.getByText("feature/lookdev"), {
+      clientX: 280,
+      clientY: 220,
+    });
+
+    const menu = screen.getByRole("menu", { name: "More actions" });
+    expect(menu.parentElement).toBe(document.body);
+    expect(
+      screen.queryByRole("menuitem", { name: "Close" }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Branches" }));
+    expect(
+      screen.queryByRole("menu", { name: "More actions" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("exposes branch callbacks from the context menu", () => {
     const onCheckoutBranch = vi.fn();
     const onCreateBranchFromBase = vi.fn();

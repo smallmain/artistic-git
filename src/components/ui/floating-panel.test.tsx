@@ -19,6 +19,9 @@ function MenuFixture({ onClose }: { onClose: () => void }) {
 
   return (
     <>
+      <button onPointerDown={(event) => event.stopPropagation()} type="button">
+        Outside action
+      </button>
       <button ref={triggerRef} type="button">
         Open menu
       </button>
@@ -125,6 +128,20 @@ describe("FloatingPanel", () => {
     render(<MenuFixture onClose={onClose} />);
 
     fireEvent.pointerDown(document.body);
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes before an outside component can stop event propagation", () => {
+    const onClose = vi.fn();
+    render(<MenuFixture onClose={onClose} />);
+
+    const menu = screen.getByRole("menu", { name: "Actions" });
+    expect(menu.parentElement).toBe(document.body);
+
+    fireEvent.pointerDown(
+      screen.getByRole("button", { name: "Outside action" }),
+    );
 
     expect(onClose).toHaveBeenCalledTimes(1);
   });

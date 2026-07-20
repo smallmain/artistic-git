@@ -22,6 +22,7 @@ export interface TooltipPosition {
 
 interface PositionOptions {
   gap?: number;
+  placement?: "auto" | "vertical";
   viewportPadding?: number;
 }
 
@@ -35,7 +36,7 @@ export function calculateTooltipPosition(
   trigger: Bounds,
   tooltip: Bounds,
   viewport: ViewportSize,
-  { gap = 8, viewportPadding = 8 }: PositionOptions = {},
+  { gap = 8, placement = "auto", viewportPadding = 8 }: PositionOptions = {},
 ): TooltipPosition {
   const triggerCenterX = trigger.left + trigger.width / 2;
   const triggerCenterY = trigger.top + trigger.height / 2;
@@ -73,10 +74,12 @@ export function calculateTooltipPosition(
     },
   };
 
-  const bestCandidate = sidePriority.reduce((best, side) => {
+  const candidateSides =
+    placement === "vertical" ? sidePriority.slice(0, 2) : sidePriority;
+  const bestCandidate = candidateSides.reduce((best, side) => {
     const candidate = candidates[side];
     return candidate.clearance > best.clearance ? candidate : best;
-  }, candidates[sidePriority[0]]);
+  }, candidates[candidateSides[0]]);
 
   const maxLeft = Math.max(
     viewportPadding,

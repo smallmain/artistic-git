@@ -174,6 +174,23 @@ describe("history graph pagination", () => {
 });
 
 describe("HistoryWorkbench", () => {
+  it("keeps the toolbar and column labels outside the list scroll viewport", () => {
+    renderWithProviders(<HistoryWorkbench rows={mockHistoryRows} />);
+
+    const frame = screen.getByTestId("history-frame");
+    const viewport = screen.getByTestId("history-scroll-viewport");
+    const columnHeader = screen.getByTestId("history-column-header");
+    const toolbar = screen
+      .getByRole("heading", { name: "Commit History" })
+      .closest("header");
+
+    expect(frame).toHaveClass("overflow-hidden", "border");
+    expect(frame).toContainElement(viewport);
+    expect(viewport).toHaveClass("overflow-auto", "overscroll-contain");
+    expect(viewport).not.toContainElement(columnHeader);
+    expect(viewport).not.toContainElement(toolbar);
+  });
+
   it("does not show fixture rows while backend history is loading", () => {
     logPageMock.mockReturnValue(new Promise<never>(() => undefined));
 

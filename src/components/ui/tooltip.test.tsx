@@ -40,6 +40,21 @@ describe("tooltip positioning", () => {
     expect(position).toEqual({ left: 192, side: "bottom", top: 52 });
   });
 
+  it("keeps grouped action tooltips above or below their trigger", () => {
+    const tooltip = rect(0, 0, 100, 40);
+    const position = calculateTooltipPosition(
+      rect(16, 280, 40, 24),
+      tooltip,
+      {
+        height: 600,
+        width: 800,
+      },
+      { placement: "vertical" },
+    );
+
+    expect(["top", "bottom"]).toContain(position.side);
+  });
+
   it("renders in a body portal and updates its fixed position when opened", async () => {
     render(
       <div data-testid="clipping-parent" style={{ overflow: "hidden" }}>

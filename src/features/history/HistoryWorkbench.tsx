@@ -675,9 +675,10 @@ export function HistoryWorkbench({
   return (
     <section
       aria-label={t("history.title")}
-      className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border bg-card text-card-foreground"
+      className="isolate flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border bg-card text-card-foreground"
+      data-testid="history-frame"
     >
-      <header className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
+      <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
         <div className="flex min-w-0 items-center gap-2">
           <GitPullRequest className="size-5 shrink-0 text-muted-foreground" />
           <div className="min-w-0">
@@ -797,7 +798,10 @@ export function HistoryWorkbench({
         </div>
       ) : null}
 
-      <div className="grid border-b bg-muted/35 px-4 py-2 text-xs font-medium text-muted-foreground [grid-template-columns:112px_minmax(0,1fr)_180px_140px]">
+      <div
+        className="grid shrink-0 border-b bg-muted/35 px-4 py-2 text-xs font-medium text-muted-foreground [grid-template-columns:112px_minmax(0,1fr)_180px_140px]"
+        data-testid="history-column-header"
+      >
         <span>{t("history.columns.graph")}</span>
         <span>{t("history.columns.commit")}</span>
         <span>{t("history.columns.author")}</span>
@@ -805,7 +809,7 @@ export function HistoryWorkbench({
       </div>
 
       <div
-        className="relative min-h-0 flex-1 overflow-auto"
+        className="relative min-h-0 flex-1 overflow-auto overscroll-contain"
         data-testid="history-scroll-viewport"
         onScroll={handleScroll}
         ref={historyViewportRef}

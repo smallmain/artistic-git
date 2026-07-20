@@ -114,4 +114,34 @@ describe("BranchSelect", () => {
       screen.getByRole("combobox", { name: "Branch to clone" }),
     ).toHaveFocus();
   });
+
+  it("closes when an outside control stops pointer event propagation", () => {
+    render(
+      <>
+        <button
+          onPointerDown={(event) => event.stopPropagation()}
+          type="button"
+        >
+          Outside action
+        </button>
+        <BranchSelect
+          label="Branch to clone"
+          noResultsLabel="No matching items"
+          onChange={vi.fn()}
+          options={[{ label: "main", value: "main" }]}
+          searchLabel="Search branches"
+          value="main"
+        />
+      </>,
+    );
+
+    fireEvent.click(screen.getByRole("combobox", { name: "Branch to clone" }));
+    expect(screen.getByRole("listbox")).toBeInTheDocument();
+
+    fireEvent.pointerDown(
+      screen.getByRole("button", { name: "Outside action" }),
+    );
+
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+  });
 });
