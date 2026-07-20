@@ -352,6 +352,7 @@ impl GitRunner {
             executable: self.distribution.git_executable.clone(),
             args: args.into_iter().map(Into::into).collect(),
             environment: self.environment.clone(),
+            redacted_arguments: Vec::new(),
         }
     }
 
@@ -364,6 +365,7 @@ impl GitRunner {
             executable: self.distribution.git_lfs_executable.clone(),
             args: args.into_iter().map(Into::into).collect(),
             environment: self.environment.clone(),
+            redacted_arguments: Vec::new(),
         }
     }
 
@@ -398,6 +400,7 @@ pub struct GitCommandPlan {
     pub executable: PathBuf,
     pub args: Vec<OsString>,
     pub environment: CommandEnvironmentPlan,
+    redacted_arguments: Vec<(OsString, OsString)>,
 }
 
 impl GitCommandPlan {
@@ -410,8 +413,44 @@ impl GitCommandPlan {
 
     pub fn command_for_error(&self) -> Vec<String> {
         std::iter::once(display_os_str(self.executable.as_os_str()))
-            .chain(self.args.iter().map(|arg| display_os_str(arg.as_os_str())))
+            .chain(self.args.iter().map(|arg| {
+                self.redacted_arguments
+                    .iter()
+                    .find(|(original, _)| original == arg)
+                    .map(|(_, replacement)| display_os_str(replacement.as_os_str()))
+                    .unwrap_or_else(|| display_os_str(arg.as_os_str()))
+            }))
             .collect()
+    }
+
+    pub fn redact_argument(
+        mut self,
+        argument: impl Into<OsString>,
+        replacement: impl Into<OsString>,
+    ) -> Self {
+        let argument = argument.into();
+        let replacement = replacement.into();
+        if !argument.is_empty()
+            && argument != replacement
+            && !self
+                .redacted_arguments
+                .iter()
+                .any(|(existing, _)| existing == &argument)
+        {
+            self.redacted_arguments.push((argument, replacement));
+        }
+        self
+    }
+
+    pub fn redact_text(&self, text: &str) -> String {
+        self.redacted_arguments
+            .iter()
+            .fold(text.to_owned(), |text, (argument, replacement)| {
+                text.replace(
+                    argument.to_string_lossy().as_ref(),
+                    replacement.to_string_lossy().as_ref(),
+                )
+            })
     }
 }
 
@@ -1678,6 +1717,33 @@ mod tests {
         );
         assert!(!plan.environment.removes_variable("PATH"));
         assert!(!plan.environment.removes_variable("GIT_EXEC_PATH"));
+    }
+
+    #[test]
+    fn command_plan_redacts_sensitive_argument_without_rewriting_other_text() {
+        let temp = fake_distribution().expect("create fake distribution");
+        let distribution =
+            GitDistribution::from_root(temp.path()).expect("distribution should load");
+        let runner = GitRunner::from_distribution(distribution, temp.path().join("home"));
+        let secret_url = format!("{}://{}@example.test/private.git", "https", "token");
+        let safe_url = format!("{}://{}@example.test/private.git", "https", "[REDACTED]");
+        let plan = runner
+            .git_command_builder()
+            .args(["ls-remote", "--", secret_url.as_str()])
+            .build()
+            .redact_argument(secret_url.as_str(), safe_url.as_str());
+
+        let command = plan.command_for_error();
+        assert_eq!(command.last().map(String::as_str), Some(safe_url.as_str()));
+        assert!(!command.join(" ").contains("token"));
+        assert_eq!(
+            plan.redact_text(&format!("fatal: unable to access {secret_url}")),
+            format!("fatal: unable to access {safe_url}")
+        );
+        assert_eq!(
+            plan.redact_text("fatal: authentication failed"),
+            "fatal: authentication failed"
+        );
     }
 
     #[test]

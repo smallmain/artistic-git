@@ -24,10 +24,13 @@ import { StartScreen } from "./StartScreen";
 const commandMocks = vi.hoisted(() => ({
   cancelPendingWindowExit: vi.fn(),
   cancelCloneRepository: vi.fn(),
+  cancelOperation: vi.fn(),
   cloneRepository: vi.fn(),
   closeCurrentWindow: vi.fn(),
   openRepository: vi.fn(),
   openRepositoryWindow: vi.fn(),
+  openLogDir: vi.fn(),
+  probeRemoteRepository: vi.fn(),
   saveAppSettings: vi.fn(),
   setWindowCloseGuard: vi.fn(),
 }));
@@ -98,6 +101,7 @@ beforeEach(() => {
   });
   eventMocks.listeners = [];
   commandMocks.cancelPendingWindowExit.mockResolvedValue(undefined);
+  commandMocks.cancelOperation.mockResolvedValue({ cancelled: true });
   commandMocks.closeCurrentWindow.mockResolvedValue(undefined);
   commandMocks.setWindowCloseGuard.mockResolvedValue(undefined);
   dialogMocks.open.mockResolvedValue("/projects");
@@ -111,6 +115,11 @@ beforeEach(() => {
       repositoryPath,
     }),
   );
+  commandMocks.probeRemoteRepository.mockResolvedValue({
+    branches: ["develop", "main"],
+    defaultBranch: "main",
+    isEmpty: false,
+  });
 });
 
 afterEach(() => {
@@ -189,13 +198,17 @@ describe("StartScreen clone flow", () => {
     fireEvent.click(screen.getByRole("button", { name: "Clone Project" }));
 
     const dialog = screen.getByRole("dialog", { name: "Clone Project" });
-    fireEvent.change(within(dialog).getByLabelText("Repository URL"), {
-      target: { value: "https://github.com/studio/art-project.git" },
-    });
+    await enterCloneUrl(dialog, "https://github.com/studio/art-project.git");
 
     expect(within(dialog).getByLabelText("Project folder name")).toHaveValue(
       "art-project",
     );
+    expect(within(dialog).getByLabelText("Branch to clone")).toHaveValue(
+      "main",
+    );
+    fireEvent.change(within(dialog).getByLabelText("Branch to clone"), {
+      target: { value: "develop" },
+    });
 
     fireEvent.click(
       within(dialog).getByRole("button", { name: "Clone Project" }),
@@ -203,6 +216,7 @@ describe("StartScreen clone flow", () => {
 
     await waitFor(() => {
       expect(commandMocks.cloneRepository).toHaveBeenCalledWith({
+        branchName: "develop",
         directoryName: "art-project",
         operationId: expect.stringMatching(/^clone-/),
         targetParentDirectory: "/projects",
@@ -236,8 +250,9 @@ describe("StartScreen clone flow", () => {
     fireEvent.click(screen.getByRole("button", { name: "Clone Project" }));
 
     const dialog = screen.getByRole("dialog", { name: "Clone Project" });
-    fireEvent.change(within(dialog).getByLabelText("Repository URL"), {
-      target: { value: "git@github.com:studio/art.git" },
+    await enterCloneUrl(dialog, "git@github.com:studio/art.git");
+    fireEvent.change(within(dialog).getByLabelText("Branch to clone"), {
+      target: { value: "develop" },
     });
     fireEvent.click(within(dialog).getByRole("button", { name: "Choose" }));
     await waitFor(() => {
@@ -250,7 +265,196 @@ describe("StartScreen clone flow", () => {
     expect(await within(dialog).findByRole("alert")).toHaveTextContent(
       "target directory already exists",
     );
+    expect(within(dialog).getByLabelText("Branch to clone")).toHaveValue(
+      "develop",
+    );
+    expect(commandMocks.probeRemoteRepository).toHaveBeenCalledTimes(1);
     expect(store.getState().activeRepositoryPath).toBeNull();
+  });
+
+  it("retries repository detection interactively after an access error", async () => {
+    const probeError = structuredAppError("authentication required");
+    commandMocks.probeRemoteRepository
+      .mockRejectedValueOnce(probeError)
+      .mockResolvedValueOnce({
+        branches: ["main"],
+        defaultBranch: "main",
+        isEmpty: false,
+      });
+    renderWithStore(<StartScreen />, {
+      appSettings: { paths: { lastCloneParentDir: "/projects" } },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Clone Project" }));
+    const dialog = screen.getByRole("dialog", { name: "Clone Project" });
+    fireEvent.change(within(dialog).getByLabelText("Repository URL"), {
+      target: { value: "https://github.com/studio/private.git" },
+    });
+
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+      "Couldn't access this repository. Check the address and your access, then try again.",
+    );
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Show technical details" }),
+    );
+    const errorDialog = screen.getByRole("dialog", { name: "Error Details" });
+    expect(
+      screen.queryByRole("dialog", { name: "Clone Project" }),
+    ).not.toBeInTheDocument();
+    expect(errorDialog).toHaveTextContent("authentication required");
+    fireEvent.click(
+      within(errorDialog).getByRole("button", {
+        name: "Show technical details",
+      }),
+    );
+    expect(errorDialog).toHaveTextContent("fatal: authentication failed");
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("dialog", { name: "Error Details" }),
+      ).not.toBeInTheDocument();
+    });
+    const restoredDialog = screen.getByRole("dialog", {
+      name: "Clone Project",
+    });
+    expect(within(restoredDialog).getByLabelText("Repository URL")).toHaveValue(
+      "https://github.com/studio/private.git",
+    );
+    expect(
+      within(restoredDialog).getByRole("button", {
+        name: "Show technical details",
+      }),
+    ).toHaveFocus();
+    fireEvent.click(
+      within(restoredDialog).getByRole("button", { name: "Check again" }),
+    );
+    expect(
+      within(restoredDialog).getByLabelText("Repository URL"),
+    ).toHaveFocus();
+
+    await waitFor(() => {
+      expect(commandMocks.probeRemoteRepository).toHaveBeenLastCalledWith({
+        interactive: true,
+        operationId: expect.stringMatching(/^clone-probe-/),
+        url: "https://github.com/studio/private.git",
+      });
+    });
+    expect(
+      await within(restoredDialog).findByLabelText("Branch to clone"),
+    ).toHaveValue("main");
+  });
+
+  it("keeps the detected branch when clone is requested again from the menu", async () => {
+    renderWithStore(<StartScreen />, {
+      appSettings: { paths: { lastCloneParentDir: "/projects" } },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Clone Project" }));
+    const dialog = screen.getByRole("dialog", { name: "Clone Project" });
+    await enterCloneUrl(dialog, "https://github.com/studio/art-project.git");
+    fireEvent.change(within(dialog).getByLabelText("Branch to clone"), {
+      target: { value: "develop" },
+    });
+
+    act(() => {
+      window.dispatchEvent(new Event("artistic-git:clone-project"));
+    });
+
+    expect(within(dialog).getByLabelText("Branch to clone")).toHaveValue(
+      "develop",
+    );
+    expect(commandMocks.probeRemoteRepository).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows cloning an empty repository without a branch", async () => {
+    commandMocks.probeRemoteRepository.mockResolvedValue({
+      branches: [],
+      defaultBranch: null,
+      isEmpty: true,
+    });
+    commandMocks.cloneRepository.mockResolvedValue({
+      repository: openRepositoryResponse("/projects/empty"),
+    });
+    renderWithStore(<StartScreen />, {
+      appSettings: { paths: { lastCloneParentDir: "/projects" } },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Clone Project" }));
+    const dialog = screen.getByRole("dialog", { name: "Clone Project" });
+    fireEvent.change(within(dialog).getByLabelText("Repository URL"), {
+      target: { value: "https://github.com/studio/empty.git" },
+    });
+
+    expect(
+      await within(dialog).findByText(
+        "Repository found. No branches are available yet.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).queryByLabelText("Branch to clone"),
+    ).not.toBeInTheDocument();
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Clone Project" }),
+    );
+
+    await waitFor(() => {
+      expect(commandMocks.cloneRepository).toHaveBeenCalledWith(
+        expect.objectContaining({ branchName: null }),
+      );
+    });
+  });
+
+  it("cancels stale detection and ignores its late result", async () => {
+    let resolveFirst: (value: unknown) => void = () => undefined;
+    commandMocks.probeRemoteRepository
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveFirst = resolve;
+          }),
+      )
+      .mockResolvedValueOnce({
+        branches: ["release"],
+        defaultBranch: "release",
+        isEmpty: false,
+      });
+    renderWithStore(<StartScreen />, {
+      appSettings: { paths: { lastCloneParentDir: "/projects" } },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Clone Project" }));
+    const dialog = screen.getByRole("dialog", { name: "Clone Project" });
+    fireEvent.change(within(dialog).getByLabelText("Repository URL"), {
+      target: { value: "https://example.test/old.git" },
+    });
+    await waitFor(() =>
+      expect(commandMocks.probeRemoteRepository).toHaveBeenCalledTimes(1),
+    );
+    const staleOperationId =
+      commandMocks.probeRemoteRepository.mock.calls[0][0].operationId;
+
+    fireEvent.change(within(dialog).getByLabelText("Repository URL"), {
+      target: { value: "https://example.test/new.git" },
+    });
+    await waitFor(() => {
+      expect(commandMocks.cancelOperation).toHaveBeenCalledWith({
+        operationId: staleOperationId,
+      });
+    });
+    expect(await within(dialog).findByLabelText("Branch to clone")).toHaveValue(
+      "release",
+    );
+
+    await act(async () => {
+      resolveFirst({
+        branches: ["old"],
+        defaultBranch: "old",
+        isEmpty: false,
+      });
+    });
+    expect(within(dialog).getByLabelText("Branch to clone")).toHaveValue(
+      "release",
+    );
   });
 
   it("shows clone progress events in the dialog", async () => {
@@ -267,9 +471,7 @@ describe("StartScreen clone flow", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Clone Project" }));
     const dialog = screen.getByRole("dialog", { name: "Clone Project" });
-    fireEvent.change(within(dialog).getByLabelText("Repository URL"), {
-      target: { value: "https://github.com/studio/art-project.git" },
-    });
+    await enterCloneUrl(dialog, "https://github.com/studio/art-project.git");
     fireEvent.click(
       within(dialog).getByRole("button", { name: "Clone Project" }),
     );
@@ -307,9 +509,7 @@ describe("StartScreen clone flow", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Clone Project" }));
     const dialog = screen.getByRole("dialog", { name: "Clone Project" });
-    fireEvent.change(within(dialog).getByLabelText("Repository URL"), {
-      target: { value: "https://github.com/studio/art-project.git" },
-    });
+    await enterCloneUrl(dialog, "https://github.com/studio/art-project.git");
     fireEvent.click(
       within(dialog).getByRole("button", { name: "Clone Project" }),
     );
@@ -340,9 +540,10 @@ describe("StartScreen clone flow", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Clone Project" }));
     const cloneDialog = screen.getByRole("dialog", { name: "Clone Project" });
-    fireEvent.change(within(cloneDialog).getByLabelText("Repository URL"), {
-      target: { value: "https://github.com/studio/art-project.git" },
-    });
+    await enterCloneUrl(
+      cloneDialog,
+      "https://github.com/studio/art-project.git",
+    );
     fireEvent.click(
       within(cloneDialog).getByRole("button", { name: "Clone Project" }),
     );
@@ -382,9 +583,10 @@ describe("StartScreen clone flow", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Clone Project" }));
     const cloneDialog = screen.getByRole("dialog", { name: "Clone Project" });
-    fireEvent.change(within(cloneDialog).getByLabelText("Repository URL"), {
-      target: { value: "https://github.com/studio/art-project.git" },
-    });
+    await enterCloneUrl(
+      cloneDialog,
+      "https://github.com/studio/art-project.git",
+    );
     fireEvent.click(
       within(cloneDialog).getByRole("button", { name: "Clone Project" }),
     );
@@ -431,6 +633,39 @@ function openRepositoryResponse(repositoryPath: string) {
     },
     warnings: [],
   };
+}
+
+function structuredAppError(summary: string) {
+  return {
+    category: "expected",
+    context: {
+      operationId: "clone-probe-test",
+      operationName: "probeRemoteRepository",
+      repositoryPath: null,
+      windowLabel: "main",
+    },
+    git: {
+      command: ["git", "ls-remote", "--", "[REDACTED]"],
+      exitCode: 128,
+      stderr: "fatal: authentication failed",
+      stdout: "",
+    },
+    summary,
+  };
+}
+
+async function enterCloneUrl(dialog: HTMLElement, url: string) {
+  fireEvent.change(within(dialog).getByLabelText("Repository URL"), {
+    target: { value: url },
+  });
+  await waitFor(() => {
+    expect(commandMocks.probeRemoteRepository).toHaveBeenLastCalledWith({
+      interactive: false,
+      operationId: expect.stringMatching(/^clone-probe-/),
+      url,
+    });
+  });
+  await within(dialog).findByLabelText("Branch to clone");
 }
 
 function chooseRepositoryDirectory(relativePath = "art-project/.git/config") {

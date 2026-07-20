@@ -50,23 +50,33 @@ pub(crate) fn with_auth_runtime_for_operation<T>(
         }
     };
 
+    let operation_id = operation.operation_id.clone();
     AUTH_CONTEXT.with(|contexts| {
         contexts.borrow_mut().push(AuthCommandContext {
             runtime: auth_runtime.clone(),
-            operation_id: operation.operation_id,
+            operation_id: operation_id.clone(),
         });
     });
-    let _guard = AuthContextGuard;
+    let _guard = AuthContextGuard {
+        operation_id,
+        runtime: auth_runtime.clone(),
+    };
     action()
 }
 
-struct AuthContextGuard;
+struct AuthContextGuard {
+    operation_id: artistic_git_contracts::OperationId,
+    runtime: crate::auth_ipc::AuthRuntime,
+}
 
 impl Drop for AuthContextGuard {
     fn drop(&mut self) {
         AUTH_CONTEXT.with(|contexts| {
             contexts.borrow_mut().pop();
         });
+        if let Err(error) = self.runtime.finish_operation(&self.operation_id) {
+            tracing::warn!(error = %error, "failed to finish auth operation context");
+        }
     }
 }
 
@@ -181,6 +191,23 @@ where
     run_git(runner, root, args, operation_name).map(|output| output.stdout)
 }
 
+pub(crate) fn git_stdout_with_redacted_argument<I, S>(
+    runner: &GitRunner,
+    root: Option<&Path>,
+    args: I,
+    redacted_argument: impl Into<OsString>,
+    replacement: impl Into<OsString>,
+    operation_name: &str,
+) -> AppResult<String>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<OsString>,
+{
+    let plan = plan_git(runner, root, args).redact_argument(redacted_argument, replacement);
+    let plan = apply_auth_context_to_plan(plan, root, operation_name)?;
+    command_to_output(plan.to_command(), &plan, operation_name).map(|output| output.stdout)
+}
+
 pub(crate) fn run_git<I, S>(
     runner: &GitRunner,
     root: Option<&Path>,
@@ -242,11 +269,18 @@ where
     I: IntoIterator<Item = S>,
     S: Into<OsString>,
 {
-    let plan = plan_git(runner, root, args);
-    let plan =
-        apply_auth_runtime_to_plan(plan, auth_runtime, interaction_policy, root, operation_name)?;
-    let output = command_output(plan.to_command(), &plan, operation_name)?;
-    Ok((plan, output))
+    with_auth_runtime_for_operation(
+        auth_runtime,
+        interaction_policy,
+        None,
+        root.map(Path::to_path_buf),
+        || {
+            let plan = plan_git(runner, root, args);
+            let plan = apply_auth_context_to_plan(plan, root, operation_name)?;
+            let output = command_output(plan.to_command(), &plan, operation_name)?;
+            Ok((plan, output))
+        },
+    )
 }
 
 pub(crate) fn apply_auth_context_to_plan(
@@ -268,37 +302,13 @@ pub(crate) fn apply_auth_context_to_plan(
         .map_err(|source| auth_ipc_error(source, operation_name))
 }
 
-fn apply_auth_runtime_to_plan(
-    plan: GitCommandPlan,
-    auth_runtime: Option<&crate::auth_ipc::AuthRuntime>,
-    interaction_policy: crate::auth_ipc::InteractionPolicy,
-    root: Option<&Path>,
-    operation_name: &str,
-) -> AppResult<GitCommandPlan> {
-    let Some(auth_runtime) = auth_runtime else {
-        return Ok(plan);
-    };
-
-    auth_runtime
-        .inject_once(
-            interaction_policy,
-            root.map(Path::to_path_buf),
-            plan,
-            root.map(|path| {
-                crate::auth_ipc::AuthInvocationContext::new().with_repository_path(path)
-            })
-            .unwrap_or_default(),
-        )
-        .map_err(|source| auth_ipc_error(source, operation_name))
-}
-
 pub(crate) fn command_failure(
     plan: &GitCommandPlan,
     output: Output,
     operation_name: &str,
 ) -> AppError {
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = plan.redact_text(&String::from_utf8_lossy(&output.stderr));
+    let stdout = plan.redact_text(&String::from_utf8_lossy(&output.stdout));
     let summary = if stderr.trim().is_empty() {
         format!("git command failed during {operation_name}")
     } else {
@@ -440,7 +450,9 @@ fn invalid_path(operation_name: &str) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth_ipc::{AuthRuntime, InteractionPolicy, StaticAuthIpcHandler};
+    use crate::auth_ipc::{
+        AuthInvocationContext, AuthIpcError, AuthRuntime, InteractionPolicy, StaticAuthIpcHandler,
+    };
     use artistic_git_git_runner::{GitDistribution, GitRunner};
     use artistic_git_helpers::{
         AUTH_INVOCATION_ID_ENV, AUTH_OPERATION_ID_ENV, AUTH_SOCKET_ENV, AUTH_TOKEN_ENV,
@@ -549,6 +561,17 @@ mod tests {
             first.environment.variable(AUTH_TOKEN_ENV),
             second.environment.variable(AUTH_TOKEN_ENV)
         );
+        let error = runtime
+            .inject_for_operation(
+                &artistic_git_contracts::OperationId::new("sync-op-1"),
+                runner
+                    .git_command_builder()
+                    .args(["status", "--short"])
+                    .build(),
+                AuthInvocationContext::new(),
+            )
+            .expect_err("auth operation should be cleaned up after the scope");
+        assert!(matches!(error, AuthIpcError::UnknownOperation(_)));
     }
 
     fn fake_runner() -> (GitRunner, TestTempDir) {

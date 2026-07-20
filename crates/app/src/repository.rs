@@ -12,12 +12,13 @@ use artistic_git_contracts::{
     LocalChange, LocalChangeSubmodule, LocalChangesRenormalizeSuggestion, LocalChangesResponse,
     LogPageRequest, LogPageResponse, LogSearchRequest, OpenRepositoryRequest,
     OpenRepositoryResponse, OperationId, OperationProgressEvent, ProgressState,
-    RemoteSettingsResponse, RenormalizePreviewRequest, RenormalizePreviewResponse,
-    RepositoryHeadState, RepositoryHealth, RepositoryMiddleState, RepositoryMiddleStateKind,
-    RepositoryOpenWarning, RepositoryOpenWarningKind, RepositoryPathRequest, RepositoryRemote,
-    RepositoryRemoteMode, RepositorySummary, RestoreStashRequest, RestoreStashResponse,
-    SafetyBackupListResponse, SaveRemoteSettingsRequest, StashDetailsRequest, StashDetailsResponse,
-    StashEntry, StashListResponse,
+    RemoteRepositoryProbeRequest, RemoteRepositoryProbeResponse, RemoteSettingsResponse,
+    RenormalizePreviewRequest, RenormalizePreviewResponse, RepositoryHeadState, RepositoryHealth,
+    RepositoryMiddleState, RepositoryMiddleStateKind, RepositoryOpenWarning,
+    RepositoryOpenWarningKind, RepositoryPathRequest, RepositoryRemote, RepositoryRemoteMode,
+    RepositorySummary, RestoreStashRequest, RestoreStashResponse, SafetyBackupListResponse,
+    SaveRemoteSettingsRequest, StashDetailsRequest, StashDetailsResponse, StashEntry,
+    StashListResponse,
 };
 use artistic_git_core::config::{
     AppSettings, ConfigActor, GitUserSettings, ProjectSettings, WindowGeometry,
@@ -31,7 +32,7 @@ use artistic_git_git_runner::{
     parse_git_progress_line, CancelToken, GitCommandPlan, GitRunner, OperationBusy,
 };
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     ffi::{OsStr, OsString},
     fs,
     io::{self, Read},
@@ -48,6 +49,7 @@ const TOOL_WORKTREE_PREFIX: &str = "artistic-git-";
 const RENORMALIZE_SUGGESTION_THRESHOLD: usize = 1_000;
 const RENORMALIZE_SUGGESTION_MIN_MODIFIED_PERCENT: usize = 80;
 const RENORMALIZE_SUGGESTION_SAMPLE_LIMIT: usize = 8;
+const PROBE_REMOTE_REPOSITORY_OPERATION: &str = "probeRemoteRepository";
 
 #[derive(Clone)]
 pub struct RepositoryBackend {
@@ -230,6 +232,27 @@ impl RepositoryBackend {
         request: CloneRepositoryRequest,
     ) -> AppResult<CloneRepositoryResponse> {
         self.clone_repository_with_progress(request, |_| {})
+    }
+
+    pub fn probe_remote_repository(
+        &self,
+        request: RemoteRepositoryProbeRequest,
+    ) -> AppResult<RemoteRepositoryProbeResponse> {
+        let operation_id = request.operation_id.clone();
+        let auth_operation_id = operation_id.clone();
+        self.run_cancellable_operation(operation_id, PROBE_REMOTE_REPOSITORY_OPERATION, || {
+            if request.interactive {
+                crate::git_ops::with_auth_runtime_for_operation(
+                    self.auth_runtime.as_ref(),
+                    crate::auth_ipc::InteractionPolicy::interactive(),
+                    auth_operation_id,
+                    None,
+                    || probe_remote_repository(&self.runner, request),
+                )
+            } else {
+                probe_remote_repository(&self.runner, request)
+            }
+        })
     }
 
     pub fn clone_repository_with_progress<F>(
@@ -1111,6 +1134,31 @@ pub fn clone_repository(
     clone_repository_with_cancel_and_progress(runner, config, request, &CancelToken::new(), |_| {})
 }
 
+pub fn probe_remote_repository(
+    runner: &GitRunner,
+    request: RemoteRepositoryProbeRequest,
+) -> AppResult<RemoteRepositoryProbeResponse> {
+    let url = validate_remote_repository_url(&request.url, PROBE_REMOTE_REPOSITORY_OPERATION)?;
+    let safe_url = diagnostic_remote_url(url);
+    let output = crate::git_ops::git_stdout_with_redacted_argument(
+        runner,
+        None,
+        [
+            OsString::from("ls-remote"),
+            OsString::from("--symref"),
+            OsString::from("--"),
+            OsString::from(url),
+            OsString::from("HEAD"),
+            OsString::from("refs/heads/*"),
+        ],
+        OsString::from(url),
+        OsString::from(safe_url),
+        PROBE_REMOTE_REPOSITORY_OPERATION,
+    )?;
+
+    Ok(parse_remote_repository_probe(&output))
+}
+
 pub fn clone_repository_with_cancel(
     runner: &GitRunner,
     config: Option<&ConfigActor>,
@@ -1131,13 +1179,8 @@ where
     F: Fn(OperationProgressEvent),
 {
     let target = validate_clone_target(&request)?;
-    let url = request.url.trim();
-    if url.is_empty() {
-        return Err(logged(AppError::expected(
-            "repository URL is required",
-            "cloneRepository",
-        )));
-    }
+    let url = validate_remote_repository_url(&request.url, "cloneRepository")?;
+    let branch_name = validate_clone_branch_name(runner, request.branch_name.as_deref())?;
 
     let _permit = runner
         .operation_concurrency()
@@ -1147,11 +1190,34 @@ where
     run_clone_command(
         runner,
         url,
+        branch_name.as_deref(),
         &target,
         cancel_token,
         request.operation_id.as_ref(),
         progress,
     )?;
+    if let Some(branch_name) = branch_name.as_deref() {
+        let current_branch = git_stdout(
+            runner,
+            Some(&target.path),
+            ["branch", "--show-current"],
+            "cloneRepository",
+        );
+        match current_branch {
+            Ok(current_branch) if current_branch.trim() == branch_name => {}
+            Ok(_) => {
+                cleanup_clone_target(&target);
+                return Err(logged(AppError::expected(
+                    "selected branch is no longer available on the remote",
+                    "cloneRepository",
+                )));
+            }
+            Err(error) => {
+                cleanup_clone_target(&target);
+                return Err(error);
+            }
+        }
+    }
 
     let repository = open_repository_impl(
         runner,
@@ -1650,6 +1716,115 @@ pub fn search_log_with_cancel(
     )
 }
 
+fn validate_remote_repository_url<'a>(url: &'a str, operation_name: &str) -> AppResult<&'a str> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return Err(logged(AppError::expected(
+            "repository URL is required",
+            operation_name,
+        )));
+    }
+    if trimmed.contains('\0') || trimmed.starts_with('-') {
+        return Err(logged(AppError::expected(
+            "repository URL is invalid",
+            operation_name,
+        )));
+    }
+    if url_contains_embedded_credentials_or_parameters(trimmed) {
+        return Err(logged(AppError::expected(
+            "repository URL must not contain credentials, query parameters, or fragments; use the credential prompt instead",
+            operation_name,
+        )));
+    }
+
+    Ok(trimmed)
+}
+
+fn url_contains_embedded_credentials_or_parameters(url: &str) -> bool {
+    let Some((_, remainder)) = url.split_once("://") else {
+        return false;
+    };
+    let authority = remainder.split('/').next().unwrap_or(remainder);
+    let embeds_password = authority
+        .rsplit_once('@')
+        .is_some_and(|(userinfo, _)| userinfo.contains(':'));
+
+    embeds_password || remainder.contains('?') || remainder.contains('#')
+}
+
+fn diagnostic_remote_url(url: &str) -> String {
+    let Some((scheme, remainder)) = url.split_once("://") else {
+        return url.to_owned();
+    };
+    let (authority, suffix) = remainder
+        .split_once('/')
+        .map(|(authority, path)| (authority, format!("/{path}")))
+        .unwrap_or((remainder, String::new()));
+    let Some((_, host)) = authority.rsplit_once('@') else {
+        return url.to_owned();
+    };
+
+    format!("{scheme}://[REDACTED]@{host}{suffix}")
+}
+
+fn validate_clone_branch_name(
+    runner: &GitRunner,
+    branch_name: Option<&str>,
+) -> AppResult<Option<String>> {
+    let Some(branch_name) = branch_name else {
+        return Ok(None);
+    };
+    let trimmed = branch_name.trim();
+    if trimmed.is_empty() || trimmed != branch_name || trimmed.starts_with('-') {
+        return Err(logged(AppError::expected(
+            "selected branch name is invalid",
+            "cloneRepository",
+        )));
+    }
+
+    let branch_ref = format!("refs/heads/{trimmed}");
+    git_stdout(
+        runner,
+        None,
+        ["check-ref-format", branch_ref.as_str()],
+        "cloneRepository",
+    )?;
+    Ok(Some(trimmed.to_owned()))
+}
+
+fn parse_remote_repository_probe(output: &str) -> RemoteRepositoryProbeResponse {
+    let mut default_branch = None;
+    let mut branches = BTreeSet::new();
+
+    for line in output.lines() {
+        let Some((value, reference)) = line.split_once('\t') else {
+            continue;
+        };
+        if reference == "HEAD" {
+            if let Some(branch) = value
+                .strip_prefix("ref: refs/heads/")
+                .filter(|branch| !branch.is_empty())
+            {
+                default_branch = Some(branch.to_owned());
+            }
+            continue;
+        }
+        if let Some(branch) = reference.strip_prefix("refs/heads/") {
+            if !branch.is_empty() {
+                branches.insert(branch.to_owned());
+            }
+        }
+    }
+
+    let branches = branches.into_iter().collect::<Vec<_>>();
+    let default_branch = default_branch.filter(|branch| branches.contains(branch));
+    RemoteRepositoryProbeResponse {
+        is_empty: branches.is_empty(),
+        default_branch,
+        branches,
+    }
+}
+
 fn validate_clone_target(request: &CloneRepositoryRequest) -> AppResult<CloneTarget> {
     let parent_directory = request.target_parent_directory.trim();
     if parent_directory.is_empty() {
@@ -1705,6 +1880,7 @@ fn validate_clone_directory_name(name: &str) -> AppResult<OsString> {
 fn run_clone_command<F>(
     runner: &GitRunner,
     url: &str,
+    branch_name: Option<&str>,
     target: &CloneTarget,
     cancel_token: &CancelToken,
     operation_id: Option<&OperationId>,
@@ -1729,18 +1905,31 @@ where
         ProgressState::Indeterminate,
     );
 
+    let mut clone_args = vec![
+        OsString::from("clone"),
+        OsString::from("--recurse-submodules"),
+        OsString::from("--progress"),
+    ];
+    if let Some(branch_name) = branch_name {
+        clone_args.push(OsString::from("--branch"));
+        clone_args.push(OsString::from(branch_name));
+    }
+    clone_args.extend([
+        OsString::from("--"),
+        OsString::from(url),
+        target.directory_name.clone(),
+    ]);
+
     let plan = runner
         .git_command_builder()
         .default_credential_helper()
         .enable_windows_longpaths()
-        .args([
-            OsString::from("clone"),
-            OsString::from("--recurse-submodules"),
-            OsString::from("--progress"),
+        .args(clone_args)
+        .build()
+        .redact_argument(
             OsString::from(url),
-            target.directory_name.clone(),
-        ])
-        .build();
+            OsString::from(diagnostic_remote_url(url)),
+        );
     let plan = crate::git_ops::apply_auth_context_to_plan(plan, None, OPERATION)?;
     let mut command = plan.to_command();
     command.current_dir(&target.parent);
@@ -3829,8 +4018,8 @@ fn command_failure(
     output: std::process::Output,
     operation_name: &str,
 ) -> AppError {
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = plan.redact_text(&String::from_utf8_lossy(&output.stderr));
+    let stdout = plan.redact_text(&String::from_utf8_lossy(&output.stdout));
     let summary = git_stderr_summary(&stderr)
         .map(str::to_owned)
         .unwrap_or_else(|| format!("git command failed during {operation_name}"));
@@ -4466,6 +4655,7 @@ mod tests {
         let response = backend
             .clone_repository(CloneRepositoryRequest {
                 url: bare_path.clone(),
+                branch_name: None,
                 target_parent_directory: display_path(parent.path()),
                 directory_name: "cloned-art".to_owned(),
                 tool_identity: Some(artistic_git_contracts::ToolGitIdentity {
@@ -4502,6 +4692,198 @@ mod tests {
             .trim(),
             "Artistic Git"
         );
+    }
+
+    #[test]
+    fn probes_remote_branches_and_clones_the_selected_branch() {
+        let (runner, _dist_temp) = real_runner();
+        let source = TestRepo::new(&runner);
+        source.init_with_commit();
+        source.git(["switch", "-c", "feature/gallery"]);
+        source.write("gallery.txt", "gallery\n");
+        source.git(["add", "gallery.txt"]);
+        source.git(["commit", "-m", "add gallery"]);
+        source.git(["switch", "main"]);
+
+        let bare = TestTempDir::new("ag-bare-remote").expect("bare remote");
+        git_stdout(
+            &runner,
+            Some(bare.path()),
+            ["init", "--bare", "-b", "main"],
+            "test",
+        )
+        .expect("init bare remote");
+        let bare_path = display_path(bare.path());
+        source.git(["remote", "add", "origin", bare_path.as_str()]);
+        source.git(["push", "--all", "origin"]);
+
+        let probe = probe_remote_repository(
+            &runner,
+            RemoteRepositoryProbeRequest {
+                url: bare_path.clone(),
+                operation_id: None,
+                interactive: false,
+            },
+        )
+        .expect("probe remote repository");
+        assert_eq!(probe.default_branch.as_deref(), Some("main"));
+        assert_eq!(probe.branches, ["feature/gallery", "main"]);
+        assert!(!probe.is_empty);
+
+        let parent = TestTempDir::new("ag-clone-parent").expect("clone parent");
+        let response = clone_repository(
+            &runner,
+            None,
+            CloneRepositoryRequest {
+                url: bare_path,
+                branch_name: Some("feature/gallery".to_owned()),
+                target_parent_directory: display_path(parent.path()),
+                directory_name: "selected-branch".to_owned(),
+                tool_identity: None,
+                operation_id: None,
+            },
+        )
+        .expect("clone selected branch");
+        let target = parent.path().join("selected-branch");
+
+        assert_eq!(
+            response.repository.summary.current_branch.as_deref(),
+            Some("feature/gallery")
+        );
+        assert!(target.join("gallery.txt").exists());
+        assert_eq!(
+            git_stdout(&runner, Some(&target), ["branch", "--show-current"], "test",)
+                .expect("current branch")
+                .trim(),
+            "feature/gallery"
+        );
+    }
+
+    #[test]
+    fn probe_reports_an_empty_remote_without_failing() {
+        let (runner, _dist_temp) = real_runner();
+        let bare = TestTempDir::new("ag-empty-bare-remote").expect("bare remote");
+        git_stdout(
+            &runner,
+            Some(bare.path()),
+            ["init", "--bare", "-b", "main"],
+            "test",
+        )
+        .expect("init empty bare remote");
+
+        let probe = probe_remote_repository(
+            &runner,
+            RemoteRepositoryProbeRequest {
+                url: display_path(bare.path()),
+                operation_id: None,
+                interactive: false,
+            },
+        )
+        .expect("probe empty remote");
+
+        assert!(probe.is_empty);
+        assert!(probe.branches.is_empty());
+        assert_eq!(probe.default_branch, None);
+    }
+
+    #[test]
+    fn probe_parser_ignores_non_branch_refs_and_a_dangling_head() {
+        let probe = parse_remote_repository_probe(
+            "ref: refs/heads/missing\tHEAD\n\
+             aaaaaaaa\tHEAD\n\
+             bbbbbbbb\trefs/tags/v1\n\
+             cccccccc\trefs/heads/release\n\
+             dddddddd\trefs/heads/develop\n\
+             cccccccc\trefs/heads/release\n",
+        );
+
+        assert_eq!(probe.default_branch, None);
+        assert_eq!(probe.branches, ["develop", "release"]);
+        assert!(!probe.is_empty);
+    }
+
+    #[test]
+    fn remote_url_validation_blocks_embedded_secrets_without_rejecting_username_urls() {
+        let username_url = format!(
+            "{}://{}@dev.azure.com/team/project/_git/repo",
+            "https", "organization"
+        );
+        let password_url = format!(
+            "{}://{}:{}@example.test/repo.git",
+            "https", "user", "secret"
+        );
+        let token_url = format!("{}://{}@example.test/repo.git", "https", "TOKEN");
+        let safe_token_url = format!("{}://{}@example.test/repo.git", "https", "[REDACTED]");
+        assert!(!url_contains_embedded_credentials_or_parameters(
+            &username_url
+        ));
+        assert!(url_contains_embedded_credentials_or_parameters(
+            &password_url
+        ));
+        assert!(url_contains_embedded_credentials_or_parameters(
+            "file:///tmp/repo.git?access_token=TOPSECRET"
+        ));
+        assert_eq!(diagnostic_remote_url(&token_url), safe_token_url);
+
+        let error = validate_remote_repository_url(
+            "file:///tmp/repo.git?access_token=TOPSECRET",
+            PROBE_REMOTE_REPOSITORY_OPERATION,
+        )
+        .expect_err("query credentials must be rejected before Git runs");
+        assert!(!error.summary.contains("TOPSECRET"));
+        assert!(error.git.is_none());
+    }
+
+    #[test]
+    fn clone_branch_validation_rejects_reflog_shorthand() {
+        let (runner, _dist_temp) = real_runner();
+
+        let error = validate_clone_branch_name(&runner, Some("@{-1}"))
+            .expect_err("reflog shorthand is not a remote branch name");
+
+        assert_eq!(error.context.operation_name, "cloneRepository");
+        assert!(error.git.is_some());
+    }
+
+    #[test]
+    fn clone_rejects_a_tag_when_the_selected_branch_disappeared() {
+        let (runner, _dist_temp) = real_runner();
+        let source = TestRepo::new(&runner);
+        source.init_with_commit();
+        source.git(["tag", "release"]);
+        let bare = TestTempDir::new("ag-tag-only-remote").expect("bare remote");
+        git_stdout(
+            &runner,
+            Some(bare.path()),
+            ["init", "--bare", "-b", "main"],
+            "test",
+        )
+        .expect("init bare remote");
+        let bare_path = display_path(bare.path());
+        source.git(["remote", "add", "origin", bare_path.as_str()]);
+        source.git(["push", "origin", "main"]);
+        source.git(["push", "origin", "refs/tags/release"]);
+        let parent = TestTempDir::new("ag-clone-parent").expect("clone parent");
+
+        let error = clone_repository(
+            &runner,
+            None,
+            CloneRepositoryRequest {
+                url: bare_path,
+                branch_name: Some("release".to_owned()),
+                target_parent_directory: display_path(parent.path()),
+                directory_name: "tag-is-not-branch".to_owned(),
+                tool_identity: None,
+                operation_id: None,
+            },
+        )
+        .expect_err("a same-named tag must not satisfy a selected branch");
+
+        assert_eq!(
+            error.summary,
+            "selected branch is no longer available on the remote"
+        );
+        assert!(!parent.path().join("tag-is-not-branch").exists());
     }
 
     #[test]
@@ -4548,6 +4930,7 @@ mod tests {
             None,
             CloneRepositoryRequest {
                 url: bare_path,
+                branch_name: None,
                 target_parent_directory: display_path(parent.path()),
                 directory_name: "progress-clone".to_owned(),
                 tool_identity: None,
@@ -4789,6 +5172,7 @@ mod tests {
             None,
             CloneRepositoryRequest {
                 url: "https://example.test/art.git".to_owned(),
+                branch_name: None,
                 target_parent_directory: display_path(parent.path()),
                 directory_name: "existing".to_owned(),
                 tool_identity: None,
@@ -4812,6 +5196,7 @@ mod tests {
             None,
             CloneRepositoryRequest {
                 url: "https://example.test/art.git".to_owned(),
+                branch_name: None,
                 target_parent_directory: display_path(parent.path()),
                 directory_name: "cancelled".to_owned(),
                 tool_identity: None,

@@ -227,6 +227,7 @@ impl FullChainFixture {
             None,
             CloneRepositoryRequest {
                 url: display_path(&self.remote.path),
+                branch_name: None,
                 target_parent_directory: display_path(self.parent.path()),
                 directory_name: directory_name.to_owned(),
                 tool_identity: Some(tool_identity()),

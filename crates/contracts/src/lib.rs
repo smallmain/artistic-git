@@ -746,8 +746,25 @@ pub struct OpenRepositoryRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
+pub struct RemoteRepositoryProbeRequest {
+    pub url: String,
+    pub operation_id: Option<OperationId>,
+    pub interactive: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteRepositoryProbeResponse {
+    pub default_branch: Option<String>,
+    pub branches: Vec<String>,
+    pub is_empty: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
 pub struct CloneRepositoryRequest {
     pub url: String,
+    pub branch_name: Option<String>,
     pub target_parent_directory: String,
     pub directory_name: String,
     pub tool_identity: Option<ToolGitIdentity>,

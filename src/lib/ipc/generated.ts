@@ -167,6 +167,7 @@ export type CheckoutLocalChangesMode = "requireClean" | "autoStash" | "discard";
 
 export type CloneRepositoryRequest = {
   url: string;
+  branchName: string | null;
   targetParentDirectory: string;
   directoryName: string;
   toolIdentity: ToolGitIdentity | null;
@@ -762,6 +763,18 @@ export type RemoteHistoryChange = {
   localHead: string;
   previousRemoteHead: string;
   remoteHead: string;
+};
+
+export type RemoteRepositoryProbeRequest = {
+  url: string;
+  operationId: OperationId | null;
+  interactive: boolean;
+};
+
+export type RemoteRepositoryProbeResponse = {
+  defaultBranch: string | null;
+  branches: string[];
+  isEmpty: boolean;
 };
 
 export type RemoteSettingsResponse = {

@@ -1,9 +1,14 @@
 import {
+  CircleAlert,
+  CircleCheck,
   FolderGit2,
   FolderOpen,
   FolderSearch,
+  GitBranch,
   GitBranchPlus,
   GraduationCap,
+  LoaderCircle,
+  RefreshCw,
   Settings,
   Trash2,
 } from "lucide-react";
@@ -12,19 +17,23 @@ import { useTranslation } from "react-i18next";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
 import { DialogFrame } from "@/components/dialogs/DialogFrame";
+import { ErrorDetailsDialog } from "@/components/dialogs/ErrorDetailsDialog";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
 import { TruncatedText } from "@/components/ui/truncated-text";
 import {
   cancelCloneRepository,
+  cancelOperation,
   cloneRepository,
   openRepository,
   openRepositoryWindow,
+  probeRemoteRepository,
   saveAppSettings,
 } from "@/lib/ipc/commands";
 import { listenAppEvent } from "@/lib/ipc/events";
 import type {
   AppSettings,
+  AppError,
   OperationProgressEvent,
   ProgressState,
 } from "@/lib/ipc/generated";
@@ -38,6 +47,24 @@ import { WindowCloseGuard } from "@/features/window-close-guard/WindowCloseGuard
 
 const pickerFallbackPath = "/Users/artist/Projects/Environment Art";
 const cloneParentStorageKey = "artistic-git:last-clone-parent-dir";
+const cloneProbeDebounceMs = 400;
+
+type CloneRemoteState =
+  | { kind: "idle" }
+  | { kind: "checking"; url: string }
+  | {
+      kind: "ready";
+      branches: string[];
+      defaultBranch: string | null;
+      isEmpty: boolean;
+      url: string;
+    }
+  | {
+      kind: "error";
+      error: AppError | Error | string;
+      message: string;
+      url: string;
+    };
 
 export function StartScreen() {
   const { t } = useTranslation();
@@ -62,6 +89,7 @@ export function StartScreen() {
   );
   const [openingPath, setOpeningPath] = React.useState<string | null>(null);
   const [cloneDialogOpen, setCloneDialogOpen] = React.useState(false);
+  const cloneDialogOpenRef = React.useRef(false);
   const [cloneUrl, setCloneUrl] = React.useState("");
   const [cloneParentDirectory, setCloneParentDirectory] = React.useState(() =>
     initialCloneParentDirectory(appSettings),
@@ -69,6 +97,19 @@ export function StartScreen() {
   const [cloneDirectoryName, setCloneDirectoryName] = React.useState("");
   const [cloneDirectoryNameTouched, setCloneDirectoryNameTouched] =
     React.useState(false);
+  const [cloneBranch, setCloneBranch] = React.useState("");
+  const [cloneRemoteState, setCloneRemoteState] =
+    React.useState<CloneRemoteState>({ kind: "idle" });
+  const [cloneProbeAttempt, setCloneProbeAttempt] = React.useState(0);
+  const [cloneProbeInteractive, setCloneProbeInteractive] =
+    React.useState(false);
+  const [cloneProbeDetails, setCloneProbeDetails] = React.useState<
+    AppError | Error | string | null
+  >(null);
+  const cloneProbeDetailsTriggerRef = React.useRef<HTMLButtonElement | null>(
+    null,
+  );
+  const restoreCloneProbeDetailsFocusRef = React.useRef(false);
   const [cloneError, setCloneError] = React.useState<string | null>(null);
   const [isCloning, setIsCloning] = React.useState(false);
   const [cloneCancelling, setCloneCancelling] = React.useState(false);
@@ -80,6 +121,15 @@ export function StartScreen() {
   const [openProgress, setOpenProgress] =
     React.useState<OperationProgressEvent | null>(null);
   const cloneCancelRequestedRef = React.useRef(false);
+  React.useEffect(() => {
+    if (
+      cloneProbeDetails === null &&
+      restoreCloneProbeDetailsFocusRef.current
+    ) {
+      restoreCloneProbeDetailsFocusRef.current = false;
+      cloneProbeDetailsTriggerRef.current?.focus();
+    }
+  }, [cloneProbeDetails]);
   const activateRepository = React.useCallback(
     (repositoryPath: string) => {
       setActiveRepositoryPath(repositoryPath);
@@ -174,6 +224,12 @@ export function StartScreen() {
     try {
       const response = await cloneRepository({
         directoryName: cloneDirectoryName.trim(),
+        branchName:
+          cloneRemoteState.kind === "ready" &&
+          cloneRemoteState.url === cloneUrl.trim() &&
+          !cloneRemoteState.isEmpty
+            ? cloneBranch
+            : null,
         operationId,
         targetParentDirectory: parentDirectory,
         toolIdentity: toolIdentityFromSettings(appSettings),
@@ -181,8 +237,12 @@ export function StartScreen() {
       });
       rememberCloneParentDirectory(parentDirectory);
       await routeRepository(response.repository.repositoryPath);
+      cloneDialogOpenRef.current = false;
       setCloneDialogOpen(false);
       setCloneUrl("");
+      setCloneBranch("");
+      setCloneRemoteState({ kind: "idle" });
+      setCloneProbeDetails(null);
       setCloneDirectoryName("");
       setCloneDirectoryNameTouched(false);
     } catch (error) {
@@ -200,8 +260,10 @@ export function StartScreen() {
     }
   }, [
     appSettings,
+    cloneBranch,
     cloneDirectoryName,
     cloneParentDirectory,
+    cloneRemoteState,
     cloneUrl,
     rememberCloneParentDirectory,
     routeRepository,
@@ -278,12 +340,77 @@ export function StartScreen() {
     (url: string) => {
       setCloneUrl(url);
       setCloneError(null);
+      setCloneBranch("");
+      setCloneRemoteState({ kind: "idle" });
+      setCloneProbeDetails(null);
+      setCloneProbeInteractive(false);
       if (!cloneDirectoryNameTouched) {
         setCloneDirectoryName(inferDirectoryNameFromUrl(url));
       }
     },
     [cloneDirectoryNameTouched],
   );
+  React.useEffect(() => {
+    const url = cloneUrl.trim();
+    if (!cloneDialogOpen || !url) {
+      return undefined;
+    }
+
+    let disposed = false;
+    let operationId: string | null = null;
+
+    const timer = window.setTimeout(() => {
+      if (disposed) {
+        return;
+      }
+      setCloneRemoteState({ kind: "checking", url });
+      setCloneBranch("");
+      operationId = createOperationId("clone-probe");
+      void probeRemoteRepository({
+        interactive: cloneProbeInteractive,
+        operationId,
+        url,
+      })
+        .then((response) => {
+          operationId = null;
+          if (disposed) {
+            return;
+          }
+          const selectedBranch =
+            response.defaultBranch ?? response.branches[0] ?? "";
+          setCloneBranch(selectedBranch);
+          setCloneProbeDetails(null);
+          setCloneRemoteState({
+            branches: response.branches,
+            defaultBranch: response.defaultBranch,
+            isEmpty: response.isEmpty,
+            kind: "ready",
+            url,
+          });
+        })
+        .catch((error) => {
+          operationId = null;
+          if (!disposed) {
+            const details = errorDetails(error, t("start.cloneProbeFailed"));
+            setCloneBranch("");
+            setCloneRemoteState({
+              error: details,
+              kind: "error",
+              message: t("start.cloneProbeFailed"),
+              url,
+            });
+          }
+        });
+    }, cloneProbeDebounceMs);
+
+    return () => {
+      disposed = true;
+      window.clearTimeout(timer);
+      if (operationId) {
+        void cancelOperation({ operationId }).catch(() => undefined);
+      }
+    };
+  }, [cloneDialogOpen, cloneProbeAttempt, cloneProbeInteractive, cloneUrl, t]);
   React.useEffect(() => {
     if (!cloneOperationId) {
       return undefined;
@@ -339,11 +466,18 @@ export function StartScreen() {
       fileInputRef.current?.click();
     };
     const cloneProject = () => {
+      if (cloneDialogOpenRef.current) {
+        return;
+      }
+      cloneDialogOpenRef.current = true;
       setCloneParentDirectory((current) =>
         current.trim() ? current : initialCloneParentDirectory(appSettings),
       );
       setCloneDialogOpen(true);
       setCloneError(null);
+      setCloneBranch("");
+      setCloneRemoteState({ kind: "idle" });
+      setCloneProbeInteractive(false);
     };
 
     window.addEventListener("artistic-git:open-project", openProject);
@@ -417,6 +551,7 @@ export function StartScreen() {
                 data-testid="start-clone-project"
                 disabled={openingPath !== null || isCloning}
                 onClick={() => {
+                  cloneDialogOpenRef.current = true;
                   setCloneParentDirectory((current) =>
                     current.trim()
                       ? current
@@ -424,6 +559,9 @@ export function StartScreen() {
                   );
                   setCloneDialogOpen(true);
                   setCloneError(null);
+                  setCloneBranch("");
+                  setCloneRemoteState({ kind: "idle" });
+                  setCloneProbeInteractive(false);
                 }}
                 size="lg"
                 type="button"
@@ -564,13 +702,15 @@ export function StartScreen() {
           ) : null}
         </section>
       </div>
-      {cloneDialogOpen ? (
+      {cloneDialogOpen && cloneProbeDetails === null ? (
         <CloneRepositoryDialog
+          branch={cloneBranch}
           busy={isCloning}
           cancelling={cloneCancelling}
           directoryName={cloneDirectoryName}
           error={cloneError}
           onCancelClone={() => void handleCancelClone()}
+          onBranchChange={setCloneBranch}
           onChooseParentDirectory={() =>
             void handleChooseCloneParentDirectory()
           }
@@ -581,6 +721,7 @@ export function StartScreen() {
           }}
           onOpenChange={(open) => {
             if (!isCloning) {
+              cloneDialogOpenRef.current = open;
               setCloneDialogOpen(open);
             }
           }}
@@ -588,13 +729,36 @@ export function StartScreen() {
             setCloneParentDirectory(value);
             setCloneError(null);
           }}
+          onRetryProbe={() => {
+            const url = cloneUrl.trim();
+            if (url) {
+              setCloneRemoteState({ kind: "checking", url });
+            }
+            setCloneBranch("");
+            setCloneProbeDetails(null);
+            setCloneProbeInteractive(true);
+            setCloneProbeAttempt((attempt) => attempt + 1);
+          }}
           onSubmit={() => void handleCloneRepository()}
           onUrlChange={handleCloneUrlChange}
           parentDirectory={cloneParentDirectory}
           progress={cloneProgress}
+          probeDetailsTriggerRef={cloneProbeDetailsTriggerRef}
+          remoteState={cloneRemoteState}
+          onShowProbeDetails={setCloneProbeDetails}
           url={cloneUrl}
         />
       ) : null}
+      <ErrorDetailsDialog
+        error={cloneProbeDetails ?? ""}
+        onOpenChange={(open) => {
+          if (!open) {
+            restoreCloneProbeDetailsFocusRef.current = true;
+            setCloneProbeDetails(null);
+          }
+        }}
+        open={cloneProbeDetails !== null}
+      />
       <WindowCloseGuard
         active={isCloning || openingPath !== null}
         canRecover={isCloning && cloneOperationId !== null && !cloneCancelling}
@@ -605,46 +769,65 @@ export function StartScreen() {
 }
 
 interface CloneRepositoryDialogProps {
+  branch: string;
   busy: boolean;
   cancelling: boolean;
   directoryName: string;
   error: string | null;
+  onBranchChange: (value: string) => void;
   onCancelClone: () => void;
   onChooseParentDirectory: () => void;
   onDirectoryNameChange: (value: string) => void;
   onOpenChange: (open: boolean) => void;
   onParentDirectoryChange: (value: string) => void;
+  onRetryProbe: () => void;
+  onShowProbeDetails: (error: AppError | Error | string) => void;
   onSubmit: () => void;
   onUrlChange: (value: string) => void;
   parentDirectory: string;
   progress: OperationProgressEvent | null;
+  probeDetailsTriggerRef: React.RefObject<HTMLButtonElement | null>;
+  remoteState: CloneRemoteState;
   url: string;
 }
 
 function CloneRepositoryDialog({
+  branch,
   busy,
   cancelling,
   directoryName,
   error,
+  onBranchChange,
   onCancelClone,
   onChooseParentDirectory,
   onDirectoryNameChange,
   onOpenChange,
   onParentDirectoryChange,
+  onRetryProbe,
+  onShowProbeDetails,
   onSubmit,
   onUrlChange,
   parentDirectory,
   progress,
+  probeDetailsTriggerRef,
+  remoteState,
   url,
 }: CloneRepositoryDialogProps) {
   const { t } = useTranslation();
   const urlId = React.useId();
+  const urlInputRef = React.useRef<HTMLInputElement | null>(null);
+  const branchId = React.useId();
   const parentId = React.useId();
   const directoryNameId = React.useId();
+  const remoteReady =
+    remoteState.kind === "ready" &&
+    remoteState.url === url.trim() &&
+    (remoteState.isEmpty || branch.trim().length > 0);
   const canSubmit =
     url.trim().length > 0 &&
     parentDirectory.trim().length > 0 &&
     directoryName.trim().length > 0 &&
+    remoteReady &&
     !busy;
 
   return (
@@ -716,10 +899,53 @@ function CloneRepositoryDialog({
               id={urlId}
               onChange={(event) => onUrlChange(event.currentTarget.value)}
               placeholder={t("start.cloneUrlPlaceholder")}
+              ref={urlInputRef}
               type="text"
               value={url}
             />
           </label>
+          <CloneRemoteStatus
+            onRetry={() => {
+              onRetryProbe();
+              urlInputRef.current?.focus();
+            }}
+            onShowDetails={onShowProbeDetails}
+            showDetailsTriggerRef={probeDetailsTriggerRef}
+            state={remoteState}
+          />
+          {remoteState.kind === "ready" && !remoteState.isEmpty ? (
+            <label
+              className="flex flex-col gap-2 text-sm font-medium"
+              htmlFor={branchId}
+            >
+              {t("start.cloneBranch")}
+              <span className="relative">
+                <GitBranch
+                  aria-hidden="true"
+                  className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+                />
+                <select
+                  className="h-9 w-full appearance-none rounded-md border bg-background pl-9 pr-8 text-sm font-normal outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  data-testid="clone-branch-select"
+                  id={branchId}
+                  onChange={(event) =>
+                    onBranchChange(event.currentTarget.value)
+                  }
+                  value={branch}
+                >
+                  {remoteState.branches.map((candidate) => (
+                    <option key={candidate} value={candidate}>
+                      {candidate === remoteState.defaultBranch
+                        ? t("start.cloneDefaultBranchOption", {
+                            branch: candidate,
+                          })
+                        : candidate}
+                    </option>
+                  ))}
+                </select>
+              </span>
+            </label>
+          ) : null}
           <label
             className="flex flex-col gap-2 text-sm font-medium"
             htmlFor={parentId}
@@ -777,6 +1003,87 @@ function CloneRepositoryDialog({
         </form>
       )}
     </DialogFrame>
+  );
+}
+
+function CloneRemoteStatus({
+  onRetry,
+  onShowDetails,
+  showDetailsTriggerRef,
+  state,
+}: {
+  onRetry: () => void;
+  onShowDetails: (error: AppError | Error | string) => void;
+  showDetailsTriggerRef: React.RefObject<HTMLButtonElement | null>;
+  state: CloneRemoteState;
+}) {
+  const { t } = useTranslation();
+
+  if (state.kind === "idle") {
+    return null;
+  }
+  if (state.kind === "checking") {
+    return (
+      <div
+        aria-live="polite"
+        className="flex items-center gap-2 bg-muted/50 px-3 py-2 text-sm text-muted-foreground"
+        role="status"
+      >
+        <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
+        {t("start.cloneProbeChecking")}
+      </div>
+    );
+  }
+  if (state.kind === "error") {
+    return (
+      <div
+        className="flex items-start justify-between gap-3 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+        role="alert"
+      >
+        <span className="flex min-w-0 items-start gap-2">
+          <CircleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+          <span className="min-w-0 break-words">{state.message}</span>
+        </span>
+        <span className="flex shrink-0 items-center gap-1">
+          <Button
+            className="h-8 px-2"
+            onClick={() => onShowDetails(state.error)}
+            ref={showDetailsTriggerRef}
+            type="button"
+            variant="ghost"
+          >
+            {t("dialogs.error.showDetails")}
+          </Button>
+          <Button
+            className="h-8 gap-2 px-2"
+            onClick={onRetry}
+            type="button"
+            variant="ghost"
+          >
+            <RefreshCw className="size-4" aria-hidden="true" />
+            {t("start.cloneProbeRetry")}
+          </Button>
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      aria-live="polite"
+      className="flex items-center gap-2 bg-success/10 px-3 py-2 text-sm"
+      role="status"
+    >
+      <CircleCheck
+        className="size-4 shrink-0 text-success"
+        aria-hidden="true"
+      />
+      {state.isEmpty
+        ? t("start.cloneProbeEmpty")
+        : t("start.cloneBranchesFound", {
+            count: state.branches.length,
+          })}
+    </div>
   );
 }
 
@@ -913,8 +1220,8 @@ function writeStoredCloneParentDirectory(path: string): void {
   }
 }
 
-function createOperationId(): string {
-  return `clone-${globalThis.crypto?.randomUUID?.() ?? Date.now().toString(36)}`;
+function createOperationId(prefix = "clone"): string {
+  return `${prefix}-${globalThis.crypto?.randomUUID?.() ?? Date.now().toString(36)}`;
 }
 
 function progressPercent(progress: ProgressState | undefined): number | null {
@@ -981,4 +1288,29 @@ function errorSummary(error: unknown, fallback: string): string {
   }
 
   return error instanceof Error ? error.message : fallback;
+}
+
+function errorDetails(
+  error: unknown,
+  fallback: string,
+): AppError | Error | string {
+  if (
+    typeof error === "string" ||
+    error instanceof Error ||
+    isAppError(error)
+  ) {
+    return error;
+  }
+
+  return fallback;
+}
+
+function isAppError(error: unknown): error is AppError {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "category" in error &&
+    "summary" in error &&
+    "context" in error
+  );
 }

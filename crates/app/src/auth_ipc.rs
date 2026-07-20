@@ -223,6 +223,7 @@ impl AuthIpcSessionManager {
         interaction_policy: InteractionPolicy,
         repository_path: Option<PathBuf>,
     ) -> AuthOperationSession {
+        self.finish_operation(&operation_id);
         self.operations.insert(
             operation_id.as_str().to_owned(),
             OperationState {
@@ -237,6 +238,16 @@ impl AuthIpcSessionManager {
             interaction_policy,
             repository_path,
         }
+    }
+
+    pub fn finish_operation(&mut self, operation_id: &OperationId) -> bool {
+        let Some(operation) = self.operations.remove(operation_id.as_str()) else {
+            return false;
+        };
+        for invocation_id in operation.invocation_ids {
+            self.invocations.remove(invocation_id.as_str());
+        }
+        true
     }
 
     pub fn issue_invocation(
@@ -1116,6 +1127,16 @@ impl AuthRuntime {
         )
     }
 
+    pub(crate) fn finish_operation(
+        &self,
+        operation_id: &OperationId,
+    ) -> Result<bool, AuthIpcError> {
+        let mut sessions = self.sessions.lock().map_err(|_| {
+            AuthIpcError::RandomUnavailable("auth session table lock poisoned".into())
+        })?;
+        Ok(sessions.finish_operation(operation_id))
+    }
+
     pub fn inject_once(
         &self,
         interaction_policy: InteractionPolicy,
@@ -1224,6 +1245,50 @@ mod tests {
             sessions.invocation_ids_for_operation(&operation_id),
             vec![first.invocation_id, second.invocation_id]
         );
+    }
+
+    #[test]
+    fn finishing_operation_removes_its_invocations() {
+        let mut sessions = AuthIpcSessionManager::new();
+        let operation_id = OperationId::new("probe-op");
+        sessions.start_operation_with_id(operation_id.clone(), InteractionPolicy::interactive());
+        let invocation = sessions
+            .issue_invocation(&operation_id)
+            .expect("issue invocation");
+
+        assert!(sessions.finish_operation(&operation_id));
+        assert!(sessions
+            .invocation_ids_for_operation(&operation_id)
+            .is_empty());
+        assert!(matches!(
+            sessions.validate_helper_request(&invocation.invocation_id, &invocation.token),
+            Err(AuthIpcError::UnknownInvocation(_))
+        ));
+        assert!(matches!(
+            sessions.issue_invocation(&operation_id),
+            Err(AuthIpcError::UnknownOperation(_))
+        ));
+    }
+
+    #[test]
+    fn restarting_operation_id_invalidates_previous_invocations() {
+        let mut sessions = AuthIpcSessionManager::new();
+        let operation_id = OperationId::new("reused-op");
+        sessions.start_operation_with_id(operation_id.clone(), InteractionPolicy::interactive());
+        let previous = sessions
+            .issue_invocation(&operation_id)
+            .expect("issue previous invocation");
+
+        sessions.start_operation_with_id(
+            operation_id.clone(),
+            InteractionPolicy::background_non_interactive(),
+        );
+
+        assert!(matches!(
+            sessions.validate_helper_request(&previous.invocation_id, &previous.token),
+            Err(AuthIpcError::UnknownInvocation(_))
+        ));
+        assert!(sessions.issue_invocation(&operation_id).is_ok());
     }
 
     #[test]

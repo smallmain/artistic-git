@@ -67,6 +67,8 @@ import type {
   ProjectSettings,
   ProjectSettingsRequest,
   RemoteSettingsResponse,
+  RemoteRepositoryProbeRequest,
+  RemoteRepositoryProbeResponse,
   RenormalizePreviewRequest,
   RenormalizePreviewResponse,
   RepositoryPathRequest,
@@ -123,6 +125,7 @@ export interface AppCommandArgs {
   open_log_dir: undefined;
   open_update_release_page: undefined;
   open_repository: { request: OpenRepositoryRequest };
+  probe_remote_repository: { request: RemoteRepositoryProbeRequest };
   clone_repository: { request: CloneRepositoryRequest };
   cancel_clone_repository: { request: CancelCloneRepositoryRequest };
   cancel_operation: { request: CancelOperationRequest };
@@ -207,6 +210,7 @@ export interface AppCommandResponses {
   open_log_dir: OpenLogDirResponse;
   open_update_release_page: void;
   open_repository: OpenRepositoryResponse;
+  probe_remote_repository: RemoteRepositoryProbeResponse;
   clone_repository: CloneRepositoryResponse;
   cancel_clone_repository: CancelCloneRepositoryResponse;
   cancel_operation: CancelOperationResponse;
@@ -426,6 +430,12 @@ export function openRepository(
   request: OpenRepositoryRequest,
 ): Promise<OpenRepositoryResponse> {
   return invokeAppCommand("open_repository", { request });
+}
+
+export function probeRemoteRepository(
+  request: RemoteRepositoryProbeRequest,
+): Promise<RemoteRepositoryProbeResponse> {
+  return invokeAppCommand("probe_remote_repository", { request });
 }
 
 export function cloneRepository(

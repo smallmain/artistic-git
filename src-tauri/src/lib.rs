@@ -623,6 +623,14 @@ fn open_repository(
 }
 
 #[tauri::command]
+fn probe_remote_repository(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::RemoteRepositoryProbeRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::RemoteRepositoryProbeResponse> {
+    backend.probe_remote_repository(request)
+}
+
+#[tauri::command]
 fn clone_repository(
     app_handle: tauri::AppHandle,
     window: tauri::Window,
@@ -1812,6 +1820,7 @@ pub fn run() {
             open_log_dir,
             open_update_release_page,
             open_repository,
+            probe_remote_repository,
             clone_repository,
             cancel_clone_repository,
             cancel_operation,
