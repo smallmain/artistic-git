@@ -70,6 +70,7 @@ export function ReviewModeOverlay({
                     ) : null}
                   </span>
                 }
+                placement="vertical"
               >
                 {({ describedBy }) => (
                   <span

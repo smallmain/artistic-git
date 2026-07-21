@@ -658,7 +658,7 @@ function RepositoryRemoteStatus({
 
   if (!hasRemote) {
     return (
-      <Tooltip content={t("repository.noRemote")}>
+      <Tooltip content={t("repository.noRemote")} placement="vertical">
         {({ describedBy }) => (
           <span
             aria-describedby={describedBy}
@@ -705,6 +705,7 @@ function RepositoryRemoteStatus({
           ) : null}
         </span>
       }
+      placement="vertical"
     >
       {({ describedBy }) => (
         <span

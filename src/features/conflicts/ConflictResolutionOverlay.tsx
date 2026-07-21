@@ -24,6 +24,7 @@ import { useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/dialogs/ConfirmDialog";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { OverlayScrollArea } from "@/components/ui/overlay-scroll-area";
 import { DiffViewer } from "@/features/diff";
 import { useLocalizedFormatters } from "@/i18n/format";
@@ -611,36 +612,34 @@ export function ConflictResolutionOverlay({
               ))}
               {conflictPageCount > 1 ? (
                 <div className="flex items-center justify-between gap-2 border-b p-2">
-                  <Button
-                    aria-label={t("conflicts.previousPage")}
+                  <IconButton
                     data-testid="conflict-previous-page"
                     disabled={busyLabel !== null || conflictPageIndex === 0}
+                    label={t("conflicts.previousPage")}
                     onClick={() => {
                       setConflictListPage({
                         key: conflictListKey,
                         pageIndex: Math.max(0, conflictPageIndex - 1),
                       });
                     }}
-                    size="icon"
-                    title={t("conflicts.previousPage")}
                     type="button"
                     variant="ghost"
                   >
                     <ChevronLeft aria-hidden="true" className="size-4" />
-                  </Button>
+                  </IconButton>
                   <span className="text-xs text-muted-foreground">
                     {t("conflicts.page", {
                       page: conflictPageIndex + 1,
                       total: conflictPageCount,
                     })}
                   </span>
-                  <Button
-                    aria-label={t("conflicts.nextPage")}
+                  <IconButton
                     data-testid="conflict-next-page"
                     disabled={
                       busyLabel !== null ||
                       conflictPageIndex >= conflictPageCount - 1
                     }
+                    label={t("conflicts.nextPage")}
                     onClick={() => {
                       setConflictListPage({
                         key: conflictListKey,
@@ -650,13 +649,11 @@ export function ConflictResolutionOverlay({
                         ),
                       });
                     }}
-                    size="icon"
-                    title={t("conflicts.nextPage")}
                     type="button"
                     variant="ghost"
                   >
                     <ChevronRight aria-hidden="true" className="size-4" />
-                  </Button>
+                  </IconButton>
                 </div>
               ) : null}
             </OverlayScrollArea>
@@ -1079,42 +1076,38 @@ function TextConflictDetail({
             </OverlayScrollArea>
             {hunkPageCount > 1 ? (
               <div className="flex shrink-0 items-center justify-between gap-2 border-t p-2">
-                <Button
-                  aria-label={t("conflicts.previousHunkPage")}
+                <IconButton
                   data-testid="conflict-previous-hunk-page"
                   disabled={currentHunkPageIndex === 0}
+                  label={t("conflicts.previousHunkPage")}
                   onClick={() =>
                     setHunkPageIndex(Math.max(0, currentHunkPageIndex - 1))
                   }
-                  size="icon"
-                  title={t("conflicts.previousHunkPage")}
                   type="button"
                   variant="ghost"
                 >
                   <ChevronLeft aria-hidden="true" className="size-4" />
-                </Button>
+                </IconButton>
                 <span className="text-xs text-muted-foreground">
                   {t("conflicts.hunkPage", {
                     page: currentHunkPageIndex + 1,
                     total: hunkPageCount,
                   })}
                 </span>
-                <Button
-                  aria-label={t("conflicts.nextHunkPage")}
+                <IconButton
                   data-testid="conflict-next-hunk-page"
                   disabled={currentHunkPageIndex >= hunkPageCount - 1}
+                  label={t("conflicts.nextHunkPage")}
                   onClick={() =>
                     setHunkPageIndex(
                       Math.min(hunkPageCount - 1, currentHunkPageIndex + 1),
                     )
                   }
-                  size="icon"
-                  title={t("conflicts.nextHunkPage")}
                   type="button"
                   variant="ghost"
                 >
                   <ChevronRight aria-hidden="true" className="size-4" />
-                </Button>
+                </IconButton>
               </div>
             ) : null}
           </div>

@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { calculateTooltipPosition } from "@/components/ui/tooltip-position";
+import { IconButton } from "@/components/ui/icon-button";
 import { Tooltip } from "@/components/ui/tooltip";
 import { dialogOpenedEventName } from "@/lib/dialog-layer";
 
@@ -53,6 +54,57 @@ describe("tooltip positioning", () => {
     );
 
     expect(["top", "bottom"]).toContain(position.side);
+  });
+
+  it.each([
+    ["bottom-left", rect(16, 640, 32, 32), rect(56, 640, 32, 32)],
+    ["top-right", rect(752, 16, 32, 32), rect(712, 16, 32, 32)],
+  ] as const)(
+    "keeps a vertical tooltip away from its %s sibling",
+    (_location, trigger, sibling) => {
+      const tooltip = rect(0, 0, 120, 40);
+      const position = calculateTooltipPosition(
+        trigger,
+        tooltip,
+        { height: 700, width: 800 },
+        { placement: "vertical" },
+      );
+      const positionedTooltip = rect(
+        position.left,
+        position.top,
+        tooltip.width,
+        tooltip.height,
+      );
+
+      expect(["top", "bottom"]).toContain(position.side);
+      expect(rectanglesOverlap(positionedTooltip, sibling)).toBe(false);
+    },
+  );
+
+  it("uses vertical placement for icon buttons by default", async () => {
+    render(
+      <IconButton label="First action">
+        <span aria-hidden="true">1</span>
+      </IconButton>,
+    );
+
+    const button = screen.getByRole("button", { name: "First action" });
+    const tooltip = screen.getByRole("tooltip", { name: "First action" });
+
+    vi.spyOn(button, "getBoundingClientRect").mockReturnValue(
+      rect(16, 640, 32, 32),
+    );
+    vi.spyOn(tooltip, "getBoundingClientRect").mockReturnValue(
+      rect(0, 0, 120, 40),
+    );
+    vi.stubGlobal("innerHeight", 700);
+    vi.stubGlobal("innerWidth", 800);
+
+    fireEvent.focus(button);
+
+    await waitFor(() => {
+      expect(tooltip).toHaveAttribute("data-side", "top");
+    });
   });
 
   it("renders in a body portal and updates its fixed position when opened", async () => {
@@ -173,4 +225,13 @@ describe("tooltip positioning", () => {
 
 function rect(left: number, top: number, width: number, height: number) {
   return new DOMRect(left, top, width, height);
+}
+
+function rectanglesOverlap(first: DOMRect, second: DOMRect) {
+  return !(
+    first.right <= second.left ||
+    first.left >= second.right ||
+    first.bottom <= second.top ||
+    first.top >= second.bottom
+  );
 }

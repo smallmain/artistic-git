@@ -965,7 +965,11 @@ function BranchFilter({
       className="relative min-w-0 max-w-64 shrink"
       data-testid="history-branch-filter"
     >
-      <Tooltip className="flex w-full min-w-0 max-w-full" content={label}>
+      <Tooltip
+        className="flex w-full min-w-0 max-w-full"
+        content={label}
+        placement="vertical"
+      >
         {({ describedBy }) => (
           <Button
             aria-expanded={open}
@@ -2410,7 +2414,10 @@ function RevertActionButton({
   }
 
   return (
-    <Tooltip content={t(`history.revert.disabled.${reason}`)}>
+    <Tooltip
+      content={t(`history.revert.disabled.${reason}`)}
+      placement="vertical"
+    >
       {({ describedBy }) => button(describedBy)}
     </Tooltip>
   );

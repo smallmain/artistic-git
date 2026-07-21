@@ -436,9 +436,9 @@ export function LocalChangesPanel({
               )}
               {renderPageCount > 1 ? (
                 <div className="flex items-center justify-between gap-2 border-t p-2">
-                  <Button
-                    aria-label={t("localChanges.previousPage")}
+                  <IconButton
                     disabled={renderPageIndex === 0}
+                    label={t("localChanges.previousPage")}
                     onClick={() => {
                       setRenderPage({
                         changes,
@@ -450,22 +450,20 @@ export function LocalChangesPanel({
                         changeListRef.current.scrollTop = 0;
                       }
                     }}
-                    size="icon"
-                    title={t("localChanges.previousPage")}
                     type="button"
                     variant="ghost"
                   >
                     <ChevronLeft className="size-4" aria-hidden="true" />
-                  </Button>
+                  </IconButton>
                   <span className="text-xs text-muted-foreground">
                     {t("localChanges.page", {
                       page: renderPageIndex + 1,
                       total: renderPageCount,
                     })}
                   </span>
-                  <Button
-                    aria-label={t("localChanges.nextPage")}
+                  <IconButton
                     disabled={renderPageIndex >= renderPageCount - 1}
+                    label={t("localChanges.nextPage")}
                     onClick={() => {
                       setRenderPage({
                         changes,
@@ -480,13 +478,11 @@ export function LocalChangesPanel({
                         changeListRef.current.scrollTop = 0;
                       }
                     }}
-                    size="icon"
-                    title={t("localChanges.nextPage")}
                     type="button"
                     variant="ghost"
                   >
                     <ChevronRight className="size-4" aria-hidden="true" />
-                  </Button>
+                  </IconButton>
                 </div>
               ) : null}
             </OverlayScrollArea>

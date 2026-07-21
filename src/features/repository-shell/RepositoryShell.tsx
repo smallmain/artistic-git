@@ -24,6 +24,7 @@ import { DetailsDialog } from "@/components/dialogs/DetailsDialog";
 import { DialogFrame } from "@/components/dialogs/DialogFrame";
 import { Button } from "@/components/ui/button";
 import { BranchSelect } from "@/components/ui/branch-select";
+import { IconButton } from "@/components/ui/icon-button";
 import { OverlayScrollArea } from "@/components/ui/overlay-scroll-area";
 import {
   ConflictResolutionOverlay,
@@ -3466,59 +3467,54 @@ function SafetyBackupsDialog({
                     {backup.headOid ? ` · ${shortOid(backup.headOid)}` : ""}
                   </p>
                 </div>
-                <Button
+                <IconButton
                   disabled={busy}
+                  label={t("repository.deleteSafetyBackup")}
                   onClick={() => onDelete(backup)}
-                  size="icon"
-                  title={t("repository.deleteSafetyBackup")}
                   type="button"
                   variant="ghost"
                 >
                   <Trash2 className="size-4" aria-hidden="true" />
-                </Button>
+                </IconButton>
               </li>
             ))}
           </ul>
           {pageCount > 1 ? (
             <div className="flex items-center justify-between gap-2 border-t pt-2">
-              <Button
-                aria-label={t("repository.previousSafetyBackupsPage")}
+              <IconButton
                 disabled={busy || pageIndex === 0}
+                label={t("repository.previousSafetyBackupsPage")}
                 onClick={() =>
                   setPageState({
                     backups,
                     pageIndex: Math.max(0, pageIndex - 1),
                   })
                 }
-                size="icon"
-                title={t("repository.previousSafetyBackupsPage")}
                 type="button"
                 variant="ghost"
               >
                 <ChevronLeft className="size-4" aria-hidden="true" />
-              </Button>
+              </IconButton>
               <span className="text-xs text-muted-foreground">
                 {t("repository.safetyBackupsPage", {
                   page: pageIndex + 1,
                   total: pageCount,
                 })}
               </span>
-              <Button
-                aria-label={t("repository.nextSafetyBackupsPage")}
+              <IconButton
                 disabled={busy || pageIndex >= pageCount - 1}
+                label={t("repository.nextSafetyBackupsPage")}
                 onClick={() =>
                   setPageState({
                     backups,
                     pageIndex: Math.min(pageCount - 1, pageIndex + 1),
                   })
                 }
-                size="icon"
-                title={t("repository.nextSafetyBackupsPage")}
                 type="button"
                 variant="ghost"
               >
                 <ChevronRight className="size-4" aria-hidden="true" />
-              </Button>
+              </IconButton>
             </div>
           ) : null}
         </div>
@@ -4138,36 +4134,32 @@ function LargeFileWarningPanel({
       </OverlayScrollArea>
       {pageCount > 1 ? (
         <div className="flex items-center justify-between gap-2">
-          <Button
-            aria-label={t("localChanges.previousLargeFilesPage")}
+          <IconButton
             disabled={busy || currentPageIndex === 0}
+            label={t("localChanges.previousLargeFilesPage")}
             onClick={() => setPageIndex(Math.max(0, currentPageIndex - 1))}
-            size="icon"
-            title={t("localChanges.previousLargeFilesPage")}
             type="button"
             variant="ghost"
           >
             <ChevronLeft aria-hidden="true" className="size-4" />
-          </Button>
+          </IconButton>
           <span className="text-xs text-muted-foreground">
             {t("localChanges.largeFilesPage", {
               page: currentPageIndex + 1,
               total: pageCount,
             })}
           </span>
-          <Button
-            aria-label={t("localChanges.nextLargeFilesPage")}
+          <IconButton
             disabled={busy || currentPageIndex >= pageCount - 1}
+            label={t("localChanges.nextLargeFilesPage")}
             onClick={() =>
               setPageIndex(Math.min(pageCount - 1, currentPageIndex + 1))
             }
-            size="icon"
-            title={t("localChanges.nextLargeFilesPage")}
             type="button"
             variant="ghost"
           >
             <ChevronRight aria-hidden="true" className="size-4" />
-          </Button>
+          </IconButton>
         </div>
       ) : null}
       <div className="flex flex-wrap gap-2">
@@ -4390,36 +4382,32 @@ function StashDetailsFileList({
       </OverlayScrollArea>
       {pageCount > 1 ? (
         <div className="flex items-center justify-between gap-2 border-t p-2">
-          <Button
-            aria-label={t("repository.previousStashFilesPage")}
+          <IconButton
             disabled={currentPageIndex === 0}
+            label={t("repository.previousStashFilesPage")}
             onClick={() => setPageIndex(Math.max(0, currentPageIndex - 1))}
-            size="icon"
-            title={t("repository.previousStashFilesPage")}
             type="button"
             variant="ghost"
           >
             <ChevronLeft className="size-4" aria-hidden="true" />
-          </Button>
+          </IconButton>
           <span className="text-xs text-muted-foreground">
             {t("repository.stashFilesPage", {
               page: currentPageIndex + 1,
               total: pageCount,
             })}
           </span>
-          <Button
-            aria-label={t("repository.nextStashFilesPage")}
+          <IconButton
             disabled={currentPageIndex >= pageCount - 1}
+            label={t("repository.nextStashFilesPage")}
             onClick={() =>
               setPageIndex(Math.min(pageCount - 1, currentPageIndex + 1))
             }
-            size="icon"
-            title={t("repository.nextStashFilesPage")}
             type="button"
             variant="ghost"
           >
             <ChevronRight className="size-4" aria-hidden="true" />
-          </Button>
+          </IconButton>
         </div>
       ) : null}
     </>

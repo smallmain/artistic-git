@@ -20,7 +20,7 @@ export const IconButton = React.forwardRef<HTMLButtonElement, IconButtonProps>(
       className,
       label,
       tooltip = label,
-      tooltipPlacement = "auto",
+      tooltipPlacement = "vertical",
       ...props
     },
     ref,

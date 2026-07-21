@@ -27,6 +27,7 @@ import { useTranslation } from "react-i18next";
 import { DialogFrame } from "@/components/dialogs/DialogFrame";
 import { Button } from "@/components/ui/button";
 import { BranchSelect } from "@/components/ui/branch-select";
+import { IconButton } from "@/components/ui/icon-button";
 import type {
   AppSettings,
   AutoTrackingRule,
@@ -1616,32 +1617,30 @@ function GeneralSettings({
                 })}
                 {credentialPageCount > 1 ? (
                   <div className="flex items-center justify-between gap-2 pt-1">
-                    <Button
-                      aria-label={t("settings.general.previousCredentialsPage")}
+                    <IconButton
                       disabled={currentCredentialPageIndex === 0}
+                      label={t("settings.general.previousCredentialsPage")}
                       onClick={() =>
                         setCredentialPageIndex(
                           Math.max(0, currentCredentialPageIndex - 1),
                         )
                       }
-                      size="icon"
-                      title={t("settings.general.previousCredentialsPage")}
                       type="button"
                       variant="ghost"
                     >
                       <ChevronLeft aria-hidden="true" className="size-4" />
-                    </Button>
+                    </IconButton>
                     <span className="text-xs text-muted-foreground">
                       {t("settings.general.credentialsPage", {
                         page: currentCredentialPageIndex + 1,
                         total: credentialPageCount,
                       })}
                     </span>
-                    <Button
-                      aria-label={t("settings.general.nextCredentialsPage")}
+                    <IconButton
                       disabled={
                         currentCredentialPageIndex >= credentialPageCount - 1
                       }
+                      label={t("settings.general.nextCredentialsPage")}
                       onClick={() =>
                         setCredentialPageIndex(
                           Math.min(
@@ -1650,13 +1649,11 @@ function GeneralSettings({
                           ),
                         )
                       }
-                      size="icon"
-                      title={t("settings.general.nextCredentialsPage")}
                       type="button"
                       variant="ghost"
                     >
                       <ChevronRight aria-hidden="true" className="size-4" />
-                    </Button>
+                    </IconButton>
                   </div>
                 ) : null}
               </div>
