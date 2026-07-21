@@ -96,9 +96,9 @@ const branchVirtualOverscan = 6;
 const defaultBranchViewportHeight = 720;
 const stashRowHeight = 40;
 const stashVirtualOverscan = 6;
-/** Shared translucent hover action cluster for list rows. */
+/** Shared edge-fade hover action cluster for list rows. */
 const hoverActionGroupClassName =
-  "absolute right-1 top-1/2 z-10 hidden -translate-y-1/2 items-center gap-0.5 rounded-md bg-background/80 px-0.5 shadow-sm backdrop-blur-sm group-hover:flex group-focus-within:flex";
+  "hover-action-group-fade absolute right-1 top-1/2 z-10 hidden -translate-y-1/2 items-center gap-0.5 py-0.5 pr-0.5 pl-[22px] group-hover:flex group-focus-within:flex";
 
 function fallbackBranchViewportHeight() {
   return Math.max(defaultBranchViewportHeight, window.innerHeight);
@@ -883,7 +883,7 @@ function BranchRow({
       style={style}
     >
       <button
-        className="grid h-10 w-full grid-cols-[14px_auto_1fr_auto] items-center gap-2 rounded-md px-2 text-left text-sm hover:bg-accent"
+        className="grid h-10 w-full grid-cols-[14px_auto_1fr_auto] items-center gap-2 rounded-md px-2 text-left text-sm transition-colors group-hover:bg-accent group-focus-within:bg-accent"
         onClick={() => {
           onFocus(branch);
         }}
@@ -1057,7 +1057,7 @@ function StashRow({
       style={style}
     >
       <button
-        className="grid h-10 w-full grid-cols-[auto_1fr_auto] items-center gap-2 rounded-md px-2 text-left text-sm hover:bg-accent"
+        className="grid h-10 w-full grid-cols-[auto_1fr_auto] items-center gap-2 rounded-md px-2 text-left text-sm transition-colors group-hover:bg-accent group-focus-within:bg-accent"
         disabled={busy || !onDetails}
         onClick={onDetails ? () => onDetails(stash) : undefined}
         type="button"
@@ -1104,7 +1104,7 @@ function OptionalActionButton({
 
   return (
     <IconButton
-      className="size-7"
+      className="size-7 bg-card/40"
       disabled={busy || !onClick}
       label={label}
       onClick={onClick}

@@ -123,14 +123,21 @@ describe("RepositorySidebar", () => {
     );
   });
 
-  it("renders centered branch and stash hover actions on a blurred background", () => {
+  it("renders branch and stash hover actions with an edge-fade background", () => {
     renderSidebar({});
 
     const branchActions = screen.getAllByTestId("branch-hover-actions")[0];
     const stashActions = screen.getAllByTestId("stash-hover-actions")[0];
+    const branchButton = screen
+      .getAllByTestId("branch-row")[0]
+      .querySelector(":scope > button");
+    const stashButton = screen
+      .getAllByTestId("stash-row")[0]
+      .querySelector(":scope > button");
 
     for (const actionGroup of [branchActions, stashActions]) {
       expect(actionGroup).toHaveClass(
+        "hover-action-group-fade",
         "absolute",
         "right-1",
         "top-1/2",
@@ -138,12 +145,30 @@ describe("RepositorySidebar", () => {
         "-translate-y-1/2",
         "items-center",
         "gap-0.5",
-        "bg-background/80",
-        "backdrop-blur-sm",
+        "py-0.5",
+        "pr-0.5",
+        "pl-[22px]",
         "group-hover:flex",
         "group-focus-within:flex",
       );
+      expect(actionGroup).not.toHaveClass(
+        "rounded-md",
+        "bg-background/80",
+        "shadow-sm",
+      );
+      for (const actionButton of actionGroup.querySelectorAll("button")) {
+        expect(actionButton).toHaveClass("size-7", "bg-card/40");
+      }
     }
+
+    expect(branchButton).toHaveClass(
+      "group-hover:bg-accent",
+      "group-focus-within:bg-accent",
+    );
+    expect(stashButton).toHaveClass(
+      "group-hover:bg-accent",
+      "group-focus-within:bg-accent",
+    );
 
     expect(
       screen.queryByRole("button", { name: "More actions" }),
