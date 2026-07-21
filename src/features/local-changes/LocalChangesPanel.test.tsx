@@ -179,6 +179,73 @@ describe("LocalChangesPanel", () => {
     expect(tooltip).toHaveAttribute("data-state", "open");
   });
 
+  it("resizes and persists the change list and diff panel ratio", () => {
+    const { unmount } = renderWithProviders(
+      <LocalChangesPanel changes={createChanges()} />,
+    );
+    const panel = screen.getByTestId("local-changes-panel");
+    const resizeHandle = screen.getByRole("separator", {
+      name: "Resize change list and diff panels",
+    });
+
+    vi.spyOn(panel, "getBoundingClientRect").mockReturnValue({
+      bottom: 700,
+      height: 600,
+      left: 100,
+      right: 1_100,
+      toJSON: () => ({}),
+      top: 100,
+      width: 1_000,
+      x: 100,
+      y: 100,
+    });
+    vi.spyOn(resizeHandle, "getBoundingClientRect").mockReturnValue({
+      bottom: 700,
+      height: 600,
+      left: 486,
+      right: 494,
+      toJSON: () => ({}),
+      top: 100,
+      width: 8,
+      x: 486,
+      y: 100,
+    });
+
+    expect(panel.style.gridTemplateColumns).toContain("39%");
+    expect(resizeHandle).toHaveClass("group", "cursor-ew-resize");
+    expect(resizeHandle.firstElementChild).toHaveClass(
+      "w-px",
+      "bg-border",
+      "group-hover:w-0.5",
+      "group-hover:bg-ring",
+      "group-active:w-0.5",
+      "group-active:bg-ring",
+    );
+
+    fireEvent.pointerDown(resizeHandle, { clientX: 490, pointerId: 7 });
+    fireEvent.pointerMove(window, { clientX: 600 });
+
+    expect(panel.style.gridTemplateColumns).toContain("50%");
+    expect(
+      window.localStorage.getItem("artistic-git.local-changes.split-ratio"),
+    ).toBeNull();
+
+    fireEvent.pointerUp(window);
+
+    expect(
+      window.localStorage.getItem("artistic-git.local-changes.split-ratio"),
+    ).toBe("50");
+
+    fireEvent.pointerMove(window, { clientX: 700 });
+    expect(panel.style.gridTemplateColumns).toContain("50%");
+
+    unmount();
+    renderWithProviders(<LocalChangesPanel changes={createChanges()} />);
+    expect(
+      screen.getByTestId("local-changes-panel").style.gridTemplateColumns,
+    ).toContain("50%");
+  });
+
   it("switches to tree mode, persists it, and supports folder tri-state checks", () => {
     renderWithProviders(
       <LocalChangesPanel

@@ -43,7 +43,11 @@ import type {
 } from "./types";
 
 const defaultStorageKey = "artistic-git.local-changes.view-mode";
+const splitRatioStorageKey = "artistic-git.local-changes.split-ratio";
 const changeRenderPageSize = 250;
+const defaultSplitRatioPercent = 39;
+const minimumChangeListWidthPx = 240;
+const minimumDiffWidthPx = 320;
 
 export function LocalChangesPanel({
   busy = false,
@@ -81,6 +85,9 @@ export function LocalChangesPanel({
     React.useState<LocalChangesViewMode>(
       () => viewMode ?? readViewMode(storageKey),
     );
+  const [splitRatioPercent, setSplitRatioPercent] = React.useState(() =>
+    readSplitRatio(),
+  );
   const [contextMenu, setContextMenu] = React.useState<{
     busyEpoch: object;
     ids: string[];
@@ -94,9 +101,12 @@ export function LocalChangesPanel({
     searchTerm: string;
     viewMode: LocalChangesViewMode;
   } | null>(null);
+  const panelRef = React.useRef<HTMLElement>(null);
   const changeListRef = React.useRef<HTMLDivElement>(null);
+  const finishActiveResizeRef = React.useRef<(() => void) | null>(null);
   const contextMenuBusyEpoch = React.useMemo(() => ({ busy }), [busy]);
   const hasError = error !== null && error !== undefined;
+  const splitPosition = `clamp(${minimumChangeListWidthPx}px, ${splitRatioPercent}%, calc(100% - ${minimumDiffWidthPx}px))`;
 
   const effectiveSelectedId = selectedId ?? internalSelectedId;
   const effectiveViewMode = viewMode ?? internalViewMode;
@@ -150,6 +160,13 @@ export function LocalChangesPanel({
     onSelectedChange?.(selectedChange);
   }, [onSelectedChange, selectedChange]);
 
+  React.useEffect(
+    () => () => {
+      finishActiveResizeRef.current?.();
+    },
+    [],
+  );
+
   const updateViewMode = (mode: LocalChangesViewMode) => {
     if (viewMode === undefined) {
       setInternalViewMode(mode);
@@ -200,11 +217,78 @@ export function LocalChangesPanel({
     );
   };
 
+  const startSplitResize = React.useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      const panel = panelRef.current;
+      if (!panel) {
+        return;
+      }
+
+      finishActiveResizeRef.current?.();
+      const panelRect = panel.getBoundingClientRect();
+      if (panelRect.width <= 0) {
+        return;
+      }
+
+      const handleRect = event.currentTarget.getBoundingClientRect();
+      const handleCenter = handleRect.left + handleRect.width / 2;
+      const measuredRatio =
+        ((handleCenter - panelRect.left) / panelRect.width) * 100;
+      const startRatio =
+        handleCenter >= panelRect.left && handleCenter <= panelRect.right
+          ? measuredRatio
+          : splitRatioPercent;
+      const startX = event.clientX;
+      const bounds = getSplitRatioBounds(panelRect.width);
+      let nextRatio = roundSplitRatio(
+        clamp(startRatio, bounds.minimum, bounds.maximum),
+      );
+
+      event.preventDefault();
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+
+      const handlePointerMove = (moveEvent: PointerEvent) => {
+        const deltaPercent =
+          ((moveEvent.clientX - startX) / panelRect.width) * 100;
+        nextRatio = roundSplitRatio(
+          clamp(startRatio + deltaPercent, bounds.minimum, bounds.maximum),
+        );
+        setSplitRatioPercent(nextRatio);
+      };
+      let finished = false;
+      const finishResize = () => {
+        if (finished) {
+          return;
+        }
+        finished = true;
+        window.removeEventListener("pointermove", handlePointerMove);
+        window.removeEventListener("pointerup", finishResize);
+        window.removeEventListener("pointercancel", finishResize);
+        window.removeEventListener("blur", finishResize);
+        if (finishActiveResizeRef.current === finishResize) {
+          finishActiveResizeRef.current = null;
+        }
+        window.localStorage.setItem(splitRatioStorageKey, String(nextRatio));
+      };
+
+      window.addEventListener("pointermove", handlePointerMove);
+      window.addEventListener("pointerup", finishResize);
+      window.addEventListener("pointercancel", finishResize);
+      window.addEventListener("blur", finishResize);
+      finishActiveResizeRef.current = finishResize;
+    },
+    [splitRatioPercent],
+  );
+
   return (
     <section
       aria-busy={loading}
-      className="relative grid h-full min-h-0 grid-cols-[360px_minmax(0,1fr)] overflow-hidden border bg-background"
+      className="relative grid h-full min-h-0 overflow-hidden border bg-background"
       data-testid="local-changes-panel"
+      ref={panelRef}
+      style={{
+        gridTemplateColumns: `${splitPosition} minmax(0, 1fr)`,
+      }}
     >
       {hasError ? (
         <div
@@ -239,10 +323,7 @@ export function LocalChangesPanel({
         </div>
       ) : (
         <>
-          <aside
-            className="flex min-h-0 flex-col border-r bg-card"
-            inert={loading}
-          >
+          <aside className="flex min-h-0 flex-col bg-card" inert={loading}>
             <header className="space-y-3 border-b p-3">
               <div className="flex items-center justify-between gap-2">
                 <TriStateCheckbox
@@ -425,6 +506,20 @@ export function LocalChangesPanel({
               </Button>
             </footer>
           </aside>
+
+          <div
+            aria-label={t("localChanges.resizePanels")}
+            aria-orientation="vertical"
+            className="group absolute inset-y-0 z-10 w-2 -translate-x-1/2 touch-none cursor-ew-resize"
+            onPointerDown={startSplitResize}
+            role="separator"
+            style={{ left: splitPosition }}
+          >
+            <span
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-border transition-[width,background-color] group-hover:w-0.5 group-hover:bg-ring group-active:w-0.5 group-active:bg-ring"
+            />
+          </div>
 
           <div
             aria-busy={detailLoading}
@@ -991,6 +1086,31 @@ function ContextMenu({
 function readViewMode(storageKey: string): LocalChangesViewMode {
   const value = window.localStorage.getItem(storageKey);
   return value === "tree" ? "tree" : "flat";
+}
+
+function readSplitRatio(): number {
+  const value = Number(window.localStorage.getItem(splitRatioStorageKey));
+  return Number.isFinite(value) && value > 0 && value < 100
+    ? value
+    : defaultSplitRatioPercent;
+}
+
+function getSplitRatioBounds(width: number): {
+  maximum: number;
+  minimum: number;
+} {
+  return {
+    maximum: Math.max(50, 100 - (minimumDiffWidthPx / width) * 100),
+    minimum: Math.min(50, (minimumChangeListWidthPx / width) * 100),
+  };
+}
+
+function roundSplitRatio(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.min(maximum, Math.max(minimum, value));
 }
 
 function mapFileKindToCard(
