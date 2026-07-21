@@ -494,6 +494,12 @@ describe("RepositorySidebar", () => {
     }
   });
 
+  it("keeps the main sidebar divider below overlays in the adjacent panel", () => {
+    renderSidebar({});
+
+    expect(screen.getByLabelText("Resize sidebar")).toHaveClass("z-0");
+  });
+
   it("finishes and cleans up an interrupted sidebar drag", () => {
     const onSidebarLayoutChange = vi.fn();
     renderSidebar({ onSidebarLayoutChange });

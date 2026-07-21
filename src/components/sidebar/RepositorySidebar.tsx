@@ -628,7 +628,7 @@ export function RepositorySidebar({
 
       <div
         aria-label={t("repository.resizeSidebar")}
-        className="group absolute inset-y-0 right-0 z-10 w-2 cursor-col-resize"
+        className="group absolute inset-y-0 right-0 z-0 w-2 cursor-col-resize"
         onPointerDown={startSidebarResize}
         role="separator"
       >
