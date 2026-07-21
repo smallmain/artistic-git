@@ -408,6 +408,7 @@ describe("App", () => {
       },
     });
 
+    fireEvent.click(screen.getByRole("button", { name: "Search branches" }));
     fireEvent.change(screen.getByRole("textbox", { name: "Search branches" }), {
       target: { value: "nope" },
     });
@@ -420,6 +421,9 @@ describe("App", () => {
 
     expect(
       screen.queryByRole("textbox", { name: "Search branches" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Search branches" }),
     ).not.toBeInTheDocument();
   });
 

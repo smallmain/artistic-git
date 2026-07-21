@@ -20,6 +20,7 @@ import { useInfiniteQuery, type InfiniteData } from "@tanstack/react-query";
 
 import { DialogFrame } from "@/components/dialogs/DialogFrame";
 import { Button } from "@/components/ui/button";
+import { ExpandableSearch } from "@/components/ui/expandable-search";
 import { FloatingPanel } from "@/components/ui/floating-panel";
 import { IconButton } from "@/components/ui/icon-button";
 import { Tooltip } from "@/components/ui/tooltip";
@@ -730,41 +731,22 @@ export function HistoryWorkbench({
             onSelectedBranchesChange={setSelectedBranches}
             selectedBranches={selectedBranches}
           />
-          <label className="relative flex min-w-0 max-w-sm flex-1 basis-60 items-center">
-            <Search className="pointer-events-none absolute left-3 size-4 text-muted-foreground" />
-            <input
-              aria-label={t("history.search.label")}
-              className="h-9 w-full rounded-md border bg-background pl-9 pr-9 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              data-app-search="current"
-              onChange={(event) => {
-                const nextQuery = event.target.value;
-                setQuery(nextQuery);
-                if (!nextQuery.trim()) {
-                  setDebouncedQuery("");
-                  setSearchResults(null);
-                }
-              }}
-              placeholder={t("history.search.placeholder")}
-              value={query}
-            />
-            {isSearching ? (
-              <Loader2 className="absolute right-3 size-4 animate-spin text-muted-foreground" />
-            ) : query ? (
-              <IconButton
-                className="absolute right-1 size-7"
-                label={t("history.search.clear")}
-                onClick={() => {
-                  setQuery("");
-                  setDebouncedQuery("");
-                  setSearchResults(null);
-                }}
-                tooltip={t("history.search.clear")}
-                variant="ghost"
-              >
-                <X className="size-4" />
-              </IconButton>
-            ) : null}
-          </label>
+          <ExpandableSearch
+            clearLabel={t("history.search.clear")}
+            dataAppSearch="current"
+            expandedClassName="min-w-0 max-w-sm flex-1 basis-60"
+            isSearching={isSearching}
+            label={t("history.search.label")}
+            onChange={(nextQuery) => {
+              setQuery(nextQuery);
+              if (!nextQuery.trim()) {
+                setDebouncedQuery("");
+                setSearchResults(null);
+              }
+            }}
+            placeholder={t("history.search.placeholder")}
+            value={query}
+          />
         </div>
       </header>
 

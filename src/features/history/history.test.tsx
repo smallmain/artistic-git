@@ -94,6 +94,15 @@ function renderWithProviders(
   };
 }
 
+function openExpandableSearch(label: string) {
+  const existing = screen.queryByRole("textbox", { name: label });
+  if (existing) {
+    return existing;
+  }
+  fireEvent.click(screen.getByRole("button", { name: label }));
+  return screen.getByRole("textbox", { name: label });
+}
+
 beforeEach(() => {
   vi.useFakeTimers();
   cancelOperationMock.mockReset();
@@ -365,7 +374,7 @@ describe("HistoryWorkbench", () => {
 
     await screen.findByText("No commits match the current filters.");
     onInitialLoadingChange.mockClear();
-    fireEvent.change(screen.getByRole("textbox", { name: "Search history" }), {
+    fireEvent.change(openExpandableSearch("Search history"), {
       target: { value: "lookdev" },
     });
     await waitFor(() => expect(searchLogMock).toHaveBeenCalledTimes(3));
@@ -653,7 +662,7 @@ describe("HistoryWorkbench", () => {
       <HistoryWorkbench historyRepositoryPath="/repo/art" rows={[]} />,
     );
 
-    fireEvent.change(screen.getByRole("textbox", { name: "Search history" }), {
+    fireEvent.change(openExpandableSearch("Search history"), {
       target: { value: "viewport" },
     });
     await act(async () => {
@@ -713,7 +722,7 @@ describe("HistoryWorkbench", () => {
     renderWithProviders(
       <HistoryWorkbench historyRepositoryPath="/repo/art" rows={[]} />,
     );
-    fireEvent.change(screen.getByRole("textbox", { name: "Search history" }), {
+    fireEvent.change(openExpandableSearch("Search history"), {
       target: { value: "missing" },
     });
 
@@ -786,7 +795,7 @@ describe("HistoryWorkbench", () => {
     renderWithProviders(
       <HistoryWorkbench historyRepositoryPath="/repo/art" rows={[]} />,
     );
-    const search = screen.getByRole("textbox", { name: "Search history" });
+    const search = openExpandableSearch("Search history");
 
     fireEvent.change(search, { target: { value: "old" } });
     await waitFor(() => {
@@ -895,7 +904,8 @@ describe("HistoryWorkbench", () => {
       name: `Current branch: ${branchName}`,
     });
     const filter = screen.getByTestId("history-branch-filter");
-    const search = screen.getByRole("textbox", { name: "Search history" });
+    const search = screen.getByTestId("expandable-search");
+    const expandedSearch = openExpandableSearch("Search history");
 
     expect(filter).toHaveClass("max-w-64", "min-w-0", "shrink");
     expect(filter).toContainElement(trigger);
@@ -905,8 +915,9 @@ describe("HistoryWorkbench", () => {
       within(trigger).getByText(`Current branch: ${branchName}`),
     ).toHaveClass("min-w-0", "flex-1", "truncate");
     expect(trigger).toHaveAttribute("aria-describedby");
-    expect(search.parentElement).toHaveClass("min-w-0", "flex-1");
-    expect(search.parentElement).not.toHaveClass("min-w-[240px]");
+    expect(search).toHaveClass("min-w-0", "flex-1");
+    expect(search).not.toHaveClass("min-w-[240px]");
+    expect(expandedSearch).toHaveAttribute("aria-label", "Search history");
   });
 
   it("keeps the branch filter bounded with thousands of branches", async () => {
@@ -1553,7 +1564,7 @@ describe("HistoryWorkbench", () => {
     fireEvent.click(screen.getByRole("button", { name: /Current branch:/ }));
     fireEvent.click(screen.getByRole("button", { name: "All" }));
 
-    fireEvent.change(screen.getByRole("textbox", { name: "Search history" }), {
+    fireEvent.change(openExpandableSearch("Search history"), {
       target: { value: "viewport" },
     });
 

@@ -10,7 +10,6 @@ import {
   MoreHorizontal,
   RefreshCw,
   ScanEye,
-  Search,
   Settings,
   TriangleAlert,
   Trash2,
@@ -19,6 +18,7 @@ import {
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { ExpandableSearch } from "@/components/ui/expandable-search";
 import { IconButton } from "@/components/ui/icon-button";
 import {
   FloatingPanel,
@@ -747,54 +747,57 @@ function SidebarSection({
   scrollViewportRef,
   title,
 }: SidebarSectionProps) {
+  const { t } = useTranslation();
+
   return (
     <section
       className="flex min-h-0 flex-col px-3 py-3"
       style={{ flexBasis: collapsed ? "auto" : maxHeight }}
     >
-      <button
-        className="flex h-8 items-center gap-2 text-sm font-medium"
-        onClick={() => {
-          onCollapseChange(!collapsed);
-        }}
-        type="button"
-      >
-        {collapsed ? (
-          <ChevronRight className="size-4" aria-hidden="true" />
-        ) : (
-          <ChevronDown className="size-4" aria-hidden="true" />
+      <div className="flex h-8 items-center gap-2">
+        <button
+          className="flex min-w-0 flex-1 items-center gap-2 text-left text-sm font-medium"
+          onClick={() => {
+            onCollapseChange(!collapsed);
+          }}
+          type="button"
+        >
+          {collapsed ? (
+            <ChevronRight className="size-4 shrink-0" aria-hidden="true" />
+          ) : (
+            <ChevronDown className="size-4 shrink-0" aria-hidden="true" />
+          )}
+          <span className="shrink-0" aria-hidden="true">
+            {icon}
+          </span>
+          <span className="min-w-0 truncate">{title}</span>
+        </button>
+        {collapsed ? null : (
+          <ExpandableSearch
+            clearLabel={t("history.search.clear")}
+            expandedClassName="w-36 flex-none"
+            label={searchLabel}
+            onChange={onQueryChange}
+            size="sm"
+            value={query}
+          />
         )}
-        {icon}
-        {title}
-      </button>
+      </div>
       {collapsed ? null : (
-        <>
-          <label className="relative my-2 block">
-            <Search className="pointer-events-none absolute left-2 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <input
-              aria-label={searchLabel}
-              className="h-8 w-full rounded-md border bg-background pl-8 pr-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              onChange={(event) => {
-                onQueryChange(event.target.value);
-              }}
-              value={query}
-            />
-          </label>
-          <div
-            className="min-h-0 flex-1 overflow-auto"
-            data-testid={scrollTestId}
-            onScroll={onScroll}
-            ref={scrollViewportRef}
-          >
-            {filteredCount === 0 ? (
-              <p className="px-2 py-6 text-center text-sm text-muted-foreground">
-                {emptyLabel}
-              </p>
-            ) : (
-              children
-            )}
-          </div>
-        </>
+        <div
+          className="mt-2 min-h-0 flex-1 overflow-auto"
+          data-testid={scrollTestId}
+          onScroll={onScroll}
+          ref={scrollViewportRef}
+        >
+          {filteredCount === 0 ? (
+            <p className="px-2 py-6 text-center text-sm text-muted-foreground">
+              {emptyLabel}
+            </p>
+          ) : (
+            children
+          )}
+        </div>
       )}
     </section>
   );
@@ -901,10 +904,10 @@ function BranchRow({
               </span>
             )}
           </Tooltip>
-        ) : null}{hoverActionGroupClassName}
+        ) : null}
       </button>
       <div
-        className="absolute right-1 top-1 hidden items-center gap-0.5 rounded-md border border-border/60 bg-background/80 p-0.5 shadow-sm backdrop-blur-sm group-hover:flex group-focus-within:flex"
+        className={hoverActionGroupClassName}
         data-testid="branch-hover-actions"
       >
         {hasRemote ? (

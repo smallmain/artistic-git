@@ -25,6 +25,15 @@ function renderWithProviders(ui: ReactElement) {
   );
 }
 
+function openExpandableSearch(label: string) {
+  const existing = screen.queryByRole("textbox", { name: label });
+  if (existing) {
+    return existing;
+  }
+  fireEvent.click(screen.getByRole("button", { name: label }));
+  return screen.getByRole("textbox", { name: label });
+}
+
 beforeEach(() => {
   window.localStorage.clear();
 });
@@ -278,7 +287,7 @@ describe("RepositorySidebar", () => {
     expect(screen.getByText("No branches yet")).toBeVisible();
     expect(screen.getByText("No stashes yet")).toBeVisible();
 
-    fireEvent.change(screen.getByRole("textbox", { name: "Search branches" }), {
+    fireEvent.change(openExpandableSearch("Search branches"), {
       target: { value: "missing" },
     });
     expect(screen.getByText("No matching items")).toBeVisible();
@@ -346,12 +355,12 @@ describe("RepositorySidebar", () => {
       expect.objectContaining({ name: "branch-0999" }),
     );
 
-    fireEvent.change(screen.getByRole("textbox", { name: "Search branches" }), {
+    fireEvent.change(openExpandableSearch("Search branches"), {
       target: { value: "branch-0000" },
     });
     expect(screen.getByText("branch-0000")).toBeInTheDocument();
 
-    fireEvent.change(screen.getByRole("textbox", { name: "Search branches" }), {
+    fireEvent.change(openExpandableSearch("Search branches"), {
       target: { value: "" },
     });
     expect(screen.getByText("branch-0000")).toBeInTheDocument();
@@ -404,7 +413,7 @@ describe("RepositorySidebar", () => {
       "1000",
     );
 
-    fireEvent.change(screen.getByRole("textbox", { name: "Search stashes" }), {
+    fireEvent.change(openExpandableSearch("Search stashes"), {
       target: { value: "stash-0000" },
     });
     expect(screen.getByText("stash-0000")).toBeInTheDocument();
