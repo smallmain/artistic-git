@@ -3087,10 +3087,9 @@ fn build_view_menu(
 }
 
 fn initial_menu_language(app: &tauri::AppHandle) -> NativeMenuLanguage {
-    let saved_language = app
-        .path()
-        .app_config_dir()
-        .ok()
+    // Builder::menu runs during Builder::build, before Tauri manages PathResolver.
+    // Calling app.path() there panics with "state() called before manage()".
+    let saved_language = early_app_config_dir(app)
         .and_then(|directory| fs::read_to_string(directory.join("settings.json")).ok())
         .and_then(|content| {
             serde_json::from_str::<artistic_git_core::config::AppSettings>(&content).ok()
@@ -3098,6 +3097,33 @@ fn initial_menu_language(app: &tauri::AppHandle) -> NativeMenuLanguage {
         .map(|settings| settings.language)
         .unwrap_or(artistic_git_core::config::LanguagePreference::System);
     resolved_menu_language(saved_language)
+}
+
+fn early_app_config_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
+    if let Some(resolver) = app.try_state::<tauri::path::PathResolver<tauri::Wry>>() {
+        return resolver.app_config_dir().ok();
+    }
+
+    platform_config_dir().map(|dir| dir.join(&app.config().identifier))
+}
+
+fn platform_config_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        env::var_os("HOME").map(|home| PathBuf::from(home).join("Library/Application Support"))
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        env::var_os("APPDATA").map(PathBuf::from)
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+    }
 }
 
 fn resolved_menu_language(
@@ -4574,6 +4600,18 @@ mod tests {
             resolved_menu_language(artistic_git_core::config::LanguagePreference::EnUs),
             NativeMenuLanguage::English
         ));
+    }
+
+    #[test]
+    fn early_menu_config_dir_matches_tauri_bundle_identifier_layout() {
+        let config_dir = platform_config_dir().expect("platform config dir");
+        let app_config_dir = config_dir.join("com.smallmain.artistic-git");
+
+        assert!(app_config_dir.is_absolute());
+        assert_eq!(
+            app_config_dir.file_name().and_then(|value| value.to_str()),
+            Some("com.smallmain.artistic-git")
+        );
     }
 
     #[cfg(target_os = "macos")]
