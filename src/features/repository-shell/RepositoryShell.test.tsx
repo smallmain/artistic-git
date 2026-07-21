@@ -19,6 +19,7 @@ import type {
   ConflictEnteredEvent,
   DiffPayload,
   LocalChange,
+  LocalChangesResponse,
   OperationProgressEvent,
 } from "@/lib/ipc/generated";
 import { useWindowStore, type WindowStoreState } from "@/store/window-store";
@@ -1744,24 +1745,27 @@ describe("RepositoryShell session preferences", () => {
   });
 
   it("refetches local changes when opening the local changes tab", async () => {
+    let resolveRefresh: ((value: LocalChangesResponse) => void) | undefined;
     commandMocks.listLocalChanges
       .mockResolvedValueOnce({
-        changes: [],
-        renormalizeSuggestion: null,
-      })
-      .mockResolvedValue({
         changes: [
           createLocalChange({
             changeKind: "added",
             fileKind: "text",
             indexStatus: "?",
-            newPath: "fresh-local.txt",
-            newText: "fresh\n",
+            newPath: "cached-local.txt",
+            newText: "cached\n",
             worktreeStatus: "?",
           }),
         ],
         renormalizeSuggestion: null,
-      });
+      })
+      .mockImplementationOnce(
+        () =>
+          new Promise<LocalChangesResponse>((resolve) => {
+            resolveRefresh = resolve;
+          }),
+      );
 
     renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
 
@@ -1775,6 +1779,24 @@ describe("RepositoryShell session preferences", () => {
     await waitFor(() =>
       expect(commandMocks.listLocalChanges).toHaveBeenCalledTimes(2),
     );
+    expect(screen.getAllByText("cached-local.txt")).not.toHaveLength(0);
+    expect(
+      screen.queryByText("Loading local changes..."),
+    ).not.toBeInTheDocument();
+
+    resolveRefresh?.({
+      changes: [
+        createLocalChange({
+          changeKind: "added",
+          fileKind: "text",
+          indexStatus: "?",
+          newPath: "fresh-local.txt",
+          newText: "fresh\n",
+          worktreeStatus: "?",
+        }),
+      ],
+      renormalizeSuggestion: null,
+    });
     expect(await screen.findAllByText("fresh-local.txt")).not.toHaveLength(0);
   });
 

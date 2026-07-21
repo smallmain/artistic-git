@@ -2581,7 +2581,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
               error={localChangesQuery.error}
               initialCheckedIds={localChangeCheckedIds}
               loadDeferredDetails
-              loading={localChangesQuery.isFetching}
+              loading={localChangesQuery.isPending}
               onCheckedChange={setLocalChangeCheckedIds}
               onCommit={setCommitIds}
               onPreviewRenormalize={runPreviewRenormalize}

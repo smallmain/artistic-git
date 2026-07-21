@@ -1772,6 +1772,7 @@ fn list_local_changes_for_repository(
     path_filters: &[String],
     load_policy: LocalChangeLoadPolicy,
 ) -> AppResult<Vec<LocalChange>> {
+    let inspect_submodules = repository_has_submodules(root);
     let mut args = vec![
         OsString::from("status"),
         OsString::from("--porcelain=v1"),
@@ -1784,6 +1785,11 @@ fn list_local_changes_for_repository(
     }
     let output = git_output_bytes(runner, Some(root), args, load_policy.operation_name())?;
     entry_budget.reserve(local_change_entry_count_bytes(&output), root)?;
+    let changed_lines = if output.is_empty() {
+        BTreeMap::new()
+    } else {
+        local_change_changed_lines(runner, root, path_filters, load_policy.operation_name())
+    };
     let fields = output
         .split(|byte| *byte == 0)
         .filter(|field| !field.is_empty())
@@ -1808,14 +1814,16 @@ fn list_local_changes_for_repository(
         }
 
         let change_kind = local_change_kind(&index_status, &worktree_status);
-        if should_skip_uncommitted_submodule_directory_change(
-            runner,
-            root,
-            &path,
-            old_path.as_deref(),
-            &index_status,
-            &worktree_status,
-        )? {
+        if inspect_submodules
+            && should_skip_uncommitted_submodule_directory_change(
+                runner,
+                root,
+                &path,
+                old_path.as_deref(),
+                &index_status,
+                &worktree_status,
+            )?
+        {
             index += 1;
             continue;
         }
@@ -1825,7 +1833,9 @@ fn list_local_changes_for_repository(
             path: &path,
             old_path: old_path.as_deref(),
             change_kind,
+            changed_lines: changed_lines.get(&path).copied(),
             index_status: &index_status,
+            inspect_submodules,
             worktree_status: &worktree_status,
             load_policy,
         };
@@ -4902,7 +4912,9 @@ struct LocalChangeDiffContext<'a> {
     path: &'a str,
     old_path: Option<&'a str>,
     change_kind: DiffChangeKind,
+    changed_lines: Option<usize>,
     index_status: &'a str,
+    inspect_submodules: bool,
     worktree_status: &'a str,
     load_policy: LocalChangeLoadPolicy,
 }
@@ -5226,20 +5238,24 @@ fn local_change_diff(
         path,
         old_path,
         change_kind,
+        changed_lines,
         index_status,
+        inspect_submodules,
         worktree_status,
         ..
     } = context;
-    if let Some(submodule) = submodule_pointer_change(
-        runner,
-        root,
-        path,
-        old_path,
-        change_kind,
-        index_status,
-        worktree_status,
-    )? {
-        return Ok(submodule);
+    if inspect_submodules {
+        if let Some(submodule) = submodule_pointer_change(
+            runner,
+            root,
+            path,
+            old_path,
+            change_kind,
+            index_status,
+            worktree_status,
+        )? {
+            return Ok(submodule);
+        }
     }
 
     if preview_budget.exhausted() {
@@ -5282,14 +5298,13 @@ fn local_change_diff(
     }
 
     let mut contents = local_change_contents(runner, context, preview)?;
-    let changed_lines = changed_lines_for_local_change(
-        runner,
-        root,
-        path,
-        change_kind,
-        contents.old_display_content.as_deref(),
-        contents.new_display_content.as_deref(),
-    );
+    let changed_lines = changed_lines.unwrap_or_else(|| {
+        changed_lines_for_content(
+            change_kind,
+            contents.old_display_content.as_deref(),
+            contents.new_display_content.as_deref(),
+        )
+    });
     let mut probe = DiffFileProbe::new(path.to_owned(), core_change_kind(change_kind));
     probe.old_path = old_path.map(|value| value.to_owned().into());
     probe.old_content = contents.old_content.as_deref();
@@ -5529,6 +5544,7 @@ fn local_change_contents(
         index_status,
         worktree_status,
         load_policy,
+        ..
     } = context;
     let operation_name = load_policy.operation_name();
     let LocalChangePreview {
@@ -6017,37 +6033,62 @@ fn bytes_to_lossy_string(content: &[u8]) -> String {
     String::from_utf8_lossy(content).into_owned()
 }
 
-fn changed_lines_for_local_change(
+fn local_change_changed_lines(
     runner: &GitRunner,
     root: &Path,
-    path: &str,
-    change_kind: DiffChangeKind,
-    old_content: Option<&[u8]>,
-    new_content: Option<&[u8]>,
-) -> usize {
-    git_changed_lines(runner, root, path)
-        .unwrap_or_else(|| changed_lines_for_content(change_kind, old_content, new_content))
+    path_filters: &[String],
+    operation_name: &str,
+) -> BTreeMap<String, usize> {
+    let mut args = vec![
+        OsString::from("diff"),
+        OsString::from("--numstat"),
+        OsString::from("-z"),
+        OsString::from("HEAD"),
+    ];
+    if !path_filters.is_empty() {
+        args.push(OsString::from("--"));
+        args.extend(path_filters.iter().map(crate::git_ops::literal_pathspec));
+    }
+    let Ok(output) = git_output_bytes(runner, Some(root), args, operation_name) else {
+        return BTreeMap::new();
+    };
+    parse_local_change_numstat(&output)
 }
 
-fn git_changed_lines(runner: &GitRunner, root: &Path, path: &str) -> Option<usize> {
-    let output = git_stdout(
-        runner,
-        Some(root),
-        [
-            OsString::from("diff"),
-            OsString::from("--numstat"),
-            OsString::from("HEAD"),
-            OsString::from("--"),
-            crate::git_ops::literal_pathspec(path),
-        ],
-        "listLocalChanges",
-    )
-    .ok()?;
-    let line = output.lines().find(|line| !line.trim().is_empty())?;
-    let mut fields = line.split_whitespace();
-    let additions = fields.next()?.parse::<usize>().ok()?;
-    let deletions = fields.next()?.parse::<usize>().ok()?;
-    Some(additions + deletions)
+fn parse_local_change_numstat(output: &[u8]) -> BTreeMap<String, usize> {
+    let mut stats = BTreeMap::new();
+    let mut fields = output.split(|byte| *byte == 0);
+
+    while let Some(record) = fields.next() {
+        if record.is_empty() {
+            continue;
+        }
+        let mut columns = record.splitn(3, |byte| *byte == b'\t');
+        let additions = columns.next().and_then(parse_numstat_usize);
+        let deletions = columns.next().and_then(parse_numstat_usize);
+        let Some(path) = columns.next() else {
+            continue;
+        };
+        let path = if path.is_empty() {
+            let _old_path = fields.next();
+            fields.next().unwrap_or_default()
+        } else {
+            path
+        };
+        let (Some(additions), Some(deletions)) = (additions, deletions) else {
+            continue;
+        };
+        stats.insert(
+            String::from_utf8_lossy(path).into_owned(),
+            additions.saturating_add(deletions),
+        );
+    }
+
+    stats
+}
+
+fn parse_numstat_usize(value: &[u8]) -> Option<usize> {
+    std::str::from_utf8(value).ok()?.parse().ok()
 }
 
 fn changed_lines_for_content(
@@ -6743,6 +6784,22 @@ mod tests {
             }),
             LocalChangePreviewDecision::Deferred
         );
+    }
+
+    #[test]
+    fn local_change_numstat_parses_regular_renamed_and_binary_records() {
+        let stats = parse_local_change_numstat(
+            b"3\t2\tsrc/main.rs\0\
+              1\t4\t\0old/name.rs\0new/name.rs\0\
+              -\t-\tassets/image.bin\0\
+              5\t0\tpath\twith-tab.txt\0",
+        );
+
+        assert_eq!(stats["src/main.rs"], 5);
+        assert_eq!(stats["new/name.rs"], 5);
+        assert_eq!(stats["path\twith-tab.txt"], 5);
+        assert!(!stats.contains_key("old/name.rs"));
+        assert!(!stats.contains_key("assets/image.bin"));
     }
 
     #[test]
@@ -8625,7 +8682,9 @@ mod tests {
                 path: "asset.bin",
                 old_path: None,
                 change_kind: DiffChangeKind::Added,
+                changed_lines: None,
                 index_status: "?",
+                inspect_submodules: false,
                 worktree_status: "?",
                 load_policy: LocalChangeLoadPolicy::Batch,
             },
@@ -8665,7 +8724,9 @@ mod tests {
                 path: "asset.bin",
                 old_path: None,
                 change_kind: DiffChangeKind::Added,
+                changed_lines: None,
                 index_status: "?",
+                inspect_submodules: false,
                 worktree_status: "?",
                 load_policy: LocalChangeLoadPolicy::Detail,
             },
