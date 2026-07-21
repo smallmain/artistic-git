@@ -172,10 +172,31 @@ body {
   min-width: 320px;
   min-height: 600px;
   margin: 0;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 #root {
   overflow: hidden;
+}
+
+:where(
+  input:not([type]),
+  input[type="email"],
+  input[type="number"],
+  input[type="password"],
+  input[type="search"],
+  input[type="tel"],
+  input[type="text"],
+  input[type="url"],
+  textarea,
+  [contenteditable]:not([contenteditable="false"]),
+  pre,
+  .select-text,
+  .cm-content
+) {
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 :where(

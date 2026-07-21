@@ -1238,7 +1238,7 @@ describe("HistoryWorkbench", () => {
     });
 
     const body = await screen.findByTestId("history-commit-body");
-    expect(body).toHaveClass("max-h-24", "overflow-auto");
+    expect(body).toHaveClass("max-h-24", "select-text", "overflow-auto");
     expect(body).toHaveTextContent(
       "The rest of this commit description is hidden",
     );

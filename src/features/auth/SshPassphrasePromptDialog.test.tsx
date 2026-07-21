@@ -215,7 +215,7 @@ describe("SshPassphrasePromptDialog", () => {
     ).toBeVisible();
     expect(
       screen.getByText("Enter passphrase for an internal askpass request"),
-    ).toBeInTheDocument();
+    ).toHaveClass("select-text");
     fireEvent.change(screen.getByLabelText("Passphrase"), {
       target: { value: "secret" },
     });

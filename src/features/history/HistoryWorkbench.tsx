@@ -2029,7 +2029,7 @@ function CommitDetailPanel({
                   </p>
                   {loadedDetails?.body ? (
                     <p
-                      className="mt-2 max-h-24 max-w-3xl overflow-auto whitespace-pre-wrap pr-2 text-sm text-muted-foreground"
+                      className="mt-2 max-h-24 max-w-3xl select-text overflow-auto whitespace-pre-wrap pr-2 text-sm text-muted-foreground"
                       data-testid="history-commit-body"
                     >
                       {loadedDetails.body}

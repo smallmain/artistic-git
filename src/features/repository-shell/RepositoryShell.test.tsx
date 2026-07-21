@@ -2150,6 +2150,9 @@ describe("RepositoryShell review mode", () => {
     expect(overlay).toHaveTextContent("Branch main");
     expect(overlay).toHaveTextContent("Latest remote work");
     expect(overlay).toHaveTextContent("New remote content is available.");
+    expect(within(overlay).getByText("abc123456789")).toHaveClass(
+      "select-text",
+    );
     expect(screen.getByRole("button", { name: "Review Mode" })).toBeDisabled();
     expect(overlay).toHaveFocus();
     expect(screen.getByTestId("navigation-lock")).toHaveTextContent("locked");

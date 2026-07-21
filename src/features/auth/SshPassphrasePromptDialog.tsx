@@ -209,7 +209,7 @@ export function SshPassphrasePromptDialog() {
             <summary className="cursor-pointer font-medium text-foreground">
               {t("dialogs.error.showDetails")}
             </summary>
-            <p className="mt-2 break-words rounded-md border bg-muted px-3 py-2 font-mono text-xs">
+            <p className="mt-2 select-text break-words rounded-md border bg-muted px-3 py-2 font-mono text-xs">
               {request.prompt}
             </p>
           </details>

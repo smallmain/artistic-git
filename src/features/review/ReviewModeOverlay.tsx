@@ -92,7 +92,7 @@ export function ReviewModeOverlay({
               {commit?.subject ?? t("review.noCommit")}
             </span>
             {commit ? (
-              <span className="font-mono text-xs text-muted-foreground">
+              <span className="select-text font-mono text-xs text-muted-foreground">
                 {commit.oid.slice(0, 12)}
               </span>
             ) : null}
