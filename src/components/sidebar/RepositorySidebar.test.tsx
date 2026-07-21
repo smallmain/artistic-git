@@ -93,11 +93,31 @@ describe("RepositorySidebar", () => {
     );
   });
 
-  it("renders branch actions in a translucent group", () => {
+  it("renders branch and stash hover actions without a group background", () => {
     renderSidebar({});
 
-    const actionGroups = screen.getAllByTestId("branch-hover-actions");
-    expect(actionGroups[0]).toHaveClass("bg-background/80", "backdrop-blur-sm");
+    const branchActions = screen.getAllByTestId("branch-hover-actions")[0];
+    const stashActions = screen.getAllByTestId("stash-hover-actions")[0];
+
+    for (const actionGroup of [branchActions, stashActions]) {
+      expect(actionGroup).toHaveClass(
+        "absolute",
+        "right-1",
+        "top-1",
+        "hidden",
+        "items-center",
+        "gap-0.5",
+        "group-hover:flex",
+        "group-focus-within:flex",
+      );
+      expect(actionGroup).not.toHaveClass(
+        "bg-background/80",
+        "bg-card",
+        "backdrop-blur-sm",
+        "border",
+        "shadow-sm",
+      );
+    }
   });
 
   it("opens branch context menus outside the list and dismisses them elsewhere", () => {

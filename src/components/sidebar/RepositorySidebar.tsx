@@ -96,6 +96,9 @@ const branchVirtualOverscan = 6;
 const defaultBranchViewportHeight = 720;
 const stashRowHeight = 44;
 const stashVirtualOverscan = 6;
+/** Shared chrome-free hover action cluster for list rows. */
+const hoverActionGroupClassName =
+  "absolute right-1 top-1 hidden items-center gap-0.5 group-hover:flex group-focus-within:flex";
 
 function fallbackBranchViewportHeight() {
   return Math.max(defaultBranchViewportHeight, window.innerHeight);
@@ -898,7 +901,7 @@ function BranchRow({
               </span>
             )}
           </Tooltip>
-        ) : null}
+        ) : null}{hoverActionGroupClassName}
       </button>
       <div
         className="absolute right-1 top-1 hidden items-center gap-0.5 rounded-md border border-border/60 bg-background/80 p-0.5 shadow-sm backdrop-blur-sm group-hover:flex group-focus-within:flex"
@@ -1063,7 +1066,10 @@ function StashRow({
         <span className="min-w-0 truncate">{stash.name}</span>
         <span className="text-xs text-muted-foreground">{stash.timeLabel}</span>
       </button>
-      <div className="absolute right-1 top-1 hidden items-center gap-0.5 rounded bg-card group-hover:flex group-focus-within:flex">
+      <div
+        className={hoverActionGroupClassName}
+        data-testid="stash-hover-actions"
+      >
         <OptionalActionButton
           busy={busy}
           icon={<UploadCloud className="size-3.5" aria-hidden="true" />}
