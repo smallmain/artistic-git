@@ -147,14 +147,61 @@
 }
 
 .hover-action-group-fade {
+  isolation: isolate;
+}
+
+.hover-action-group-fade::before {
+  position: absolute;
+  z-index: 0;
+  inset: -3px -2px -3px -14px;
+  border-radius: 8px;
   background-image: linear-gradient(
     90deg,
-    transparent,
-    hsl(var(--accent) / 0.68) 26%,
-    hsl(var(--accent) / 0.96) 52%
+    transparent 0%,
+    hsl(var(--accent) / 0.56) 18%,
+    hsl(var(--accent) / 0.9) 36%,
+    hsl(var(--accent) / 0.98) 54%
   );
-  -webkit-backdrop-filter: blur(7px);
-  backdrop-filter: blur(7px);
+  -webkit-backdrop-filter: blur(8px) saturate(1.08);
+  backdrop-filter: blur(8px) saturate(1.08);
+  -webkit-mask-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgb(0 0 0 / 0.34) 12%,
+    rgb(0 0 0 / 0.88) 32%,
+    black 48%
+  );
+  mask-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgb(0 0 0 / 0.34) 12%,
+    rgb(0 0 0 / 0.88) 32%,
+    black 48%
+  );
+  animation: hover-action-backdrop-in var(--duration-fast-value)
+    var(--ease-out-value);
+  content: "";
+  pointer-events: none;
+}
+
+.hover-action-group-fade > * {
+  z-index: 1;
+}
+
+@keyframes hover-action-backdrop-in {
+  from {
+    opacity: 0.45;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hover-action-group-fade::before {
+    animation: none;
+  }
 }
 
 html,
