@@ -34,7 +34,7 @@ afterEach(() => {
 });
 
 describe("RepositorySidebar", () => {
-  it("keeps review mode and icon-only settings in separate action areas", () => {
+  it("keeps review mode and icon-only settings below the stash list", () => {
     renderSidebar({});
 
     const reviewButton = screen.getByRole("button", { name: "Review Mode" });
@@ -43,6 +43,8 @@ describe("RepositorySidebar", () => {
     });
     const reviewArea = screen.getByTestId("sidebar-review-action");
     const settingsArea = screen.getByTestId("sidebar-settings-action");
+    const stashSection = screen.getByRole("button", { name: "Stashes" });
+    const sidebar = reviewArea.closest("aside");
 
     expect(reviewArea).not.toBe(settingsArea);
     expect(reviewArea).toContainElement(reviewButton);
@@ -50,6 +52,17 @@ describe("RepositorySidebar", () => {
     expect(reviewButton).toHaveClass("w-full");
     expect(settingsButton).toHaveClass("size-9");
     expect(settingsButton).not.toHaveTextContent("Settings");
+    expect(reviewArea).toHaveClass("border-t");
+    expect(settingsArea).toHaveClass("border-t");
+    expect(sidebar?.compareDocumentPosition(stashSection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(
+      stashSection.compareDocumentPosition(reviewArea) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      reviewArea.compareDocumentPosition(settingsArea) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
   it("constrains the repository path so long absolute paths truncate in the header", () => {

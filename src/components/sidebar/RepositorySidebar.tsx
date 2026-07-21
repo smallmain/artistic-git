@@ -424,41 +424,6 @@ export function RepositorySidebar({
         </div>
       </section>
 
-      <section
-        className="shrink-0 border-b px-3 py-2"
-        data-testid="sidebar-review-action"
-      >
-        <button
-          className="flex h-9 w-full items-center justify-center gap-2 rounded-md bg-[linear-gradient(135deg,hsl(var(--review-cyan-start)),hsl(var(--review-cyan-end)))] px-3 text-sm font-medium text-white shadow-sm hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-60"
-          disabled={busy || !onReviewMode}
-          onClick={(event) => onReviewMode?.(event.currentTarget)}
-          title={
-            busy ? t("repository.busyTooltip") : t("repository.reviewMode")
-          }
-          type="button"
-        >
-          <History className="size-4" aria-hidden="true" />
-          {t("repository.reviewMode")}
-        </button>
-      </section>
-
-      <section
-        className="flex shrink-0 items-center border-b px-3 py-2"
-        data-testid="sidebar-settings-action"
-      >
-        <IconButton
-          className="size-9"
-          label={t("actions.openSettings")}
-          onClick={onOpenSettings}
-          tooltip={t("actions.openSettings")}
-          tooltipPlacement="vertical"
-          type="button"
-          variant="ghost"
-        >
-          <Settings className="size-4" aria-hidden="true" />
-        </IconButton>
-      </section>
-
       <div className="flex min-h-0 flex-1 flex-col">
         <SidebarSection
           collapsed={sidebarLayout.branchesCollapsed}
@@ -614,6 +579,41 @@ export function RepositorySidebar({
           </ul>
         </SidebarSection>
       </div>
+
+      <section
+        className="shrink-0 border-t px-3 py-2"
+        data-testid="sidebar-review-action"
+      >
+        <button
+          className="flex h-9 w-full items-center justify-center gap-2 rounded-md bg-[linear-gradient(135deg,hsl(var(--review-cyan-start)),hsl(var(--review-cyan-end)))] px-3 text-sm font-medium text-white shadow-sm hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-60"
+          disabled={busy || !onReviewMode}
+          onClick={(event) => onReviewMode?.(event.currentTarget)}
+          title={
+            busy ? t("repository.busyTooltip") : t("repository.reviewMode")
+          }
+          type="button"
+        >
+          <History className="size-4" aria-hidden="true" />
+          {t("repository.reviewMode")}
+        </button>
+      </section>
+
+      <section
+        className="flex shrink-0 items-center border-t px-3 py-2"
+        data-testid="sidebar-settings-action"
+      >
+        <IconButton
+          className="size-9"
+          label={t("actions.openSettings")}
+          onClick={onOpenSettings}
+          tooltip={t("actions.openSettings")}
+          tooltipPlacement="vertical"
+          type="button"
+          variant="ghost"
+        >
+          <Settings className="size-4" aria-hidden="true" />
+        </IconButton>
+      </section>
 
       <div
         aria-label={t("repository.resizeSidebar")}
