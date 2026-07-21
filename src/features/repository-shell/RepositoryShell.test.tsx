@@ -3099,6 +3099,37 @@ describe("RepositoryShell branch flow", () => {
     expect(commandMocks.fetchRepository).not.toHaveBeenCalled();
   });
 
+  it("does not start automatic fetch while a write operation is running", async () => {
+    commandMocks.fetchRepository.mockResolvedValue({
+      event: {
+        lastSuccessAt: "1760000000",
+        message: null,
+        repositoryPath: "/repo/art",
+        state: "idle" as const,
+      },
+      skipped: false,
+    });
+    commandMocks.syncAllBranches.mockReturnValueOnce(
+      new Promise(() => undefined),
+    );
+
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+    await waitFor(() =>
+      expect(commandMocks.fetchRepository).toHaveBeenCalledTimes(1),
+    );
+
+    fireEvent.click(
+      (await screen.findAllByRole("button", { name: "Sync" }))[0]!,
+    );
+    expect(await screen.findByText("Syncing...")).toBeInTheDocument();
+    expect(commandMocks.fetchRepository).toHaveBeenCalledTimes(1);
+
+    window.dispatchEvent(new Event("focus"));
+    await act(async () => undefined);
+
+    expect(commandMocks.fetchRepository).toHaveBeenCalledTimes(1);
+  });
+
   it("hides sync entrances and pending branch badges when the repository has no remote", async () => {
     commandMocks.repositorySummary.mockResolvedValue({
       currentBranch: "main",

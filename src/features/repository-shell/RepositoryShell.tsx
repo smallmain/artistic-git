@@ -208,6 +208,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   const [reviewRecoveryPrompt, setReviewRecoveryPrompt] = React.useState(false);
   const fetchInFlightRef = React.useRef<Promise<void> | null>(null);
   const initialFetchRepositoryRef = React.useRef<string | null>(null);
+  const suppressAutoFetchRef = React.useRef(false);
   const [branchToCheckout, setBranchToCheckout] =
     React.useState<BranchListItem | null>(null);
   const [checkoutMode, setCheckoutMode] =
@@ -855,6 +856,12 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     historyWriteBusy ||
     reviewBusy ||
     bisectResetBusy;
+  suppressAutoFetchRef.current =
+    writeOperationBusy ||
+    conflict !== null ||
+    reviewModeState !== null ||
+    reviewRecoveryPrompt ||
+    remoteHistoryChange !== null;
   const closeGuardActiveOperation =
     activeOperation?.cancellable === true ? activeOperation : null;
   const closeGuardActive =
@@ -1061,9 +1068,31 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     ],
   );
 
+  const waitForBackgroundFetch = React.useCallback(async () => {
+    const existingRequest = fetchInFlightRef.current;
+    if (!existingRequest) {
+      return;
+    }
+    try {
+      await existingRequest;
+    } catch {
+      // Background fetch failures must not block write operations.
+    }
+  }, []);
+
   const runFetch = React.useCallback(
-    async (options: { throwOnError?: boolean } = {}) => {
+    async (
+      options: {
+        reason?: "auto" | "manual" | "prewrite";
+        throwOnError?: boolean;
+      } = {},
+    ) => {
       if (!repository.hasRemote) {
+        return;
+      }
+
+      const reason = options.reason ?? "manual";
+      if (reason === "auto" && suppressAutoFetchRef.current) {
         return;
       }
 
@@ -1205,6 +1234,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
 
     setSyncBusy(true);
     try {
+      await waitForBackgroundFetch();
       const operationId = createRepositoryOperationId("sync-all");
       const response = await syncAllBranches({
         operationId,
@@ -1218,7 +1248,13 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     } finally {
       setSyncBusy(false);
     }
-  }, [handleSyncAllResponse, repository.hasRemote, repositoryPath, syncBusy]);
+  }, [
+    handleSyncAllResponse,
+    repository.hasRemote,
+    repositoryPath,
+    syncBusy,
+    waitForBackgroundFetch,
+  ]);
 
   const runSyncBranch = React.useCallback(
     async (branch: BranchListItem) => {
@@ -1228,6 +1264,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
 
       setSyncBusy(true);
       try {
+        await waitForBackgroundFetch();
         const operationId = createRepositoryOperationId("sync-branch");
         const response = await syncBranch({
           branchName: branch.name,
@@ -1243,7 +1280,13 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         setSyncBusy(false);
       }
     },
-    [handleSyncBranchResponse, repository.hasRemote, repositoryPath, syncBusy],
+    [
+      handleSyncBranchResponse,
+      repository.hasRemote,
+      repositoryPath,
+      syncBusy,
+      waitForBackgroundFetch,
+    ],
   );
 
   const runAcceptRemoteHistory = React.useCallback(async () => {
@@ -1253,6 +1296,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
 
     setSyncBusy(true);
     try {
+      await waitForBackgroundFetch();
       const operationId = createRepositoryOperationId("accept-remote-history");
       const response = await acceptRemoteHistory({
         branchName: remoteHistoryChange.branchName,
@@ -1276,7 +1320,12 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     } finally {
       setSyncBusy(false);
     }
-  }, [remoteHistoryChange, repositoryPath, setConflictEntered]);
+  }, [
+    remoteHistoryChange,
+    repositoryPath,
+    setConflictEntered,
+    waitForBackgroundFetch,
+  ]);
 
   const refreshSafetyBackups = React.useCallback(async () => {
     setSafetyBackupBusyAction("load");
@@ -1471,7 +1520,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     }
 
     initialFetchRepositoryRef.current = repositoryPath;
-    void runFetch();
+    void runFetch({ reason: "auto" });
   }, [
     fetchPreferences?.autoFetch,
     repository.hasRemote,
@@ -1488,7 +1537,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
       if (document.visibilityState === "hidden") {
         return;
       }
-      void runFetch();
+      void runFetch({ reason: "auto" });
     };
 
     window.addEventListener("focus", triggerFocusedFetch);
@@ -1510,7 +1559,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     }
 
     const intervalId = window.setInterval(() => {
-      void runFetch();
+      void runFetch({ reason: "auto" });
     }, fetchInterval.value * 1000);
 
     return () => {
@@ -1840,7 +1889,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
 
   const fetchBeforeCurrentBranchWrite = React.useCallback(async () => {
     if (shouldFetchBeforeCurrentBranchWrite) {
-      await runFetch({ throwOnError: true });
+      await runFetch({ reason: "prewrite", throwOnError: true });
     }
   }, [runFetch, shouldFetchBeforeCurrentBranchWrite]);
 
