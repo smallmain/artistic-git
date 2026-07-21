@@ -62,9 +62,24 @@ export function Tooltip({
       return;
     }
 
+    const triggerBounds = trigger.getBoundingClientRect();
+    const tooltipBounds = tooltip.getBoundingClientRect();
+
+    // Hover action groups can become display:none during the close delay.
+    // Keep the last valid coordinates instead of repositioning from a zero rect.
+    if (
+      !trigger.isConnected ||
+      triggerBounds.width <= 0 ||
+      triggerBounds.height <= 0 ||
+      tooltipBounds.width <= 0 ||
+      tooltipBounds.height <= 0
+    ) {
+      return;
+    }
+
     const nextPosition = calculateTooltipPosition(
-      trigger.getBoundingClientRect(),
-      tooltip.getBoundingClientRect(),
+      triggerBounds,
+      tooltipBounds,
       { height: window.innerHeight, width: window.innerWidth },
       { placement },
     );

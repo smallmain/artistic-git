@@ -158,6 +158,44 @@ describe("tooltip positioning", () => {
     });
   });
 
+  it("keeps its last valid position while a hovered action becomes hidden", async () => {
+    render(
+      <Tooltip content="Hidden action tooltip" placement="vertical">
+        {({ describedBy }) => (
+          <button aria-describedby={describedBy}>Hidden action</button>
+        )}
+      </Tooltip>,
+    );
+
+    const button = screen.getByRole("button", { name: "Hidden action" });
+    const trigger = button.parentElement;
+    const tooltip = screen.getByRole("tooltip", {
+      name: "Hidden action tooltip",
+    });
+    let triggerRect = rect(100, 100, 24, 24);
+
+    expect(trigger).not.toBeNull();
+    vi.spyOn(button, "getBoundingClientRect").mockImplementation(
+      () => triggerRect,
+    );
+    vi.spyOn(tooltip, "getBoundingClientRect").mockReturnValue(
+      rect(0, 0, 100, 40),
+    );
+    vi.stubGlobal("innerHeight", 240);
+    vi.stubGlobal("innerWidth", 320);
+
+    fireEvent.mouseEnter(trigger!);
+    await waitFor(() => {
+      expect(tooltip).toHaveStyle({ left: "62px", top: "132px" });
+    });
+
+    fireEvent.mouseLeave(trigger!);
+    triggerRect = rect(0, 0, 0, 0);
+    fireEvent.scroll(window);
+
+    expect(tooltip).toHaveStyle({ left: "62px", top: "132px" });
+  });
+
   it("opens from keyboard focus and dismisses with Escape", async () => {
     render(
       <Tooltip content="Keyboard tooltip">
