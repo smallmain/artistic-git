@@ -52,6 +52,32 @@ describe("RepositorySidebar", () => {
     expect(settingsButton).not.toHaveTextContent("Settings");
   });
 
+  it("constrains the repository path so long absolute paths truncate in the header", () => {
+    renderSidebar({
+      repositoryPath: "/Users/smallmain/Documents/Work/Peek/vscode",
+    });
+
+    const pathLabels = screen.getAllByText(
+      "/Users/smallmain/Documents/Work/Peek/vscode",
+    );
+    const visiblePath = pathLabels.find(
+      (node) => node.getAttribute("role") !== "tooltip",
+    );
+
+    expect(visiblePath).toBeDefined();
+    expect(visiblePath).toHaveClass("truncate", "max-w-full", "min-w-0");
+    expect(visiblePath?.parentElement).toHaveClass(
+      "block",
+      "w-full",
+      "max-w-full",
+      "min-w-0",
+    );
+    expect(visiblePath?.parentElement?.parentElement).toHaveClass(
+      "min-w-0",
+      "flex-1",
+    );
+  });
+
   it("renders branch actions in a translucent group", () => {
     renderSidebar({});
 
@@ -472,6 +498,7 @@ function renderSidebar({
   onBranchFocus = vi.fn(),
   onShowStashDetails,
   onSidebarLayoutChange,
+  repositoryPath = "/repo/art",
   stashItems = stashes,
   stashesTruncated = false,
 }: {
@@ -491,6 +518,7 @@ function renderSidebar({
   onSidebarLayoutChange?: ComponentProps<
     typeof RepositorySidebar
   >["onSidebarLayoutChange"];
+  repositoryPath?: string;
   stashItems?: StashListItem[];
   stashesTruncated?: boolean;
 }) {
@@ -512,7 +540,7 @@ function renderSidebar({
       repository={{
         branchName: "main",
         hasRemote,
-        path: "/repo/art",
+        path: repositoryPath,
         projectName: "art",
       }}
       stashes={stashItems}

@@ -23,11 +23,13 @@ export function TruncatedText({
   const tooltipText = tooltip ?? displayText;
 
   return (
-    <Tooltip content={tooltipText}>
+    // Tooltip defaults to inline-flex for icon triggers. For truncated labels the
+    // wrapper must fill the constrained parent width, or text-overflow never kicks in.
+    <Tooltip className="block w-full min-w-0 max-w-full" content={tooltipText}>
       {({ describedBy }) => (
         <Component
           aria-describedby={describedBy}
-          className={cn("block min-w-0 truncate", className)}
+          className={cn("block min-w-0 max-w-full truncate", className)}
         >
           {displayText}
         </Component>

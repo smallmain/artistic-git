@@ -30,9 +30,19 @@ describe("common UI accessibility", () => {
       />,
     );
 
-    expect(
-      screen.getAllByText("C:/repo/assets/characters/hero.png"),
-    ).toHaveLength(2);
+    const labels = screen.getAllByText("C:/repo/assets/characters/hero.png");
+    expect(labels).toHaveLength(2);
+    const visibleLabel = labels.find(
+      (node) => node.getAttribute("role") !== "tooltip",
+    );
+    expect(visibleLabel).toBeDefined();
+    expect(visibleLabel).toHaveClass("truncate", "max-w-full", "min-w-0");
+    expect(visibleLabel?.parentElement).toHaveClass(
+      "block",
+      "w-full",
+      "min-w-0",
+      "max-w-full",
+    );
     expect(
       screen.getByRole("tooltip", {
         name: "C:/repo/assets/characters/hero.png",
