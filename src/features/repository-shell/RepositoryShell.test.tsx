@@ -1030,7 +1030,9 @@ describe("RepositoryShell loading state", () => {
 
     await waitFor(() =>
       expect(commandMocks.logPage).toHaveBeenCalledWith(
-        expect.objectContaining({ revisions: ["refs/heads/main"] }),
+        expect.objectContaining({
+          revisions: ["refs/heads/main", "refs/remotes/origin/main"],
+        }),
       ),
     );
     expect(commandMocks.logPage).toHaveBeenCalledTimes(1);

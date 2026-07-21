@@ -5,6 +5,8 @@ export interface HistoryCommitRef {
   name: string;
   type: HistoryRefType;
   current?: boolean;
+  /** Remote-tracking ref such as origin/main. Local branches omit this. */
+  remote?: boolean;
 }
 
 export interface HistoryAuthor {
@@ -74,6 +76,8 @@ export interface HistoryBranch {
   name: string;
   current?: boolean;
   revision?: string;
+  /** Remote-tracking tip when the branch also exists on origin. */
+  remoteRevision?: string;
 }
 
 export type BranchFilterMode = "auto" | "all" | "custom";

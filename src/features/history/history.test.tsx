@@ -36,7 +36,13 @@ import {
 
 import { resolveAvatarPresentation } from "./avatar";
 import { HistoryWorkbench } from "./HistoryWorkbench";
-import { attachGraphRows, createHistoryGraphBuilder } from "./history-data";
+import {
+  attachGraphRows,
+  collectUnsyncedCommitIds,
+  createHistoryGraphBuilder,
+  mapCommitSummaryToHistoryCommit,
+  parseCommitRefs,
+} from "./history-data";
 import { createMockHistorySearchSource, searchCommits } from "./history-search";
 import { mockHistoryCommits, mockHistoryRows } from "./fixtures";
 import { useIncrementalLogRows } from "./useIncrementalHistoryRows";
@@ -136,6 +142,89 @@ describe("history avatars", () => {
 
     expect(avatar.initials).toBe("MC");
     expect(avatar.remoteUrl).toBeNull();
+  });
+});
+
+describe("history commit refs", () => {
+  it("keeps local and remote branch decorations distinct", () => {
+    expect(
+      parseCommitRefs([
+        "HEAD -> main",
+        "origin/main",
+        "feature/lookdev",
+        "origin/feature/lookdev",
+        "tag: v1.4.0-rc.1",
+        "HEAD",
+      ]),
+    ).toEqual([
+      { current: true, name: "main", type: "branch" },
+      { name: "main", remote: true, type: "branch" },
+      { name: "feature/lookdev", type: "branch" },
+      { name: "feature/lookdev", remote: true, type: "branch" },
+      { name: "v1.4.0-rc.1", type: "tag" },
+    ]);
+
+    const commit = mapCommitSummaryToHistoryCommit({
+      authorEmail: "mira@example.test",
+      authorName: "Mira Chen",
+      authoredAtUnixSeconds: "1783488000",
+      oid: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      parents: [],
+      refs: ["HEAD -> main", "origin/main"],
+      subject: "Synced tip",
+    });
+    expect(commit.refs).toEqual([
+      { current: true, name: "main", type: "branch" },
+      { name: "main", remote: true, type: "branch" },
+    ]);
+  });
+
+  it("marks only divergent local and remote commits as unsynced", () => {
+    const shared = {
+      ...mockHistoryCommits[0],
+      id: "shared",
+      parents: [],
+      refs: [],
+      shortId: "shared",
+    };
+    const localOnly = {
+      ...shared,
+      id: "local-only",
+      parents: [shared.id],
+      refs: [{ name: "main", type: "branch" as const }],
+      shortId: "local-only",
+    };
+    const remoteOnly = {
+      ...shared,
+      id: "remote-only",
+      parents: [shared.id],
+      refs: [{ name: "main", remote: true, type: "branch" as const }],
+      shortId: "remote-only",
+    };
+
+    expect(
+      Array.from(
+        collectUnsyncedCommitIds(
+          attachGraphRows([localOnly, remoteOnly, shared]),
+          "main",
+        ),
+      ).toSorted(),
+    ).toEqual(["local-only", "remote-only"]);
+
+    expect(
+      collectUnsyncedCommitIds(
+        attachGraphRows([
+          {
+            ...shared,
+            refs: [
+              { current: true, name: "main", type: "branch" as const },
+              { name: "main", remote: true, type: "branch" as const },
+            ],
+          },
+        ]),
+        "main",
+      ).size,
+    ).toBe(0);
   });
 });
 
@@ -896,6 +985,140 @@ describe("HistoryWorkbench", () => {
       fireEvent.change(search, { target: { value: "branch-20" } });
     });
     expect(screen.getByRole("option", { name: "branch-20" })).toBeDisabled();
+  });
+
+  it("distinguishes local and remote branch badges with branch and cloud icons", () => {
+    const row = {
+      ...mockHistoryRows[0],
+      commit: {
+        ...mockHistoryRows[0].commit,
+        refs: [
+          { current: true, name: "main", type: "branch" as const },
+          { name: "main", remote: true, type: "branch" as const },
+          { name: "v1.4.0-rc.1", type: "tag" as const },
+        ],
+      },
+    };
+
+    renderWithProviders(<HistoryWorkbench rows={[row]} />);
+
+    const badges = screen.getAllByTestId("history-ref-badge");
+    expect(badges).toHaveLength(3);
+    expect(badges[0]).not.toHaveAttribute("data-remote");
+    expect(badges[0].querySelector("svg.lucide-git-branch")).not.toBeNull();
+    expect(badges[1]).toHaveAttribute("data-remote", "true");
+    expect(badges[1].querySelector("svg.lucide-cloud")).not.toBeNull();
+    expect(badges[2].querySelector("svg.lucide-tag")).not.toBeNull();
+  });
+
+  it("highlights unpushed local and unsynced remote commits for a single branch", () => {
+    const shared = {
+      ...mockHistoryCommits[0],
+      id: "shared",
+      message: "Shared base",
+      parents: [],
+      refs: [],
+      shortId: "shared",
+    };
+    const unpushed = {
+      ...shared,
+      id: "local-only",
+      message: "Unpushed local commit",
+      parents: [shared.id],
+      refs: [{ current: true, name: "main", type: "branch" as const }],
+      shortId: "local-only",
+    };
+    const remoteOnly = {
+      ...shared,
+      id: "remote-only",
+      message: "Unsynced remote commit",
+      parents: [shared.id],
+      refs: [{ name: "main", remote: true, type: "branch" as const }],
+      shortId: "remote-only",
+    };
+
+    renderWithProviders(
+      <HistoryWorkbench
+        activeBranchName="main"
+        branches={[
+          {
+            current: true,
+            name: "main",
+            remoteRevision: "refs/remotes/origin/main",
+            revision: "refs/heads/main",
+          },
+        ]}
+        rows={attachGraphRows([unpushed, remoteOnly, shared])}
+      />,
+    );
+
+    expect(
+      screen.getByText("Unpushed local commit").closest("[data-testid='history-commit-row']"),
+    ).toHaveAttribute("data-unsynced", "true");
+    expect(
+      screen
+        .getByText("Unsynced remote commit")
+        .closest("[data-testid='history-commit-row']"),
+    ).toHaveAttribute("data-unsynced", "true");
+    expect(
+      screen.getByText("Shared base").closest("[data-testid='history-commit-row']"),
+    ).not.toHaveAttribute("data-unsynced");
+  });
+
+  it("does not highlight unsynced commits when browsing all branches", () => {
+    const shared = {
+      ...mockHistoryCommits[0],
+      id: "shared",
+      message: "Shared base",
+      parents: [],
+      refs: [],
+      shortId: "shared",
+    };
+    const unpushed = {
+      ...shared,
+      id: "local-only",
+      message: "Unpushed local commit",
+      parents: [shared.id],
+      refs: [{ current: true, name: "main", type: "branch" as const }],
+      shortId: "local-only",
+    };
+    const remoteOnly = {
+      ...shared,
+      id: "remote-only",
+      message: "Unsynced remote commit",
+      parents: [shared.id],
+      refs: [{ name: "main", remote: true, type: "branch" as const }],
+      shortId: "remote-only",
+    };
+
+    renderWithProviders(
+      <HistoryWorkbench
+        activeBranchName="main"
+        branches={[
+          {
+            current: true,
+            name: "main",
+            remoteRevision: "refs/remotes/origin/main",
+            revision: "refs/heads/main",
+          },
+        ]}
+        rows={attachGraphRows([unpushed, remoteOnly, shared])}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Current branch: main" }),
+    );
+    fireEvent.click(screen.getByText("All"));
+
+    expect(
+      screen.getByText("Unpushed local commit").closest("[data-testid='history-commit-row']"),
+    ).not.toHaveAttribute("data-unsynced");
+    expect(
+      screen
+        .getByText("Unsynced remote commit")
+        .closest("[data-testid='history-commit-row']"),
+    ).not.toHaveAttribute("data-unsynced");
   });
 
   it("bounds reference badges for a commit with thousands of refs", async () => {

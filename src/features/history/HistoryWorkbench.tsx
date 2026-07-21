@@ -2,6 +2,7 @@ import {
   AlertTriangle,
   Check,
   ChevronDown,
+  Cloud,
   Copy,
   FileText,
   GitBranch,
@@ -53,6 +54,7 @@ import { showToast } from "@/lib/toast";
 
 import { resolveAvatarPresentation } from "./avatar";
 import {
+  collectUnsyncedCommitIds,
   mapCommitChangedFile,
   mapCommitSummaryToHistoryCommit,
   toCommitChangedFile,
@@ -333,6 +335,15 @@ export function HistoryWorkbench({
       .find((reference) => reference.type === "branch" && reference.current)
       ?.name ??
     null;
+  const singleHistoryBranchName = React.useMemo(() => {
+    if (branchMode === "auto") {
+      return activeHistoryBranchName;
+    }
+    if (branchMode === "custom" && selectedBranches.size === 1) {
+      return Array.from(selectedBranches)[0] ?? null;
+    }
+    return null;
+  }, [activeHistoryBranchName, branchMode, selectedBranches]);
   const historyRevisions = React.useMemo(() => {
     if (branchMode === "all") {
       return [];
@@ -344,11 +355,25 @@ export function HistoryWorkbench({
           ? new Set([activeHistoryBranchName])
           : new Set<string>()
         : selectedBranches;
-    return branches
-      .filter((branch) => names.has(branch.name))
-      .map((branch) => branch.revision ?? `refs/heads/${branch.name}`)
-      .toSorted();
-  }, [activeHistoryBranchName, branchMode, branches, selectedBranches]);
+    const selected = branches.filter((branch) => names.has(branch.name));
+    const includeRemoteTracking = singleHistoryBranchName !== null;
+    const revisions = new Set<string>();
+
+    for (const branch of selected) {
+      revisions.add(branch.revision ?? `refs/heads/${branch.name}`);
+      if (includeRemoteTracking && branch.remoteRevision) {
+        revisions.add(branch.remoteRevision);
+      }
+    }
+
+    return Array.from(revisions).toSorted();
+  }, [
+    activeHistoryBranchName,
+    branchMode,
+    branches,
+    selectedBranches,
+    singleHistoryBranchName,
+  ]);
 
   React.useEffect(() => {
     if (!trimmedQuery) {
@@ -530,6 +555,12 @@ export function HistoryWorkbench({
     effectiveRows.rows,
     fixtureFilteredRows,
   ]);
+  const unsyncedCommitIds = React.useMemo(() => {
+    if (singleHistoryBranchName === null) {
+      return new Set<string>();
+    }
+    return collectUnsyncedCommitIds(visibleRows, singleHistoryBranchName);
+  }, [singleHistoryBranchName, visibleRows]);
 
   const virtual = useVirtualWindow({
     count: visibleRows.length,
@@ -831,6 +862,7 @@ export function HistoryWorkbench({
                   height: item.size,
                   transform: `translateY(${item.start}px)`,
                 }}
+                unsynced={unsyncedCommitIds.has(row.commit.id)}
               />
             );
           })}
@@ -1164,12 +1196,14 @@ function HistoryCommitRow({
   onSelect,
   row,
   style,
+  unsynced = false,
 }: {
   gravatarEnabled: boolean;
   now: string;
   onSelect: (commitId: string, trigger: HTMLButtonElement) => void;
   row: HistoryRow;
   style: React.CSSProperties;
+  unsynced?: boolean;
 }) {
   const { t } = useTranslation();
   const formatters = useLocalizedFormatters();
@@ -1179,11 +1213,17 @@ function HistoryCommitRow({
 
   return (
     <button
-      className="absolute left-0 right-0 grid border-b bg-card px-4 text-left transition-colors hover:bg-accent/45 [grid-template-columns:112px_minmax(0,1fr)_180px_140px]"
+      className={cn(
+        "absolute left-0 right-0 grid border-b px-4 text-left transition-colors [grid-template-columns:112px_minmax(0,1fr)_180px_140px]",
+        unsynced
+          ? "bg-warning/15 hover:bg-warning/25"
+          : "bg-card hover:bg-accent/45",
+      )}
       data-commit-id={commit.id}
       data-commit-message={commit.message}
       data-commit-short-id={commit.shortId}
       data-testid="history-commit-row"
+      data-unsynced={unsynced ? "true" : undefined}
       onClick={(event) => {
         onSelect(commit.id, event.currentTarget);
       }}
@@ -1203,7 +1243,7 @@ function HistoryCommitRow({
           <span className="mt-1 flex min-w-0 items-center gap-1.5">
             {visibleRefs.map((ref, index) => (
               <RefBadge
-                key={`${ref.type}:${ref.name}:${index}`}
+                key={`${ref.type}:${ref.remote ? "remote" : "local"}:${ref.name}:${index}`}
                 refItem={ref}
               />
             ))}
@@ -1290,16 +1330,24 @@ function createHistoryOperationId(prefix: string): string {
 
 function RefBadge({ refItem }: { refItem: HistoryCommit["refs"][number] }) {
   const isTag = refItem.type === "tag";
+  const isRemoteBranch = !isTag && Boolean(refItem.remote);
   return (
     <span
       className={cn(
         "inline-flex max-w-44 items-center gap-1 truncate rounded px-1.5 py-0.5 text-[11px] font-medium",
-        isTag ? "bg-warning/20 text-foreground" : "bg-sync/15 text-foreground",
+        isTag
+          ? "bg-warning/20 text-foreground"
+          : isRemoteBranch
+            ? "bg-muted text-foreground"
+            : "bg-sync/15 text-foreground",
       )}
+      data-remote={isRemoteBranch ? "true" : undefined}
       data-testid="history-ref-badge"
     >
       {isTag ? (
         <Tag className="size-3 shrink-0" />
+      ) : isRemoteBranch ? (
+        <Cloud className="size-3 shrink-0" />
       ) : (
         <GitBranch className="size-3 shrink-0" />
       )}
@@ -1411,13 +1459,15 @@ function VirtualCommitRefList({ refs }: { refs: HistoryCommit["refs"] }) {
         {virtual.items.map((item) => {
           const ref = refs[item.index];
           const isTag = ref.type === "tag";
+          const isRemoteBranch = !isTag && Boolean(ref.remote);
           return (
             <div
               aria-posinset={item.index + 1}
               aria-setsize={refs.length}
               className="absolute left-0 right-0 flex items-center gap-2 px-2 text-sm"
+              data-remote={isRemoteBranch ? "true" : undefined}
               data-testid="history-detail-ref-item"
-              key={`${ref.type}:${ref.name}:${item.index}`}
+              key={`${ref.type}:${ref.remote ? "remote" : "local"}:${ref.name}:${item.index}`}
               role="listitem"
               style={{
                 height: item.size,
@@ -1426,6 +1476,8 @@ function VirtualCommitRefList({ refs }: { refs: HistoryCommit["refs"] }) {
             >
               {isTag ? (
                 <Tag aria-hidden="true" className="size-3.5 shrink-0" />
+              ) : isRemoteBranch ? (
+                <Cloud aria-hidden="true" className="size-3.5 shrink-0" />
               ) : (
                 <GitBranch aria-hidden="true" className="size-3.5 shrink-0" />
               )}

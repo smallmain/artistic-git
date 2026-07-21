@@ -123,7 +123,7 @@ export function mergeHistoryCommits(commits: HistoryCommit[]): HistoryCommit[] {
   return Array.from(byId.values());
 }
 
-function parseCommitRefs(refs: string[]): HistoryCommitRef[] {
+export function parseCommitRefs(refs: string[]): HistoryCommitRef[] {
   return refs
     .map((ref) => ref.trim())
     .filter((ref) => ref.length > 0 && ref !== "HEAD")
@@ -131,28 +131,124 @@ function parseCommitRefs(refs: string[]): HistoryCommitRef[] {
       if (ref.startsWith("HEAD -> ")) {
         return {
           current: true,
-          name: normalizeBranchRef(ref.slice("HEAD -> ".length)),
-          type: "branch",
+          name: normalizeLocalBranchRef(ref.slice("HEAD -> ".length)),
+          type: "branch" as const,
         };
       }
       if (ref.startsWith("tag: ")) {
         return {
           name: ref.slice("tag: ".length),
-          type: "tag",
+          type: "tag" as const,
+        };
+      }
+      const remoteName = parseRemoteBranchName(ref);
+      if (remoteName !== null) {
+        return {
+          name: remoteName,
+          remote: true,
+          type: "branch" as const,
         };
       }
       return {
-        name: normalizeBranchRef(ref),
-        type: "branch",
+        name: normalizeLocalBranchRef(ref),
+        type: "branch" as const,
       };
     });
 }
 
-function normalizeBranchRef(ref: string): string {
-  return ref
-    .replace(/^refs\/heads\//, "")
-    .replace(/^refs\/remotes\/origin\//, "")
-    .replace(/^origin\//, "");
+function parseRemoteBranchName(ref: string): string | null {
+  const candidates = [
+    ref.startsWith("refs/remotes/origin/")
+      ? ref.slice("refs/remotes/origin/".length)
+      : null,
+    ref.startsWith("origin/") ? ref.slice("origin/".length) : null,
+  ];
+  for (const name of candidates) {
+    if (name && name !== "HEAD" && !name.startsWith("HEAD/")) {
+      return name;
+    }
+  }
+  return null;
+}
+
+function normalizeLocalBranchRef(ref: string): string {
+  return ref.replace(/^refs\/heads\//, "");
+}
+
+/**
+ * Commits only reachable from the local tip or only from the remote tip of a
+ * single branch. Shared history (already synced) is excluded.
+ */
+export function collectUnsyncedCommitIds(
+  rows: readonly HistoryRow[],
+  branchName: string,
+): Set<string> {
+  const rowsByCommitId = new Map<string, HistoryRow>();
+  let localTip: HistoryRow | null = null;
+  let remoteTip: HistoryRow | null = null;
+
+  for (const row of rows) {
+    rowsByCommitId.set(row.commit.id, row);
+    rowsByCommitId.set(row.commit.shortId, row);
+    for (const ref of row.commit.refs) {
+      if (ref.type !== "branch" || ref.name !== branchName) {
+        continue;
+      }
+      if (ref.remote) {
+        remoteTip ??= row;
+      } else {
+        localTip ??= row;
+      }
+    }
+  }
+
+  if (localTip === null || remoteTip === null) {
+    return new Set();
+  }
+  if (localTip.commit.id === remoteTip.commit.id) {
+    return new Set();
+  }
+
+  const localReachable = collectReachableFromTip(rowsByCommitId, localTip);
+  const remoteReachable = collectReachableFromTip(rowsByCommitId, remoteTip);
+  const unsynced = new Set<string>();
+
+  for (const commitId of localReachable) {
+    if (!remoteReachable.has(commitId)) {
+      unsynced.add(commitId);
+    }
+  }
+  for (const commitId of remoteReachable) {
+    if (!localReachable.has(commitId)) {
+      unsynced.add(commitId);
+    }
+  }
+
+  return unsynced;
+}
+
+function collectReachableFromTip(
+  rowsByCommitId: ReadonlyMap<string, HistoryRow>,
+  tip: HistoryRow,
+): Set<string> {
+  const reachable = new Set<string>();
+  const pending: HistoryRow[] = [tip];
+
+  while (pending.length > 0) {
+    const row = pending.pop();
+    if (!row || reachable.has(row.commit.id)) {
+      continue;
+    }
+    reachable.add(row.commit.id);
+    for (const parent of row.commit.parents) {
+      const parentRow = rowsByCommitId.get(parent);
+      if (parentRow) {
+        pending.push(parentRow);
+      }
+    }
+  }
+
+  return reachable;
 }
 
 interface HistoryGraphLayoutState {

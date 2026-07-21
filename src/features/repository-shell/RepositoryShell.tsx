@@ -335,14 +335,21 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   );
   const historyBranches = React.useMemo(
     () =>
-      (branchesQuery.data?.branches ?? []).map((branch) => ({
-        current: branch.current,
-        name: branch.shortName || branch.name,
-        revision:
-          branch.existence === "remoteOnly"
-            ? `refs/remotes/origin/${branch.shortName || branch.name}`
-            : `refs/heads/${branch.shortName || branch.name}`,
-      })),
+      (branchesQuery.data?.branches ?? []).map((branch) => {
+        const shortName = branch.shortName || branch.name;
+        return {
+          current: branch.current,
+          name: shortName,
+          remoteRevision:
+            branch.existence === "localOnly"
+              ? undefined
+              : `refs/remotes/origin/${shortName}`,
+          revision:
+            branch.existence === "remoteOnly"
+              ? `refs/remotes/origin/${shortName}`
+              : `refs/heads/${shortName}`,
+        };
+      }),
     [branchesQuery.data],
   );
   const historyScopeReady = !summaryQuery.isPending && !branchesQuery.isPending;
