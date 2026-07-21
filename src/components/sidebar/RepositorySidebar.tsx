@@ -380,7 +380,7 @@ export function RepositorySidebar({
 
   return (
     <aside
-      className="relative flex min-h-0 shrink-0 flex-col border-r bg-card text-card-foreground"
+      className="relative flex min-h-0 shrink-0 flex-col bg-card text-card-foreground"
       style={{ width: sidebarLayout.widthPx }}
     >
       <section className="flex h-20 shrink-0 items-center gap-3 border-b px-4">
@@ -509,7 +509,7 @@ export function RepositorySidebar({
 
         <div
           aria-label={t("repository.resizeSections")}
-          className="h-2 shrink-0 cursor-row-resize border-t hover:border-ring"
+          className="h-2 shrink-0 cursor-row-resize border-t border-border transition-colors hover:border-ring"
           onPointerDown={startSectionResize}
           role="separator"
         />
@@ -617,7 +617,7 @@ export function RepositorySidebar({
 
       <div
         aria-label={t("repository.resizeSidebar")}
-        className="absolute right-[-3px] top-0 h-full w-1.5 cursor-col-resize"
+        className="absolute inset-y-0 right-0 z-10 w-2 cursor-col-resize border-r border-border transition-colors hover:border-ring"
         onPointerDown={startSidebarResize}
         role="separator"
       />
