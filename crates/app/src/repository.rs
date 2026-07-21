@@ -71,6 +71,10 @@ const BRANCH_REF_QUERY_LIMIT: usize = BRANCH_LIST_ENTRY_LIMIT + 1;
 const REMOTE_BRANCH_LIST_ENTRY_LIMIT: usize = 5_000;
 const WORKTREE_GITDIR_FILE_LIMIT_BYTES: usize = 64 * 1024;
 const CANCEL_COMPLETION_TIMEOUT: Duration = Duration::from_secs(60);
+// Git briefly creates `.git/index.lock` while refreshing the index during concurrent
+// `status`/`diff` reads. Residual crash locks almost always age past this threshold
+// before the user reopens the app; active external writers will surface once age grows.
+const INDEX_LOCK_RESIDUAL_AGE_SECONDS: u64 = 2;
 
 #[derive(Clone)]
 pub struct RepositoryBackend {
@@ -4573,6 +4577,13 @@ fn inspect_middle_states(git_common_dir: &Path) -> Vec<RepositoryMiddleState> {
 }
 
 fn inspect_index_lock(git_common_dir: &Path) -> Option<IndexLockInfo> {
+    let info = read_index_lock_info(git_common_dir)?;
+    // Ignore very young locks so health checks do not race with the app's own concurrent
+    // repository reads (especially `git status` on large working trees).
+    (u64::from(info.age_seconds) >= INDEX_LOCK_RESIDUAL_AGE_SECONDS).then_some(info)
+}
+
+fn read_index_lock_info(git_common_dir: &Path) -> Option<IndexLockInfo> {
     let path = git_common_dir.join("index.lock");
     let metadata = fs::metadata(&path).ok()?;
     let modified = metadata.modified().ok()?;
@@ -8279,7 +8290,9 @@ mod tests {
         let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.git(["init", "-b", "main"]);
-        fs::File::create(repo.path.join(".git/index.lock")).expect("index.lock");
+        let lock_path = repo.path.join(".git/index.lock");
+        fs::File::create(&lock_path).expect("index.lock");
+        set_index_lock_age(&lock_path, Duration::from_secs(30));
 
         let response = open_repository(
             &runner,
@@ -8296,7 +8309,68 @@ mod tests {
             response.health.head,
             RepositoryHeadState::Unborn { .. }
         ));
-        assert!(response.health.index_lock.is_some());
+        let index_lock = response
+            .health
+            .index_lock
+            .expect("residual index.lock should be reported");
+        assert!(index_lock.age_seconds >= 30);
+    }
+
+    #[test]
+    fn ignores_transient_index_lock_from_concurrent_reads() {
+        let (runner, _dist_temp) = real_runner();
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        let lock_path = repo.path.join(".git/index.lock");
+        fs::File::create(&lock_path).expect("index.lock");
+        // Fresh locks are treated as in-flight index refreshes (e.g. git status), not residuals.
+        set_index_lock_age(&lock_path, Duration::from_secs(0));
+
+        let summary = repository_summary(
+            &runner,
+            RepositoryPathRequest {
+                repository_path: display_path(&repo.path),
+            },
+        )
+        .expect("summary with transient index.lock");
+
+        assert!(summary
+            .details
+            .as_ref()
+            .expect("summary details")
+            .health
+            .index_lock
+            .is_none());
+        assert!(!summary.in_progress);
+    }
+
+    #[test]
+    fn reports_residual_index_lock_once_it_has_aged() {
+        let (runner, _dist_temp) = real_runner();
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        let lock_path = repo.path.join(".git/index.lock");
+        fs::File::create(&lock_path).expect("index.lock");
+        set_index_lock_age(&lock_path, Duration::from_secs(5));
+
+        let summary = repository_summary(
+            &runner,
+            RepositoryPathRequest {
+                repository_path: display_path(&repo.path),
+            },
+        )
+        .expect("summary with residual index.lock");
+
+        let index_lock = summary
+            .details
+            .as_ref()
+            .expect("summary details")
+            .health
+            .index_lock
+            .as_ref()
+            .expect("aged index.lock should be reported");
+        assert!(index_lock.age_seconds >= 5);
+        assert!(summary.in_progress);
     }
 
     #[test]
@@ -9603,6 +9677,17 @@ size 16\n"
         fs::create_dir_all(&home).expect("create runner home");
         let runner = GitRunner::from_distribution(distribution, home);
         (runner, temp)
+    }
+
+    fn set_index_lock_age(path: &Path, age: Duration) {
+        let file = fs::File::options()
+            .write(true)
+            .open(path)
+            .expect("open index.lock");
+        let modified = SystemTime::now()
+            .checked_sub(age)
+            .expect("index.lock age stays within system time range");
+        file.set_modified(modified).expect("set index.lock mtime");
     }
 
     fn allow_file_protocol_for_local_submodule_fixtures(runner: &GitRunner) {
