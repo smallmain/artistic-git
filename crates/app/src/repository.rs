@@ -59,6 +59,7 @@ const RENORMALIZE_SUGGESTION_SAMPLE_LIMIT: usize = 8;
 const PROBE_REMOTE_REPOSITORY_OPERATION: &str = "probeRemoteRepository";
 const LOCAL_CHANGE_PREVIEW_FILE_LIMIT: usize = 250;
 const LOCAL_CHANGE_PREVIEW_TOTAL_BYTES: usize = 8 * 1024 * 1024;
+const IMAGE_PREVIEW_LIMIT_BYTES: usize = 8 * 1024 * 1024;
 const LOCAL_CHANGE_ENTRY_LIMIT: usize = 5_000;
 const COMMAND_OUTPUT_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 const COMMAND_OUTPUT_DIAGNOSTIC_BYTES: usize = 64 * 1024;
@@ -1933,7 +1934,7 @@ pub fn local_change_detail(
         (root.clone(), path_filters, None)
     };
 
-    let mut preview_budget = LocalChangePreviewBudget::default();
+    let mut preview_budget = LocalChangePreviewBudget::for_policy(LocalChangeLoadPolicy::Detail);
     let mut entry_budget = LocalChangeEntryBudget::default();
     let changes = list_local_changes_for_repository(
         runner,
@@ -2379,11 +2380,12 @@ pub fn commit_file_detail(
 
     let old_size = historical_blob_size(runner, &root, old_revision_and_path, operation_name)?;
     let new_size = historical_blob_size(runner, &root, new_revision_and_path, operation_name)?;
-    let oversized = old_size.is_some_and(|size| size > OVERSIZED_TEXT_BYTES as u64)
-        || new_size.is_some_and(|size| size > OVERSIZED_TEXT_BYTES as u64);
+    let preview_limit = LocalChangeLoadPolicy::Historical.preview_limit(&file.path);
+    let oversized = old_size.is_some_and(|size| size > preview_limit as u64)
+        || new_size.is_some_and(|size| size > preview_limit as u64);
 
     let (payload, diff) = if oversized {
-        commit_file_oversized_diff(&file, old_size, new_size)
+        commit_file_oversized_diff(&file, old_size, new_size, preview_limit)
     } else {
         let old_content =
             historical_blob_content(runner, &root, old_revision_and_path, operation_name)?;
@@ -2861,12 +2863,10 @@ fn commit_file_oversized_diff(
     file: &CommitChangedFile,
     old_size: Option<u64>,
     new_size: Option<u64>,
+    preview_limit: usize,
 ) -> (DiffPayload, DiffContent) {
     let mut metadata = commit_file_metadata(file);
-    metadata.insert(
-        "previewLimitBytes".to_owned(),
-        OVERSIZED_TEXT_BYTES.to_string(),
-    );
+    metadata.insert("previewLimitBytes".to_owned(), preview_limit.to_string());
     metadata.insert("previewDeferred".to_owned(), "true".to_owned());
     metadata.insert("oversized".to_owned(), "true".to_owned());
     if let Some(size) = old_size {
@@ -2895,11 +2895,12 @@ fn commit_file_diff(
     old_content: Option<Vec<u8>>,
     new_content: Option<Vec<u8>>,
 ) -> AppResult<(DiffPayload, DiffContent)> {
+    let preview_limit = LocalChangeLoadPolicy::Historical.preview_limit(&file.path);
     if let Some((oid, size)) = [old_content.as_deref(), new_content.as_deref()]
         .into_iter()
         .flatten()
         .filter_map(parse_lfs_pointer)
-        .find(|pointer| pointer.size > OVERSIZED_TEXT_BYTES as u64)
+        .find(|pointer| pointer.size > preview_limit as u64)
         .map(|pointer| (pointer.oid, pointer.size))
     {
         let mut metadata = commit_file_metadata(file);
@@ -2907,10 +2908,7 @@ fn commit_file_diff(
         metadata.insert("lfsSize".to_owned(), size.to_string());
         metadata.insert("oversized".to_owned(), "true".to_owned());
         metadata.insert("previewDeferred".to_owned(), "true".to_owned());
-        metadata.insert(
-            "previewLimitBytes".to_owned(),
-            OVERSIZED_TEXT_BYTES.to_string(),
-        );
+        metadata.insert("previewLimitBytes".to_owned(), preview_limit.to_string());
         return Ok((
             DiffPayload {
                 old_path: file.old_path.clone(),
@@ -2923,7 +2921,7 @@ fn commit_file_diff(
             DiffContent::Deferred {
                 message: Some(format!(
                     "Git LFS content is {size} bytes, above the {} byte preview limit",
-                    OVERSIZED_TEXT_BYTES
+                    preview_limit
                 )),
             },
         ));
@@ -3880,7 +3878,7 @@ fn submodule_has_lfs_files(
     let mut command = plan.to_command();
     command.current_dir(submodule);
     let output = command_to_output(command, &plan, operation_name)?;
-    Ok(!output.stdout.trim().is_empty())
+    Ok(!String::from_utf8_lossy(&output.stdout).trim().is_empty())
 }
 
 fn run_git_lfs_for_submodule<I, S>(
@@ -4193,7 +4191,8 @@ fn resolve_repository_root(runner: &GitRunner, path: &Path) -> AppResult<PathBuf
             error
         }
     })?;
-    let root = PathBuf::from(output.stdout.trim());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let root = PathBuf::from(stdout.trim());
     canonicalize_path(&root, "openRepository")
 }
 
@@ -4782,7 +4781,8 @@ where
         }
         Err(error) => return Err(error),
     };
-    let mut commits = parse_log_records(&output.stdout);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut commits = parse_log_records(&stdout);
     let has_next = commits.len() > limit;
     commits.truncate(limit);
     let next_after = has_next.then(|| (skip + limit).to_string());
@@ -4904,6 +4904,14 @@ impl LocalChangeLoadPolicy {
     fn fetch_missing_lfs(self) -> bool {
         matches!(self, Self::Detail)
     }
+
+    fn preview_limit(self, path: &str) -> usize {
+        if !matches!(self, Self::Batch) && is_image_preview_path(path) {
+            IMAGE_PREVIEW_LIMIT_BYTES
+        } else {
+            OVERSIZED_TEXT_BYTES
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -4925,6 +4933,14 @@ struct LocalChangePreviewSizes {
     new_size: Option<u64>,
     old_expected: bool,
     old_size: Option<u64>,
+}
+
+impl LocalChangePreviewSizes {
+    fn exceeds(self, limit: usize) -> bool {
+        let limit = limit as u64;
+        self.old_size.is_some_and(|size| size > limit)
+            || self.new_size.is_some_and(|size| size > limit)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -4957,20 +4973,29 @@ impl Default for LocalChangePreviewBudget {
 }
 
 impl LocalChangePreviewBudget {
+    fn for_policy(load_policy: LocalChangeLoadPolicy) -> Self {
+        let mut budget = Self::default();
+        if matches!(load_policy, LocalChangeLoadPolicy::Detail) {
+            budget.remaining_bytes = IMAGE_PREVIEW_LIMIT_BYTES.saturating_mul(2);
+        }
+        budget
+    }
+
     fn exhausted(&self) -> bool {
         self.remaining_files == 0 || self.remaining_bytes == 0
     }
 
-    fn reserve(&mut self, sizes: LocalChangePreviewSizes) -> LocalChangePreviewDecision {
+    fn reserve(
+        &mut self,
+        sizes: LocalChangePreviewSizes,
+        per_file_limit: usize,
+    ) -> LocalChangePreviewDecision {
         if self.exhausted() {
             return LocalChangePreviewDecision::Deferred;
         }
         self.remaining_files -= 1;
 
-        let per_file_limit = OVERSIZED_TEXT_BYTES as u64;
-        if sizes.old_size.is_some_and(|size| size > per_file_limit)
-            || sizes.new_size.is_some_and(|size| size > per_file_limit)
-        {
+        if sizes.exceeds(per_file_limit) {
             return LocalChangePreviewDecision::Oversized;
         }
 
@@ -4982,7 +5007,7 @@ impl LocalChangePreviewBudget {
         .filter(|(expected, _)| *expected)
         .map(|(_, size)| {
             size.and_then(|size| usize::try_from(size).ok())
-                .unwrap_or(OVERSIZED_TEXT_BYTES)
+                .unwrap_or(per_file_limit)
         })
         .sum::<usize>();
         if estimated_bytes > self.remaining_bytes {
@@ -5026,7 +5051,7 @@ fn prepare_local_change_preview(
             context.path,
             context.index_status,
             context.worktree_status,
-            operation_name,
+            context.load_policy,
         )?
     } else {
         None
@@ -5125,13 +5150,11 @@ fn local_change_preview_placeholder(
     sizes: LocalChangePreviewSizes,
     deferred: bool,
 ) -> (DiffPayload, DiffContent) {
+    let preview_limit = LocalChangeLoadPolicy::Detail.preview_limit(path);
     let mut metadata = BTreeMap::new();
     metadata.insert("indexStatus".to_owned(), index_status.to_owned());
     metadata.insert("worktreeStatus".to_owned(), worktree_status.to_owned());
-    metadata.insert(
-        "previewLimitBytes".to_owned(),
-        OVERSIZED_TEXT_BYTES.to_string(),
-    );
+    metadata.insert("previewLimitBytes".to_owned(), preview_limit.to_string());
     metadata.insert("previewDeferred".to_owned(), "true".to_owned());
     if !deferred {
         metadata.insert("oversized".to_owned(), "true".to_owned());
@@ -5228,6 +5251,10 @@ fn deferred_large_file_kind(path: &str) -> DiffFileKind {
     DiffFileKind::Binary
 }
 
+fn is_image_preview_path(path: &str) -> bool {
+    matches!(deferred_large_file_kind(path), DiffFileKind::Image)
+}
+
 fn local_change_diff(
     runner: &GitRunner,
     context: LocalChangeDiffContext<'_>,
@@ -5242,8 +5269,10 @@ fn local_change_diff(
         index_status,
         inspect_submodules,
         worktree_status,
-        ..
+        load_policy,
     } = context;
+    let preview_limit = load_policy.preview_limit(path);
+    let selected_preview_limit = LocalChangeLoadPolicy::Detail.preview_limit(path);
     if inspect_submodules {
         if let Some(submodule) = submodule_pointer_change(
             runner,
@@ -5271,9 +5300,11 @@ fn local_change_diff(
     }
 
     let preview = prepare_local_change_preview(runner, context)?;
-    match preview_budget.reserve(preview.sizes) {
+    match preview_budget.reserve(preview.sizes, preview_limit) {
         LocalChangePreviewDecision::Load => {}
         LocalChangePreviewDecision::Oversized => {
+            let deferred = matches!(load_policy, LocalChangeLoadPolicy::Batch)
+                && !preview.sizes.exceeds(selected_preview_limit);
             return Ok(local_change_preview_placeholder(
                 path,
                 old_path,
@@ -5281,7 +5312,7 @@ fn local_change_diff(
                 index_status,
                 worktree_status,
                 preview.sizes,
-                false,
+                deferred,
             ));
         }
         LocalChangePreviewDecision::Deferred => {
@@ -5576,7 +5607,7 @@ fn local_change_contents(
             path,
             index_status,
             worktree_status,
-            operation_name,
+            load_policy,
         )?
     };
 
@@ -5625,14 +5656,15 @@ fn local_change_new_content(
     path: &str,
     index_status: &str,
     worktree_status: &str,
-    operation_name: &str,
+    load_policy: LocalChangeLoadPolicy,
 ) -> AppResult<Option<Vec<u8>>> {
     if index_status == "D" || worktree_status == "D" {
         return Ok(None);
     }
 
+    let operation_name = load_policy.operation_name();
     let worktree_path = repository_relative_path(root, path, operation_name)?;
-    if let Ok(bytes) = read_file_with_limit(&worktree_path, OVERSIZED_TEXT_BYTES) {
+    if let Ok(bytes) = read_file_with_limit(&worktree_path, load_policy.preview_limit(path)) {
         return Ok(Some(bytes));
     }
 
@@ -5688,7 +5720,8 @@ fn display_content_for_side(
         }));
     };
 
-    if pointer.size > OVERSIZED_TEXT_BYTES as u64 {
+    let preview_limit = load_policy.preview_limit(path);
+    if pointer.size > preview_limit as u64 {
         return Ok(Err(LfsDisplayIssue {
             status: LfsContentStatus::Error,
             message: Some(format!(
@@ -5696,7 +5729,7 @@ fn display_content_for_side(
                 side.label(),
                 path,
                 pointer.size,
-                OVERSIZED_TEXT_BYTES
+                preview_limit
             )),
             fetch_attempted: false,
         }));
@@ -5707,6 +5740,7 @@ fn display_content_for_side(
         root,
         &pointer.oid,
         Some(pointer.size),
+        preview_limit,
         load_policy.operation_name(),
     ) {
         Ok(content) => {
@@ -5757,6 +5791,7 @@ fn display_content_for_side(
         root,
         &pointer.oid,
         Some(pointer.size),
+        preview_limit,
         load_policy.operation_name(),
     ) {
         Ok(content) => Ok(Ok(DisplayContent {
@@ -5884,14 +5919,15 @@ fn read_local_lfs_object(
     root: &Path,
     oid: &str,
     expected_size: Option<u64>,
+    preview_limit: usize,
     operation_name: &str,
 ) -> Result<Vec<u8>, LocalLfsObjectReadError> {
     let path = local_lfs_object_path(runner, root, oid, operation_name)
         .map_err(LocalLfsObjectReadError::Error)?;
     let read_limit = expected_size
         .and_then(|size| usize::try_from(size).ok())
-        .unwrap_or(OVERSIZED_TEXT_BYTES)
-        .min(OVERSIZED_TEXT_BYTES);
+        .unwrap_or(preview_limit)
+        .min(preview_limit);
     let bytes = match read_file_with_limit(&path, read_limit) {
         Ok(bytes) => bytes,
         Err(source) if source.kind() == io::ErrorKind::NotFound => {
@@ -6216,7 +6252,8 @@ where
     I: IntoIterator<Item = S>,
     S: Into<OsString>,
 {
-    run_git(runner, root, args, operation_name).map(|output| output.stdout)
+    run_git(runner, root, args, operation_name)
+        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 fn git_output_bytes<I, S>(
@@ -6229,7 +6266,7 @@ where
     I: IntoIterator<Item = S>,
     S: Into<OsString>,
 {
-    run_git(runner, root, args, operation_name).map(|output| output.stdout.into_bytes())
+    run_git(runner, root, args, operation_name).map(|output| output.stdout)
 }
 
 fn run_git<I, S>(
@@ -6605,13 +6642,13 @@ fn logged(error: AppError) -> AppError {
 
 #[derive(Debug)]
 struct CommandOutput {
-    stdout: String,
+    stdout: Vec<u8>,
 }
 
 impl CommandOutput {
     fn from_output(output: std::process::Output) -> Self {
         Self {
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stdout: output.stdout,
         }
     }
 }
@@ -6694,23 +6731,29 @@ mod tests {
             remaining_files: 2,
         };
         assert_eq!(
-            budget.reserve(LocalChangePreviewSizes {
-                new_expected: true,
-                new_size: Some(6),
-                ..LocalChangePreviewSizes::default()
-            }),
+            budget.reserve(
+                LocalChangePreviewSizes {
+                    new_expected: true,
+                    new_size: Some(6),
+                    ..LocalChangePreviewSizes::default()
+                },
+                OVERSIZED_TEXT_BYTES,
+            ),
             LocalChangePreviewDecision::Load
         );
         assert_eq!(
-            budget.reserve(LocalChangePreviewSizes {
-                new_expected: true,
-                new_size: Some(5),
-                ..LocalChangePreviewSizes::default()
-            }),
+            budget.reserve(
+                LocalChangePreviewSizes {
+                    new_expected: true,
+                    new_size: Some(5),
+                    ..LocalChangePreviewSizes::default()
+                },
+                OVERSIZED_TEXT_BYTES,
+            ),
             LocalChangePreviewDecision::Deferred
         );
         assert_eq!(
-            budget.reserve(LocalChangePreviewSizes::default()),
+            budget.reserve(LocalChangePreviewSizes::default(), OVERSIZED_TEXT_BYTES),
             LocalChangePreviewDecision::Deferred
         );
 
@@ -6768,20 +6811,26 @@ mod tests {
 
         assert_eq!(charged_size, Some(8));
         assert_eq!(
-            budget.reserve(LocalChangePreviewSizes {
-                new_expected: true,
-                new_size: charged_size,
-                ..LocalChangePreviewSizes::default()
-            }),
+            budget.reserve(
+                LocalChangePreviewSizes {
+                    new_expected: true,
+                    new_size: charged_size,
+                    ..LocalChangePreviewSizes::default()
+                },
+                OVERSIZED_TEXT_BYTES,
+            ),
             LocalChangePreviewDecision::Load
         );
         assert_eq!(budget.remaining_bytes, 2);
         assert_eq!(
-            budget.reserve(LocalChangePreviewSizes {
-                new_expected: true,
-                new_size: Some(3),
-                ..LocalChangePreviewSizes::default()
-            }),
+            budget.reserve(
+                LocalChangePreviewSizes {
+                    new_expected: true,
+                    new_size: Some(3),
+                    ..LocalChangePreviewSizes::default()
+                },
+                OVERSIZED_TEXT_BYTES,
+            ),
             LocalChangePreviewDecision::Deferred
         );
     }
@@ -7933,7 +7982,7 @@ mod tests {
             .recv_timeout(Duration::from_secs(5))
             .expect("large output should be drained while Git is running")
             .expect("large output command");
-        assert!(output.stdout.contains("stdout-11999"));
+        assert!(String::from_utf8_lossy(&output.stdout).contains("stdout-11999"));
     }
 
     #[cfg(unix)]
@@ -8663,6 +8712,64 @@ mod tests {
     }
 
     #[test]
+    fn local_change_detail_previews_images_above_the_text_limit() {
+        let (runner, _dist_temp) = real_runner();
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        let relative_path = "UnityProject/Assets/AssetRaw/UIRaw/Atlas/GameMainUl/ui_btn_Invite.png";
+        let path = repo.path.join(relative_path);
+        fs::create_dir_all(path.parent().expect("image parent")).expect("create image parent");
+        fs::write(&path, png_fixture(68)).expect("write original image");
+        repo.git(["add", relative_path]);
+        repo.git(["commit", "-m", "add image"]);
+        let png = png_fixture(OVERSIZED_TEXT_BYTES + 1);
+        fs::write(&path, &png).expect("write image");
+
+        let changes = list_local_changes(
+            &runner,
+            RepositoryPathRequest {
+                repository_path: display_path(&repo.path),
+            },
+        )
+        .expect("local changes");
+        let change = changes
+            .changes
+            .iter()
+            .find(|change| change.path == relative_path)
+            .expect("image change");
+
+        assert_eq!(change.payload.file_kind, DiffFileKind::Deferred);
+        assert_eq!(change.payload.metadata["previewDeferred"], "true");
+        assert!(!change.payload.metadata.contains_key("oversized"));
+
+        let detail = local_change_detail(
+            &runner,
+            LocalChangeDetailRequest {
+                repository_path: display_path(&repo.path),
+                path: relative_path.to_owned(),
+                old_path: None,
+                submodule: None,
+                operation_id: None,
+            },
+        )
+        .expect("image detail");
+
+        assert_eq!(detail.payload.file_kind, DiffFileKind::Image);
+        let DiffContent::Image {
+            old_image: Some(old_asset),
+            new_image: Some(asset),
+        } = detail.diff
+        else {
+            panic!("expected image preview");
+        };
+        assert_eq!(old_asset.mime_type.as_deref(), Some("image/png"));
+        assert_eq!(old_asset.size_bytes, Some(68));
+        assert_eq!(asset.mime_type.as_deref(), Some("image/png"));
+        assert_eq!(asset.size_bytes, Some(png.len() as u32));
+        assert!(asset.src.starts_with("data:image/png;base64,"));
+    }
+
+    #[test]
     fn batch_local_change_preview_reports_missing_lfs_without_fetching() {
         let (runner, temp, fetch_marker) = lfs_policy_runner();
         let repo = temp.path().join("repo");
@@ -9382,15 +9489,12 @@ size 16\n"
     }
 
     #[test]
-    fn defers_large_historical_assets_without_calling_them_large_text() {
+    fn previews_large_historical_images_above_the_text_limit() {
         let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.init_with_commit();
-        fs::write(
-            repo.path.join("large.png"),
-            vec![b'x'; OVERSIZED_TEXT_BYTES + 1],
-        )
-        .expect("large image fixture");
+        let png = png_fixture(OVERSIZED_TEXT_BYTES + 1);
+        fs::write(repo.path.join("large.png"), &png).expect("large image fixture");
         repo.git(["add", "large.png"]);
         repo.git(["commit", "-m", "add large image"]);
         let oid = repo.git_output(["rev-parse", "HEAD"]).trim().to_owned();
@@ -9407,8 +9511,16 @@ size 16\n"
         .expect("large image detail");
 
         assert_eq!(detail.payload.file_kind, DiffFileKind::Image);
-        assert_eq!(detail.payload.metadata["previewDeferred"], "true");
-        assert!(matches!(detail.diff, DiffContent::Deferred { .. }));
+        assert!(!detail.payload.metadata.contains_key("previewDeferred"));
+        let DiffContent::Image {
+            old_image: None,
+            new_image: Some(asset),
+        } = detail.diff
+        else {
+            panic!("expected historical image preview");
+        };
+        assert_eq!(asset.mime_type.as_deref(), Some("image/png"));
+        assert_eq!(asset.size_bytes, Some(png.len() as u32));
         assert_eq!(
             deferred_large_file_kind("archive.zip"),
             DiffFileKind::Binary
@@ -9738,6 +9850,18 @@ size 16\n"
         fs::create_dir_all(&home).expect("create runner home");
         let runner = GitRunner::from_distribution(distribution, home);
         (runner, temp)
+    }
+
+    fn png_fixture(size: usize) -> Vec<u8> {
+        let mut png = vec![
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x04, 0x00, 0x00,
+            0x00, 0xb5, 0x1c, 0x0c, 0x02, 0x00, 0x00, 0x00, 0x0b, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0xda, 0x63, 0x64, 0xf8, 0x0f, 0x00, 0x01, 0x05, 0x01, 0x01, 0x27, 0x18, 0xe3, 0x66,
+            0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+        ];
+        png.resize(size.max(png.len()), 0);
+        png
     }
 
     fn set_index_lock_age(path: &Path, age: Duration) {

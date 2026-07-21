@@ -189,6 +189,30 @@ describe("LocalChangesPanel", () => {
     );
   });
 
+  it("does not label an image awaiting content as unsupported binary", () => {
+    renderWithProviders(
+      <LocalChangesPanel
+        changes={[
+          {
+            id: "image-without-content",
+            payload: createPayload({
+              changeKind: "added",
+              fileKind: "image",
+              newPath: "assets/atlas.png",
+            }),
+          },
+        ]}
+      />,
+    );
+
+    expect(
+      screen.getByText("Preview not loaded for this item"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Binary file preview is not available"),
+    ).not.toBeInTheDocument();
+  });
+
   it("resizes and persists the change list and diff panel ratio", () => {
     const { unmount } = renderWithProviders(
       <LocalChangesPanel changes={createChanges()} />,

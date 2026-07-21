@@ -1112,7 +1112,7 @@ function clamp(value: number, minimum: number, maximum: number): number {
 function mapFileKindToCard(
   fileKind: LocalChangeItem["payload"]["fileKind"],
 ): "binary" | "deferred" | "oversizedText" | "lfsPointer" | "moved" {
-  if (fileKind === "deferred") {
+  if (fileKind === "deferred" || fileKind === "image" || fileKind === "text") {
     return "deferred";
   }
 
