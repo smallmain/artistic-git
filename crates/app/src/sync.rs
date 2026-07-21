@@ -128,6 +128,12 @@ where
     if branch_upstream(runner, &root, &branch_name)?.is_none() || !has_origin_branch {
         return publish_non_current_branch(runner, &root, &branch_name);
     }
+    if branch_checked_out_in_other_worktree(runner, &root, &branch_name)? {
+        return Err(expected_repo_error(
+            "该分支已在其他 worktree 中检出，请先在对应 worktree 中完成同步，或移除该 worktree 后重试。",
+            &root,
+        ));
+    }
     cleanup_sync_worktree_residue(runner, &root);
 
     match sync_branch_fast_path(runner, &root, &branch_name)? {
@@ -212,7 +218,12 @@ where
         let response = match response {
             Ok(response) => response,
             Err(error) => {
-                branches.push(failed_branch_response(&root, &branch_name, error.summary));
+                branches.push(failed_branch_response(
+                    runner,
+                    &root,
+                    &branch_name,
+                    error.summary,
+                ));
                 continue;
             }
         };
@@ -635,6 +646,13 @@ fn fetch_branch_ref_fast_forward(
         if output.status.success() {
             return Ok(true);
         }
+        if is_checked_out_branch_fetch_rejection(&output) {
+            return Err(command_failure(
+                &plan,
+                output,
+                "该分支已在其他 worktree 中检出，请先在对应 worktree 中完成同步，或移除该 worktree 后重试。",
+            ));
+        }
         if is_fast_forward_fetch_rejection(&output) {
             return Ok(false);
         }
@@ -873,6 +891,32 @@ fn current_branch_name(runner: &GitRunner, root: &Path) -> AppResult<Option<Stri
     } else {
         Ok(None)
     }
+}
+
+fn branch_checked_out_in_other_worktree(
+    runner: &GitRunner,
+    root: &Path,
+    branch_name: &str,
+) -> AppResult<bool> {
+    let (plan, output) = run_git_raw(
+        runner,
+        Some(root),
+        ["worktree", "list", "--porcelain", "-z"],
+        SYNC_BRANCH_OPERATION,
+    )?;
+    if !output.status.success() {
+        return Err(command_failure(
+            &plan,
+            output,
+            "无法检查分支 worktree 状态。",
+        ));
+    }
+
+    let target = format!("branch refs/heads/{branch_name}");
+    Ok(output
+        .stdout
+        .split(|byte| *byte == 0)
+        .any(|field| field == target.as_bytes()))
 }
 
 fn remote_branch_oid(
@@ -1622,10 +1666,12 @@ fn ensure_committed_head(runner: &GitRunner, root: &Path) -> AppResult<()> {
 }
 
 fn ensure_clean_worktree(runner: &GitRunner, root: &Path) -> AppResult<()> {
+    // Stashing a modified .gitignore can reveal files that were previously ignored.
+    // Git preserves untracked files during merge/rebase, so only tracked changes block sync.
     let output = crate::git_ops::git_stdout(
         runner,
         Some(root),
-        ["status", "--porcelain=v1", "-z"],
+        ["status", "--porcelain=v1", "-z", "--untracked-files=no"],
         SYNC_OPERATION,
     )?;
     if output.is_empty() {
@@ -2276,6 +2322,12 @@ fn is_fast_forward_fetch_rejection(output: &Output) -> bool {
         || text.contains("would clobber existing tag")
 }
 
+fn is_checked_out_branch_fetch_rejection(output: &Output) -> bool {
+    combined_output(output)
+        .to_ascii_lowercase()
+        .contains("refusing to fetch into branch")
+}
+
 fn is_network_error(output: &Output) -> bool {
     let text = combined_output(output).to_ascii_lowercase();
     [
@@ -2379,11 +2431,16 @@ fn sync_branch_response_from_current(response: SyncCurrentBranchResponse) -> Syn
     }
 }
 
-fn failed_branch_response(root: &Path, branch_name: &str, message: String) -> SyncBranchResponse {
+fn failed_branch_response(
+    runner: &GitRunner,
+    root: &Path,
+    branch_name: &str,
+    message: String,
+) -> SyncBranchResponse {
     SyncBranchResponse {
         repository_path: display_path(root),
         branch_name: branch_name.to_owned(),
-        upstream: None,
+        upstream: branch_upstream(runner, root, branch_name).ok().flatten(),
         status: SyncCurrentBranchStatus::Failed,
         attempts: 1,
         message: Some(message),
@@ -2672,6 +2729,57 @@ mod tests {
         assert_eq!(fixture.local.read("tracked.txt"), "dirty local\n");
         assert_eq!(fixture.local.read("scratch.txt"), "scratch\n");
         assert!(fixture.local.path.join("remote.txt").exists());
+        assert!(fixture
+            .local
+            .git_output(["stash", "list"])
+            .trim()
+            .is_empty());
+    }
+
+    #[test]
+    fn sync_current_branch_allows_files_hidden_by_dirty_gitignore() {
+        let (runner, _home) = real_runner();
+        let fixture = DoubleClone::new(&runner);
+        fixture.local.write(".gitignore", "base.tmp\n");
+        fixture.local.git(["add", ".gitignore"]);
+        fixture.local.git(["commit", "-m", "add ignore file"]);
+        fixture.local.git(["push"]);
+        fixture.peer.git(["pull", "--ff-only"]);
+
+        fixture
+            .local
+            .write(".gitignore", "base.tmp\nlocal-only.tmp\n");
+        fixture
+            .local
+            .write("local-only.tmp", "local ignored data\n");
+        fixture.peer.write("remote.txt", "remote\n");
+        fixture.peer.git(["add", "remote.txt"]);
+        fixture.peer.git(["commit", "-m", "remote change"]);
+        fixture.peer.git(["push"]);
+
+        let response = sync_current_branch(
+            &runner,
+            SyncCurrentBranchRequest {
+                repository_path: display_path(&fixture.local.path),
+                operation_id: None,
+            },
+        )
+        .expect("sync with ignored file hidden by dirty .gitignore");
+
+        assert_eq!(response.status, SyncCurrentBranchStatus::Pulled);
+        assert_eq!(
+            fixture.local.read(".gitignore"),
+            "base.tmp\nlocal-only.tmp\n"
+        );
+        assert_eq!(fixture.local.read("local-only.tmp"), "local ignored data\n");
+        assert!(fixture.local.path.join("remote.txt").exists());
+        assert_eq!(
+            fixture
+                .local
+                .git_output(["status", "--porcelain=v1", "--untracked-files=all"])
+                .trim(),
+            "M .gitignore"
+        );
         assert!(fixture
             .local
             .git_output(["stash", "list"])
@@ -3111,6 +3219,55 @@ mod tests {
             fixture.local.show("feature/success", "success-remote.txt"),
             "remote\n"
         );
+        assert_no_sync_worktrees(&fixture.local);
+    }
+
+    #[test]
+    fn sync_all_branches_reports_branch_checked_out_in_linked_worktree() {
+        let (runner, _home) = real_runner();
+        let fixture = DoubleClone::new(&runner);
+        fixture.create_tracking_branch("feature/linked");
+        let linked = TestTempDir::new("ag-sync-user-worktree").expect("linked worktree path");
+        fs::remove_dir_all(linked.path()).expect("worktree target must not exist");
+        fixture.local.git([
+            OsString::from("worktree"),
+            OsString::from("add"),
+            linked.path().as_os_str().to_owned(),
+            OsString::from("feature/linked"),
+        ]);
+
+        let response = sync_all_branches_with_progress(
+            &runner,
+            None,
+            SyncAllBranchesRequest {
+                repository_path: display_path(&fixture.local.path),
+                operation_id: Some(OperationId("sync-all-linked-test".to_owned())),
+            },
+            |_| {},
+        )
+        .expect("sync all branches");
+
+        let linked_branch = response
+            .branches
+            .iter()
+            .find(|branch| branch.branch_name == "feature/linked")
+            .expect("linked branch result");
+        assert_eq!(linked_branch.status, SyncCurrentBranchStatus::Failed);
+        assert_eq!(
+            linked_branch.upstream.as_deref(),
+            Some("origin/feature/linked")
+        );
+        assert!(linked_branch
+            .message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("已在其他 worktree 中检出"));
+        assert!(!linked_branch
+            .message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Git 拉取失败"));
+        assert!(!response.all_up_to_date);
         assert_no_sync_worktrees(&fixture.local);
     }
 
@@ -3900,6 +4057,22 @@ mod tests {
         );
 
         assert!(is_fast_forward_fetch_rejection(&output));
+    }
+
+    #[test]
+    fn sync_branch_unit_detects_checked_out_branch_fetch_rejection() {
+        let output = test_output(
+            128,
+            "",
+            "fatal: refusing to fetch into branch 'refs/heads/review' checked out at '/repo.review'\n",
+        );
+
+        assert!(is_checked_out_branch_fetch_rejection(&output));
+        assert!(is_network_error(&test_output(
+            128,
+            "",
+            "fatal: refusing to fetch into branch 'refs/heads/review' checked out at '/repo.review'\nfatal: The remote end hung up unexpectedly\n",
+        )));
     }
 
     #[test]
