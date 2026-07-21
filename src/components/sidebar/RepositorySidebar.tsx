@@ -509,7 +509,7 @@ export function RepositorySidebar({
 
         <div
           aria-label={t("repository.resizeSections")}
-          className="h-1 cursor-row-resize bg-border hover:bg-ring"
+          className="h-2 shrink-0 cursor-row-resize border-t hover:border-ring"
           onPointerDown={startSectionResize}
           role="separator"
         />
