@@ -73,4 +73,32 @@ describe("RealtimeEventBridge", () => {
       window.removeEventListener("artistic-git:error", handleError);
     }
   });
+
+  it("does not report an installation failure after unmount", async () => {
+    const bridgeError = new Error("stale bridge installation failed");
+    let rejectInstallation: (error: unknown) => void = () => undefined;
+    bridgeMocks.installRealtimeEventBridge.mockReturnValue(
+      new Promise((_, reject) => {
+        rejectInstallation = reject;
+      }),
+    );
+    const handleError = vi.fn();
+    window.addEventListener("artistic-git:error", handleError);
+
+    try {
+      const view = render(
+        <QueryClientProvider client={createAppQueryClient()}>
+          <RealtimeEventBridge />
+        </QueryClientProvider>,
+      );
+      expect(bridgeMocks.installRealtimeEventBridge).toHaveBeenCalled();
+      view.unmount();
+      rejectInstallation(bridgeError);
+
+      await Promise.resolve();
+      expect(handleError).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener("artistic-git:error", handleError);
+    }
+  });
 });

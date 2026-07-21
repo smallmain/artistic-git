@@ -6,6 +6,8 @@ import {
 } from "@tauri-apps/api/event";
 import { isTauri } from "@tauri-apps/api/core";
 
+import { reportDesktopRuntimeError } from "@/lib/runtime-errors";
+
 import type {
   ConflictEnteredEvent,
   ConfigChangeEvent,
@@ -70,9 +72,83 @@ export function listenRuntimeEvent<T>(
   if (!runtimeEventsAvailable()) {
     return Promise.resolve(() => undefined);
   }
-  return listen<T>(name, handler);
+  guardRuntimeEventUnregister();
+  return listen<T>(name, handler).then(createSafeUnlisten);
 }
 
 function runtimeEventsAvailable(): boolean {
   return isTauri() || import.meta.env.MODE === "test";
+}
+
+const unregisterGuardMarker = "__artisticGitMissingListenerGuard";
+
+type RuntimeUnregisterListener = (event: string, eventId: number) => void;
+type GuardedRuntimeUnregisterListener = RuntimeUnregisterListener & {
+  [unregisterGuardMarker]?: true;
+};
+
+function guardRuntimeEventUnregister(): void {
+  const internals = window.__TAURI_EVENT_PLUGIN_INTERNALS__;
+  const unregister = internals?.unregisterListener as
+    GuardedRuntimeUnregisterListener | undefined;
+  if (!unregister || unregister[unregisterGuardMarker]) {
+    return;
+  }
+
+  // Tauri's generated callback dereferences stale event IDs during Strict Mode/HMR cleanup.
+  // Ignoring only that lookup failure lets its subsequent backend unlisten still run.
+  const guarded: GuardedRuntimeUnregisterListener = (event, eventId) => {
+    try {
+      unregister.call(internals, event, eventId);
+    } catch (error) {
+      if (!isMissingRuntimeListenerError(error)) {
+        throw error;
+      }
+    }
+  };
+  guarded[unregisterGuardMarker] = true;
+  internals.unregisterListener = guarded;
+}
+
+function createSafeUnlisten(unlisten: UnlistenFn): UnlistenFn {
+  let active = true;
+
+  return () => {
+    if (!active) {
+      return;
+    }
+    active = false;
+
+    try {
+      const result = (unlisten as () => unknown)();
+      if (isPromiseLike(result)) {
+        void Promise.resolve(result).catch((error: unknown) => {
+          if (!isMissingRuntimeListenerError(error)) {
+            reportDesktopRuntimeError(error);
+          }
+        });
+      }
+    } catch (error) {
+      if (!isMissingRuntimeListenerError(error)) {
+        throw error;
+      }
+    }
+  };
+}
+
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return (
+    (typeof value === "object" || typeof value === "function") &&
+    value !== null &&
+    "then" in value &&
+    typeof value.then === "function"
+  );
+}
+
+function isMissingRuntimeListenerError(error: unknown): boolean {
+  return (
+    error instanceof TypeError &&
+    error.message.includes("handlerId") &&
+    error.message.toLowerCase().includes("undefined")
+  );
 }

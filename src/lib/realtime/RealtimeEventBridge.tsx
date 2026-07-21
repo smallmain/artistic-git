@@ -57,7 +57,9 @@ export function RealtimeEventBridge({
         }
       })
       .catch((error) => {
-        reportDesktopRuntimeError(error);
+        if (active) {
+          reportDesktopRuntimeError(error);
+        }
       });
 
     return () => {

@@ -49,6 +49,18 @@ export async function installRealtimeEventBridge({
   queryClient,
 }: RealtimeEventBridgeOptions): Promise<RealtimeUnsubscribe> {
   const unlisteners: RealtimeUnsubscribe[] = [];
+  let active = true;
+  const unsubscribe = () => {
+    if (!active) {
+      return;
+    }
+    active = false;
+    for (const unlisten of unlisteners.toReversed()) {
+      unlisten();
+    }
+    unlisteners.length = 0;
+  };
+
   try {
     unlisteners.push(
       await listen("repo-changed", (event) => {
@@ -93,15 +105,9 @@ export async function installRealtimeEventBridge({
       }),
     );
   } catch (error) {
-    for (const unlisten of unlisteners.toReversed()) {
-      unlisten();
-    }
+    unsubscribe();
     throw error;
   }
 
-  return () => {
-    for (const unlisten of unlisteners.toReversed()) {
-      unlisten();
-    }
-  };
+  return unsubscribe;
 }

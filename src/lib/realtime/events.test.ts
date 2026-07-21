@@ -144,6 +144,7 @@ describe("realtime query invalidation", () => {
     );
 
     unsubscribe();
+    unsubscribe();
 
     expect(unlisten).toHaveBeenCalledTimes(5);
   });
