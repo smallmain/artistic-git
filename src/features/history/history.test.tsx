@@ -284,7 +284,11 @@ describe("HistoryWorkbench", () => {
 
     expect(frame).toHaveClass("overflow-hidden", "border");
     expect(frame).toContainElement(viewport);
-    expect(viewport).toHaveClass("overflow-auto", "overscroll-contain");
+    expect(viewport).toHaveClass(
+      "overlay-scrollbar-viewport",
+      "overflow-auto",
+      "overscroll-contain",
+    );
     expect(viewport).not.toContainElement(columnHeader);
     expect(viewport).not.toContainElement(toolbar);
   });
@@ -909,8 +913,17 @@ describe("HistoryWorkbench", () => {
 
     expect(filter).toHaveClass("max-w-64", "min-w-0", "shrink");
     expect(filter).toContainElement(trigger);
-    expect(trigger.parentElement).toHaveClass("w-full", "min-w-0", "max-w-full");
-    expect(trigger).toHaveClass("w-full", "min-w-0", "max-w-full", "overflow-hidden");
+    expect(trigger.parentElement).toHaveClass(
+      "w-full",
+      "min-w-0",
+      "max-w-full",
+    );
+    expect(trigger).toHaveClass(
+      "w-full",
+      "min-w-0",
+      "max-w-full",
+      "overflow-hidden",
+    );
     expect(
       within(trigger).getByText(`Current branch: ${branchName}`),
     ).toHaveClass("min-w-0", "flex-1", "truncate");
@@ -1064,7 +1077,9 @@ describe("HistoryWorkbench", () => {
     );
 
     expect(
-      screen.getByText("Unpushed local commit").closest("[data-testid='history-commit-row']"),
+      screen
+        .getByText("Unpushed local commit")
+        .closest("[data-testid='history-commit-row']"),
     ).toHaveAttribute("data-unsynced", "true");
     expect(
       screen
@@ -1072,7 +1087,9 @@ describe("HistoryWorkbench", () => {
         .closest("[data-testid='history-commit-row']"),
     ).toHaveAttribute("data-unsynced", "true");
     expect(
-      screen.getByText("Shared base").closest("[data-testid='history-commit-row']"),
+      screen
+        .getByText("Shared base")
+        .closest("[data-testid='history-commit-row']"),
     ).not.toHaveAttribute("data-unsynced");
   });
 
@@ -1123,7 +1140,9 @@ describe("HistoryWorkbench", () => {
     fireEvent.click(screen.getByText("All"));
 
     expect(
-      screen.getByText("Unpushed local commit").closest("[data-testid='history-commit-row']"),
+      screen
+        .getByText("Unpushed local commit")
+        .closest("[data-testid='history-commit-row']"),
     ).not.toHaveAttribute("data-unsynced");
     expect(
       screen
@@ -1441,6 +1460,36 @@ describe("HistoryWorkbench", () => {
         value: originalClipboard,
       });
     }
+  });
+
+  it("opens commit details at 90% height and resizes from its top edge", () => {
+    renderWithProviders(<HistoryWorkbench rows={mockHistoryRows} />);
+
+    fireEvent.click(screen.getByText("Merge color pipeline preview"));
+    const panel = screen.getByTestId("history-commit-detail-panel");
+    const resizeHandle = screen.getByRole("separator", {
+      name: "Resize commit details",
+    });
+
+    expect(panel).toHaveStyle({ height: "90vh" });
+    expect(resizeHandle).toHaveAttribute("aria-valuenow", "90");
+    expect(resizeHandle.firstElementChild).toHaveClass(
+      "bg-border",
+      "group-hover:bg-ring",
+    );
+
+    fireEvent.pointerDown(resizeHandle, {
+      clientY: window.innerHeight * 0.1,
+      pointerId: 5,
+    });
+    fireEvent.pointerMove(window, { clientY: window.innerHeight * 0.3 });
+
+    expect(panel).toHaveStyle({ height: "70vh" });
+    expect(resizeHandle).toHaveAttribute("aria-valuenow", "70");
+
+    fireEvent.pointerUp(window);
+    fireEvent.pointerMove(window, { clientY: window.innerHeight * 0.5 });
+    expect(panel).toHaveStyle({ height: "70vh" });
   });
 
   it("keeps focus inside commit details and returns it to the commit row", () => {

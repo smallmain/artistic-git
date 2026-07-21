@@ -23,6 +23,7 @@ import { Button } from "@/components/ui/button";
 import { ExpandableSearch } from "@/components/ui/expandable-search";
 import { FloatingPanel } from "@/components/ui/floating-panel";
 import { IconButton } from "@/components/ui/icon-button";
+import { OverlayScrollArea } from "@/components/ui/overlay-scroll-area";
 import { Tooltip } from "@/components/ui/tooltip";
 import { TruncatedText } from "@/components/ui/truncated-text";
 import { DiffViewer } from "@/features/diff";
@@ -97,6 +98,9 @@ const maxVisibleCommitRefs = 6;
 const changedFileRowHeight = 60;
 const fallbackChangedFileViewportHeight = 504;
 const commitDetailFileLimit = 5_000;
+const commitDetailDefaultHeightPercent = 90;
+const commitDetailMinHeightPercent = 40;
+const commitDetailMaxHeightPercent = 100;
 type RevertUnavailableReason = RevertDisabledReason | "missingRepository";
 
 interface HistoryWorkbenchProps {
@@ -821,11 +825,12 @@ export function HistoryWorkbench({
         <span>{t("history.columns.time")}</span>
       </div>
 
-      <div
-        className="relative min-h-0 flex-1 overflow-auto overscroll-contain"
+      <OverlayScrollArea
+        className="min-h-0 flex-1"
         data-testid="history-scroll-viewport"
         onScroll={handleScroll}
         ref={historyViewportRef}
+        viewportClassName="overscroll-contain"
       >
         <div className="relative" style={{ height: historyContentHeight }}>
           {virtual.items.map((item) => {
@@ -879,7 +884,7 @@ export function HistoryWorkbench({
             </Button>
           </div>
         ) : null}
-      </div>
+      </OverlayScrollArea>
 
       {selectedCommit ? (
         <CommitDetailPanel
@@ -960,10 +965,7 @@ function BranchFilter({
       className="relative min-w-0 max-w-64 shrink"
       data-testid="history-branch-filter"
     >
-      <Tooltip
-        className="flex w-full min-w-0 max-w-full"
-        content={label}
-      >
+      <Tooltip className="flex w-full min-w-0 max-w-full" content={label}>
         {({ describedBy }) => (
           <Button
             aria-expanded={open}
@@ -1081,10 +1083,9 @@ function VirtualBranchFilterOptions({
   const height = Math.min(virtual.totalSize, branchFilterViewportHeight);
 
   return (
-    <div
+    <OverlayScrollArea
       aria-label={t("history.filters.branches")}
       aria-multiselectable="true"
-      className="overflow-auto"
       data-testid="history-branch-filter-viewport"
       onScroll={virtual.onScroll}
       role="listbox"
@@ -1130,7 +1131,7 @@ function VirtualBranchFilterOptions({
           );
         })}
       </div>
-    </div>
+    </OverlayScrollArea>
   );
 }
 
@@ -1430,9 +1431,8 @@ function VirtualCommitRefList({ refs }: { refs: HistoryCommit["refs"] }) {
   const height = Math.min(virtual.totalSize, commitRefViewportHeight);
 
   return (
-    <div
+    <OverlayScrollArea
       aria-label={t("history.refs.list")}
-      className="overflow-auto"
       onScroll={virtual.onScroll}
       role="list"
       style={{ height }}
@@ -1470,7 +1470,7 @@ function VirtualCommitRefList({ refs }: { refs: HistoryCommit["refs"] }) {
           );
         })}
       </div>
-    </div>
+    </OverlayScrollArea>
   );
 }
 
@@ -1636,6 +1636,10 @@ function CommitDetailPanel({
   const [fileState, setFileState] = React.useState<CommitFileLoadState>({
     status: "idle",
   });
+  const [panelHeightPercent, setPanelHeightPercent] = React.useState(
+    commitDetailDefaultHeightPercent,
+  );
+  const finishPanelResizeRef = React.useRef<(() => void) | null>(null);
   const panelRef = React.useRef<HTMLDivElement>(null);
   const titleId = React.useId();
   const dialogId = useModalLayer(panelRef, {
@@ -1644,6 +1648,13 @@ function CommitDetailPanel({
   });
   const activeRevertTarget =
     revertTarget && revertTarget.id === commit.id ? revertTarget : null;
+
+  React.useEffect(
+    () => () => {
+      finishPanelResizeRef.current?.();
+    },
+    [],
+  );
 
   React.useEffect(() => {
     if (!detailsRepositoryPath) {
@@ -1891,6 +1902,53 @@ function CommitDetailPanel({
     }
   };
 
+  const startPanelResize = React.useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      finishPanelResizeRef.current?.();
+      event.preventDefault();
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+
+      const handlePointerMove = (moveEvent: PointerEvent) => {
+        if (window.innerHeight <= 0) {
+          return;
+        }
+
+        const nextHeight =
+          ((window.innerHeight - moveEvent.clientY) / window.innerHeight) * 100;
+        setPanelHeightPercent(
+          Math.min(
+            commitDetailMaxHeightPercent,
+            Math.max(
+              commitDetailMinHeightPercent,
+              Math.round(nextHeight * 10) / 10,
+            ),
+          ),
+        );
+      };
+      let finished = false;
+      const finishResize = () => {
+        if (finished) {
+          return;
+        }
+        finished = true;
+        window.removeEventListener("pointermove", handlePointerMove);
+        window.removeEventListener("pointerup", finishResize);
+        window.removeEventListener("pointercancel", finishResize);
+        window.removeEventListener("blur", finishResize);
+        if (finishPanelResizeRef.current === finishResize) {
+          finishPanelResizeRef.current = null;
+        }
+      };
+
+      window.addEventListener("pointermove", handlePointerMove);
+      window.addEventListener("pointerup", finishResize);
+      window.addEventListener("pointercancel", finishResize);
+      window.addEventListener("blur", finishResize);
+      finishPanelResizeRef.current = finishResize;
+    },
+    [],
+  );
+
   return (
     <DialogLayerContext.Provider value={dialogId}>
       <div
@@ -1925,8 +1983,25 @@ function CommitDetailPanel({
                 fileState.status === "loading"),
             )
           }
-          className="relative z-10 h-[68vh] w-full border-t bg-card shadow-floating"
+          className="relative z-10 w-full bg-card shadow-floating"
+          data-testid="history-commit-detail-panel"
+          style={{ height: `${panelHeightPercent}vh` }}
         >
+          <div
+            aria-label={t("history.details.resize")}
+            aria-orientation="horizontal"
+            aria-valuemax={commitDetailMaxHeightPercent}
+            aria-valuemin={commitDetailMinHeightPercent}
+            aria-valuenow={panelHeightPercent}
+            className="group absolute inset-x-0 top-0 z-20 h-2 -translate-y-1/2 touch-none cursor-row-resize"
+            onPointerDown={startPanelResize}
+            role="separator"
+          >
+            <span
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-border transition-colors group-hover:bg-ring"
+            />
+          </div>
           <div className="flex h-full flex-col">
             <header className="flex items-start justify-between gap-4 border-b px-5 py-4">
               <div className="flex min-w-0 items-start gap-3">
@@ -2207,8 +2282,8 @@ function CommitChangedFilesList({
           {t("history.details.filesTruncated", { count: files.length })}
         </p>
       ) : null}
-      <div
-        className="min-h-0 flex-1 overflow-auto"
+      <OverlayScrollArea
+        className="min-h-0 flex-1"
         data-testid="history-detail-changed-files"
         onScroll={(event) => {
           measureViewport(event.currentTarget);
@@ -2259,7 +2334,7 @@ function CommitChangedFilesList({
             );
           })}
         </div>
-      </div>
+      </OverlayScrollArea>
     </div>
   );
 }

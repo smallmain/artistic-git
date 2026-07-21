@@ -7,7 +7,6 @@ import {
   GitBranch,
   GitFork,
   Layers,
-  MoreHorizontal,
   RefreshCw,
   ScanEye,
   Settings,
@@ -20,6 +19,7 @@ import { useTranslation } from "react-i18next";
 
 import { ExpandableSearch } from "@/components/ui/expandable-search";
 import { IconButton } from "@/components/ui/icon-button";
+import { OverlayScrollArea } from "@/components/ui/overlay-scroll-area";
 import {
   FloatingPanel,
   type FloatingPanelAnchor,
@@ -91,14 +91,14 @@ const minSidebarWidth = 260;
 const maxSidebarWidth = 460;
 const minBranchRatio = 35;
 const maxBranchRatio = 78;
-const branchRowHeight = 44;
+const branchRowHeight = 40;
 const branchVirtualOverscan = 6;
 const defaultBranchViewportHeight = 720;
-const stashRowHeight = 44;
+const stashRowHeight = 40;
 const stashVirtualOverscan = 6;
-/** Shared chrome-free hover action cluster for list rows. */
+/** Shared translucent hover action cluster for list rows. */
 const hoverActionGroupClassName =
-  "absolute right-1 top-1 hidden items-center gap-0.5 group-hover:flex group-focus-within:flex";
+  "absolute right-1 top-1/2 z-10 hidden -translate-y-1/2 items-center gap-0.5 rounded-md bg-background/80 px-0.5 shadow-sm backdrop-blur-sm group-hover:flex group-focus-within:flex";
 
 function fallbackBranchViewportHeight() {
   return Math.max(defaultBranchViewportHeight, window.innerHeight);
@@ -486,7 +486,7 @@ export function RepositorySidebar({
                 onFocus={onBranchFocus}
                 onSync={onSyncBranch}
                 style={{
-                  height: branchRowHeight - 4,
+                  height: branchRowHeight,
                   left: 0,
                   position: "absolute",
                   right: 0,
@@ -499,10 +499,15 @@ export function RepositorySidebar({
 
         <div
           aria-label={t("repository.resizeSections")}
-          className="h-2 shrink-0 cursor-row-resize border-t border-border transition-colors hover:border-ring"
+          className="group relative h-2 shrink-0 cursor-row-resize"
           onPointerDown={startSectionResize}
           role="separator"
-        />
+        >
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-border transition-colors group-hover:bg-ring"
+          />
+        </div>
 
         <SidebarSection
           collapsed={sidebarLayout.stashesCollapsed}
@@ -558,7 +563,7 @@ export function RepositorySidebar({
                 onDetails={onShowStashDetails}
                 stash={stash}
                 style={{
-                  height: stashRowHeight - 4,
+                  height: stashRowHeight,
                   left: 0,
                   position: "absolute",
                   right: 0,
@@ -610,9 +615,7 @@ export function RepositorySidebar({
             label={t("repository.safetyBackups")}
             onClick={onShowSafetyBackups}
             tooltip={
-              busy
-                ? t("repository.busyTooltip")
-                : t("repository.safetyBackups")
+              busy ? t("repository.busyTooltip") : t("repository.safetyBackups")
             }
             tooltipPlacement="vertical"
             type="button"
@@ -625,10 +628,15 @@ export function RepositorySidebar({
 
       <div
         aria-label={t("repository.resizeSidebar")}
-        className="absolute inset-y-0 right-0 z-10 w-2 cursor-col-resize border-r border-border transition-colors hover:border-ring"
+        className="group absolute inset-y-0 right-0 z-10 w-2 cursor-col-resize"
         onPointerDown={startSidebarResize}
         role="separator"
-      />
+      >
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-border transition-colors group-hover:bg-ring"
+        />
+      </div>
     </aside>
   );
 }
@@ -789,8 +797,8 @@ function SidebarSection({
         )}
       </div>
       {collapsed ? null : (
-        <div
-          className="mt-2 min-h-0 flex-1 overflow-auto"
+        <OverlayScrollArea
+          className="mt-2 min-h-0 flex-1"
           data-testid={scrollTestId}
           onScroll={onScroll}
           ref={scrollViewportRef}
@@ -802,7 +810,7 @@ function SidebarSection({
           ) : (
             children
           )}
-        </div>
+        </OverlayScrollArea>
       )}
     </section>
   );
@@ -948,22 +956,6 @@ function BranchRow({
           label={t("repository.deleteBranch")}
           onClick={canDelete ? () => onDelete?.(branch) : undefined}
         />
-        <IconButton
-          aria-expanded={menuAnchor !== null}
-          aria-haspopup="menu"
-          className="size-7"
-          label={t("repository.moreActions")}
-          onClick={(event) =>
-            setMenuAnchor((current) =>
-              current === null ? event.currentTarget : null,
-            )
-          }
-          tooltip={t("repository.moreActions")}
-          tooltipPlacement="vertical"
-          variant="ghost"
-        >
-          <MoreHorizontal className="size-3.5" aria-hidden="true" />
-        </IconButton>
       </div>
       {menuAnchor ? (
         <FloatingPanel
@@ -1089,12 +1081,6 @@ function StashRow({
           icon={<Trash2 className="size-3.5" aria-hidden="true" />}
           label={t("repository.deleteStash")}
           onClick={onDelete ? () => onDelete(stash) : undefined}
-        />
-        <OptionalActionButton
-          busy={busy}
-          icon={<MoreHorizontal className="size-3.5" aria-hidden="true" />}
-          label={t("repository.stashDetails")}
-          onClick={onDetails ? () => onDetails(stash) : undefined}
         />
       </div>
     </li>

@@ -135,6 +135,17 @@
   background-color: hsl(var(--foreground) / 0.36);
 }
 
+.overlay-scrollbar-viewport {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.overlay-scrollbar-viewport::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
 html,
 body,
 #root {
@@ -166,6 +177,11 @@ body {
 ):focus-visible {
   outline: 2px solid hsl(var(--ring));
   outline-offset: 2px;
+}
+
+.expandable-search-input:focus-visible {
+  outline: none;
+  box-shadow: none;
 }
 
 .text-numeric {

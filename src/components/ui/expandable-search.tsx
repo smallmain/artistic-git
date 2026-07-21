@@ -50,12 +50,6 @@ export function ExpandableSearch({
   const controlSizeClass = compact ? "size-8" : "size-9";
   const fieldHeightClass = compact ? "h-8" : "h-9";
 
-  React.useEffect(() => {
-    if (value.length > 0) {
-      setExpanded(true);
-    }
-  }, [value]);
-
   React.useLayoutEffect(() => {
     if (open) {
       inputRef.current?.focus();
@@ -102,7 +96,7 @@ export function ExpandableSearch({
             aria-label={label}
             className={cn(
               fieldHeightClass,
-              "w-full rounded-md border bg-background pl-8 pr-8 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              "expandable-search-input w-full rounded-md border bg-background pl-8 pr-8 text-sm outline-none focus-visible:outline-none focus-visible:ring-0",
               inputClassName,
             )}
             data-app-search={dataAppSearch}

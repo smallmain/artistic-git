@@ -1946,7 +1946,7 @@ describe("RepositoryShell stash flow", () => {
     renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
 
     fireEvent.click(
-      await screen.findByRole("button", { name: "Stash details" }),
+      await screen.findByRole("button", { name: /WIP material polish/ }),
     );
 
     expect(screen.getByText("Loading stash details...")).toBeVisible();
@@ -2046,7 +2046,9 @@ describe("RepositoryShell stash flow", () => {
     renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
 
     fireEvent.click(
-      await screen.findByRole("button", { name: "Stash details" }),
+      await screen.findByRole("button", {
+        name: /Automatically saved changes: switching branches/,
+      }),
     );
 
     const dialog = await screen.findByRole("dialog", {
@@ -2080,9 +2082,7 @@ describe("RepositoryShell stash flow", () => {
     });
     renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
 
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Stash details" }),
-    );
+    fireEvent.click(await screen.findByRole("button", { name: /Large stash/ }));
     const dialog = await screen.findByRole("dialog");
 
     expect(within(dialog).getAllByTestId("stash-detail-file")).toHaveLength(

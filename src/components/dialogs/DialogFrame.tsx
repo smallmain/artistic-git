@@ -3,6 +3,7 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { IconButton } from "@/components/ui/icon-button";
+import { OverlayScrollArea } from "@/components/ui/overlay-scroll-area";
 import { DialogLayerContext, useModalLayer } from "@/lib/dialog-layer";
 import { cn } from "@/lib/utils";
 
@@ -82,9 +83,9 @@ export function DialogFrame({
             )}
           </div>
 
-          <div className="flex flex-col gap-4 overflow-auto p-5">
+          <OverlayScrollArea viewportClassName="flex flex-col gap-4 p-5">
             {children}
-          </div>
+          </OverlayScrollArea>
           {footer ? <div className="border-t p-5">{footer}</div> : null}
         </div>
       </div>

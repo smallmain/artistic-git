@@ -2,6 +2,7 @@ import { Check, ChevronDown, GitBranch, Search } from "lucide-react";
 import * as React from "react";
 import { createPortal } from "react-dom";
 
+import { OverlayScrollArea } from "@/components/ui/overlay-scroll-area";
 import {
   DialogLayerContext,
   dialogOpenedEventName,
@@ -374,14 +375,14 @@ export function BranchSelect({
                   value={query}
                 />
               </label>
-              <div
+              <OverlayScrollArea
                 aria-activedescendant={
                   filteredOptions[effectiveActiveIndex]
                     ? `${listboxId}-option-${effectiveActiveIndex}`
                     : undefined
                 }
                 aria-label={label}
-                className="relative h-[216px] overflow-auto rounded-md bg-background"
+                className="h-[216px] rounded-md bg-background"
                 id={listboxId}
                 onScroll={(event) =>
                   setScrollTop(event.currentTarget.scrollTop)
@@ -436,7 +437,7 @@ export function BranchSelect({
                     })}
                   </div>
                 )}
-              </div>
+              </OverlayScrollArea>
             </div>,
             document.body,
           )

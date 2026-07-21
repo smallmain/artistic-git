@@ -29,9 +29,15 @@ describe("ExpandableSearch", () => {
     fireEvent.click(screen.getByRole("button", { name: "Search branches" }));
 
     expect(root).toHaveAttribute("data-expanded", "true");
-    expect(
-      screen.getByRole("textbox", { name: "Search branches" }),
-    ).toHaveFocus();
+    const field = screen.getByRole("textbox", { name: "Search branches" });
+    expect(field).toHaveFocus();
+    expect(field).toHaveClass(
+      "expandable-search-input",
+      "outline-none",
+      "focus-visible:outline-none",
+      "focus-visible:ring-0",
+    );
+    expect(field).not.toHaveClass("focus-visible:ring-2");
   });
 
   it("stays expanded while it has a value and collapses when emptied and blurred", () => {

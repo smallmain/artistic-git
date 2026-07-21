@@ -24,6 +24,7 @@ import { DetailsDialog } from "@/components/dialogs/DetailsDialog";
 import { DialogFrame } from "@/components/dialogs/DialogFrame";
 import { Button } from "@/components/ui/button";
 import { BranchSelect } from "@/components/ui/branch-select";
+import { OverlayScrollArea } from "@/components/ui/overlay-scroll-area";
 import {
   ConflictResolutionOverlay,
   type ConflictResolutionApi,
@@ -856,12 +857,15 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     historyWriteBusy ||
     reviewBusy ||
     bisectResetBusy;
-  suppressAutoFetchRef.current =
+  const suppressAutoFetch =
     writeOperationBusy ||
     conflict !== null ||
     reviewModeState !== null ||
     reviewRecoveryPrompt ||
     remoteHistoryChange !== null;
+  React.useEffect(() => {
+    suppressAutoFetchRef.current = suppressAutoFetch;
+  }, [suppressAutoFetch]);
   const closeGuardActiveOperation =
     activeOperation?.cancellable === true ? activeOperation : null;
   const closeGuardActive =
@@ -4119,17 +4123,19 @@ function LargeFileWarningPanel({
       <p className="font-medium">
         {t("localChanges.largeFilesTitle", { threshold: thresholdMb })}
       </p>
-      <ul className="max-h-32 overflow-auto text-muted-foreground">
-        {visibleFiles.map((file) => (
-          <li
-            className="truncate"
-            data-testid="large-file-warning-item"
-            key={file.path}
-          >
-            {file.path}
-          </li>
-        ))}
-      </ul>
+      <OverlayScrollArea className="max-h-32" viewportClassName="max-h-32">
+        <ul className="text-muted-foreground">
+          {visibleFiles.map((file) => (
+            <li
+              className="truncate"
+              data-testid="large-file-warning-item"
+              key={file.path}
+            >
+              {file.path}
+            </li>
+          ))}
+        </ul>
+      </OverlayScrollArea>
       {pageCount > 1 ? (
         <div className="flex items-center justify-between gap-2">
           <Button
@@ -4366,20 +4372,22 @@ function StashDetailsFileList({
 
   return (
     <>
-      <ul className="max-h-80 overflow-auto p-1 text-sm">
-        {visibleFiles.map((file) => (
-          <li
-            className="rounded px-2 py-1"
-            data-testid="stash-detail-file"
-            key={file.path}
-          >
-            <span className="block truncate">{file.path}</span>
-            <span className="text-xs text-muted-foreground">
-              {t(`diff.changeKind.${file.changeKind}`)}
-            </span>
-          </li>
-        ))}
-      </ul>
+      <OverlayScrollArea className="max-h-80" viewportClassName="max-h-80">
+        <ul className="p-1 text-sm">
+          {visibleFiles.map((file) => (
+            <li
+              className="rounded px-2 py-1"
+              data-testid="stash-detail-file"
+              key={file.path}
+            >
+              <span className="block truncate">{file.path}</span>
+              <span className="text-xs text-muted-foreground">
+                {t(`diff.changeKind.${file.changeKind}`)}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </OverlayScrollArea>
       {pageCount > 1 ? (
         <div className="flex items-center justify-between gap-2 border-t p-2">
           <Button

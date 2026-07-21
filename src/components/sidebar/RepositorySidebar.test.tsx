@@ -57,13 +57,17 @@ describe("RepositorySidebar", () => {
     const reviewArea = screen.getByTestId("sidebar-review-action");
     const settingsArea = screen.getByTestId("sidebar-settings-action");
     const stashSection = screen.getByRole("button", { name: "Stashes" });
-    const sidebar = reviewArea.closest("aside");
+    const sidebar = reviewArea.closest("aside")!;
 
     expect(reviewArea).not.toBe(settingsArea);
     expect(reviewArea).toContainElement(reviewButton);
     expect(settingsArea).toContainElement(settingsButton);
     expect(settingsArea).toContainElement(safetyBackupsButton);
-    expect(reviewButton).toHaveClass("w-full", "bg-review", "text-review-foreground");
+    expect(reviewButton).toHaveClass(
+      "w-full",
+      "bg-review",
+      "text-review-foreground",
+    );
     expect(reviewButton.className).not.toMatch(/gradient/i);
     expect(reviewButton.querySelector("svg")).not.toBeNull();
     expect(settingsButton).toHaveClass("size-9");
@@ -76,7 +80,10 @@ describe("RepositorySidebar", () => {
     ).toBeTruthy();
     expect(reviewArea).toHaveClass("border-t");
     expect(settingsArea).toHaveClass("border-t");
-    expect(sidebar?.compareDocumentPosition(stashSection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(
+      sidebar.compareDocumentPosition(stashSection) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
     expect(
       stashSection.compareDocumentPosition(reviewArea) &
         Node.DOCUMENT_POSITION_FOLLOWING,
@@ -116,7 +123,7 @@ describe("RepositorySidebar", () => {
     );
   });
 
-  it("renders branch and stash hover actions without a group background", () => {
+  it("renders centered branch and stash hover actions on a blurred background", () => {
     renderSidebar({});
 
     const branchActions = screen.getAllByTestId("branch-hover-actions")[0];
@@ -126,21 +133,41 @@ describe("RepositorySidebar", () => {
       expect(actionGroup).toHaveClass(
         "absolute",
         "right-1",
-        "top-1",
+        "top-1/2",
         "hidden",
+        "-translate-y-1/2",
         "items-center",
         "gap-0.5",
+        "bg-background/80",
+        "backdrop-blur-sm",
         "group-hover:flex",
         "group-focus-within:flex",
       );
-      expect(actionGroup).not.toHaveClass(
-        "bg-background/80",
-        "bg-card",
-        "backdrop-blur-sm",
-        "border",
-        "shadow-sm",
-      );
     }
+
+    expect(
+      screen.queryByRole("button", { name: "More actions" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Stash details" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps branch and stash rows contiguous beneath overlay scrollbars", () => {
+    renderSidebar({});
+
+    const branchRows = screen.getAllByTestId("branch-row");
+    const stashRows = screen.getAllByTestId("stash-row");
+
+    expect(branchRows[0]).toHaveStyle({ height: "40px", top: "0px" });
+    expect(branchRows[1]).toHaveStyle({ height: "40px", top: "40px" });
+    expect(stashRows[0]).toHaveStyle({ height: "40px", top: "0px" });
+    expect(screen.getByTestId("sidebar-branches-scroll")).toHaveClass(
+      "overlay-scrollbar-viewport",
+    );
+    expect(screen.getByTestId("sidebar-stashes-scroll")).toHaveClass(
+      "overlay-scrollbar-viewport",
+    );
   });
 
   it("opens branch context menus outside the list and dismisses them elsewhere", () => {
@@ -265,13 +292,10 @@ describe("RepositorySidebar", () => {
       expect.objectContaining({ id: "stash@{0}" }),
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Stash details" }));
+    fireEvent.click(screen.getByRole("button", { name: /WIP/ }));
     expect(onShowStashDetails).toHaveBeenCalledWith(
       expect.objectContaining({ id: "stash@{0}" }),
     );
-
-    fireEvent.click(screen.getByRole("button", { name: /WIP/ }));
-    expect(onShowStashDetails).toHaveBeenCalledTimes(2);
   });
 
   it("shows fetch offline status with the failure summary", () => {
@@ -357,7 +381,7 @@ describe("RepositorySidebar", () => {
     });
     fireEvent.scroll(viewport);
 
-    expect(screen.getAllByTestId("branch-row").length).toBeLessThanOrEqual(22);
+    expect(screen.getAllByTestId("branch-row").length).toBeLessThanOrEqual(23);
     expect(screen.getByText("branch-0999")).toBeInTheDocument();
     expect(screen.getByText("branch-0999").closest("li")).toHaveAttribute(
       "aria-setsize",
@@ -420,7 +444,7 @@ describe("RepositorySidebar", () => {
     });
     fireEvent.scroll(viewport);
 
-    expect(screen.getAllByTestId("stash-row").length).toBeLessThanOrEqual(22);
+    expect(screen.getAllByTestId("stash-row").length).toBeLessThanOrEqual(23);
     expect(screen.getByText("stash-0999")).toBeInTheDocument();
     expect(screen.getByText("stash-0999").closest("li")).toHaveAttribute(
       "aria-setsize",
@@ -452,6 +476,22 @@ describe("RepositorySidebar", () => {
     expect(onSidebarLayoutChange).toHaveBeenCalledWith(
       expect.objectContaining({ widthPx: 390 }),
     );
+  });
+
+  it("shows a centered hover line for each sidebar resize handle", () => {
+    renderSidebar({});
+
+    for (const label of [
+      "Resize sidebar",
+      "Resize branch and stash sections",
+    ]) {
+      const handle = screen.getByLabelText(label);
+      expect(handle).toHaveClass("group");
+      expect(handle.firstElementChild).toHaveClass(
+        "bg-border",
+        "group-hover:bg-ring",
+      );
+    }
   });
 
   it("finishes and cleans up an interrupted sidebar drag", () => {

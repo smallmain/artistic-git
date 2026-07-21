@@ -24,6 +24,7 @@ import { useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/dialogs/ConfirmDialog";
 import { Button } from "@/components/ui/button";
+import { OverlayScrollArea } from "@/components/ui/overlay-scroll-area";
 import { DiffViewer } from "@/features/diff";
 import { useLocalizedFormatters } from "@/i18n/format";
 import { DialogLayerContext, useModalLayer } from "@/lib/dialog-layer";
@@ -583,8 +584,8 @@ export function ConflictResolutionOverlay({
               </Button>
             </div>
 
-            <div
-              className="min-h-0 flex-1 overflow-auto"
+            <OverlayScrollArea
+              className="min-h-0 flex-1"
               data-testid="conflict-file-list"
             >
               {visibleFiles.map((file) => (
@@ -658,7 +659,7 @@ export function ConflictResolutionOverlay({
                   </Button>
                 </div>
               ) : null}
-            </div>
+            </OverlayScrollArea>
           </aside>
 
           <div className="min-w-0 flex-1 bg-background">
@@ -1050,9 +1051,10 @@ function TextConflictDetail({
         </div>
         <div className="flex min-h-0 flex-col border-l">
           <div className="flex max-h-80 shrink-0 flex-col border-b">
-            <div
-              className="grid min-h-0 flex-1 gap-2 overflow-auto p-3"
+            <OverlayScrollArea
+              className="min-h-0 flex-1"
               data-testid="conflict-hunk-list"
+              viewportClassName="grid gap-2 p-3"
             >
               {detail.hunks.length === 0 ? (
                 <p className="text-sm text-muted-foreground">
@@ -1074,7 +1076,7 @@ function TextConflictDetail({
                   />
                 ))
               )}
-            </div>
+            </OverlayScrollArea>
             {hunkPageCount > 1 ? (
               <div className="flex shrink-0 items-center justify-between gap-2 border-t p-2">
                 <Button

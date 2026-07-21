@@ -551,7 +551,8 @@ export const resources = {
           proxyModeCustom: "Custom proxy",
           proxyModeNone: "Direct connection (no proxy)",
           proxyModeSystem: "Use system proxy",
-          proxyUrlInvalid: "Enter a valid proxy URL, such as http://127.0.0.1:6152.",
+          proxyUrlInvalid:
+            "Enter a valid proxy URL, such as http://127.0.0.1:6152.",
           saveNetwork: "Save network settings",
           globalGitconfig:
             "If left blank, author details from {{path}} will be used.",
@@ -717,6 +718,7 @@ export const resources = {
           loading: "Loading commit details...",
           noChanges: "This commit does not change any files.",
           noFile: "No file selected",
+          resize: "Resize commit details",
           revert: "Revert commit",
         },
         empty: "No commits match the current filters.",
@@ -1673,6 +1675,7 @@ export const resources = {
           loading: "正在加载提交详情...",
           noChanges: "此提交没有更改任何文件。",
           noFile: "未选择文件",
+          resize: "调整提交详情高度",
           revert: "撤回此提交",
         },
         empty: "没有提交匹配当前筛选。",

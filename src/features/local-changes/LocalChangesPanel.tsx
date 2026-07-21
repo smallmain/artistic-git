@@ -19,6 +19,7 @@ import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { FloatingPanel } from "@/components/ui/floating-panel";
 import { IconButton } from "@/components/ui/icon-button";
+import { OverlayScrollArea } from "@/components/ui/overlay-scroll-area";
 import { DiffViewer } from "@/features/diff";
 import { cn } from "@/lib/utils";
 
@@ -326,7 +327,7 @@ export function LocalChangesPanel({
               ) : null}
             </header>
 
-            <div className="min-h-0 flex-1 overflow-auto" ref={changeListRef}>
+            <OverlayScrollArea className="min-h-0 flex-1" ref={changeListRef}>
               {filteredChanges.length === 0 ? (
                 <div className="p-4 text-sm text-muted-foreground">
                   {t("localChanges.empty")}
@@ -405,7 +406,7 @@ export function LocalChangesPanel({
                   </Button>
                 </div>
               ) : null}
-            </div>
+            </OverlayScrollArea>
 
             <footer className="flex items-center justify-between gap-3 border-t p-3">
               <span className="text-sm text-muted-foreground">

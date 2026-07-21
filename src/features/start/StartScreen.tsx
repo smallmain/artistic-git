@@ -21,6 +21,7 @@ import { ErrorDetailsDialog } from "@/components/dialogs/ErrorDetailsDialog";
 import { Button } from "@/components/ui/button";
 import { BranchSelect } from "@/components/ui/branch-select";
 import { IconButton } from "@/components/ui/icon-button";
+import { OverlayScrollArea } from "@/components/ui/overlay-scroll-area";
 import { TruncatedText } from "@/components/ui/truncated-text";
 import {
   cancelCloneRepository,
@@ -934,7 +935,7 @@ export function StartScreen() {
             ) : null}
           </div>
 
-          <div className="min-h-0 flex-1 overflow-auto rounded-md border bg-card">
+          <OverlayScrollArea className="min-h-0 flex-1 rounded-md border bg-card">
             {recentProjectsRuntime.status === "loading" ? (
               <div
                 aria-live="polite"
@@ -1066,7 +1067,7 @@ export function StartScreen() {
                 ))}
               </ul>
             )}
-          </div>
+          </OverlayScrollArea>
 
           {missingProject ? (
             <div
