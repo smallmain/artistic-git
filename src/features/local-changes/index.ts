@@ -3,6 +3,7 @@ export {
   buildChangeTree,
   collectTreeItemIds,
   filterChanges,
+  formatChangeName,
   formatChangePath,
   getCheckState,
   isDeferredLocalChange,

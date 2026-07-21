@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button";
 import { FloatingPanel } from "@/components/ui/floating-panel";
 import { IconButton } from "@/components/ui/icon-button";
 import { OverlayScrollArea } from "@/components/ui/overlay-scroll-area";
+import { Tooltip } from "@/components/ui/tooltip";
 import { DiffViewer } from "@/features/diff";
 import { cn } from "@/lib/utils";
 
@@ -27,6 +28,7 @@ import {
   buildChangeTree,
   collectTreeItemIds,
   filterChanges,
+  formatChangeName,
   formatChangePath,
   getCheckState,
   isDeferredLocalChange,
@@ -579,6 +581,7 @@ function FlatChangeList({
             onSelect={() => onSelect(change.id)}
             onToggle={(checked) => onToggle([change.id], checked)}
             selected={selectedId === change.id}
+            viewMode="flat"
           />
         </li>
       ))}
@@ -650,11 +653,11 @@ function TreeNodeRow({
         <ChangeRow
           change={node.item}
           checked={checkedIds.has(node.item.id)}
-          indent
           onContextMenu={(event) => onContextMenu(event, [node.item!.id])}
           onSelect={() => onSelect(node.item!.id)}
           onToggle={(checked) => onToggle([node.item!.id], checked)}
           selected={selectedId === node.item.id}
+          viewMode="tree"
         />
       </li>
     );
@@ -711,28 +714,33 @@ function TreeNodeRow({
 function ChangeRow({
   change,
   checked,
-  indent = false,
   onContextMenu,
   onSelect,
   onToggle,
   selected,
+  viewMode,
 }: {
   change: LocalChangeItem;
   checked: boolean;
-  indent?: boolean;
   onContextMenu: (event: React.MouseEvent) => void;
   onSelect: () => void;
   onToggle: (checked: boolean) => void;
   selected: boolean;
+  viewMode: LocalChangesViewMode;
 }) {
   const { t } = useTranslation();
-  const folder = parentPath(change.payload.newPath);
+  const fullPath = formatChangePath(change);
+  const displayName = viewMode === "flat" ? formatChangeName(change) : fullPath;
+  const displayPath =
+    viewMode === "flat"
+      ? fullPath
+      : parentPath(change.payload.newPath) || t("localChanges.repositoryRoot");
 
   return (
     <div
       className={cn(
         "grid min-h-14 grid-cols-[32px_minmax(0,1fr)_32px] items-center gap-2 border-b px-2 py-2 hover:bg-accent",
-        indent ? "pl-6" : "",
+        viewMode === "tree" ? "pl-6" : "",
         selected ? "bg-accent" : "",
       )}
       data-change-path={change.payload.newPath}
@@ -763,33 +771,41 @@ function ChangeRow({
         onClick={(event) => event.stopPropagation()}
         type="checkbox"
       />
-      <div className="min-w-0">
-        <div className="flex min-w-0 items-center gap-2">
-          <ChangeKindBadge change={change} />
-          <span className="truncate text-sm font-medium">
-            {formatChangePath(change)}
-          </span>
-        </div>
-        <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5">
-          <p className="min-w-0 truncate text-xs text-muted-foreground">
-            {folder || t("localChanges.repositoryRoot")}
-          </p>
-          {change.submodule ? (
-            <span
-              className="inline-flex max-w-full shrink rounded-sm border border-primary/20 bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-foreground"
-              title={t("localChanges.submoduleBadge", {
-                name: change.submodule.name,
-              })}
-            >
-              <span className="truncate">
-                {t("localChanges.submoduleBadge", {
-                  name: change.submodule.name,
-                })}
+      <Tooltip className="block w-full min-w-0 max-w-full" content={fullPath}>
+        {({ describedBy }) => (
+          <span
+            aria-describedby={describedBy}
+            className="block min-w-0"
+            data-testid="local-change-label"
+          >
+            <span className="flex min-w-0 items-center gap-2">
+              <ChangeKindBadge change={change} />
+              <span className="truncate text-sm font-medium">
+                {displayName}
               </span>
             </span>
-          ) : null}
-        </div>
-      </div>
+            <span className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5">
+              <span className="min-w-0 truncate text-xs text-muted-foreground">
+                {displayPath}
+              </span>
+              {change.submodule ? (
+                <span
+                  className="inline-flex max-w-full shrink rounded-sm border border-primary/20 bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-foreground"
+                  title={t("localChanges.submoduleBadge", {
+                    name: change.submodule.name,
+                  })}
+                >
+                  <span className="truncate">
+                    {t("localChanges.submoduleBadge", {
+                      name: change.submodule.name,
+                    })}
+                  </span>
+                </span>
+              ) : null}
+            </span>
+          </span>
+        )}
+      </Tooltip>
       <IconButton
         label={t("localChanges.moreActions")}
         onClick={(event) => {

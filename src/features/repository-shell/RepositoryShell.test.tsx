@@ -1421,10 +1421,9 @@ describe("RepositoryShell deferred local-change previews", () => {
     );
 
     expect(await screen.findByText("Loading file preview...")).toBeVisible();
-    expect(screen.getAllByText("deps/lib/art.ts").length).toBeGreaterThan(0);
-    expect(
-      screen.getByText("deps/lib/art.ts").closest("aside"),
-    ).not.toHaveAttribute("inert");
+    const deferredRow = screen.getByTestId("local-change-row");
+    expect(deferredRow).toHaveAttribute("data-change-path", "deps/lib/art.ts");
+    expect(deferredRow.closest("aside")).not.toHaveAttribute("inert");
     await waitFor(() =>
       expect(commandMocks.localChangeDetail).toHaveBeenCalledTimes(1),
     );
@@ -1486,7 +1485,11 @@ describe("RepositoryShell deferred local-change previews", () => {
       operationId: string;
     };
 
-    fireEvent.click(screen.getByText("second.ts"));
+    const secondRow = screen
+      .getAllByTestId("local-change-row")
+      .find((row) => row.getAttribute("data-change-path") === "second.ts");
+    expect(secondRow).toBeDefined();
+    fireEvent.click(secondRow!);
 
     await waitFor(() =>
       expect(commandMocks.localChangeDetail).toHaveBeenCalledTimes(2),

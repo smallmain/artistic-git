@@ -18,6 +18,7 @@ import type { DiffPayload } from "@/lib/ipc/generated";
 import { LocalChangesPanel } from "./LocalChangesPanel";
 import {
   filterChanges,
+  formatChangeName,
   formatChangePath,
   getCheckState,
 } from "./local-change-utils";
@@ -56,6 +57,8 @@ describe("local change utilities", () => {
     expect(formatChangePath(changes[2])).toBe(
       "assets/old-name.png -> assets/new-name.png",
     );
+    expect(formatChangeName(changes[0])).toBe("main.ts");
+    expect(formatChangeName(changes[2])).toBe("old-name.png -> new-name.png");
     expect(getCheckState(["a", "b"], new Set(["a"]))).toBe("mixed");
   });
 });
@@ -137,6 +140,43 @@ describe("LocalChangesPanel", () => {
       screen.getAllByText("assets/textures/material.bin").length,
     ).toBeGreaterThan(0);
     expect(screen.queryByText("src/main.ts")).not.toBeInTheDocument();
+  });
+
+  it("shows flat filenames above full paths with full-path tooltips", () => {
+    renderWithProviders(<LocalChangesPanel changes={createChanges()} />);
+
+    const rows = screen.getAllByTestId("local-change-row");
+    const materialRow = rows.find(
+      (row) =>
+        row.getAttribute("data-change-path") === "assets/textures/material.bin",
+    );
+    const renamedRow = rows.find(
+      (row) => row.getAttribute("data-change-path") === "assets/new-name.png",
+    );
+
+    expect(materialRow).toBeDefined();
+    expect(renamedRow).toBeDefined();
+    expect(within(materialRow!).getByText("material.bin")).toBeInTheDocument();
+    expect(
+      within(materialRow!).getByText("assets/textures/material.bin"),
+    ).toBeInTheDocument();
+    expect(
+      within(renamedRow!).getByText("old-name.png -> new-name.png"),
+    ).toBeInTheDocument();
+    expect(
+      within(renamedRow!).getByText(
+        "assets/old-name.png -> assets/new-name.png",
+      ),
+    ).toBeInTheDocument();
+
+    const label = within(materialRow!).getByTestId("local-change-label");
+    const tooltip = document.getElementById(
+      label.getAttribute("aria-describedby")!,
+    );
+    expect(tooltip).toHaveTextContent("assets/textures/material.bin");
+
+    fireEvent.mouseEnter(label.parentElement!);
+    expect(tooltip).toHaveAttribute("data-state", "open");
   });
 
   it("switches to tree mode, persists it, and supports folder tri-state checks", () => {

@@ -113,10 +113,26 @@ export function formatChangePath(change: LocalChangeItem): string {
   return newPath;
 }
 
+export function formatChangeName(change: LocalChangeItem): string {
+  const { oldPath, newPath } = change.payload;
+  const newName = fileName(newPath);
+
+  if (oldPath && oldPath !== newPath) {
+    const oldName = fileName(oldPath);
+    return oldName === newName ? newName : `${oldName} -> ${newName}`;
+  }
+
+  return newName;
+}
+
 export function parentPath(path: string): string {
   const segments = path.split("/");
   segments.pop();
   return segments.join("/");
+}
+
+function fileName(path: string): string {
+  return path.split("/").filter(Boolean).at(-1) ?? path;
 }
 
 function normalizeSearch(searchTerm: string): string {
