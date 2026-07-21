@@ -699,7 +699,7 @@ export function HistoryWorkbench({
             onSelectedBranchesChange={setSelectedBranches}
             selectedBranches={selectedBranches}
           />
-          <label className="relative flex min-w-[240px] max-w-sm flex-1 items-center">
+          <label className="relative flex min-w-0 max-w-sm flex-1 basis-60 items-center">
             <Search className="pointer-events-none absolute left-3 size-4 text-muted-foreground" />
             <input
               aria-label={t("history.search.label")}
@@ -942,14 +942,20 @@ function BranchFilter({
     selectedBranches.size >= maxCustomBranchSelections;
 
   return (
-    <div className="relative min-w-0 max-w-64">
-      <Tooltip content={label}>
+    <div
+      className="relative min-w-0 max-w-64 shrink"
+      data-testid="history-branch-filter"
+    >
+      <Tooltip
+        className="flex w-full min-w-0 max-w-full"
+        content={label}
+      >
         {({ describedBy }) => (
           <Button
             aria-expanded={open}
             aria-haspopup="dialog"
             aria-describedby={describedBy}
-            className="max-w-full min-w-0 gap-2"
+            className="w-full min-w-0 max-w-full justify-start gap-2 overflow-hidden"
             onClick={(event) => {
               if (open) {
                 setQuery("");
@@ -962,7 +968,7 @@ function BranchFilter({
             variant="secondary"
           >
             <GitBranch className="size-4 shrink-0" />
-            <span className="min-w-0 truncate">{label}</span>
+            <span className="min-w-0 flex-1 truncate">{label}</span>
             <ChevronDown className="size-4 shrink-0" />
           </Button>
         )}

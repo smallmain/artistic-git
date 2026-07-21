@@ -805,11 +805,19 @@ describe("HistoryWorkbench", () => {
     const trigger = screen.getByRole("button", {
       name: `Current branch: ${branchName}`,
     });
-    expect(trigger.parentElement?.parentElement).toHaveClass("max-w-64");
+    const filter = screen.getByTestId("history-branch-filter");
+    const search = screen.getByRole("textbox", { name: "Search history" });
+
+    expect(filter).toHaveClass("max-w-64", "min-w-0", "shrink");
+    expect(filter).toContainElement(trigger);
+    expect(trigger.parentElement).toHaveClass("w-full", "min-w-0", "max-w-full");
+    expect(trigger).toHaveClass("w-full", "min-w-0", "max-w-full", "overflow-hidden");
     expect(
       within(trigger).getByText(`Current branch: ${branchName}`),
-    ).toHaveClass("truncate");
+    ).toHaveClass("min-w-0", "flex-1", "truncate");
     expect(trigger).toHaveAttribute("aria-describedby");
+    expect(search.parentElement).toHaveClass("min-w-0", "flex-1");
+    expect(search.parentElement).not.toHaveClass("min-w-[240px]");
   });
 
   it("keeps the branch filter bounded with thousands of branches", async () => {
