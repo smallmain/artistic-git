@@ -499,13 +499,13 @@ export function RepositorySidebar({
 
         <div
           aria-label={t("repository.resizeSections")}
-          className="group relative h-2 shrink-0 cursor-row-resize"
+          className="group relative h-2 shrink-0 cursor-ns-resize"
           onPointerDown={startSectionResize}
           role="separator"
         >
           <span
             aria-hidden="true"
-            className="pointer-events-none absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-border transition-colors group-hover:bg-ring"
+            className="pointer-events-none absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-border transition-[height,background-color] group-hover:h-0.5 group-hover:bg-ring group-active:h-0.5 group-active:bg-ring"
           />
         </div>
 
@@ -628,13 +628,13 @@ export function RepositorySidebar({
 
       <div
         aria-label={t("repository.resizeSidebar")}
-        className="group absolute inset-y-0 right-0 z-0 w-2 cursor-col-resize"
+        className="group absolute inset-y-0 right-0 z-0 w-2 cursor-ew-resize"
         onPointerDown={startSidebarResize}
         role="separator"
       >
         <span
           aria-hidden="true"
-          className="pointer-events-none absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-border transition-colors group-hover:bg-ring"
+          className="pointer-events-none absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-border transition-[width,background-color] group-hover:w-0.5 group-hover:bg-ring group-active:w-0.5 group-active:bg-ring"
         />
       </div>
     </aside>

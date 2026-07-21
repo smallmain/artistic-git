@@ -1993,13 +1993,13 @@ function CommitDetailPanel({
             aria-valuemax={commitDetailMaxHeightPercent}
             aria-valuemin={commitDetailMinHeightPercent}
             aria-valuenow={panelHeightPercent}
-            className="group absolute inset-x-0 top-0 z-20 h-2 -translate-y-1/2 touch-none cursor-row-resize"
+            className="group absolute inset-x-0 top-0 z-20 h-2 -translate-y-1/2 touch-none cursor-ns-resize"
             onPointerDown={startPanelResize}
             role="separator"
           >
             <span
               aria-hidden="true"
-              className="pointer-events-none absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-border transition-colors group-hover:bg-ring"
+              className="pointer-events-none absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-border transition-[height,background-color] group-hover:h-0.5 group-hover:bg-ring group-active:h-0.5 group-active:bg-ring"
             />
           </div>
           <div className="flex h-full flex-col">

@@ -1473,9 +1473,14 @@ describe("HistoryWorkbench", () => {
 
     expect(panel).toHaveStyle({ height: "90vh" });
     expect(resizeHandle).toHaveAttribute("aria-valuenow", "90");
+    expect(resizeHandle).toHaveClass("cursor-ns-resize");
     expect(resizeHandle.firstElementChild).toHaveClass(
+      "h-px",
       "bg-border",
+      "group-hover:h-0.5",
       "group-hover:bg-ring",
+      "group-active:h-0.5",
+      "group-active:bg-ring",
     );
 
     fireEvent.pointerDown(resizeHandle, {

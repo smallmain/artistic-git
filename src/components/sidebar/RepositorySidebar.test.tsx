@@ -503,20 +503,32 @@ describe("RepositorySidebar", () => {
     );
   });
 
-  it("shows a centered hover line for each sidebar resize handle", () => {
+  it("uses directional cursors and thickens sidebar resize lines", () => {
     renderSidebar({});
 
-    for (const label of [
-      "Resize sidebar",
+    const widthHandle = screen.getByLabelText("Resize sidebar");
+    const ratioHandle = screen.getByLabelText(
       "Resize branch and stash sections",
-    ]) {
-      const handle = screen.getByLabelText(label);
-      expect(handle).toHaveClass("group");
-      expect(handle.firstElementChild).toHaveClass(
-        "bg-border",
-        "group-hover:bg-ring",
-      );
-    }
+    );
+
+    expect(widthHandle).toHaveClass("group", "cursor-ew-resize");
+    expect(widthHandle.firstElementChild).toHaveClass(
+      "w-px",
+      "bg-border",
+      "group-hover:w-0.5",
+      "group-hover:bg-ring",
+      "group-active:w-0.5",
+      "group-active:bg-ring",
+    );
+    expect(ratioHandle).toHaveClass("group", "cursor-ns-resize");
+    expect(ratioHandle.firstElementChild).toHaveClass(
+      "h-px",
+      "bg-border",
+      "group-hover:h-0.5",
+      "group-hover:bg-ring",
+      "group-active:h-0.5",
+      "group-active:bg-ring",
+    );
   });
 
   it("keeps the main sidebar divider below overlays in the adjacent panel", () => {
