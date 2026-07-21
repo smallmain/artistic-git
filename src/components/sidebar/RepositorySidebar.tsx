@@ -6,10 +6,10 @@ import {
   CloudOff,
   GitBranch,
   GitFork,
-  History,
   Layers,
   MoreHorizontal,
   RefreshCw,
+  ScanEye,
   Search,
   Settings,
   TriangleAlert,
@@ -585,7 +585,7 @@ export function RepositorySidebar({
         data-testid="sidebar-review-action"
       >
         <button
-          className="flex h-9 w-full items-center justify-center gap-2 rounded-md bg-[linear-gradient(135deg,hsl(var(--review-cyan-start)),hsl(var(--review-cyan-end)))] px-3 text-sm font-medium text-white shadow-sm hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-60"
+          className="flex h-9 w-full items-center justify-center gap-2 rounded-lg bg-review px-3 text-sm font-medium text-review-foreground transition-colors hover:bg-review/90 active:bg-review/85 disabled:cursor-not-allowed disabled:opacity-60"
           disabled={busy || !onReviewMode}
           onClick={(event) => onReviewMode?.(event.currentTarget)}
           title={
@@ -593,7 +593,7 @@ export function RepositorySidebar({
           }
           type="button"
         >
-          <History className="size-4" aria-hidden="true" />
+          <ScanEye className="size-4" aria-hidden="true" />
           {t("repository.reviewMode")}
         </button>
       </section>

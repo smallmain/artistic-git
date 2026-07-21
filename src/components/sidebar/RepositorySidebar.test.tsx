@@ -49,7 +49,9 @@ describe("RepositorySidebar", () => {
     expect(reviewArea).not.toBe(settingsArea);
     expect(reviewArea).toContainElement(reviewButton);
     expect(settingsArea).toContainElement(settingsButton);
-    expect(reviewButton).toHaveClass("w-full");
+    expect(reviewButton).toHaveClass("w-full", "bg-review", "text-review-foreground");
+    expect(reviewButton.className).not.toMatch(/gradient/i);
+    expect(reviewButton.querySelector("svg")).not.toBeNull();
     expect(settingsButton).toHaveClass("size-9");
     expect(settingsButton).not.toHaveTextContent("Settings");
     expect(reviewArea).toHaveClass("border-t");
