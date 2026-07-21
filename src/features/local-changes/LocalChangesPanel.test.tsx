@@ -179,6 +179,16 @@ describe("LocalChangesPanel", () => {
     expect(tooltip).toHaveAttribute("data-state", "open");
   });
 
+  it("constrains the diff viewer so its content can scroll", () => {
+    renderWithProviders(<LocalChangesPanel changes={createChanges()} />);
+
+    expect(screen.getByLabelText("File comparison").parentElement).toHaveClass(
+      "flex",
+      "min-h-0",
+      "overflow-hidden",
+    );
+  });
+
   it("resizes and persists the change list and diff panel ratio", () => {
     const { unmount } = renderWithProviders(
       <LocalChangesPanel changes={createChanges()} />,

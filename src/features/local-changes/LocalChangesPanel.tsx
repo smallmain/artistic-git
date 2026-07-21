@@ -519,7 +519,7 @@ export function LocalChangesPanel({
 
           <div
             aria-busy={detailLoading}
-            className="min-h-0 min-w-0"
+            className="flex min-h-0 min-w-0 overflow-hidden"
             inert={loading}
           >
             {detailLoading ? (
