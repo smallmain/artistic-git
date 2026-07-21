@@ -467,19 +467,6 @@ export function RepositorySidebar({
               : t("repository.branches")
           }
         >
-          {onShowSafetyBackups ? (
-            <button
-              className="mb-2 flex h-8 w-full items-center gap-2 rounded-md border bg-background px-2 text-left text-sm text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
-              disabled={busy}
-              onClick={onShowSafetyBackups}
-              type="button"
-            >
-              <Archive className="size-4" aria-hidden="true" />
-              <span className="min-w-0 truncate">
-                {t("repository.safetyBackups")}
-              </span>
-            </button>
-          ) : null}
           <ul
             className="relative"
             style={{ height: filteredBranches.length * branchRowHeight }}
@@ -602,7 +589,7 @@ export function RepositorySidebar({
       </section>
 
       <section
-        className="flex shrink-0 items-center border-t px-3 py-2"
+        className="flex shrink-0 items-center gap-1 border-t px-3 py-2"
         data-testid="sidebar-settings-action"
       >
         <IconButton
@@ -616,6 +603,24 @@ export function RepositorySidebar({
         >
           <Settings className="size-4" aria-hidden="true" />
         </IconButton>
+        {onShowSafetyBackups ? (
+          <IconButton
+            className="size-9"
+            disabled={busy}
+            label={t("repository.safetyBackups")}
+            onClick={onShowSafetyBackups}
+            tooltip={
+              busy
+                ? t("repository.busyTooltip")
+                : t("repository.safetyBackups")
+            }
+            tooltipPlacement="vertical"
+            type="button"
+            variant="ghost"
+          >
+            <Archive className="size-4" aria-hidden="true" />
+          </IconButton>
+        ) : null}
       </section>
 
       <div

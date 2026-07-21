@@ -44,11 +44,15 @@ afterEach(() => {
 
 describe("RepositorySidebar", () => {
   it("keeps review mode and icon-only settings below the stash list", () => {
-    renderSidebar({});
+    const onShowSafetyBackups = vi.fn();
+    renderSidebar({ onShowSafetyBackups });
 
     const reviewButton = screen.getByRole("button", { name: "Review Mode" });
     const settingsButton = screen.getByRole("button", {
       name: "Open settings",
+    });
+    const safetyBackupsButton = screen.getByRole("button", {
+      name: "Safety backups",
     });
     const reviewArea = screen.getByTestId("sidebar-review-action");
     const settingsArea = screen.getByTestId("sidebar-settings-action");
@@ -58,11 +62,18 @@ describe("RepositorySidebar", () => {
     expect(reviewArea).not.toBe(settingsArea);
     expect(reviewArea).toContainElement(reviewButton);
     expect(settingsArea).toContainElement(settingsButton);
+    expect(settingsArea).toContainElement(safetyBackupsButton);
     expect(reviewButton).toHaveClass("w-full", "bg-review", "text-review-foreground");
     expect(reviewButton.className).not.toMatch(/gradient/i);
     expect(reviewButton.querySelector("svg")).not.toBeNull();
     expect(settingsButton).toHaveClass("size-9");
     expect(settingsButton).not.toHaveTextContent("Settings");
+    expect(safetyBackupsButton).toHaveClass("size-9");
+    expect(safetyBackupsButton).not.toHaveTextContent("Safety backups");
+    expect(
+      settingsButton.compareDocumentPosition(safetyBackupsButton) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
     expect(reviewArea).toHaveClass("border-t");
     expect(settingsArea).toHaveClass("border-t");
     expect(sidebar?.compareDocumentPosition(stashSection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -74,6 +85,9 @@ describe("RepositorySidebar", () => {
       reviewArea.compareDocumentPosition(settingsArea) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
+
+    fireEvent.click(safetyBackupsButton);
+    expect(onShowSafetyBackups).toHaveBeenCalledTimes(1);
   });
 
   it("constrains the repository path so long absolute paths truncate in the header", () => {
@@ -540,6 +554,7 @@ function renderSidebar({
   onDeleteBranch,
   onDeleteStash,
   onBranchFocus = vi.fn(),
+  onShowSafetyBackups,
   onShowStashDetails,
   onSidebarLayoutChange,
   repositoryPath = "/repo/art",
@@ -558,6 +573,7 @@ function renderSidebar({
   onDeleteBranch?: (branch: BranchListItem) => void;
   onDeleteStash?: (stash: StashListItem) => void;
   onBranchFocus?: (branch: BranchListItem) => void;
+  onShowSafetyBackups?: () => void;
   onShowStashDetails?: (stash: StashListItem) => void;
   onSidebarLayoutChange?: ComponentProps<
     typeof RepositorySidebar
@@ -579,6 +595,7 @@ function renderSidebar({
       onCreateBranchFromBase={onCreateBranchFromBase}
       onDeleteBranch={onDeleteBranch}
       onDeleteStash={onDeleteStash}
+      onShowSafetyBackups={onShowSafetyBackups}
       onShowStashDetails={onShowStashDetails}
       onSidebarLayoutChange={onSidebarLayoutChange}
       repository={{
