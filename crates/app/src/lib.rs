@@ -113,11 +113,12 @@ pub use review::{
     review_mode_recovery, start_review_mode, sync_review_mode,
 };
 pub use settings::{
-    clear_recent_projects, forget_recent_project, generate_ssh_key, identity_sources,
-    list_recent_projects, load_app_settings, load_gitignore, load_project_settings,
-    save_app_settings, save_gitignore, save_project_settings, settings_snapshot, ssh_key_status,
-    validate_identity_for_write, ForgetRecentProjectRequest, GenerateSshKeyRequest,
-    GitignoreFileResponse, GitignoreRequest, IdentitySourcesResponse, IdentityValidationRequest,
+    apply_network_settings_to_runtime, clear_recent_projects, forget_recent_project,
+    generate_ssh_key, identity_sources, list_recent_projects, load_app_settings, load_gitignore,
+    load_project_settings, save_app_settings, save_gitignore, save_project_settings,
+    settings_snapshot, ssh_key_status, validate_identity_for_write, ForgetRecentProjectRequest,
+    GenerateSshKeyRequest, GitignoreFileResponse, GitignoreRequest, IdentitySourcesResponse,
+    IdentityValidationRequest,
     IdentityValidationResponse, ProjectSettingsRequest, RecentProjectEntry, RecentProjectsRequest,
     SaveAppSettingsRequest, SaveGitignoreRequest, SaveProjectSettingsRequest, SettingsSnapshot,
     SshKeyStatus,

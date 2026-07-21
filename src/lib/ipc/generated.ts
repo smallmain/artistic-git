@@ -60,6 +60,7 @@ export type AppSettings = {
   language?: LanguagePreference;
   appearance?: AppearanceSettings;
   git?: GitSettings;
+  network?: NetworkSettings;
   updates?: UpdateSettings;
   privacy?: PrivacySettings;
   onboarding?: OnboardingSettings;
@@ -574,6 +575,16 @@ export type GitSettings = {
   user?: GitUserSettings;
   rememberSshPassphrase?: boolean;
 };
+
+export type NetworkSettings = {
+  proxyMode?: ProxyMode;
+  httpProxy?: string | null;
+  httpsProxy?: string | null;
+  allProxy?: string | null;
+  noProxy?: string | null;
+};
+
+export type ProxyMode = "system" | "none" | "custom";
 
 export type GitUserSettings = {
   name?: string | null;

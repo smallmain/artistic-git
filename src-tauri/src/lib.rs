@@ -4047,6 +4047,9 @@ fn repository_backend(
             app_config_dir.join("settings.json"),
             app_data_dir.join("projects.json"),
         ))?;
+    if let Ok(settings) = config.settings() {
+        artistic_git_app::apply_network_settings_to_runtime(&runner, &settings.network);
+    }
     let app_handle = app.handle().clone();
     config.subscribe(Arc::new(move |event| {
         let _ = app_handle.emit("config-change", &event);

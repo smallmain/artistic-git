@@ -275,6 +275,7 @@ pub fn save_app_settings(
         next_settings.git.fetch_interval_seconds,
         "saveAppSettings",
     )?;
+    validate_network_settings(&next_settings.network, "saveAppSettings")?;
     let previous_settings = config
         .settings()
         .map_err(|source| config_error(source, "saveAppSettings"))?;
@@ -289,6 +290,8 @@ pub fn save_app_settings(
             *settings = next_settings.clone();
         })
         .map_err(|source| config_error(source, "saveAppSettings"))?;
+
+    apply_network_settings_to_runtime(runner, &settings.network);
 
     if should_apply_identity {
         let mut seen_paths = BTreeSet::new();
@@ -306,6 +309,41 @@ pub fn save_app_settings(
     }
 
     Ok(settings)
+}
+
+pub fn apply_network_settings_to_runtime(
+    runner: &GitRunner,
+    network: &artistic_git_core::network::NetworkSettings,
+) {
+    let resolved = artistic_git_core::network::resolve_proxy_environment(network);
+    runner.apply_proxy_environment(resolved.as_os_map(), resolved.force_http1);
+    artistic_git_core::network::apply_process_proxy_environment(&resolved);
+}
+
+fn validate_network_settings(
+    network: &artistic_git_core::network::NetworkSettings,
+    operation_name: &str,
+) -> AppResult<()> {
+    use artistic_git_core::network::{validate_proxy_url, ProxyMode};
+
+    if network.proxy_mode != ProxyMode::Custom {
+        return Ok(());
+    }
+    for (label, value) in [
+        ("HTTP", network.http_proxy.as_deref()),
+        ("HTTPS", network.https_proxy.as_deref()),
+        ("SOCKS/all", network.all_proxy.as_deref()),
+    ] {
+        if let Some(value) = value {
+            if !validate_proxy_url(value) {
+                return Err(crate::logged_app_error(AppError::expected(
+                    format!("invalid {label} proxy URL"),
+                    operation_name,
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn load_project_settings(

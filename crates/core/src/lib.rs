@@ -3,6 +3,7 @@ pub mod diff_engine;
 pub mod history_graph;
 pub mod keyring;
 pub mod logging;
+pub mod network;
 pub mod realtime;
 pub mod retry;
 

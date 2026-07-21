@@ -78,10 +78,12 @@ import {
   normalizeProjectSettings,
   settingsWithFetchPreferences,
   settingsWithLanguage,
+  settingsWithNetworkPreferences,
   settingsWithRememberSshPassphrase,
   settingsWithTheme,
   settingsWithUpdatePreferences,
   validateFetchIntervalSeconds,
+  validateProxyUrl,
   type FetchIntervalValidation,
   validateGitUser,
   type GitUserValidation,
@@ -1138,6 +1140,7 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
                   void persistSettings(draft, { validateIdentity: true })
                 }
                 onSaveFetch={() => void persistSettings(draft)}
+                onSaveNetwork={() => void persistSettings(draft)}
                 onThemeChange={persistTheme}
                 onUpdateDraft={setDraft}
                 onUpdateUser={updateDraftUser}
@@ -1327,6 +1330,7 @@ function GeneralSettings({
   onRememberSshPassphraseChange,
   onSave,
   onSaveCredential,
+  onSaveNetwork,
   onSaveFetch,
   onThemeChange,
   onNewCredential,
@@ -1367,6 +1371,7 @@ function GeneralSettings({
   onRetrySupplementalSettings: () => void;
   onSave: () => void;
   onSaveCredential: () => void;
+  onSaveNetwork: () => void;
   onSaveFetch: () => void;
   onThemeChange: (value: "system" | "light" | "dark") => void;
   onUpdateDraft: React.Dispatch<React.SetStateAction<AppSettings>>;
@@ -1737,6 +1742,109 @@ function GeneralSettings({
         >
           <Save className="size-4" aria-hidden="true" />
           {t("settings.general.saveFetch")}
+        </Button>
+      </SettingsGroup>
+
+      <SettingsGroup
+        icon={<Cloud className="size-4" aria-hidden="true" />}
+        title={t("settings.general.network")}
+      >
+        <p className="text-sm text-muted-foreground">
+          {t("settings.general.networkHelp")}
+        </p>
+        <SelectField
+          label={t("settings.general.proxyMode")}
+          onChange={(value) => {
+            onUpdateDraft((current) =>
+              settingsWithNetworkPreferences(current, {
+                proxyMode: value as "system" | "none" | "custom",
+              }),
+            );
+          }}
+          options={[
+            ["system", t("settings.general.proxyModeSystem")],
+            ["none", t("settings.general.proxyModeNone")],
+            ["custom", t("settings.general.proxyModeCustom")],
+          ]}
+          value={draft.network?.proxyMode ?? "system"}
+        />
+        {draft.network?.proxyMode === "custom" ? (
+          <div className="grid gap-3">
+            <ProxyField
+              invalid={!validateProxyUrl(draft.network?.httpProxy)}
+              label={t("settings.general.httpProxy")}
+              onChange={(httpProxy) =>
+                onUpdateDraft((current) =>
+                  settingsWithNetworkPreferences(current, {
+                    httpProxy: httpProxy || null,
+                  }),
+                )
+              }
+              placeholder="http://127.0.0.1:6152"
+              value={draft.network?.httpProxy ?? ""}
+            />
+            <ProxyField
+              invalid={!validateProxyUrl(draft.network?.httpsProxy)}
+              label={t("settings.general.httpsProxy")}
+              onChange={(httpsProxy) =>
+                onUpdateDraft((current) =>
+                  settingsWithNetworkPreferences(current, {
+                    httpsProxy: httpsProxy || null,
+                  }),
+                )
+              }
+              placeholder="http://127.0.0.1:6152"
+              value={draft.network?.httpsProxy ?? ""}
+            />
+            <ProxyField
+              invalid={!validateProxyUrl(draft.network?.allProxy)}
+              label={t("settings.general.allProxy")}
+              onChange={(allProxy) =>
+                onUpdateDraft((current) =>
+                  settingsWithNetworkPreferences(current, {
+                    allProxy: allProxy || null,
+                  }),
+                )
+              }
+              placeholder="socks5://127.0.0.1:6153"
+              value={draft.network?.allProxy ?? ""}
+            />
+            <ProxyField
+              invalid={false}
+              label={t("settings.general.noProxy")}
+              onChange={(noProxy) =>
+                onUpdateDraft((current) =>
+                  settingsWithNetworkPreferences(current, {
+                    noProxy: noProxy || null,
+                  }),
+                )
+              }
+              placeholder="localhost,127.0.0.1"
+              value={draft.network?.noProxy ?? ""}
+            />
+            {!validateProxyUrl(draft.network?.httpProxy) ||
+            !validateProxyUrl(draft.network?.httpsProxy) ||
+            !validateProxyUrl(draft.network?.allProxy) ? (
+              <p className="text-sm text-destructive">
+                {t("settings.general.proxyUrlInvalid")}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+        <Button
+          className="gap-2"
+          disabled={
+            saving ||
+            (draft.network?.proxyMode === "custom" &&
+              (!validateProxyUrl(draft.network?.httpProxy) ||
+                !validateProxyUrl(draft.network?.httpsProxy) ||
+                !validateProxyUrl(draft.network?.allProxy)))
+          }
+          onClick={onSaveNetwork}
+          type="button"
+        >
+          <Save className="size-4" aria-hidden="true" />
+          {t("settings.general.saveNetwork")}
         </Button>
       </SettingsGroup>
 
@@ -2714,6 +2822,36 @@ function TextField({
           invalid && "border-destructive focus-visible:ring-destructive",
         )}
         onChange={(event) => onChange(event.target.value)}
+        value={value}
+      />
+    </label>
+  );
+}
+
+function ProxyField({
+  invalid,
+  label,
+  onChange,
+  placeholder,
+  value,
+}: {
+  invalid: boolean;
+  label: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+  value: string;
+}) {
+  return (
+    <label className="grid gap-1 text-sm">
+      <span className="font-medium">{label}</span>
+      <input
+        aria-invalid={invalid}
+        className={cn(
+          "h-9 rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          invalid && "border-destructive focus-visible:ring-destructive",
+        )}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
         value={value}
       />
     </label>

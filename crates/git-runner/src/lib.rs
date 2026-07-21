@@ -320,7 +320,7 @@ fn push_platform_tool_path_entries(entries: &mut Vec<PathBuf>) {
 #[derive(Debug, Clone)]
 pub struct GitRunner {
     distribution: Arc<GitDistribution>,
-    environment: CommandEnvironmentPlan,
+    environment: Arc<std::sync::RwLock<CommandEnvironmentPlan>>,
     concurrency: Arc<OperationConcurrency>,
 }
 
@@ -350,7 +350,7 @@ impl GitRunner {
 
         Self {
             distribution: Arc::new(distribution),
-            environment,
+            environment: Arc::new(std::sync::RwLock::new(environment)),
             concurrency: Arc::new(OperationConcurrency::default()),
         }
     }
@@ -359,8 +359,23 @@ impl GitRunner {
         &self.distribution
     }
 
-    pub fn environment_plan(&self) -> &CommandEnvironmentPlan {
-        &self.environment
+    pub fn environment_plan(&self) -> CommandEnvironmentPlan {
+        self.environment
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
+    pub fn apply_proxy_environment(
+        &self,
+        variables: BTreeMap<String, OsString>,
+        force_http1: bool,
+    ) {
+        let mut environment = self
+            .environment
+            .write()
+            .unwrap_or_else(|error| error.into_inner());
+        environment.set_proxy_environment(variables, force_http1);
     }
 
     pub fn operation_concurrency(&self) -> &OperationConcurrency {
@@ -375,7 +390,7 @@ impl GitRunner {
         GitCommandPlan {
             executable: self.distribution.git_executable.clone(),
             args: args.into_iter().map(Into::into).collect(),
-            environment: self.environment.clone(),
+            environment: self.environment_plan(),
             redacted_arguments: Vec::new(),
         }
     }
@@ -388,7 +403,7 @@ impl GitRunner {
         GitCommandPlan {
             executable: self.distribution.git_lfs_executable.clone(),
             args: args.into_iter().map(Into::into).collect(),
-            environment: self.environment.clone(),
+            environment: self.environment_plan(),
             redacted_arguments: Vec::new(),
         }
     }
@@ -1149,6 +1164,92 @@ impl CommandEnvironmentPlan {
         self
     }
 
+    pub fn set_proxy_environment(
+        &mut self,
+        variables: BTreeMap<String, OsString>,
+        force_http1: bool,
+    ) {
+        for key in [
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+            "no_proxy",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "NO_PROXY",
+        ] {
+            self.variables.remove(key);
+        }
+        self.clear_dynamic_http_version();
+        self.variables.extend(variables);
+        if force_http1 {
+            self.set_dynamic_http_version("HTTP/1.1");
+        }
+    }
+
+    fn clear_dynamic_http_version(&mut self) {
+        let count = self
+            .variables
+            .get("GIT_CONFIG_COUNT")
+            .and_then(|value| value.to_str())
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(0);
+        let mut kept = Vec::new();
+        for index in 0..count {
+            let key_name = format!("GIT_CONFIG_KEY_{index}");
+            let value_name = format!("GIT_CONFIG_VALUE_{index}");
+            let key = self.variables.get(&key_name).cloned();
+            let value = self.variables.get(&value_name).cloned();
+            if key.as_ref().and_then(|item| item.to_str()) == Some("http.version") {
+                continue;
+            }
+            if let (Some(key), Some(value)) = (key, value) {
+                kept.push((key, value));
+            }
+        }
+        for index in 0..count {
+            self.variables.remove(&format!("GIT_CONFIG_KEY_{index}"));
+            self.variables.remove(&format!("GIT_CONFIG_VALUE_{index}"));
+        }
+        for (index, (key, value)) in kept.into_iter().enumerate() {
+            self.variables
+                .insert(format!("GIT_CONFIG_KEY_{index}"), key);
+            self.variables
+                .insert(format!("GIT_CONFIG_VALUE_{index}"), value);
+        }
+        self.variables.insert(
+            "GIT_CONFIG_COUNT".to_owned(),
+            OsString::from(
+                self.variables
+                    .keys()
+                    .filter(|key| key.starts_with("GIT_CONFIG_KEY_"))
+                    .count()
+                    .to_string(),
+            ),
+        );
+    }
+
+    fn set_dynamic_http_version(&mut self, version: &str) {
+        let index = self
+            .variables
+            .keys()
+            .filter(|key| key.starts_with("GIT_CONFIG_KEY_"))
+            .count();
+        self.variables.insert(
+            format!("GIT_CONFIG_KEY_{index}"),
+            OsString::from("http.version"),
+        );
+        self.variables.insert(
+            format!("GIT_CONFIG_VALUE_{index}"),
+            OsString::from(version),
+        );
+        self.variables.insert(
+            "GIT_CONFIG_COUNT".to_owned(),
+            OsString::from((index + 1).to_string()),
+        );
+    }
+
     pub fn removes_variable(&self, key: &str) -> bool {
         self.clear_parent_environment && !self.variables.contains_key(key)
     }
@@ -1815,6 +1916,41 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn command_environment_plan_applies_proxy_variables() {
+        let temp = fake_distribution().expect("create fake distribution");
+        let distribution =
+            GitDistribution::from_root(temp.path()).expect("distribution should load");
+        let home = temp.path().join("controlled-home");
+        let runner = GitRunner::from_distribution(distribution, &home);
+        runner.apply_proxy_environment(
+            BTreeMap::from([
+                (
+                    "https_proxy".to_owned(),
+                    OsString::from("http://127.0.0.1:6152"),
+                ),
+                (
+                    "HTTPS_PROXY".to_owned(),
+                    OsString::from("http://127.0.0.1:6152"),
+                ),
+            ]),
+            true,
+        );
+        let environment = runner.environment_plan();
+        assert_eq!(
+            environment.variable("https_proxy"),
+            Some(OsStr::new("http://127.0.0.1:6152"))
+        );
+        assert_eq!(
+            environment.variable("GIT_CONFIG_COUNT"),
+            Some(OsStr::new("2"))
+        );
+        assert!(environment
+            .variables()
+            .values()
+            .any(|value| value == "http.version" || value == "HTTP/1.1"));
     }
 
     #[test]

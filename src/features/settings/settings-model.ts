@@ -29,6 +29,13 @@ export const defaultAppSettings: AppSettings = {
     user: { name: null, email: null },
     rememberSshPassphrase: false,
   },
+  network: {
+    proxyMode: "system",
+    httpProxy: null,
+    httpsProxy: null,
+    allProxy: null,
+    noProxy: null,
+  },
   updates: { autoCheck: true },
   privacy: { gravatarEnabled: false },
   onboarding: { onboarded: false },
@@ -92,6 +99,10 @@ export function normalizeAppSettings(
       fetchIntervalSeconds: normalizeFetchIntervalSeconds(
         normalizedGit.fetchIntervalSeconds,
       ),
+    },
+    network: {
+      ...defaultAppSettings.network,
+      ...settings?.network,
     },
     updates: {
       ...defaultAppSettings.updates,
@@ -226,6 +237,39 @@ export function settingsWithFetchPreferences(
         normalized.git?.fetchIntervalSeconds,
     },
   };
+}
+
+export function settingsWithNetworkPreferences(
+  settings: AppSettings | null | undefined,
+  preferences: Partial<NonNullable<AppSettings["network"]>>,
+): AppSettings {
+  const normalized = normalizeAppSettings(settings);
+  return {
+    ...normalized,
+    network: {
+      ...normalized.network,
+      ...preferences,
+    },
+  };
+}
+
+export function validateProxyUrl(value: string | null | undefined): boolean {
+  const trimmed = value?.trim() ?? "";
+  if (!trimmed) {
+    return true;
+  }
+  if (/\s/.test(trimmed)) {
+    return false;
+  }
+  try {
+    const withScheme = trimmed.includes("://")
+      ? trimmed
+      : ["http", "://", trimmed].join("");
+    const url = new URL(withScheme);
+    return Boolean(url.hostname);
+  } catch {
+    return false;
+  }
 }
 
 export function settingsWithRememberSshPassphrase(
