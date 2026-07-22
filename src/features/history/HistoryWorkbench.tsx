@@ -2006,7 +2006,7 @@ function CommitDetailPanel({
                 fileState.status === "loading"),
             )
           }
-          className="relative z-10 w-full bg-card shadow-floating"
+          className="relative z-10 w-full overflow-hidden bg-card shadow-floating"
           data-testid="history-commit-detail-panel"
           style={{ height: `${panelHeightPercent}vh` }}
         >
@@ -2132,7 +2132,10 @@ function CommitDetailPanel({
                     }}
                     truncated={detailsState.value.truncated}
                   />
-                  <div className="flex min-w-0 p-4">
+                  <div
+                    className="flex min-h-0 min-w-0 overflow-hidden p-4"
+                    data-testid="history-detail-diff-pane"
+                  >
                     {activeFile && activeFileKey ? (
                       detailsRepositoryPath ? (
                         fileState.status === "loaded" &&

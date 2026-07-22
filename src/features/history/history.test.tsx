@@ -1278,6 +1278,13 @@ describe("HistoryWorkbench", () => {
         within(fileAlert).getByRole("button", { name: "Try again" }),
       );
       expect(await screen.findByLabelText("File comparison")).toBeVisible();
+      expect(screen.getByTestId("history-commit-detail-panel")).toHaveClass(
+        "overflow-hidden",
+      );
+      expect(screen.getByTestId("history-detail-diff-pane")).toHaveClass(
+        "min-h-0",
+        "overflow-hidden",
+      );
       expect(screen.getByText("File permissions changed")).toBeVisible();
       expect(screen.getByText("100644 -> 100755")).toBeVisible();
       expect(commitFileDetailMock).toHaveBeenLastCalledWith({
