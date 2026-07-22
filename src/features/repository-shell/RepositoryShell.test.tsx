@@ -2274,8 +2274,10 @@ describe("RepositoryShell stash flow", () => {
       expect(commandMocks.stashFileDetail).toHaveBeenCalledTimes(2),
     );
     expect(
-      await within(dialog).findByRole("slider", { name: "Zoom" }),
-    ).toBeVisible();
+      await within(dialog).findByRole("button", {
+        name: "Toggle linked image views",
+      }),
+    ).toHaveAttribute("aria-pressed", "true");
     expect(within(dialog).getByAltText("old stash image")).toBeVisible();
     expect(within(dialog).getByAltText("new stash image")).toBeVisible();
     expect(dialog.className).toBe(fixedDialogClassName);

@@ -1,4 +1,11 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -207,8 +214,142 @@ describe("DiffViewer", () => {
       </AppProviders>,
     );
 
-    expect(screen.getByText("Zoom")).toBeInTheDocument();
+    expect(screen.queryByRole("slider")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Toggle linked image views" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByLabelText("Old image preview")).toBeInTheDocument();
+    expect(screen.getByLabelText("New image preview")).toBeInTheDocument();
     expect(screen.getByText(/10 x 20/)).toBeInTheDocument();
+  });
+
+  it("fits large images, keeps small images at their original size, and links viewport interactions", async () => {
+    const bounds = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        return this.hasAttribute("data-image-viewport")
+          ? domRect(400, 300)
+          : domRect(0, 0);
+      });
+
+    try {
+      renderWithProviders(
+        <DiffViewer
+          content={{
+            kind: "image",
+            newImage: {
+              alt: "new preview",
+              height: 100,
+              sizeBytes: 100,
+              src: "data:image/png;base64,new",
+              width: 100,
+            },
+            oldImage: {
+              alt: "old preview",
+              height: 200,
+              sizeBytes: 100,
+              src: "data:image/png;base64,old",
+              width: 800,
+            },
+          }}
+          payload={createPayload({ fileKind: "image" })}
+          source="commitDetails"
+        />,
+      );
+
+      const oldViewport = screen.getByLabelText("Old image preview");
+      const oldImage = screen.getByAltText("old preview");
+      const newImage = screen.getByAltText("new preview");
+      const oldStage = oldImage.parentElement;
+      const newStage = newImage.parentElement;
+      const lockButton = screen.getByRole("button", {
+        name: "Toggle linked image views",
+      });
+
+      await waitFor(() => expect(imageScale(oldImage)).toBeCloseTo(0.5));
+      expect(imageScale(newImage)).toBeCloseTo(1);
+      expect(lockButton).toHaveAttribute("aria-pressed", "true");
+      expect(lockButton.querySelector(".lucide-lock")).not.toBeNull();
+
+      fireEvent.wheel(oldViewport, {
+        clientX: 200,
+        clientY: 150,
+        deltaY: -100,
+      });
+      await waitFor(() => expect(imageScale(oldImage)).toBeGreaterThan(0.5));
+      expect(imageScale(oldImage) / 0.5).toBeCloseTo(imageScale(newImage));
+
+      fireEvent.pointerDown(oldViewport, {
+        button: 0,
+        clientX: 100,
+        clientY: 100,
+        pointerId: 1,
+        pointerType: "mouse",
+      });
+      fireEvent.pointerMove(oldViewport, {
+        clientX: 132,
+        clientY: 124,
+        pointerId: 1,
+        pointerType: "mouse",
+      });
+      fireEvent.pointerUp(oldViewport, {
+        clientX: 132,
+        clientY: 124,
+        pointerId: 1,
+        pointerType: "mouse",
+      });
+      await waitFor(() =>
+        expect(oldStage).toHaveStyle({
+          transform: "translate3d(32px, 24px, 0)",
+        }),
+      );
+      expect(newStage).toHaveStyle({
+        transform: "translate3d(32px, 24px, 0)",
+      });
+
+      fireEvent.click(
+        within(oldViewport).getByRole("button", {
+          name: "Reset image position",
+        }),
+      );
+      expect(oldStage).toHaveStyle({ transform: "translate3d(0px, 0px, 0)" });
+      expect(newStage).toHaveStyle({ transform: "translate3d(0px, 0px, 0)" });
+
+      fireEvent.click(lockButton);
+      expect(lockButton).toHaveAttribute("aria-pressed", "false");
+      expect(lockButton.querySelector(".lucide-lock-open")).not.toBeNull();
+      const linkedNewScale = imageScale(newImage);
+
+      fireEvent.wheel(oldViewport, {
+        clientX: 200,
+        clientY: 150,
+        deltaY: -100,
+      });
+      await waitFor(() =>
+        expect(imageScale(oldImage) / 0.5).toBeGreaterThan(linkedNewScale),
+      );
+      expect(imageScale(newImage)).toBeCloseTo(linkedNewScale);
+
+      fireEvent.click(
+        within(oldViewport).getByRole("button", {
+          name: "Fit image to preview",
+        }),
+      );
+      expect(imageScale(oldImage)).toBeCloseTo(0.5);
+      expect(imageScale(newImage)).toBeCloseTo(linkedNewScale);
+
+      dispatchGesture(oldViewport, "gesturestart", 1);
+      dispatchGesture(oldViewport, "gesturechange", 1.5);
+      dispatchGesture(oldViewport, "gestureend", 1.5);
+      await waitFor(() => expect(imageScale(oldImage)).toBeCloseTo(0.75));
+      expect(imageScale(newImage)).toBeCloseTo(linkedNewScale);
+
+      fireEvent.click(lockButton);
+      expect(lockButton).toHaveAttribute("aria-pressed", "true");
+      expect(imageScale(oldImage) / 0.5).toBeCloseTo(imageScale(newImage));
+    } finally {
+      bounds.mockRestore();
+    }
   });
 
   it("renders explicit LFS loading and error states", () => {
@@ -357,4 +498,37 @@ function createPayload(overrides: Partial<DiffPayload> = {}): DiffPayload {
     oldPath: null,
     ...overrides,
   };
+}
+
+function domRect(width: number, height: number): DOMRect {
+  return {
+    bottom: height,
+    height,
+    left: 0,
+    right: width,
+    top: 0,
+    width,
+    x: 0,
+    y: 0,
+    toJSON: () => ({}),
+  } as DOMRect;
+}
+
+function imageScale(image: HTMLElement): number {
+  const match = /scale\(([^)]+)\)/.exec(image.style.transform);
+  return match ? Number(match[1]) : Number.NaN;
+}
+
+function dispatchGesture(
+  element: HTMLElement,
+  type: "gesturestart" | "gesturechange" | "gestureend",
+  scale: number,
+) {
+  const event = new Event(type, { bubbles: true, cancelable: true });
+  Object.defineProperties(event, {
+    clientX: { value: 200 },
+    clientY: { value: 150 },
+    scale: { value: scale },
+  });
+  fireEvent(element, event);
 }

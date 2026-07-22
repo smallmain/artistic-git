@@ -13,7 +13,9 @@ import {
   FileQuestion,
   FileText,
   Image as ImageIcon,
+  Lock,
   LockKeyhole,
+  LockOpen,
   Rows3,
 } from "lucide-react";
 import * as React from "react";
@@ -22,8 +24,13 @@ import { useTranslation } from "react-i18next";
 import { IconButton } from "@/components/ui/icon-button";
 import { useLocalizedFormatters } from "@/i18n/format";
 
+import {
+  ImageDiff,
+  type ImagePaneSide,
+  type ImageViewportTransform,
+  type ImageViewportTransforms,
+} from "./ImageDiff";
 import type {
-  DiffAsset,
   DiffViewerContent,
   DiffViewerProps,
   TextDiffContent,
@@ -56,6 +63,76 @@ export function DiffViewer({
     onTextModeChange?.(mode);
   };
 
+  if (effectiveContent.kind === "image") {
+    return (
+      <ImageDiffViewer
+        content={effectiveContent}
+        key={`${effectiveContent.oldImage?.src ?? ""}\0${effectiveContent.newImage?.src ?? ""}`}
+        modeChangeSummary={modeChangeSummary}
+        payload={payload}
+        source={source}
+      />
+    );
+  }
+
+  const actions =
+    effectiveContent.kind === "text" ? (
+      <div className="flex shrink-0 items-center gap-1">
+        <IconButton
+          aria-pressed={textMode === "split"}
+          label={t("diff.splitMode")}
+          onClick={() => updateTextMode("split")}
+          tooltip={t("diff.splitMode")}
+          variant={textMode === "split" ? "secondary" : "ghost"}
+        >
+          <Columns2 className="size-4" aria-hidden="true" />
+        </IconButton>
+        <IconButton
+          aria-pressed={textMode === "inline"}
+          label={t("diff.inlineMode")}
+          onClick={() => updateTextMode("inline")}
+          tooltip={t("diff.inlineMode")}
+          variant={textMode === "inline" ? "secondary" : "ghost"}
+        >
+          <Rows3 className="size-4" aria-hidden="true" />
+        </IconButton>
+      </div>
+    ) : null;
+
+  return (
+    <DiffViewerFrame
+      actions={actions}
+      kind={effectiveContent.kind}
+      modeChangeSummary={modeChangeSummary}
+      payload={payload}
+      source={source}
+    >
+      {renderContent(effectiveContent, payload, textMode, textRenderer)}
+    </DiffViewerFrame>
+  );
+}
+
+interface DiffViewerFrameProps {
+  actions?: React.ReactNode;
+  bodyClassName?: string;
+  children: React.ReactNode;
+  kind: DiffViewerContent["kind"];
+  modeChangeSummary: string | null;
+  payload: DiffViewerProps["payload"];
+  source: DiffViewerProps["source"];
+}
+
+function DiffViewerFrame({
+  actions,
+  bodyClassName = "min-h-0 flex-1 overflow-auto",
+  children,
+  kind,
+  modeChangeSummary,
+  payload,
+  source,
+}: DiffViewerFrameProps) {
+  const { t } = useTranslation();
+
   return (
     <section
       aria-label={t("diff.viewerLabel")}
@@ -64,7 +141,7 @@ export function DiffViewer({
     >
       <header className="flex min-h-12 items-center justify-between gap-3 border-b bg-card px-3">
         <div className="flex min-w-0 items-center gap-2">
-          <FileIcon kind={effectiveContent.kind} />
+          <FileIcon kind={kind} />
           <div className="min-w-0">
             <p className="truncate text-sm font-medium">
               {formatDiffPath(payload)}
@@ -81,35 +158,102 @@ export function DiffViewer({
           </div>
         </div>
 
-        {effectiveContent.kind === "text" ? (
-          <div className="flex shrink-0 items-center gap-1">
-            <IconButton
-              aria-pressed={textMode === "split"}
-              label={t("diff.splitMode")}
-              onClick={() => updateTextMode("split")}
-              tooltip={t("diff.splitMode")}
-              variant={textMode === "split" ? "secondary" : "ghost"}
-            >
-              <Columns2 className="size-4" aria-hidden="true" />
-            </IconButton>
-            <IconButton
-              aria-pressed={textMode === "inline"}
-              label={t("diff.inlineMode")}
-              onClick={() => updateTextMode("inline")}
-              tooltip={t("diff.inlineMode")}
-              variant={textMode === "inline" ? "secondary" : "ghost"}
-            >
-              <Rows3 className="size-4" aria-hidden="true" />
-            </IconButton>
-          </div>
-        ) : null}
+        {actions}
       </header>
 
-      <div className="min-h-0 flex-1 overflow-auto">
-        {renderContent(effectiveContent, payload, textMode, textRenderer)}
-      </div>
+      <div className={bodyClassName}>{children}</div>
     </section>
   );
+}
+
+function ImageDiffViewer({
+  content,
+  modeChangeSummary,
+  payload,
+  source,
+}: {
+  content: Extract<DiffViewerContent, { kind: "image" }>;
+  modeChangeSummary: string | null;
+  payload: DiffViewerProps["payload"];
+  source: DiffViewerProps["source"];
+}) {
+  const { t } = useTranslation();
+  const [locked, setLocked] = React.useState(true);
+  const [transforms, setTransforms] = React.useState<ImageViewportTransforms>(
+    createImageViewportTransforms,
+  );
+  const lastActiveSide = React.useRef<ImagePaneSide>(
+    content.newImage ? "new" : "old",
+  );
+
+  const activate = React.useCallback((side: ImagePaneSide) => {
+    lastActiveSide.current = side;
+  }, []);
+
+  const updateTransform = React.useCallback(
+    (
+      side: ImagePaneSide,
+      update: (current: ImageViewportTransform) => ImageViewportTransform,
+    ) => {
+      lastActiveSide.current = side;
+      setTransforms((current) => {
+        const next = update(current[side]);
+        return locked ? { new: next, old: next } : { ...current, [side]: next };
+      });
+    },
+    [locked],
+  );
+
+  const toggleLocked = () => {
+    if (!locked) {
+      setTransforms((current) => {
+        const active = current[lastActiveSide.current];
+        return { new: active, old: active };
+      });
+    }
+    setLocked((current) => !current);
+  };
+
+  const actions = (
+    <IconButton
+      aria-pressed={locked}
+      label={t("diff.toggleImageSync")}
+      onClick={toggleLocked}
+      tooltip={locked ? t("diff.imageSyncLocked") : t("diff.imageSyncUnlocked")}
+      variant={locked ? "secondary" : "ghost"}
+    >
+      {locked ? (
+        <Lock className="size-4" aria-hidden="true" />
+      ) : (
+        <LockOpen className="size-4" aria-hidden="true" />
+      )}
+    </IconButton>
+  );
+
+  return (
+    <DiffViewerFrame
+      actions={actions}
+      bodyClassName="min-h-0 flex-1 overflow-hidden"
+      kind="image"
+      modeChangeSummary={modeChangeSummary}
+      payload={payload}
+      source={source}
+    >
+      <ImageDiff
+        content={content}
+        onActivate={activate}
+        onTransformChange={updateTransform}
+        transforms={transforms}
+      />
+    </DiffViewerFrame>
+  );
+}
+
+function createImageViewportTransforms(): ImageViewportTransforms {
+  return {
+    new: { offsetX: 0, offsetY: 0, zoom: 1 },
+    old: { offsetX: 0, offsetY: 0, zoom: 1 },
+  };
 }
 
 function getEffectiveContent(
@@ -127,7 +271,7 @@ function getEffectiveContent(
 }
 
 function renderContent(
-  content: DiffViewerContent,
+  content: Exclude<DiffViewerContent, { kind: "image" }>,
   payload: DiffViewerProps["payload"],
   textMode: TextDiffMode,
   textRenderer: DiffViewerProps["textRenderer"],
@@ -138,10 +282,6 @@ function renderContent(
     ) : (
       <TextDiff content={content} mode={textMode} />
     );
-  }
-
-  if (content.kind === "image") {
-    return <ImageDiff content={content} />;
   }
 
   return <FileDiffCard content={content} payload={payload} />;
@@ -279,85 +419,6 @@ function createCodeMirrorExtensions(language?: string): Extension[] {
   }
 
   return extensions;
-}
-
-function ImageDiff({
-  content,
-}: {
-  content: Extract<DiffViewerContent, { kind: "image" }>;
-}) {
-  const { t } = useTranslation();
-  const [zoom, setZoom] = React.useState(100);
-
-  return (
-    <div className="flex min-h-full flex-col">
-      <div className="flex items-center justify-end gap-2 border-b bg-card px-3 py-2 text-xs">
-        <label htmlFor="diff-image-zoom">{t("diff.zoom")}</label>
-        <input
-          className="w-32 accent-primary"
-          id="diff-image-zoom"
-          max={200}
-          min={25}
-          onChange={(event) => setZoom(Number(event.target.value))}
-          type="range"
-          value={zoom}
-        />
-        <span className="w-10 text-right text-numeric">{zoom}%</span>
-      </div>
-      <div className="grid min-h-0 flex-1 grid-cols-1 md:grid-cols-2">
-        <ImagePane
-          asset={content.oldImage}
-          label={t("diff.oldImage")}
-          zoom={zoom}
-        />
-        <ImagePane
-          asset={content.newImage}
-          label={t("diff.newImage")}
-          zoom={zoom}
-        />
-      </div>
-    </div>
-  );
-}
-
-function ImagePane({
-  asset,
-  label,
-  zoom,
-}: {
-  asset?: DiffAsset | null;
-  label: string;
-  zoom: number;
-}) {
-  const { t } = useTranslation();
-  const formatters = useLocalizedFormatters();
-
-  return (
-    <section className="flex min-h-72 flex-col border-b md:border-b-0 md:border-r">
-      <header className="flex items-center justify-between gap-2 border-b px-3 py-2 text-xs">
-        <span className="font-medium">{label}</span>
-        {asset ? (
-          <span className="text-muted-foreground">
-            {formatImageMeta(asset, formatters.formatFileSize)}
-          </span>
-        ) : null}
-      </header>
-      <div className="diff-checkerboard flex min-h-0 flex-1 items-center justify-center overflow-auto p-4">
-        {asset ? (
-          <img
-            alt={asset.alt ?? label}
-            className="max-w-none"
-            src={asset.src}
-            style={{ width: `${zoom}%` }}
-          />
-        ) : (
-          <div className="text-sm text-muted-foreground">
-            {t("diff.imageMissing")}
-          </div>
-        )}
-      </div>
-    </section>
-  );
 }
 
 function FileDiffCard({
@@ -534,22 +595,6 @@ function formatDiffPath(payload: DiffViewerProps["payload"]): string {
   }
 
   return payload.newPath;
-}
-
-function formatImageMeta(
-  asset: DiffAsset,
-  formatFileSize: (bytes: number) => string,
-): string {
-  const dimensions =
-    asset.width && asset.height
-      ? `${asset.width} x ${asset.height}`
-      : undefined;
-  const size =
-    asset.sizeBytes === undefined || asset.sizeBytes === null
-      ? undefined
-      : formatFileSize(asset.sizeBytes);
-
-  return [dimensions, size].filter(Boolean).join(" · ");
 }
 
 function parseOptionalNumber(value: string | undefined): number | undefined {
