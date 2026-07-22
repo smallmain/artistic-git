@@ -1640,6 +1640,9 @@ function CommitDetailPanel({
   const [fileState, setFileState] = React.useState<CommitFileLoadState>({
     status: "idle",
   });
+  const fileDetailCacheRef = React.useRef(
+    new Map<string, { content: DiffContent; payload: DiffPayload }>(),
+  );
   const [panelHeightPercent, setPanelHeightPercent] = React.useState(
     commitDetailDefaultHeightPercent,
   );
@@ -1820,10 +1823,22 @@ function CommitDetailPanel({
       return;
     }
 
+    const cached = fileDetailCacheRef.current.get(activeFileKey);
+    if (cached) {
+      setFileState({
+        content: cached.content,
+        key: activeFileKey,
+        payload: cached.payload,
+        status: "loaded",
+      });
+      return;
+    }
+
     let disposed = false;
     let settled = false;
     const operationId = createHistoryOperationId("commit-file-detail");
     const requestedPath = activeFile.path;
+    setFileState({ key: activeFileKey, status: "loading" });
 
     void commitFileDetail({
       file: toCommitChangedFile(activeFile),
@@ -1841,6 +1856,10 @@ function CommitDetailPanel({
           );
         }
         settled = true;
+        fileDetailCacheRef.current.set(activeFileKey, {
+          content: response.diff,
+          payload: response.payload,
+        });
         if (!disposed) {
           setFileState({
             content: response.diff,
@@ -2130,6 +2149,7 @@ function CommitDetailPanel({
                             error={fileState.error}
                             message={t("history.details.fileLoadFailed")}
                             onRetry={() => {
+                              fileDetailCacheRef.current.delete(activeFileKey);
                               setFileState({ status: "idle" });
                               setFileAttempt((value) => value + 1);
                             }}

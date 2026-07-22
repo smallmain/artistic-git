@@ -72,6 +72,7 @@ const commandMocks = vi.hoisted(() => ({
   setWindowCloseGuard: vi.fn(),
   settingsSnapshot: vi.fn(),
   stashDetails: vi.fn(),
+  stashFileDetail: vi.fn(),
   startReviewMode: vi.fn(),
   syncAllBranches: vi.fn(),
   syncBranch: vi.fn(),
@@ -554,8 +555,19 @@ beforeEach(() => {
       selector: "stash@{0}",
     }),
     files: [],
-    rawDiff: "",
   });
+  commandMocks.stashFileDetail.mockImplementation((request) =>
+    Promise.resolve({
+      file: {
+        changeKind: "modified",
+        fileKind: "text",
+        oldPath: null,
+        patch: "",
+        path: request.path,
+      },
+      selector: request.selector,
+    }),
+  );
   commandMocks.validateBranchName.mockResolvedValue({
     exists: false,
     message: null,
@@ -642,6 +654,33 @@ describe("RepositoryShell loading state", () => {
 
     expect(screen.queryByText("src/preview/render-preview.ts")).toBeNull();
     expect(screen.queryByLabelText("File comparison")).toBeNull();
+  });
+
+  it("keeps cached local changes interactive during a background refresh", async () => {
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+    await waitFor(() =>
+      expect(commandMocks.listLocalChanges).toHaveBeenCalledTimes(1),
+    );
+    const pendingRefresh = createPendingResponse<LocalChangesResponse>({
+      changes: [],
+      renormalizeSuggestion: null,
+    });
+    commandMocks.listLocalChanges.mockReturnValueOnce(pendingRefresh.promise);
+
+    fireEvent.click(screen.getByRole("button", { name: /Local Changes/ }));
+    await waitFor(() =>
+      expect(commandMocks.listLocalChanges).toHaveBeenCalledTimes(2),
+    );
+
+    expect(screen.getAllByText("src/app.ts").length).toBeGreaterThan(0);
+    expect(
+      screen.getByRole("checkbox", { name: "Select or deselect src/app.ts" }),
+    ).toBeEnabled();
+    expect(
+      screen.getByRole("textbox", { name: "Search files and contents" }),
+    ).toBeEnabled();
+
+    await act(async () => pendingRefresh.resolve());
   });
 
   it("keeps the repository loading status until the initial history is ready", async () => {
@@ -1957,7 +1996,6 @@ describe("RepositoryShell stash flow", () => {
         selector: "stash@{0}",
       }),
       files: [],
-      rawDiff: "",
     });
     commandMocks.listStashes.mockResolvedValue({
       stashes: [
@@ -1974,12 +2012,19 @@ describe("RepositoryShell stash flow", () => {
       await screen.findByRole("button", { name: /WIP material polish/ }),
     );
 
-    expect(screen.getByText("Loading stash details...")).toBeVisible();
+    const dialog = screen.getByRole("dialog", { name: "WIP material polish" });
+    expect(within(dialog).getByText("Loading stash details...")).toBeVisible();
+    expect(
+      within(dialog).getAllByRole("button", { name: "Close" }),
+    ).not.toHaveLength(0);
+    for (const closeButton of within(dialog).getAllByRole("button", {
+      name: "Close",
+    })) {
+      expect(closeButton).toBeEnabled();
+    }
     expect(screen.queryByText("Updating stash...")).not.toBeInTheDocument();
     await act(async () => pendingDetails.resolve());
-    expect(
-      await screen.findByRole("dialog", { name: "WIP material polish" }),
-    ).toBeVisible();
+    expect(dialog).toBeVisible();
   });
 
   it("requires confirmation before deleting a stash", async () => {
@@ -2060,13 +2105,20 @@ describe("RepositoryShell stash flow", () => {
       files: [
         {
           changeKind: "modified",
-          fileKind: "text",
           oldPath: null,
-          patch: "@@ -1 +1 @@\n-old\n+new",
           path: "src/app.ts",
         },
       ],
-      rawDiff: "diff --git a/src/app.ts b/src/app.ts\n+new",
+    });
+    commandMocks.stashFileDetail.mockResolvedValue({
+      file: {
+        changeKind: "modified",
+        fileKind: "text",
+        oldPath: null,
+        patch: "diff --git a/src/app.ts b/src/app.ts\n+new",
+        path: "src/app.ts",
+      },
+      selector: "stash@{0}",
     });
     renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
 
@@ -2079,15 +2131,79 @@ describe("RepositoryShell stash flow", () => {
     const dialog = await screen.findByRole("dialog", {
       name: "Automatically saved changes: switching branches",
     });
+    await within(dialog).findByText("src/app.ts");
     expect(dialog).toHaveTextContent(
       "Created automatically for switching branches.",
     );
     expect(dialog).not.toHaveTextContent("Auto Stash: switch branch");
     expect(dialog).toHaveTextContent("Created");
-    expect(dialog).toHaveTextContent("2026");
+    expect(await within(dialog).findByText(/2026/)).toBeVisible();
     expect(dialog).toHaveTextContent("src/app.ts");
     expect(dialog).toHaveTextContent("Modified");
-    expect(dialog).toHaveTextContent("diff --git a/src/app.ts b/src/app.ts");
+    expect(
+      await within(dialog).findByText(/diff --git a\/src\/app\.ts/),
+    ).toBeVisible();
+    expect(commandMocks.stashDetails).toHaveBeenCalledWith({
+      repositoryPath: "/repo/art",
+      selector: "stashoid",
+    });
+    expect(commandMocks.stashFileDetail).toHaveBeenCalledWith({
+      operationId: expect.stringMatching(/^stash-file-detail-/),
+      path: "src/app.ts",
+      repositoryPath: "/repo/art",
+      selector: "stashoid",
+    });
+  });
+
+  it("loads stash patches per selected file and reuses cached previews", async () => {
+    const entry = stashEntry({
+      message: "Two file stash",
+      selector: "stash@{0}",
+    });
+    commandMocks.listStashes.mockResolvedValue({ stashes: [entry] });
+    commandMocks.stashDetails.mockResolvedValue({
+      entry,
+      files: ["src/first.ts", "src/second.ts"].map((path) => ({
+        changeKind: "modified" as const,
+        oldPath: null,
+        path,
+      })),
+    });
+    commandMocks.stashFileDetail.mockImplementation(async (request) => ({
+      file: {
+        changeKind: "modified" as const,
+        fileKind: "text" as const,
+        oldPath: null,
+        patch: `diff --git a/${request.path} b/${request.path}`,
+        path: request.path,
+      },
+      selector: request.selector,
+    }));
+    renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: /Two file stash/ }),
+    );
+    const dialog = await screen.findByRole("dialog", {
+      name: "Two file stash",
+    });
+    const first = await within(dialog).findByRole("button", {
+      name: /src\/first\.ts/,
+    });
+    const second = within(dialog).getByRole("button", {
+      name: /src\/second\.ts/,
+    });
+    await waitFor(() =>
+      expect(commandMocks.stashFileDetail).toHaveBeenCalledTimes(1),
+    );
+
+    fireEvent.click(second);
+    await waitFor(() =>
+      expect(commandMocks.stashFileDetail).toHaveBeenCalledTimes(2),
+    );
+    fireEvent.click(first);
+    await waitFor(() => expect(first).toHaveAttribute("aria-pressed", "true"));
+    expect(commandMocks.stashFileDetail).toHaveBeenCalledTimes(2);
   });
 
   it("keeps large stash detail file lists on bounded pages", async () => {
@@ -2098,21 +2214,18 @@ describe("RepositoryShell stash flow", () => {
       entry: stashEntry({ message: "Large stash", selector: "stash@{0}" }),
       files: Array.from({ length: 205 }, (_, index) => ({
         changeKind: "modified" as const,
-        fileKind: "text" as const,
         oldPath: null,
-        patch: "",
         path: `generated/file-${index}.txt`,
       })),
-      rawDiff: "",
     });
     renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
 
     fireEvent.click(await screen.findByRole("button", { name: /Large stash/ }));
     const dialog = await screen.findByRole("dialog");
 
-    expect(within(dialog).getAllByTestId("stash-detail-file")).toHaveLength(
-      200,
-    );
+    expect(
+      await within(dialog).findAllByTestId("stash-detail-file"),
+    ).toHaveLength(200);
     expect(within(dialog).getByText("Page 1 of 2")).toBeInTheDocument();
 
     fireEvent.click(

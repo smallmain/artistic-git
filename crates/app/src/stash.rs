@@ -3,13 +3,13 @@ use artistic_git_contracts::{
     ConflictEnteredEvent, ConflictFile, ConflictResolutionStatus, CreateAutoStashRequest,
     CreateStashRequest, CreateStashResponse, DeleteStashRequest, DeleteStashResponse,
     DiffChangeKind, DiffFileKind, GitCommandError, OperationContext, OperationId,
-    RestoreStashRequest, RestoreStashResponse, StashDetailsRequest, StashDetailsResponse,
-    StashDiffFile, StashEntry, StashListResponse, StashRecoveryPoint, StashRestoreOutcome,
+    RestoreStashRequest, RestoreStashResponse, StashChangedFile, StashDetailsRequest,
+    StashDetailsResponse, StashDiffFile, StashEntry, StashFileDetailRequest,
+    StashFileDetailResponse, StashListResponse, StashRecoveryPoint, StashRestoreOutcome,
 };
 use artistic_git_core::diff_engine::OVERSIZED_TEXT_BYTES;
 use artistic_git_git_runner::{GitCommandPlan, GitRunner};
 use std::{
-    collections::{BTreeMap, BTreeSet},
     ffi::OsString,
     fs,
     io::{self, Read},
@@ -104,55 +104,70 @@ pub fn stash_details(
     }
 
     let entry = stash_entry_for_selector(runner, &root, selector, "stashDetails")?;
-    let name_status = git_output_bytes_bounded(
-        runner,
-        Some(&root),
-        [
-            "stash",
-            "show",
-            "--include-untracked",
-            "--name-status",
-            "-z",
-            "--find-renames",
-            selector,
-        ],
-        "stashDetails",
-        STASH_DETAILS_OUTPUT_LIMIT_BYTES,
-        "Stash contains too many files to preview.",
-    )?;
-    let raw_diff = git_stdout_bounded(
-        runner,
-        Some(&root),
-        [
-            "stash",
-            "show",
-            "--include-untracked",
-            "--patch",
-            "--no-color",
-            "--find-renames",
-            selector,
-        ],
-        "stashDetails",
-        STASH_DETAILS_OUTPUT_LIMIT_BYTES,
-        "Stash content is too large to preview.",
-    )?;
-    let patch_chunks = parse_patch_chunks(&raw_diff);
-    let files = parse_stash_name_status(&name_status, &patch_chunks);
-    if files.len() > STASH_DETAILS_FILE_LIMIT {
-        return Err(stash_details_limit_error(
-            &root,
-            format!(
-                "Stash contains too many files to preview (limit: {STASH_DETAILS_FILE_LIMIT} files; detected: {}).",
-                files.len()
-            ),
-            None,
-        ));
+    let files = stash_changed_files(runner, &root, selector, "stashDetails")?;
+
+    Ok(StashDetailsResponse { entry, files })
+}
+
+pub fn stash_file_detail(
+    runner: &GitRunner,
+    request: StashFileDetailRequest,
+) -> AppResult<StashFileDetailResponse> {
+    const OPERATION: &str = "stashFileDetail";
+    let root = canonical_repository_path(&request.repository_path, OPERATION)?;
+    let selector = request.selector.trim();
+    if selector.is_empty() {
+        return Err(logged(AppError::expected(
+            "stash selector is empty",
+            OPERATION,
+        )));
+    }
+    let requested_path = request.path.as_str();
+    if requested_path.is_empty() {
+        return Err(logged(AppError::expected("stash path is empty", OPERATION)));
     }
 
-    Ok(StashDetailsResponse {
-        entry,
-        files,
-        raw_diff,
+    let entry = stash_entry_for_selector(runner, &root, selector, OPERATION)?;
+    let file = stash_changed_files(runner, &root, selector, OPERATION)?
+        .into_iter()
+        .find(|file| file.path == requested_path)
+        .ok_or_else(|| {
+            logged(AppError::expected(
+                "the selected stash file no longer exists; reload the stash and try again",
+                OPERATION,
+            ))
+        })?;
+    let parents = stash_commit_parents(runner, &root, &entry.oid, OPERATION)?;
+    let Some(first_parent) = parents.first() else {
+        return Err(logged(AppError::expected(
+            "the selected stash has no base commit",
+            OPERATION,
+        )));
+    };
+
+    let mut patch = stash_path_diff(runner, &root, first_parent, &entry.oid, &file, OPERATION)?;
+    if patch.is_empty() {
+        if let Some(untracked_parent) = parents.get(2) {
+            patch = stash_path_diff(
+                runner,
+                &root,
+                first_parent,
+                untracked_parent,
+                &file,
+                OPERATION,
+            )?;
+        }
+    }
+
+    Ok(StashFileDetailResponse {
+        selector: entry.selector,
+        file: StashDiffFile {
+            path: file.path,
+            old_path: file.old_path,
+            change_kind: file.change_kind,
+            file_kind: file_kind_from_patch(&patch),
+            patch,
+        },
     })
 }
 
@@ -623,17 +638,50 @@ fn parse_stash_record(record: &str) -> Option<StashEntry> {
     })
 }
 
-fn parse_stash_name_status(
-    output: &[u8],
-    patch_chunks: &BTreeMap<String, PatchChunk>,
-) -> Vec<StashDiffFile> {
+fn stash_changed_files(
+    runner: &GitRunner,
+    root: &Path,
+    selector: &str,
+    operation_name: &str,
+) -> AppResult<Vec<StashChangedFile>> {
+    let name_status = git_output_bytes_bounded(
+        runner,
+        Some(root),
+        [
+            "stash",
+            "show",
+            "--include-untracked",
+            "--name-status",
+            "-z",
+            "--find-renames",
+            selector,
+        ],
+        operation_name,
+        STASH_DETAILS_OUTPUT_LIMIT_BYTES,
+        "Stash contains too many files to preview.",
+    )?;
+    let files = parse_stash_name_status(&name_status);
+    if files.len() > STASH_DETAILS_FILE_LIMIT {
+        return Err(stash_details_limit_error(
+            root,
+            operation_name,
+            format!(
+                "Stash contains too many files to preview (limit: {STASH_DETAILS_FILE_LIMIT} files; detected: {}).",
+                files.len()
+            ),
+            None,
+        ));
+    }
+    Ok(files)
+}
+
+fn parse_stash_name_status(output: &[u8]) -> Vec<StashChangedFile> {
     let fields = output
         .split(|byte| *byte == 0)
         .filter(|field| !field.is_empty())
         .map(|field| String::from_utf8_lossy(field).into_owned())
         .collect::<Vec<_>>();
     let mut files = Vec::new();
-    let mut seen_paths = BTreeSet::new();
     let mut index = 0;
 
     while index < fields.len() {
@@ -655,95 +703,66 @@ fn parse_stash_name_status(
         if path.is_empty() {
             continue;
         }
-        seen_paths.insert(path.clone());
-        let patch = patch_for_path(patch_chunks, &path, old_path.as_deref());
-        files.push(StashDiffFile {
-            file_kind: file_kind_from_patch(&patch),
+        files.push(StashChangedFile {
             path,
             old_path,
             change_kind,
-            patch,
-        });
-    }
-
-    for chunk in patch_chunks.values() {
-        if seen_paths.contains(&chunk.path) {
-            continue;
-        }
-        files.push(StashDiffFile {
-            path: chunk.path.clone(),
-            old_path: chunk.old_path.clone(),
-            change_kind: DiffChangeKind::Modified,
-            file_kind: file_kind_from_patch(&chunk.patch),
-            patch: chunk.patch.clone(),
         });
     }
 
     files
 }
 
-fn parse_patch_chunks(raw_diff: &str) -> BTreeMap<String, PatchChunk> {
-    let mut chunks = Vec::<PatchChunk>::new();
-    let mut current_header: Option<(Option<String>, String)> = None;
-    let mut current_lines = Vec::<String>::new();
+fn stash_commit_parents(
+    runner: &GitRunner,
+    root: &Path,
+    oid: &str,
+    operation_name: &str,
+) -> AppResult<Vec<String>> {
+    let output = git_stdout(
+        runner,
+        Some(root),
+        ["rev-list", "--parents", "-n", "1", oid],
+        operation_name,
+    )?;
+    Ok(output
+        .split_whitespace()
+        .skip(1)
+        .map(ToOwned::to_owned)
+        .collect())
+}
 
-    for line in raw_diff.lines() {
-        if let Some((old_path, path)) = parse_diff_git_line(line) {
-            if let Some((previous_old_path, previous_path)) = current_header.take() {
-                chunks.push(PatchChunk {
-                    old_path: previous_old_path,
-                    path: previous_path,
-                    patch: current_lines.join("\n"),
-                });
-                current_lines.clear();
-            }
-            current_header = Some((old_path, path));
-        }
-        if current_header.is_some() {
-            current_lines.push(line.to_owned());
-        }
+fn stash_path_diff(
+    runner: &GitRunner,
+    root: &Path,
+    from: &str,
+    to: &str,
+    file: &StashChangedFile,
+    operation_name: &str,
+) -> AppResult<String> {
+    let mut args = vec![
+        OsString::from("diff"),
+        OsString::from("--patch"),
+        OsString::from("--no-color"),
+        OsString::from("--no-ext-diff"),
+        OsString::from("--find-renames"),
+        OsString::from(from),
+        OsString::from(to),
+        OsString::from("--"),
+    ];
+    if let Some(old_path) = file.old_path.as_deref() {
+        args.push(crate::git_ops::literal_pathspec(old_path));
     }
+    args.push(crate::git_ops::literal_pathspec(&file.path));
 
-    if let Some((old_path, path)) = current_header {
-        chunks.push(PatchChunk {
-            old_path,
-            path,
-            patch: current_lines.join("\n"),
-        });
-    }
-
-    chunks
-        .into_iter()
-        .map(|chunk| (chunk.path.clone(), chunk))
-        .collect()
-}
-
-fn parse_diff_git_line(line: &str) -> Option<(Option<String>, String)> {
-    let rest = line.strip_prefix("diff --git ")?;
-    let mut parts = rest.split_whitespace();
-    let old_path = strip_diff_prefix(parts.next()?);
-    let path = strip_diff_prefix(parts.next()?);
-    Some(((old_path != path).then_some(old_path), path))
-}
-
-fn strip_diff_prefix(path: &str) -> String {
-    path.trim_matches('"')
-        .strip_prefix("a/")
-        .or_else(|| path.trim_matches('"').strip_prefix("b/"))
-        .unwrap_or_else(|| path.trim_matches('"'))
-        .to_owned()
-}
-
-fn patch_for_path(
-    chunks: &BTreeMap<String, PatchChunk>,
-    path: &str,
-    old_path: Option<&str>,
-) -> String {
-    chunks
-        .get(path)
-        .or_else(|| old_path.and_then(|value| chunks.get(value)))
-        .map(|chunk| chunk.patch.clone())
-        .unwrap_or_default()
+    git_stdout_bounded(
+        runner,
+        Some(root),
+        args,
+        operation_name,
+        STASH_DETAILS_OUTPUT_LIMIT_BYTES,
+        "Stash file content is too large to preview.",
+    )
 }
 
 fn change_kind_from_name_status(status: &str) -> DiffChangeKind {
@@ -1070,6 +1089,7 @@ fn bounded_command_output(
             let stderr = finish_stderr_for_error(stderr_result, &stderr_rx);
             return Err(stash_details_limit_error(
                 root.unwrap_or_else(|| Path::new("")),
+                operation_name,
                 format!(
                     "{limit_summary} Preview limit: {limit_bytes} bytes; detected at least {observed_bytes} bytes."
                 ),
@@ -1118,6 +1138,7 @@ fn bounded_command_output(
         } => {
             return Err(stash_details_limit_error(
                 root.unwrap_or_else(|| Path::new("")),
+                operation_name,
                 format!(
                     "{limit_summary} Preview limit: {limit_bytes} bytes; detected at least {observed_bytes} bytes."
                 ),
@@ -1301,11 +1322,12 @@ fn output_reader_error(source: io::Error, stream_name: &str, operation_name: &st
 
 fn stash_details_limit_error(
     root: &Path,
+    operation_name: &str,
     summary: String,
     git: Option<GitCommandError>,
 ) -> AppError {
-    let mut error = AppError::expected(summary, "stashDetails").with_context(
-        OperationContext::new("stashDetails").with_repository_path(display_path(root)),
+    let mut error = AppError::expected(summary, operation_name).with_context(
+        OperationContext::new(operation_name).with_repository_path(display_path(root)),
     );
     if let Some(git) = git {
         error = error.with_git(git);
@@ -1384,13 +1406,6 @@ fn logged(error: AppError) -> AppError {
     crate::logged_app_error(error)
 }
 
-#[derive(Debug)]
-struct PatchChunk {
-    old_path: Option<String>,
-    path: String,
-    patch: String,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1457,23 +1472,16 @@ mod tests {
     }
 
     #[test]
-    fn parses_name_status_and_patch_chunks() {
-        let raw = concat!(
-            "diff --git a/src/a.txt b/src/a.txt\n",
-            "index 111..222 100644\n",
-            "--- a/src/a.txt\n",
-            "+++ b/src/a.txt\n",
-            "@@ -1 +1 @@\n",
-            "-old\n",
-            "+new\n"
-        );
-        let status = b"M\0src/a.txt\0";
-        let files = parse_stash_name_status(status, &parse_patch_chunks(raw));
+    fn parses_name_status_metadata() {
+        let status = b"M\0src/a.txt\0R100\0old.txt\0new.txt\0";
+        let files = parse_stash_name_status(status);
 
-        assert_eq!(files.len(), 1);
+        assert_eq!(files.len(), 2);
         assert_eq!(files[0].path, "src/a.txt");
         assert_eq!(files[0].change_kind, DiffChangeKind::Modified);
-        assert!(files[0].patch.contains("+new"));
+        assert_eq!(files[1].path, "new.txt");
+        assert_eq!(files[1].old_path.as_deref(), Some("old.txt"));
+        assert_eq!(files[1].change_kind, DiffChangeKind::Renamed);
     }
 
     #[test]
@@ -1512,7 +1520,7 @@ mod tests {
     }
 
     #[test]
-    fn oversized_stash_patch_returns_a_bounded_detailed_error() {
+    fn oversized_stash_file_returns_a_bounded_detailed_error() {
         let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.init_with_commit();
@@ -1534,25 +1542,38 @@ mod tests {
         .stash
         .expect("created stash");
 
-        let error = stash_details(
+        let details = stash_details(
             &runner,
             StashDetailsRequest {
                 repository_path: display_path(&repo.path),
-                selector: stash.selector,
+                selector: stash.selector.clone(),
             },
         )
-        .expect_err("oversized stash details");
+        .expect("stash metadata");
+        assert_eq!(details.files.len(), 1);
+
+        let error = stash_file_detail(
+            &runner,
+            StashFileDetailRequest {
+                repository_path: display_path(&repo.path),
+                selector: stash.selector,
+                path: "tracked.txt".to_owned(),
+                operation_id: None,
+            },
+        )
+        .expect_err("oversized stash file detail");
 
         assert!(error
             .summary
-            .contains("Stash content is too large to preview"));
+            .contains("Stash file content is too large to preview"));
+        assert_eq!(error.context.operation_name, "stashFileDetail");
         let canonical_repo = fs::canonicalize(&repo.path).expect("canonical repo");
         assert_eq!(
             error.context.repository_path.as_deref(),
             Some(display_path(&canonical_repo).as_str())
         );
         let git = error.git.expect("git diagnostics");
-        assert!(git.command.iter().any(|argument| argument == "show"));
+        assert!(git.command.iter().any(|argument| argument == "diff"));
         assert!(git.stdout.len() <= GIT_ERROR_OUTPUT_LIMIT_BYTES + 128);
         assert!(git.stdout.contains("output truncated"));
     }
@@ -1628,6 +1649,32 @@ mod tests {
             .files
             .iter()
             .any(|file| file.path == "new/asset.txt" && file.change_kind == DiffChangeKind::Added));
+
+        let tracked_detail = stash_file_detail(
+            &runner,
+            StashFileDetailRequest {
+                repository_path: display_path(&repo.path),
+                selector: stash.selector.clone(),
+                path: "tracked.txt".to_owned(),
+                operation_id: None,
+            },
+        )
+        .expect("tracked stash file detail");
+        assert!(tracked_detail.file.patch.contains("tracked changed"));
+        assert!(!tracked_detail.file.patch.contains("untracked asset"));
+
+        let untracked_detail = stash_file_detail(
+            &runner,
+            StashFileDetailRequest {
+                repository_path: display_path(&repo.path),
+                selector: stash.selector.clone(),
+                path: "new/asset.txt".to_owned(),
+                operation_id: None,
+            },
+        )
+        .expect("untracked stash file detail");
+        assert_eq!(untracked_detail.file.change_kind, DiffChangeKind::Added);
+        assert!(untracked_detail.file.patch.contains("untracked asset"));
 
         let restore = restore_stash(
             &runner,

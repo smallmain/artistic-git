@@ -576,16 +576,6 @@ export type GitSettings = {
   rememberSshPassphrase?: boolean;
 };
 
-export type NetworkSettings = {
-  proxyMode?: ProxyMode;
-  httpProxy?: string | null;
-  httpsProxy?: string | null;
-  allProxy?: string | null;
-  noProxy?: string | null;
-};
-
-export type ProxyMode = "system" | "none" | "custom";
-
 export type GitUserSettings = {
   name?: string | null;
   email?: string | null;
@@ -754,6 +744,14 @@ export type LoggingSettings = {
   retainDays?: number;
 };
 
+export type NetworkSettings = {
+  proxyMode?: ProxyMode;
+  httpProxy?: string | null;
+  httpsProxy?: string | null;
+  allProxy?: string | null;
+  noProxy?: string | null;
+};
+
 export type OnboardingSettings = {
   onboarded?: boolean;
 };
@@ -831,6 +829,8 @@ export type ProjectsDocument = {
   schemaVersion?: number;
   projects?: { [key in string]: ProjectSettings };
 };
+
+export type ProxyMode = "system" | "none" | "custom";
 
 export type RecentProjectEntry = {
   path: string;
@@ -1142,6 +1142,12 @@ export type StartReviewModeResponse = {
   state: ReviewModeState;
 };
 
+export type StashChangedFile = {
+  path: string;
+  oldPath: string | null;
+  changeKind: DiffChangeKind;
+};
+
 export type StashDetailsRequest = {
   repositoryPath: string;
   selector: string;
@@ -1149,8 +1155,7 @@ export type StashDetailsRequest = {
 
 export type StashDetailsResponse = {
   entry: StashEntry;
-  files: StashDiffFile[];
-  rawDiff: string;
+  files: StashChangedFile[];
 };
 
 export type StashDiffFile = {
@@ -1170,6 +1175,18 @@ export type StashEntry = {
   createdAtUnixSeconds: string | null;
   isAutoStash: boolean;
   origin: string | null;
+};
+
+export type StashFileDetailRequest = {
+  repositoryPath: string;
+  selector: string;
+  path: string;
+  operationId: OperationId | null;
+};
+
+export type StashFileDetailResponse = {
+  selector: string;
+  file: StashDiffFile;
 };
 
 export type StashListResponse = {

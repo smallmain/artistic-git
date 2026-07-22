@@ -1347,6 +1347,51 @@ describe("HistoryWorkbench", () => {
     }
   });
 
+  it("reuses a loaded file comparison when switching back to it", async () => {
+    vi.useRealTimers();
+    const summary = createCommitSummary({
+      oid: "3434343434343434343434343434343434343434",
+      subject: "Cached commit file details",
+      time: 1_783_488_000,
+    });
+    const changedFile = (path: string) => ({
+      additions: 0,
+      changeKind: "modified" as const,
+      deletions: 0,
+      newMode: "100755",
+      oldMode: "100644",
+      oldPath: null,
+      path,
+    });
+    logPageMock.mockResolvedValue({ commits: [summary], nextAfter: null });
+    commitDetailsMock.mockResolvedValue({
+      body: null,
+      bodyTruncated: false,
+      files: [changedFile("src/first.ts"), changedFile("src/second.ts")],
+      oid: summary.oid,
+      repositoryPath: "/repo/art",
+      truncated: false,
+    });
+    commitFileDetailMock.mockImplementation(async (request) =>
+      createCommitFileDetailResponse(summary.oid, request.file.path),
+    );
+
+    renderWithProviders(
+      <HistoryWorkbench historyRepositoryPath="/repo/art" rows={[]} />,
+    );
+    fireEvent.click(await screen.findByText(summary.subject));
+
+    const first = await screen.findByRole("button", { name: /src\/first\.ts/ });
+    const second = screen.getByRole("button", { name: /src\/second\.ts/ });
+    await waitFor(() => expect(commitFileDetailMock).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(second);
+    await waitFor(() => expect(commitFileDetailMock).toHaveBeenCalledTimes(2));
+    fireEvent.click(first);
+    await waitFor(() => expect(first).toHaveAttribute("aria-current", "true"));
+    expect(commitFileDetailMock).toHaveBeenCalledTimes(2);
+  });
+
   it("cancels production commit details when the drawer closes", async () => {
     vi.useRealTimers();
     const summary = createCommitSummary({

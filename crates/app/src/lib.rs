@@ -43,7 +43,9 @@ pub mod stash {
     };
     use artistic_git_git_runner::GitRunner;
 
-    pub use super::stash_impl::{cancel_stash_restore, delete_stash, list_stashes, stash_details};
+    pub use super::stash_impl::{
+        cancel_stash_restore, delete_stash, list_stashes, stash_details, stash_file_detail,
+    };
 
     pub fn create_stash(
         runner: &GitRunner,
@@ -126,7 +128,7 @@ pub use settings::{
 pub use ssh_auth::SshPassphrasePromptRequest;
 pub use stash::{
     cancel_stash_restore, create_auto_stash, create_stash, delete_stash, restore_stash,
-    stash_details,
+    stash_details, stash_file_detail,
 };
 
 pub fn sync_current_branch(

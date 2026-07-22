@@ -102,6 +102,8 @@ import type {
   SshPassphrasePromptRequest,
   StashDetailsRequest,
   StashDetailsResponse,
+  StashFileDetailRequest,
+  StashFileDetailResponse,
   StashListResponse,
   StartReviewModeRequest,
   StartReviewModeResponse,
@@ -167,6 +169,7 @@ export interface AppCommandArgs {
   create_stash: { request: CreateStashRequest };
   create_auto_stash: { request: CreateAutoStashRequest };
   stash_details: { request: StashDetailsRequest };
+  stash_file_detail: { request: StashFileDetailRequest };
   restore_stash: { request: RestoreStashRequest };
   cancel_stash_restore: { request: CancelStashRestoreRequest };
   delete_stash: { request: DeleteStashRequest };
@@ -262,6 +265,7 @@ export interface AppCommandResponses {
   create_stash: CreateStashResponse;
   create_auto_stash: CreateStashResponse;
   stash_details: StashDetailsResponse;
+  stash_file_detail: StashFileDetailResponse;
   restore_stash: RestoreStashResponse;
   cancel_stash_restore: CancelStashRestoreResponse;
   delete_stash: DeleteStashResponse;
@@ -673,6 +677,12 @@ export function stashDetails(
   request: StashDetailsRequest,
 ): Promise<StashDetailsResponse> {
   return invokeAppCommand("stash_details", { request });
+}
+
+export function stashFileDetail(
+  request: StashFileDetailRequest,
+): Promise<StashFileDetailResponse> {
+  return invokeAppCommand("stash_file_detail", { request });
 }
 
 export function restoreStash(

@@ -1371,8 +1371,31 @@ pub struct StashDetailsRequest {
 #[serde(rename_all = "camelCase")]
 pub struct StashDetailsResponse {
     pub entry: StashEntry,
-    pub files: Vec<StashDiffFile>,
-    pub raw_diff: String,
+    pub files: Vec<StashChangedFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct StashChangedFile {
+    pub path: String,
+    pub old_path: Option<String>,
+    pub change_kind: DiffChangeKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct StashFileDetailRequest {
+    pub repository_path: String,
+    pub selector: String,
+    pub path: String,
+    pub operation_id: Option<OperationId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct StashFileDetailResponse {
+    pub selector: String,
+    pub file: StashDiffFile,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]

@@ -73,6 +73,7 @@ import {
   saveConflictResolution,
   selectConflictSide,
   stashDetails,
+  stashFileDetail,
   startReviewMode,
   syncAllBranches,
   syncBranch,
@@ -98,7 +99,9 @@ import type {
   SafetyBackupSummary,
   SidebarLayoutSettings,
   StashEntry,
+  StashChangedFile,
   StashDetailsResponse,
+  StashFileDetailResponse,
   StashRecoveryPoint,
 } from "@/lib/ipc/generated";
 import { emitAppEvent } from "@/lib/ipc/events";
@@ -232,7 +235,6 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   const stashActionBusy = stashBusyAction !== null;
   const [localChangesViewModeOverride, setLocalChangesViewModeOverride] =
     React.useState<LocalChangesViewMode | null>(null);
-  const [stashDetailsBusy, setStashDetailsBusy] = React.useState(false);
   const [cancellingOperationId, setCancellingOperationId] = React.useState<
     string | null
   >(null);
@@ -242,8 +244,8 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   const [stashScope, setStashScope] = React.useState<StashScope>("all");
   const [stashToDelete, setStashToDelete] =
     React.useState<StashListItem | null>(null);
-  const [stashDetail, setStashDetail] =
-    React.useState<StashDetailsResponse | null>(null);
+  const [stashDetailEntry, setStashDetailEntry] =
+    React.useState<StashEntry | null>(null);
   const [stashRecoveryByOperation, setStashRecoveryByOperation] =
     React.useState<Record<string, StashRecoveryPoint>>({});
   const [revertAutoStashByOperation, setRevertAutoStashByOperation] =
@@ -275,6 +277,25 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   const stashesQuery = useQuery({
     queryFn: () => listStashes({ repositoryPath }),
     queryKey: repoQueryKeys.stashes(repositoryPath),
+    retry: false,
+  });
+  const stashDetailsQuery = useQuery({
+    enabled: stashDetailEntry !== null,
+    queryFn: () => {
+      if (!stashDetailEntry) {
+        return Promise.reject(new Error("No stash selected."));
+      }
+      return stashDetails({
+        repositoryPath,
+        selector: stashDetailEntry.oid,
+      });
+    },
+    queryKey: [
+      "repository",
+      repositoryPath,
+      "stashDetails",
+      stashDetailEntry?.oid ?? null,
+    ] as const,
     retry: false,
   });
   const localChangesQuery = useQuery({
@@ -837,7 +858,6 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
     branchActionBusy ||
     safetyBackupBusy ||
     stashActionBusy ||
-    stashDetailsBusy ||
     historyWriteBusy ||
     reviewBusy ||
     bisectResetBusy;
@@ -909,41 +929,37 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
                         : stashBusyAction === "create"
                           ? t("localChanges.creatingStash")
                           : t("repository.deletingStash")
-                      : stashDetailsBusy
-                        ? t("repository.stashDetailsBusy")
-                        : historyWriteBusy
-                          ? t("history.revert.busy")
-                          : reviewBusyAction === "sync"
-                            ? t("review.syncing")
-                            : reviewBusyAction === "exit"
-                              ? t("review.exiting")
-                              : reviewBusy
-                                ? t("review.busy")
-                                : repositoryInProgress
-                                  ? repositoryAttentionLabel
-                                  : repositoryDetached
-                                    ? t("repository.detachedHead")
-                                    : summaryQuery.data?.isUnborn
-                                      ? t("repository.unbornHead")
-                                      : repositoryReadErrors.length > 0
-                                        ? t("repository.partialInfoUnavailable")
-                                        : fetchState?.state === "offline"
-                                          ? t("repository.fetchOffline")
-                                          : fetchState?.state === "failed"
-                                            ? t("repository.fetchFailed")
-                                            : repositoryHasOtherRemotes
+                      : historyWriteBusy
+                        ? t("history.revert.busy")
+                        : reviewBusyAction === "sync"
+                          ? t("review.syncing")
+                          : reviewBusyAction === "exit"
+                            ? t("review.exiting")
+                            : reviewBusy
+                              ? t("review.busy")
+                              : repositoryInProgress
+                                ? repositoryAttentionLabel
+                                : repositoryDetached
+                                  ? t("repository.detachedHead")
+                                  : summaryQuery.data?.isUnborn
+                                    ? t("repository.unbornHead")
+                                    : repositoryReadErrors.length > 0
+                                      ? t("repository.partialInfoUnavailable")
+                                      : fetchState?.state === "offline"
+                                        ? t("repository.fetchOffline")
+                                        : fetchState?.state === "failed"
+                                          ? t("repository.fetchFailed")
+                                          : repositoryHasOtherRemotes
+                                            ? t("repository.otherRemotesStatus")
+                                            : additionalRemoteCount > 0
                                               ? t(
-                                                  "repository.otherRemotesStatus",
+                                                  "repository.additionalRemotesStatus",
+                                                  {
+                                                    count:
+                                                      additionalRemoteCount,
+                                                  },
                                                 )
-                                              : additionalRemoteCount > 0
-                                                ? t(
-                                                    "repository.additionalRemotesStatus",
-                                                    {
-                                                      count:
-                                                        additionalRemoteCount,
-                                                    },
-                                                  )
-                                                : t("repository.ready");
+                                              : t("repository.ready");
   const selectedCommitPaths = React.useMemo(
     () => pathsForChangeIds(commitIds ?? [], localChanges),
     [commitIds, localChanges],
@@ -2030,23 +2046,15 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
   }, [repositoryPath, stashToDelete]);
 
   const showStashDetails = React.useCallback(
-    async (stash: StashListItem) => {
-      setStashDetailsBusy(true);
-      try {
-        const response = await stashDetails({
-          repositoryPath,
-          selector: stash.id,
-        });
-        setStashDetail(response);
-      } catch (error) {
-        window.dispatchEvent(
-          new CustomEvent("artistic-git:error", { detail: error }),
-        );
-      } finally {
-        setStashDetailsBusy(false);
+    (stash: StashListItem) => {
+      const entry = stashesQuery.data?.stashes.find(
+        (candidate) => candidate.selector === stash.id,
+      );
+      if (entry) {
+        setStashDetailEntry(entry);
       }
     },
-    [repositoryPath],
+    [stashesQuery.data],
   );
 
   const conflictApi = React.useMemo<ConflictResolutionApi>(
@@ -2571,11 +2579,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
             </div>
           ) : (
             <LocalChangesPanel
-              busy={
-                interactionBusy ||
-                repositoryDetached ||
-                localChangesQuery.isFetching
-              }
+              busy={interactionBusy || repositoryDetached}
               changes={localChanges}
               detailState={localChangeDetailState}
               error={localChangesQuery.error}
@@ -2845,12 +2849,17 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
         totalCount={localChanges.length}
       />
       <StashDetailsDialog
-        details={stashDetail}
+        details={stashDetailsQuery.data ?? null}
+        entry={stashDetailEntry}
+        error={stashDetailsQuery.error}
+        loading={stashDetailsQuery.isPending}
         onOpenChange={(open) => {
           if (!open) {
-            setStashDetail(null);
+            setStashDetailEntry(null);
           }
         }}
+        onRetry={() => void stashDetailsQuery.refetch()}
+        repositoryPath={repositoryPath}
       />
     </main>
   );
@@ -2861,7 +2870,7 @@ async function runCancellableLocalChangeDetail(
   repositoryPath: string,
   change: LocalChangeItem,
 ): Promise<LocalChange> {
-  throwIfLocalChangeDetailAborted(signal);
+  throwIfPreviewAborted(signal);
   const operationId = createRepositoryOperationId("local-change-detail");
   const cancel = () => {
     void cancelOperation({ operationId }).catch(() => undefined);
@@ -2876,16 +2885,46 @@ async function runCancellableLocalChangeDetail(
       repositoryPath,
       submodule: change.submodule,
     });
-    throwIfLocalChangeDetailAborted(signal);
+    throwIfPreviewAborted(signal);
     return detail;
   } finally {
     signal.removeEventListener("abort", cancel);
   }
 }
 
-function throwIfLocalChangeDetailAborted(signal: AbortSignal): void {
+async function runCancellableStashFileDetail(
+  signal: AbortSignal,
+  repositoryPath: string,
+  selector: string,
+  path: string,
+): Promise<StashFileDetailResponse> {
+  throwIfPreviewAborted(signal);
+  const operationId = createRepositoryOperationId("stash-file-detail");
+  const cancel = () => {
+    void cancelOperation({ operationId }).catch(() => undefined);
+  };
+  signal.addEventListener("abort", cancel, { once: true });
+
+  try {
+    const detail = await stashFileDetail({
+      operationId,
+      path,
+      repositoryPath,
+      selector,
+    });
+    throwIfPreviewAborted(signal);
+    if (detail.file.path !== path) {
+      throw new Error("Stash file response did not match the requested path.");
+    }
+    return detail;
+  } finally {
+    signal.removeEventListener("abort", cancel);
+  }
+}
+
+function throwIfPreviewAborted(signal: AbortSignal): void {
   if (signal.aborted) {
-    throw new DOMException("Local change preview was cancelled.", "AbortError");
+    throw new DOMException("Preview was cancelled.", "AbortError");
   }
 }
 
@@ -4267,33 +4306,75 @@ function RestoreChangesDialog({
 
 function StashDetailsDialog({
   details,
+  entry,
+  error,
+  loading,
   onOpenChange,
+  onRetry,
+  repositoryPath,
 }: {
   details: StashDetailsResponse | null;
+  entry: StashEntry | null;
+  error: unknown;
+  loading: boolean;
   onOpenChange: (open: boolean) => void;
+  onRetry: () => void;
+  repositoryPath: string;
 }) {
   const { t } = useTranslation();
   const formatters = useLocalizedFormatters();
+  const [selectedPath, setSelectedPath] = React.useState<string | null>(null);
+  const activeFile =
+    details?.files.find((file) => file.path === selectedPath) ??
+    details?.files[0] ??
+    null;
+  const fileDetailQuery = useQuery({
+    enabled: entry !== null && activeFile !== null,
+    queryFn: ({ signal }) => {
+      if (!entry || !activeFile) {
+        return Promise.reject(new Error("No stash file selected."));
+      }
+      return runCancellableStashFileDetail(
+        signal,
+        repositoryPath,
+        entry.oid,
+        activeFile.path,
+      );
+    },
+    queryKey: [
+      "repository",
+      repositoryPath,
+      "stashFileDetail",
+      entry?.oid ?? null,
+      activeFile?.path ?? null,
+    ] as const,
+    retry: false,
+  });
 
-  if (!details) {
+  if (!entry) {
     return null;
   }
 
-  const createdAt = details.entry.createdAtUnixSeconds
-    ? formatters.formatDate(Number(details.entry.createdAtUnixSeconds) * 1000, {
+  const displayEntry = details?.entry ?? entry;
+  const createdAt = displayEntry.createdAtUnixSeconds
+    ? formatters.formatDate(Number(displayEntry.createdAtUnixSeconds) * 1000, {
         dateStyle: "medium",
         timeStyle: "short",
       })
     : t("repository.stashUnknownTime");
-  const autoStashOrigin = localizedAutoStashOrigin(details.entry.origin, t);
-  const title = details.entry.isAutoStash
+  const autoStashOrigin = localizedAutoStashOrigin(displayEntry.origin, t);
+  const title = displayEntry.isAutoStash
     ? t("repository.autoStashName", { origin: autoStashOrigin })
-    : details.entry.message;
+    : displayEntry.message;
+  const loadedFile =
+    activeFile && fileDetailQuery.data?.file.path === activeFile.path
+      ? fileDetailQuery.data.file
+      : null;
 
   return (
     <DialogFrame
       className="max-w-4xl"
-      description={details.entry.selector}
+      description={displayEntry.selector}
       footer={
         <div className="flex justify-end">
           <Button
@@ -4313,7 +4394,7 @@ function StashDetailsDialog({
           <div className="min-w-0">
             <dt className="font-medium">{t("repository.stashSelector")}</dt>
             <dd className="truncate text-muted-foreground">
-              {details.entry.selector}
+              {displayEntry.selector}
             </dd>
           </div>
           <div className="min-w-0">
@@ -4322,7 +4403,7 @@ function StashDetailsDialog({
           </div>
         </dl>
 
-        {details.entry.isAutoStash ? (
+        {displayEntry.isAutoStash ? (
           <div className="rounded-md border bg-secondary px-3 py-2 text-sm">
             {t("repository.autoStashOrigin", {
               origin: autoStashOrigin,
@@ -4330,25 +4411,87 @@ function StashDetailsDialog({
           </div>
         ) : null}
       </div>
-      <div className="mt-4 grid min-h-0 gap-4 md:grid-cols-[260px_minmax(0,1fr)]">
-        <div className="min-h-0 rounded-md border bg-background">
-          <div className="border-b px-3 py-2 text-sm font-medium">
-            {t("repository.stashFiles", { count: details.files.length })}
-          </div>
-          <StashDetailsFileList files={details.files} />
+      {loading && !details ? (
+        <div
+          className="mt-4 flex min-h-48 items-center justify-center gap-2 rounded-md border bg-background text-sm text-muted-foreground"
+          role="status"
+        >
+          <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+          {t("repository.stashDetailsBusy")}
         </div>
-        <pre className="max-h-80 overflow-auto rounded-md border bg-background p-3 text-xs">
-          {details.rawDiff || t("repository.stashNoDiff")}
-        </pre>
-      </div>
+      ) : error && !details ? (
+        <div
+          className="mt-4 flex min-h-48 flex-col items-center justify-center gap-3 rounded-md border bg-background p-6 text-center text-sm"
+          role="alert"
+        >
+          <span className="text-muted-foreground">
+            {t("repository.stashDetailsLoadFailed")}
+          </span>
+          <Button onClick={onRetry} type="button" variant="secondary">
+            {t("actions.retry")}
+          </Button>
+        </div>
+      ) : details ? (
+        <div className="mt-4 grid min-h-0 gap-4 md:grid-cols-[260px_minmax(0,1fr)]">
+          <div className="min-h-0 rounded-md border bg-background">
+            <div className="border-b px-3 py-2 text-sm font-medium">
+              {t("repository.stashFiles", { count: details.files.length })}
+            </div>
+            <StashDetailsFileList
+              activePath={activeFile?.path ?? null}
+              files={details.files}
+              onSelect={setSelectedPath}
+            />
+          </div>
+          <div className="flex min-h-48 min-w-0">
+            {!activeFile ? (
+              <div className="flex flex-1 items-center justify-center rounded-md border bg-background p-6 text-center text-sm text-muted-foreground">
+                {t("repository.stashNoDiff")}
+              </div>
+            ) : loadedFile ? (
+              <pre className="max-h-80 min-w-0 flex-1 overflow-auto rounded-md border bg-background p-3 text-xs">
+                {loadedFile.patch || t("repository.stashNoDiff")}
+              </pre>
+            ) : fileDetailQuery.error ? (
+              <div
+                className="flex flex-1 flex-col items-center justify-center gap-3 rounded-md border bg-background p-6 text-center text-sm"
+                role="alert"
+              >
+                <span className="text-muted-foreground">
+                  {t("repository.stashFileLoadFailed")}
+                </span>
+                <Button
+                  onClick={() => void fileDetailQuery.refetch()}
+                  type="button"
+                  variant="secondary"
+                >
+                  {t("actions.retry")}
+                </Button>
+              </div>
+            ) : (
+              <div
+                className="flex flex-1 items-center justify-center gap-2 rounded-md border bg-background text-sm text-muted-foreground"
+                role="status"
+              >
+                <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                {t("repository.stashFileLoading")}
+              </div>
+            )}
+          </div>
+        </div>
+      ) : null}
     </DialogFrame>
   );
 }
 
 function StashDetailsFileList({
+  activePath,
   files,
+  onSelect,
 }: {
-  files: StashDetailsResponse["files"];
+  activePath: string | null;
+  files: StashChangedFile[];
+  onSelect: (path: string) => void;
 }) {
   const { t } = useTranslation();
   const [pageIndex, setPageIndex] = React.useState(0);
@@ -4367,15 +4510,22 @@ function StashDetailsFileList({
       <OverlayScrollArea className="max-h-80" viewportClassName="max-h-80">
         <ul className="p-1 text-sm">
           {visibleFiles.map((file) => (
-            <li
-              className="rounded px-2 py-1"
-              data-testid="stash-detail-file"
-              key={file.path}
-            >
-              <span className="block truncate">{file.path}</span>
-              <span className="text-xs text-muted-foreground">
-                {t(`diff.changeKind.${file.changeKind}`)}
-              </span>
+            <li key={`${file.oldPath ?? ""}\0${file.path}`}>
+              <button
+                aria-pressed={activePath === file.path}
+                className={cn(
+                  "w-full rounded px-2 py-1 text-left hover:bg-secondary",
+                  activePath === file.path && "bg-secondary",
+                )}
+                data-testid="stash-detail-file"
+                onClick={() => onSelect(file.path)}
+                type="button"
+              >
+                <span className="block truncate">{file.path}</span>
+                <span className="text-xs text-muted-foreground">
+                  {t(`diff.changeKind.${file.changeKind}`)}
+                </span>
+              </button>
             </li>
           ))}
         </ul>

@@ -31,10 +31,11 @@ use artistic_git_contracts::{
     RepositorySummary, RestoreChangesRequest, RestoreChangesResponse, RestoreStashRequest,
     RestoreStashResponse, RevertCommitRequest, RevertCommitResponse, ReviewModeRecoveryRequest,
     ReviewModeRecoveryResponse, ReviewModeRequest, SafetyBackupListResponse,
-    SaveRemoteSettingsRequest, StartReviewModeRequest, StartReviewModeResponse,
-    StashDetailsRequest, StashDetailsResponse, StashListResponse, SyncAllBranchesRequest,
-    SyncAllBranchesResponse, SyncBranchRequest, SyncBranchResponse, SyncCurrentBranchRequest,
-    SyncCurrentBranchResponse, SyncReviewModeResponse,
+    SaveRemoteSettingsRequest, StartReviewModeRequest, StartReviewModeResponse, StashChangedFile,
+    StashDetailsRequest, StashDetailsResponse, StashFileDetailRequest, StashFileDetailResponse,
+    StashListResponse, SyncAllBranchesRequest, SyncAllBranchesResponse, SyncBranchRequest,
+    SyncBranchResponse, SyncCurrentBranchRequest, SyncCurrentBranchResponse,
+    SyncReviewModeResponse,
 };
 use artistic_git_core::config::{
     AppSettings, ConfigChangeEvent, ProjectSettings, ProjectsDocument,
@@ -97,6 +98,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register::<CreateStashResponse>()
         .register::<StashDetailsRequest>()
         .register::<StashDetailsResponse>()
+        .register::<StashChangedFile>()
+        .register::<StashFileDetailRequest>()
+        .register::<StashFileDetailResponse>()
         .register::<RestoreStashRequest>()
         .register::<RestoreStashResponse>()
         .register::<CancelStashRestoreRequest>()

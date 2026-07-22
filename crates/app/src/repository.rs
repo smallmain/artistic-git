@@ -21,7 +21,8 @@ use artistic_git_contracts::{
     RepositoryMiddleStateKind, RepositoryOpenWarning, RepositoryOpenWarningKind,
     RepositoryPathRequest, RepositoryRemote, RepositoryRemoteMode, RepositorySummary,
     RestoreStashRequest, RestoreStashResponse, SafetyBackupListResponse, SaveRemoteSettingsRequest,
-    StashDetailsRequest, StashDetailsResponse, StashListResponse,
+    StashDetailsRequest, StashDetailsResponse, StashFileDetailRequest, StashFileDetailResponse,
+    StashListResponse,
 };
 use artistic_git_core::config::{
     AppSettings, ConfigActor, GitUserSettings, ProjectSettings, WindowGeometry,
@@ -914,6 +915,16 @@ impl RepositoryBackend {
         crate::stash::stash_details(&self.runner, request)
     }
 
+    pub fn stash_file_detail(
+        &self,
+        request: StashFileDetailRequest,
+    ) -> AppResult<StashFileDetailResponse> {
+        let operation_id = request.operation_id.clone();
+        self.run_cancellable_operation(operation_id, "stashFileDetail", || {
+            crate::stash::stash_file_detail(&self.runner, request)
+        })
+    }
+
     pub fn restore_stash(&self, request: RestoreStashRequest) -> AppResult<RestoreStashResponse> {
         let operation_id = request.operation_id.clone();
         self.run_cancellable_operation(operation_id, "restoreStash", || {
@@ -1722,7 +1733,7 @@ pub fn list_local_changes(
     request: RepositoryPathRequest,
 ) -> AppResult<LocalChangesResponse> {
     let root = canonical_repository_path(&request.repository_path, "listLocalChanges")?;
-    let mut preview_budget = LocalChangePreviewBudget::default();
+    let mut preview_budget = LocalChangePreviewBudget::metadata_only();
     let mut entry_budget = LocalChangeEntryBudget::default();
     let mut changes = list_local_changes_for_repository(
         runner,
@@ -1786,7 +1797,7 @@ fn list_local_changes_for_repository(
     }
     let output = git_output_bytes(runner, Some(root), args, load_policy.operation_name())?;
     entry_budget.reserve(local_change_entry_count_bytes(&output), root)?;
-    let changed_lines = if output.is_empty() {
+    let changed_lines = if output.is_empty() || preview_budget.exhausted() {
         BTreeMap::new()
     } else {
         local_change_changed_lines(runner, root, path_filters, load_policy.operation_name())
@@ -4973,6 +4984,13 @@ impl Default for LocalChangePreviewBudget {
 }
 
 impl LocalChangePreviewBudget {
+    fn metadata_only() -> Self {
+        Self {
+            remaining_bytes: 0,
+            remaining_files: 0,
+        }
+    }
+
     fn for_policy(load_policy: LocalChangeLoadPolicy) -> Self {
         let mut budget = Self::default();
         if matches!(load_policy, LocalChangeLoadPolicy::Detail) {
@@ -8283,15 +8301,8 @@ mod tests {
             "tracked.txt"
         );
         assert_eq!(tracked.payload.metadata.get("submodule"), None);
-        match &tracked.diff {
-            DiffContent::Text {
-                old_text, new_text, ..
-            } => {
-                assert_eq!(old_text.as_deref(), Some("one\n"));
-                assert_eq!(new_text.as_deref(), Some("two\n"));
-            }
-            other => panic!("expected text diff, got {other:?}"),
-        }
+        assert_eq!(tracked.payload.file_kind, DiffFileKind::Deferred);
+        assert!(matches!(tracked.diff, DiffContent::Deferred { .. }));
 
         let added = changes
             .changes
@@ -8319,7 +8330,14 @@ mod tests {
         )
         .expect("submodule local change detail");
         assert_eq!(detail.path, "deps/lib/tracked.txt");
-        assert!(matches!(detail.diff, DiffContent::Text { .. }));
+        assert!(matches!(
+            detail.diff,
+            DiffContent::Text {
+                old_text: Some(ref old_text),
+                new_text: Some(ref new_text),
+                ..
+            } if old_text == "one\n" && new_text == "two\n"
+        ));
     }
 
     #[test]
@@ -8633,6 +8651,18 @@ mod tests {
         repo.write("tracked.txt", "two\n");
         repo.write("unrelated.txt", "unrelated\n");
 
+        let changes = list_local_changes(
+            &runner,
+            RepositoryPathRequest {
+                repository_path: display_path(&repo.path),
+            },
+        )
+        .expect("local change metadata");
+        assert!(changes.changes.iter().all(|change| {
+            change.payload.file_kind == DiffFileKind::Deferred
+                && matches!(change.diff, DiffContent::Deferred { .. })
+        }));
+
         let detail = local_change_detail(
             &runner,
             LocalChangeDetailRequest {
@@ -8682,7 +8712,7 @@ mod tests {
     }
 
     #[test]
-    fn local_changes_do_not_load_oversized_worktree_files() {
+    fn local_change_list_defers_oversized_worktree_files() {
         let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.init_with_commit();
@@ -8702,13 +8732,30 @@ mod tests {
             .find(|change| change.path == "oversized.txt")
             .expect("oversized change");
 
-        assert_eq!(change.payload.file_kind, DiffFileKind::OversizedText);
+        assert_eq!(change.payload.file_kind, DiffFileKind::Deferred);
+        assert_eq!(change.payload.metadata["previewDeferred"], "true");
+        assert!(!change.payload.metadata.contains_key("newBytes"));
+        assert!(!change.payload.metadata.contains_key("oversized"));
+        assert!(matches!(change.diff, DiffContent::Deferred { .. }));
+
+        let detail = local_change_detail(
+            &runner,
+            LocalChangeDetailRequest {
+                repository_path: display_path(&repo.path),
+                path: "oversized.txt".to_owned(),
+                old_path: None,
+                submodule: None,
+                operation_id: None,
+            },
+        )
+        .expect("oversized local change detail");
+        assert_eq!(detail.payload.file_kind, DiffFileKind::OversizedText);
         assert_eq!(
-            change.payload.metadata["newBytes"],
+            detail.payload.metadata["newBytes"],
             (OVERSIZED_TEXT_BYTES + 1).to_string()
         );
-        assert_eq!(change.payload.metadata["oversized"], "true");
-        assert!(matches!(change.diff, DiffContent::Deferred { .. }));
+        assert_eq!(detail.payload.metadata["oversized"], "true");
+        assert!(matches!(detail.diff, DiffContent::Deferred { .. }));
     }
 
     #[test]
@@ -8854,7 +8901,7 @@ mod tests {
     }
 
     #[test]
-    fn local_changes_render_available_lfs_content_instead_of_pointer() {
+    fn local_change_detail_renders_available_lfs_content_instead_of_pointer() {
         let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.init_with_commit();
@@ -8884,10 +8931,24 @@ size 16\n"
             .find(|change| change.path == "asset.bin")
             .expect("asset change");
 
-        assert_eq!(change.payload.file_kind, DiffFileKind::Text);
-        assert_eq!(change.payload.metadata["lfsResolved"], "true");
-        assert_eq!(change.payload.metadata["lfsFetchStatus"], "local");
-        match &change.diff {
+        assert_eq!(change.payload.file_kind, DiffFileKind::Deferred);
+        assert!(matches!(change.diff, DiffContent::Deferred { .. }));
+
+        let detail = local_change_detail(
+            &runner,
+            LocalChangeDetailRequest {
+                repository_path: display_path(&repo.path),
+                path: "asset.bin".to_owned(),
+                old_path: None,
+                submodule: None,
+                operation_id: None,
+            },
+        )
+        .expect("LFS local change detail");
+        assert_eq!(detail.payload.file_kind, DiffFileKind::Text);
+        assert_eq!(detail.payload.metadata["lfsResolved"], "true");
+        assert_eq!(detail.payload.metadata["lfsFetchStatus"], "local");
+        match &detail.diff {
             DiffContent::Text {
                 old_text, new_text, ..
             } => {

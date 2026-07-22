@@ -1959,6 +1959,22 @@ async fn stash_details(
 }
 
 #[tauri::command]
+async fn stash_file_detail(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_contracts::StashFileDetailRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_contracts::StashFileDetailResponse> {
+    let operation_reservation = backend
+        .inner()
+        .reserve_cancellable_operation(request.operation_id.as_ref(), "stashFileDetail")?;
+    let backend = backend.inner().clone();
+    run_blocking_command("stashFileDetail", move || {
+        let _operation_reservation = operation_reservation;
+        backend.stash_file_detail(request)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn restore_stash(
     app_handle: tauri::AppHandle,
     window: tauri::Window,
@@ -2765,6 +2781,7 @@ pub fn run() {
             create_stash,
             create_auto_stash,
             stash_details,
+            stash_file_detail,
             restore_stash,
             cancel_stash_restore,
             delete_stash,
