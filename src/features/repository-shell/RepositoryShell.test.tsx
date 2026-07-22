@@ -558,12 +558,24 @@ beforeEach(() => {
   });
   commandMocks.stashFileDetail.mockImplementation((request) =>
     Promise.resolve({
+      diff: {
+        kind: "text",
+        language: null,
+        newText: "",
+        oldText: "",
+      },
       file: {
         changeKind: "modified",
-        fileKind: "text",
         oldPath: null,
-        patch: "",
         path: request.path,
+      },
+      payload: {
+        changeKind: "modified",
+        fileKind: "text",
+        lfsLock: null,
+        metadata: {},
+        newPath: request.path,
+        oldPath: null,
       },
       selector: request.selector,
     }),
@@ -2111,12 +2123,24 @@ describe("RepositoryShell stash flow", () => {
       ],
     });
     commandMocks.stashFileDetail.mockResolvedValue({
+      diff: {
+        kind: "text",
+        language: null,
+        newText: "new",
+        oldText: "old",
+      },
       file: {
         changeKind: "modified",
-        fileKind: "text",
         oldPath: null,
-        patch: "diff --git a/src/app.ts b/src/app.ts\n+new",
         path: "src/app.ts",
+      },
+      payload: {
+        changeKind: "modified",
+        fileKind: "text",
+        lfsLock: null,
+        metadata: {},
+        newPath: "src/app.ts",
+        oldPath: null,
       },
       selector: "stash@{0}",
     });
@@ -2140,9 +2164,21 @@ describe("RepositoryShell stash flow", () => {
     expect(await within(dialog).findByText(/2026/)).toBeVisible();
     expect(dialog).toHaveTextContent("src/app.ts");
     expect(dialog).toHaveTextContent("Modified");
-    expect(
-      await within(dialog).findByText(/diff --git a\/src\/app\.ts/),
-    ).toBeVisible();
+    expect(dialog).toHaveClass("h-[min(44rem,calc(100vh-3rem))]");
+    expect(within(dialog).getByTestId("stash-detail-layout")).toHaveClass(
+      "min-h-0",
+      "flex-1",
+      "overflow-hidden",
+    );
+    expect(within(dialog).getByTestId("stash-detail-diff-pane")).toHaveClass(
+      "min-h-0",
+      "overflow-hidden",
+    );
+    const viewer = await within(dialog).findByLabelText("File comparison");
+    expect(viewer).toHaveAttribute("data-diff-source", "stashDetails");
+    expect(within(viewer).getByText("old")).toBeVisible();
+    expect(within(viewer).getByText("new")).toBeVisible();
+    expect(dialog).not.toHaveTextContent("diff --git");
     expect(commandMocks.stashDetails).toHaveBeenCalledWith({
       repositoryPath: "/repo/art",
       selector: "stashoid",
@@ -2155,7 +2191,7 @@ describe("RepositoryShell stash flow", () => {
     });
   });
 
-  it("loads stash patches per selected file and reuses cached previews", async () => {
+  it("keeps its height while switching visual stash diffs and reuses cached previews", async () => {
     const entry = stashEntry({
       message: "Two file stash",
       selector: "stash@{0}",
@@ -2163,22 +2199,57 @@ describe("RepositoryShell stash flow", () => {
     commandMocks.listStashes.mockResolvedValue({ stashes: [entry] });
     commandMocks.stashDetails.mockResolvedValue({
       entry,
-      files: ["src/first.ts", "src/second.ts"].map((path) => ({
+      files: ["src/first.ts", "assets/second.png"].map((path) => ({
         changeKind: "modified" as const,
         oldPath: null,
         path,
       })),
     });
-    commandMocks.stashFileDetail.mockImplementation(async (request) => ({
-      file: {
-        changeKind: "modified" as const,
-        fileKind: "text" as const,
-        oldPath: null,
-        patch: `diff --git a/${request.path} b/${request.path}`,
-        path: request.path,
-      },
-      selector: request.selector,
-    }));
+    commandMocks.stashFileDetail.mockImplementation(async (request) => {
+      const image = request.path === "assets/second.png";
+      return {
+        diff: image
+          ? {
+              kind: "image" as const,
+              newImage: {
+                alt: "new stash image",
+                height: 1,
+                mimeType: "image/png",
+                sizeBytes: 1,
+                src: "data:image/png;base64,",
+                width: 1,
+              },
+              oldImage: {
+                alt: "old stash image",
+                height: 1,
+                mimeType: "image/png",
+                sizeBytes: 1,
+                src: "data:image/png;base64,",
+                width: 1,
+              },
+            }
+          : {
+              kind: "text" as const,
+              language: "ts",
+              newText: "new stash content",
+              oldText: "old stash content",
+            },
+        file: {
+          changeKind: "modified" as const,
+          oldPath: null,
+          path: request.path,
+        },
+        payload: {
+          changeKind: "modified" as const,
+          fileKind: image ? ("image" as const) : ("text" as const),
+          lfsLock: null,
+          metadata: {},
+          newPath: request.path,
+          oldPath: null,
+        },
+        selector: request.selector,
+      };
+    });
     renderWithProviders(<RepositoryShell repositoryPath="/repo/art" />);
 
     fireEvent.click(
@@ -2191,19 +2262,27 @@ describe("RepositoryShell stash flow", () => {
       name: /src\/first\.ts/,
     });
     const second = within(dialog).getByRole("button", {
-      name: /src\/second\.ts/,
+      name: /assets\/second\.png/,
     });
     await waitFor(() =>
       expect(commandMocks.stashFileDetail).toHaveBeenCalledTimes(1),
     );
+    const fixedDialogClassName = dialog.className;
 
     fireEvent.click(second);
     await waitFor(() =>
       expect(commandMocks.stashFileDetail).toHaveBeenCalledTimes(2),
     );
+    expect(
+      await within(dialog).findByRole("slider", { name: "Zoom" }),
+    ).toBeVisible();
+    expect(within(dialog).getByAltText("old stash image")).toBeVisible();
+    expect(within(dialog).getByAltText("new stash image")).toBeVisible();
+    expect(dialog.className).toBe(fixedDialogClassName);
     fireEvent.click(first);
     await waitFor(() => expect(first).toHaveAttribute("aria-pressed", "true"));
     expect(commandMocks.stashFileDetail).toHaveBeenCalledTimes(2);
+    expect(dialog.className).toBe(fixedDialogClassName);
   });
 
   it("keeps large stash detail file lists on bounded pages", async () => {

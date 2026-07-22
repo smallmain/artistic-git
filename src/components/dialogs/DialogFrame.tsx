@@ -11,6 +11,8 @@ interface DialogFrameProps {
   children: React.ReactNode;
   className?: string;
   closeOnEscape?: boolean;
+  contentClassName?: string;
+  contentViewportClassName?: string;
   "data-testid"?: string;
   description: string;
   dismissible?: boolean;
@@ -24,6 +26,8 @@ export function DialogFrame({
   children,
   className,
   closeOnEscape = true,
+  contentClassName,
+  contentViewportClassName,
   "data-testid": testId,
   description,
   dismissible = true,
@@ -83,7 +87,13 @@ export function DialogFrame({
             )}
           </div>
 
-          <OverlayScrollArea viewportClassName="flex flex-col gap-4 p-5">
+          <OverlayScrollArea
+            className={contentClassName}
+            viewportClassName={cn(
+              "flex flex-col gap-4 p-5",
+              contentViewportClassName,
+            )}
+          >
             {children}
           </OverlayScrollArea>
           {footer ? <div className="border-t p-5">{footer}</div> : null}

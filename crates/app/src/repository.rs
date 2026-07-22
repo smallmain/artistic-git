@@ -2389,21 +2389,14 @@ pub fn commit_file_detail(
         | DiffChangeKind::Copied => Some((request.oid.as_str(), file.path.as_str())),
     };
 
-    let old_size = historical_blob_size(runner, &root, old_revision_and_path, operation_name)?;
-    let new_size = historical_blob_size(runner, &root, new_revision_and_path, operation_name)?;
-    let preview_limit = LocalChangeLoadPolicy::Historical.preview_limit(&file.path);
-    let oversized = old_size.is_some_and(|size| size > preview_limit as u64)
-        || new_size.is_some_and(|size| size > preview_limit as u64);
-
-    let (payload, diff) = if oversized {
-        commit_file_oversized_diff(&file, old_size, new_size, preview_limit)
-    } else {
-        let old_content =
-            historical_blob_content(runner, &root, old_revision_and_path, operation_name)?;
-        let new_content =
-            historical_blob_content(runner, &root, new_revision_and_path, operation_name)?;
-        commit_file_diff(runner, &root, &file, old_content, new_content)?
-    };
+    let (payload, diff) = historical_file_diff(
+        runner,
+        &root,
+        &file,
+        old_revision_and_path,
+        new_revision_and_path,
+        operation_name,
+    )?;
 
     Ok(CommitFileDetailResponse {
         repository_path: display_path(&root),
@@ -2816,6 +2809,34 @@ fn historical_blob_content(
     revision_and_path
         .map(|(revision, path)| git_blob_at_rev_path(runner, root, revision, path, operation_name))
         .transpose()
+}
+
+pub(crate) fn historical_file_diff(
+    runner: &GitRunner,
+    root: &Path,
+    file: &CommitChangedFile,
+    old_revision_and_path: Option<(&str, &str)>,
+    new_revision_and_path: Option<(&str, &str)>,
+    operation_name: &str,
+) -> AppResult<(DiffPayload, DiffContent)> {
+    let old_size = historical_blob_size(runner, root, old_revision_and_path, operation_name)?;
+    let new_size = historical_blob_size(runner, root, new_revision_and_path, operation_name)?;
+    let preview_limit = LocalChangeLoadPolicy::Historical.preview_limit(&file.path);
+    let oversized = old_size.is_some_and(|size| size > preview_limit as u64)
+        || new_size.is_some_and(|size| size > preview_limit as u64);
+
+    if oversized {
+        return Ok(commit_file_oversized_diff(
+            file,
+            old_size,
+            new_size,
+            preview_limit,
+        ));
+    }
+
+    let old_content = historical_blob_content(runner, root, old_revision_and_path, operation_name)?;
+    let new_content = historical_blob_content(runner, root, new_revision_and_path, operation_name)?;
+    commit_file_diff(runner, root, file, old_content, new_content)
 }
 
 fn historical_submodule_diff(

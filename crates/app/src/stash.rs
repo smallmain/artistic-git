@@ -1,11 +1,11 @@
 use artistic_git_contracts::{
-    AppError, AppResult, CancelStashRestoreRequest, CancelStashRestoreResponse,
+    AppError, AppResult, CancelStashRestoreRequest, CancelStashRestoreResponse, CommitChangedFile,
     ConflictEnteredEvent, ConflictFile, ConflictResolutionStatus, CreateAutoStashRequest,
     CreateStashRequest, CreateStashResponse, DeleteStashRequest, DeleteStashResponse,
     DiffChangeKind, DiffFileKind, GitCommandError, OperationContext, OperationId,
     RestoreStashRequest, RestoreStashResponse, StashChangedFile, StashDetailsRequest,
-    StashDetailsResponse, StashDiffFile, StashEntry, StashFileDetailRequest,
-    StashFileDetailResponse, StashListResponse, StashRecoveryPoint, StashRestoreOutcome,
+    StashDetailsResponse, StashEntry, StashFileDetailRequest, StashFileDetailResponse,
+    StashListResponse, StashRecoveryPoint, StashRestoreOutcome,
 };
 use artistic_git_core::diff_engine::OVERSIZED_TEXT_BYTES;
 use artistic_git_git_runner::{GitCommandPlan, GitRunner};
@@ -145,29 +145,53 @@ pub fn stash_file_detail(
         )));
     };
 
-    let mut patch = stash_path_diff(runner, &root, first_parent, &entry.oid, &file, OPERATION)?;
-    if patch.is_empty() {
-        if let Some(untracked_parent) = parents.get(2) {
-            patch = stash_path_diff(
+    let old_path = file.old_path.as_deref().unwrap_or(file.path.as_str());
+    let old_revision_and_path =
+        (file.change_kind != DiffChangeKind::Added).then_some((first_parent.as_str(), old_path));
+    let new_revision = if file.change_kind == DiffChangeKind::Deleted {
+        None
+    } else {
+        Some(
+            stash_file_new_revision(
                 runner,
                 &root,
-                first_parent,
-                untracked_parent,
-                &file,
+                &entry.oid,
+                parents.get(2).map(String::as_str),
+                &file.path,
                 OPERATION,
-            )?;
-        }
-    }
+            )?
+            .ok_or_else(|| {
+                logged(AppError::expected(
+                "the selected stash file content no longer exists; reload the stash and try again",
+                OPERATION,
+            ))
+            })?,
+        )
+    };
+    let new_revision_and_path = new_revision.map(|revision| (revision, file.path.as_str()));
+    let historical_file = CommitChangedFile {
+        path: file.path.clone(),
+        old_path: file.old_path.clone(),
+        old_mode: None,
+        new_mode: None,
+        change_kind: file.change_kind,
+        additions: 0,
+        deletions: 0,
+    };
+    let (payload, diff) = crate::repository::historical_file_diff(
+        runner,
+        &root,
+        &historical_file,
+        old_revision_and_path,
+        new_revision_and_path,
+        OPERATION,
+    )?;
 
     Ok(StashFileDetailResponse {
         selector: entry.selector,
-        file: StashDiffFile {
-            path: file.path,
-            old_path: file.old_path,
-            change_kind: file.change_kind,
-            file_kind: file_kind_from_patch(&patch),
-            patch,
-        },
+        file,
+        payload,
+        diff,
     })
 }
 
@@ -732,37 +756,45 @@ fn stash_commit_parents(
         .collect())
 }
 
-fn stash_path_diff(
+fn stash_file_new_revision<'a>(
     runner: &GitRunner,
     root: &Path,
-    from: &str,
-    to: &str,
-    file: &StashChangedFile,
+    stash_revision: &'a str,
+    untracked_revision: Option<&'a str>,
+    path: &str,
     operation_name: &str,
-) -> AppResult<String> {
-    let mut args = vec![
-        OsString::from("diff"),
-        OsString::from("--patch"),
-        OsString::from("--no-color"),
-        OsString::from("--no-ext-diff"),
-        OsString::from("--find-renames"),
-        OsString::from(from),
-        OsString::from(to),
-        OsString::from("--"),
-    ];
-    if let Some(old_path) = file.old_path.as_deref() {
-        args.push(crate::git_ops::literal_pathspec(old_path));
+) -> AppResult<Option<&'a str>> {
+    if tree_contains_path(runner, root, stash_revision, path, operation_name)? {
+        return Ok(Some(stash_revision));
     }
-    args.push(crate::git_ops::literal_pathspec(&file.path));
+    if let Some(untracked_revision) = untracked_revision {
+        if tree_contains_path(runner, root, untracked_revision, path, operation_name)? {
+            return Ok(Some(untracked_revision));
+        }
+    }
+    Ok(None)
+}
 
-    git_stdout_bounded(
+fn tree_contains_path(
+    runner: &GitRunner,
+    root: &Path,
+    revision: &str,
+    path: &str,
+    operation_name: &str,
+) -> AppResult<bool> {
+    let output = git_output_bytes(
         runner,
         Some(root),
-        args,
+        [
+            OsString::from("ls-tree"),
+            OsString::from("-z"),
+            OsString::from(revision),
+            OsString::from("--"),
+            crate::git_ops::literal_pathspec(path),
+        ],
         operation_name,
-        STASH_DETAILS_OUTPUT_LIMIT_BYTES,
-        "Stash file content is too large to preview.",
-    )
+    )?;
+    Ok(!output.is_empty())
 }
 
 fn change_kind_from_name_status(status: &str) -> DiffChangeKind {
@@ -772,14 +804,6 @@ fn change_kind_from_name_status(status: &str) -> DiffChangeKind {
         Some('R') => DiffChangeKind::Renamed,
         Some('C') => DiffChangeKind::Copied,
         _ => DiffChangeKind::Modified,
-    }
-}
-
-fn file_kind_from_patch(patch: &str) -> DiffFileKind {
-    if patch.contains("Binary files ") || patch.contains("GIT binary patch") {
-        DiffFileKind::Binary
-    } else {
-        DiffFileKind::Text
     }
 }
 
@@ -999,29 +1023,6 @@ where
         limit_bytes,
         limit_summary,
     )
-}
-
-fn git_stdout_bounded<I, S>(
-    runner: &GitRunner,
-    root: Option<&Path>,
-    args: I,
-    operation_name: &str,
-    limit_bytes: usize,
-    limit_summary: &str,
-) -> AppResult<String>
-where
-    I: IntoIterator<Item = S>,
-    S: Into<OsString>,
-{
-    git_output_bytes_bounded(
-        runner,
-        root,
-        args,
-        operation_name,
-        limit_bytes,
-        limit_summary,
-    )
-    .map(|output| String::from_utf8_lossy(&output).into_owned())
 }
 
 fn bounded_command_output(
@@ -1409,7 +1410,7 @@ fn logged(error: AppError) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use artistic_git_contracts::RepositoryPathRequest;
+    use artistic_git_contracts::{DiffContent, RepositoryPathRequest};
     use artistic_git_git_runner::{CancelToken, GitDistribution, GitRunner};
     use artistic_git_test_support::{require_git_dist, TestTempDir};
     use std::{io::Cursor, io::Write};
@@ -1520,7 +1521,7 @@ mod tests {
     }
 
     #[test]
-    fn oversized_stash_file_returns_a_bounded_detailed_error() {
+    fn oversized_stash_file_returns_a_visual_preview_placeholder() {
         let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.init_with_commit();
@@ -1552,7 +1553,7 @@ mod tests {
         .expect("stash metadata");
         assert_eq!(details.files.len(), 1);
 
-        let error = stash_file_detail(
+        let detail = stash_file_detail(
             &runner,
             StashFileDetailRequest {
                 repository_path: display_path(&repo.path),
@@ -1561,21 +1562,14 @@ mod tests {
                 operation_id: None,
             },
         )
-        .expect_err("oversized stash file detail");
+        .expect("oversized stash file detail");
 
-        assert!(error
-            .summary
-            .contains("Stash file content is too large to preview"));
-        assert_eq!(error.context.operation_name, "stashFileDetail");
-        let canonical_repo = fs::canonicalize(&repo.path).expect("canonical repo");
+        assert!(matches!(detail.diff, DiffContent::Deferred { .. }));
+        assert_eq!(detail.payload.file_kind, DiffFileKind::OversizedText);
         assert_eq!(
-            error.context.repository_path.as_deref(),
-            Some(display_path(&canonical_repo).as_str())
+            detail.payload.metadata.get("oversized").map(String::as_str),
+            Some("true")
         );
-        let git = error.git.expect("git diagnostics");
-        assert!(git.command.iter().any(|argument| argument == "diff"));
-        assert!(git.stdout.len() <= GIT_ERROR_OUTPUT_LIMIT_BYTES + 128);
-        assert!(git.stdout.contains("output truncated"));
     }
 
     #[test]
@@ -1660,8 +1654,15 @@ mod tests {
             },
         )
         .expect("tracked stash file detail");
-        assert!(tracked_detail.file.patch.contains("tracked changed"));
-        assert!(!tracked_detail.file.patch.contains("untracked asset"));
+        let DiffContent::Text {
+            old_text, new_text, ..
+        } = tracked_detail.diff
+        else {
+            panic!("expected tracked text diff");
+        };
+        assert_eq!(old_text.as_deref(), Some("base\n"));
+        assert_eq!(new_text.as_deref(), Some("tracked changed\n"));
+        assert_eq!(tracked_detail.payload.file_kind, DiffFileKind::Text);
 
         let untracked_detail = stash_file_detail(
             &runner,
@@ -1674,7 +1675,14 @@ mod tests {
         )
         .expect("untracked stash file detail");
         assert_eq!(untracked_detail.file.change_kind, DiffChangeKind::Added);
-        assert!(untracked_detail.file.patch.contains("untracked asset"));
+        let DiffContent::Text {
+            old_text, new_text, ..
+        } = untracked_detail.diff
+        else {
+            panic!("expected untracked text diff");
+        };
+        assert_eq!(old_text, None);
+        assert_eq!(new_text.as_deref(), Some("untracked asset\n"));
 
         let restore = restore_stash(
             &runner,
@@ -1702,6 +1710,56 @@ mod tests {
         assert_eq!(repo.read("tracked.txt"), "tracked changed\n");
         assert_eq!(repo.read("new/asset.txt"), "untracked asset\n");
         assert!(stashes.stashes.iter().any(|entry| entry.oid == restore.oid));
+    }
+
+    #[test]
+    fn stash_file_detail_returns_visual_image_assets() {
+        let (runner, _dist_temp) = real_runner();
+        let repo = TestRepo::new(&runner);
+        repo.init_with_commit();
+        repo.write_bytes("preview.bmp", &single_pixel_bmp([0, 0, 255]));
+        repo.git(["add", "preview.bmp"]);
+        repo.git(["commit", "-m", "add preview image"]);
+        repo.write_bytes("preview.bmp", &single_pixel_bmp([255, 0, 0]));
+        let stash = create_stash(
+            &runner,
+            CreateStashRequest {
+                repository_path: display_path(&repo.path),
+                message: "image preview".to_owned(),
+                include_untracked: false,
+                paths: Vec::new(),
+                operation_id: None,
+            },
+        )
+        .expect("create image stash")
+        .stash
+        .expect("created image stash");
+
+        let detail = stash_file_detail(
+            &runner,
+            StashFileDetailRequest {
+                repository_path: display_path(&repo.path),
+                selector: stash.selector,
+                path: "preview.bmp".to_owned(),
+                operation_id: None,
+            },
+        )
+        .expect("image stash detail");
+
+        assert_eq!(detail.payload.file_kind, DiffFileKind::Image);
+        let DiffContent::Image {
+            old_image,
+            new_image,
+        } = detail.diff
+        else {
+            panic!("expected image diff");
+        };
+        for image in [old_image, new_image] {
+            let image = image.expect("image asset");
+            assert_eq!(image.width, Some(1));
+            assert_eq!(image.height, Some(1));
+            assert!(image.src.starts_with("data:image/bmp;base64,"));
+        }
     }
 
     #[test]
@@ -1994,16 +2052,30 @@ mod tests {
         }
 
         fn write(&self, relative: &str, contents: &str) {
+            self.write_bytes(relative, contents.as_bytes());
+        }
+
+        fn write_bytes(&self, relative: &str, contents: &[u8]) {
             let path = self.path.join(relative);
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent).expect("create parent");
             }
             let mut file = fs::File::create(path).expect("create file");
-            file.write_all(contents.as_bytes()).expect("write file");
+            file.write_all(contents).expect("write file");
         }
 
         fn read(&self, relative: &str) -> String {
             fs::read_to_string(self.path.join(relative)).expect("read file")
         }
+    }
+
+    fn single_pixel_bmp(pixel: [u8; 3]) -> Vec<u8> {
+        let mut bmp = vec![
+            b'B', b'M', 58, 0, 0, 0, 0, 0, 0, 0, 54, 0, 0, 0, 40, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0,
+            1, 0, 24, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        bmp.extend_from_slice(&pixel);
+        bmp.push(0);
+        bmp
     }
 }

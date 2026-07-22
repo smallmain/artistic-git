@@ -30,6 +30,7 @@ import {
   ConflictResolutionOverlay,
   type ConflictResolutionApi,
 } from "@/features/conflicts";
+import { DiffViewer } from "@/features/diff";
 import { HistoryWorkbench } from "@/features/history/HistoryWorkbench";
 import {
   isDeferredLocalChange,
@@ -4366,14 +4367,17 @@ function StashDetailsDialog({
   const title = displayEntry.isAutoStash
     ? t("repository.autoStashName", { origin: autoStashOrigin })
     : displayEntry.message;
-  const loadedFile =
+  const loadedDetail =
     activeFile && fileDetailQuery.data?.file.path === activeFile.path
-      ? fileDetailQuery.data.file
+      ? fileDetailQuery.data
       : null;
 
   return (
     <DialogFrame
-      className="max-w-4xl"
+      className="h-[min(44rem,calc(100vh-3rem))] max-w-5xl"
+      contentClassName="min-h-0 flex-1"
+      contentViewportClassName="min-h-0 overflow-hidden"
+      data-testid="stash-details-dialog"
       description={displayEntry.selector}
       footer={
         <div className="flex justify-end">
@@ -4389,7 +4393,7 @@ function StashDetailsDialog({
       onOpenChange={onOpenChange}
       title={title}
     >
-      <div className="grid gap-3">
+      <div className="grid shrink-0 gap-3">
         <dl className="grid gap-3 rounded-md border bg-background p-3 text-sm sm:grid-cols-2">
           <div className="min-w-0">
             <dt className="font-medium">{t("repository.stashSelector")}</dt>
@@ -4413,7 +4417,7 @@ function StashDetailsDialog({
       </div>
       {loading && !details ? (
         <div
-          className="mt-4 flex min-h-48 items-center justify-center gap-2 rounded-md border bg-background text-sm text-muted-foreground"
+          className="flex min-h-0 flex-1 items-center justify-center gap-2 rounded-md border bg-background text-sm text-muted-foreground"
           role="status"
         >
           <Loader2 className="size-4 animate-spin" aria-hidden="true" />
@@ -4421,7 +4425,7 @@ function StashDetailsDialog({
         </div>
       ) : error && !details ? (
         <div
-          className="mt-4 flex min-h-48 flex-col items-center justify-center gap-3 rounded-md border bg-background p-6 text-center text-sm"
+          className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 rounded-md border bg-background p-6 text-center text-sm"
           role="alert"
         >
           <span className="text-muted-foreground">
@@ -4432,9 +4436,12 @@ function StashDetailsDialog({
           </Button>
         </div>
       ) : details ? (
-        <div className="mt-4 grid min-h-0 gap-4 md:grid-cols-[260px_minmax(0,1fr)]">
-          <div className="min-h-0 rounded-md border bg-background">
-            <div className="border-b px-3 py-2 text-sm font-medium">
+        <div
+          className="grid min-h-0 flex-1 gap-4 overflow-hidden md:grid-cols-[260px_minmax(0,1fr)]"
+          data-testid="stash-detail-layout"
+        >
+          <div className="flex min-h-0 flex-col overflow-hidden rounded-md border bg-background">
+            <div className="shrink-0 border-b px-3 py-2 text-sm font-medium">
               {t("repository.stashFiles", { count: details.files.length })}
             </div>
             <StashDetailsFileList
@@ -4443,15 +4450,20 @@ function StashDetailsDialog({
               onSelect={setSelectedPath}
             />
           </div>
-          <div className="flex min-h-48 min-w-0">
+          <div
+            className="flex min-h-0 min-w-0 overflow-hidden"
+            data-testid="stash-detail-diff-pane"
+          >
             {!activeFile ? (
               <div className="flex flex-1 items-center justify-center rounded-md border bg-background p-6 text-center text-sm text-muted-foreground">
                 {t("repository.stashNoDiff")}
               </div>
-            ) : loadedFile ? (
-              <pre className="max-h-80 min-w-0 flex-1 overflow-auto rounded-md border bg-background p-3 text-xs">
-                {loadedFile.patch || t("repository.stashNoDiff")}
-              </pre>
+            ) : loadedDetail ? (
+              <DiffViewer
+                content={loadedDetail.diff}
+                payload={loadedDetail.payload}
+                source="stashDetails"
+              />
             ) : fileDetailQuery.error ? (
               <div
                 className="flex flex-1 flex-col items-center justify-center gap-3 rounded-md border bg-background p-6 text-center text-sm"
@@ -4507,7 +4519,7 @@ function StashDetailsFileList({
 
   return (
     <>
-      <OverlayScrollArea className="max-h-80" viewportClassName="max-h-80">
+      <OverlayScrollArea className="min-h-0 flex-1">
         <ul className="p-1 text-sm">
           {visibleFiles.map((file) => (
             <li key={`${file.oldPath ?? ""}\0${file.path}`}>

@@ -1395,17 +1395,9 @@ pub struct StashFileDetailRequest {
 #[serde(rename_all = "camelCase")]
 pub struct StashFileDetailResponse {
     pub selector: String,
-    pub file: StashDiffFile,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
-#[serde(rename_all = "camelCase")]
-pub struct StashDiffFile {
-    pub path: String,
-    pub old_path: Option<String>,
-    pub change_kind: DiffChangeKind,
-    pub file_kind: DiffFileKind,
-    pub patch: String,
+    pub file: StashChangedFile,
+    pub payload: DiffPayload,
+    pub diff: DiffContent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]

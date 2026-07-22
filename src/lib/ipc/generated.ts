@@ -1158,14 +1158,6 @@ export type StashDetailsResponse = {
   files: StashChangedFile[];
 };
 
-export type StashDiffFile = {
-  path: string;
-  oldPath: string | null;
-  changeKind: DiffChangeKind;
-  fileKind: DiffFileKind;
-  patch: string;
-};
-
 export type StashEntry = {
   index: number;
   selector: string;
@@ -1186,7 +1178,9 @@ export type StashFileDetailRequest = {
 
 export type StashFileDetailResponse = {
   selector: string;
-  file: StashDiffFile;
+  file: StashChangedFile;
+  payload: DiffPayload;
+  diff: DiffContent;
 };
 
 export type StashListResponse = {

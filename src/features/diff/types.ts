@@ -9,7 +9,7 @@ import type {
 } from "@/lib/ipc/generated";
 
 export type DiffViewerSource =
-  "localChanges" | "commitDetails" | "conflictResolution";
+  "localChanges" | "commitDetails" | "conflictResolution" | "stashDetails";
 
 export type TextDiffMode = "split" | "inline";
 
