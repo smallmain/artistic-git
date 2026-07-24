@@ -234,6 +234,18 @@ test("E2E instrumentation is explicit and excluded from release builds", async (
   );
   assert.match(fullChainSource, /clone UI reported:/);
   assert.match(fullChainSource, /e2e-real-git-clone-diagnostic-/);
+  assert.match(fullChainSource, /\[data-testid="app-toast"\]/);
+  assert.match(fullChainSource, /Revert commit created and pushed:/);
+  assert.doesNotMatch(fullChainSource, /history-revert-status/);
+  assert.match(fullChainSource, /\.\.\.platformToolPathEntries\(\)/);
+  assert.match(
+    releaseWorkflow,
+    /ARTISTIC_GIT_E2E_LOG_DIR="\$\{RUNNER_TEMP\}\/tauri-e2e-logs\/main\/attempt-\$\{attempt\}"/,
+  );
+  assert.match(
+    releaseWorkflow,
+    /ARTISTIC_GIT_E2E_PROFILE_DIR="\$\{RUNNER_TEMP\}\/tauri-e2e-profile\/main\/attempt-\$\{attempt\}"/,
+  );
   for (const required of [
     "ARTISTIC_GIT_E2E_LOG_DIR:",
     "ARTISTIC_GIT_E2E_PROFILE_DIR:",

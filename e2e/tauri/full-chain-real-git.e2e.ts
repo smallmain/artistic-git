@@ -377,6 +377,7 @@ function createEmbeddedGitEnv({
     path.join(gitDist, "git", "cmd"),
     path.join(gitDist, "git", "mingw64", "bin"),
     path.join(gitDist, "git", "usr", "bin"),
+    ...platformToolPathEntries(),
   ]);
 
   return {
@@ -386,6 +387,14 @@ function createEmbeddedGitEnv({
     HOME: home,
     PATH: pathEntries.join(path.delimiter),
   };
+}
+
+function platformToolPathEntries() {
+  if (process.platform === "win32") {
+    const systemRoot = process.env.SystemRoot ?? process.env.WINDIR;
+    return systemRoot ? [path.join(systemRoot, "System32")] : [];
+  }
+  return ["/usr/bin", "/bin", "/usr/sbin", "/sbin"];
 }
 
 function firstExistingDirectory(root: string, relativePaths: string[]) {
@@ -650,10 +659,14 @@ async function revertCommitThroughUi(
   }
   await $('[data-testid="history-revert-confirm"]').click();
   await browser.waitUntil(
-    async () => {
-      const status = await $('[data-testid="history-revert-status"]');
-      return (await status.getText()).includes("Created and pushed");
-    },
+    async () =>
+      browser.execute(() =>
+        Array.from(
+          document.querySelectorAll('[data-testid="app-toast"]'),
+        ).some((toast) =>
+          toast.textContent?.includes("Revert commit created and pushed:"),
+        ),
+      ),
     {
       timeout: 180_000,
       timeoutMsg: "revert did not report that it was pushed",

@@ -612,8 +612,6 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         env:
-          ARTISTIC_GIT_E2E_LOG_DIR: ${{ runner.temp }}/tauri-e2e-logs/main
-          ARTISTIC_GIT_E2E_PROFILE_DIR: ${{ runner.temp }}/tauri-e2e-profile/main
           ARTISTIC_GIT_E2E_SPEC_SET: real
           ARTISTIC_GIT_E2E_START_TIMEOUT_MS: "120000"
           ARTISTIC_GIT_E2E_CONNECTION_RETRY_TIMEOUT_MS: "240000"
@@ -626,6 +624,9 @@ jobs:
           attempt=1
           max_attempts=2
           while true; do
+            export ARTISTIC_GIT_E2E_LOG_DIR="${RUNNER_TEMP}/tauri-e2e-logs/main/attempt-${attempt}"
+            export ARTISTIC_GIT_E2E_PROFILE_DIR="${RUNNER_TEMP}/tauri-e2e-profile/main/attempt-${attempt}"
+            mkdir -p "$ARTISTIC_GIT_E2E_LOG_DIR" "$ARTISTIC_GIT_E2E_PROFILE_DIR"
             if pnpm e2e:tauri:ci; then
               exit 0
             fi
