@@ -30,6 +30,7 @@ describe("OverlayScrollArea", () => {
 
     expect(viewportRef.current).toBe(viewport);
     expect(viewport).toHaveClass("overlay-scrollbar-viewport", "w-full");
+    expect(viewport.parentElement).toHaveClass("isolate", "overflow-hidden");
     expect(onScroll).toHaveBeenCalledTimes(1);
     const track = screen.getByTestId("overlay-scrollbar-vertical");
     expect(track.firstElementChild).toHaveStyle({ height: "35.328px" });

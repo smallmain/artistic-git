@@ -383,7 +383,7 @@ export function RepositorySidebar({
 
   return (
     <aside
-      className="relative flex min-h-0 shrink-0 flex-col bg-card text-card-foreground"
+      className="relative flex min-h-0 shrink-0 flex-col overflow-hidden bg-card text-card-foreground"
       style={{ width: sidebarLayout.widthPx }}
     >
       <section className="flex h-20 shrink-0 items-center gap-3 border-b px-4">

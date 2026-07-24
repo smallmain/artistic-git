@@ -186,7 +186,7 @@ export const OverlayScrollArea = React.forwardRef<
 
   return (
     <div
-      className={cn("relative min-h-0 overflow-hidden", className)}
+      className={cn("relative isolate min-h-0 overflow-hidden", className)}
       style={style}
     >
       <div

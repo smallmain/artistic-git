@@ -511,6 +511,7 @@ describe("RepositorySidebar", () => {
       "Resize branch and stash sections",
     );
 
+    expect(widthHandle.closest("aside")).toHaveClass("overflow-hidden");
     expect(widthHandle).toHaveClass("group", "cursor-ew-resize");
     expect(widthHandle.firstElementChild).toHaveClass(
       "w-px",
