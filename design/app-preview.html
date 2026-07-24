@@ -1,0 +1,1774 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light" data-font="inter">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Artistic Git · 主界面预览</title>
+    <style>
+      /* ============ 令牌（与 redesign-spec.md 一致） ============ */
+      @font-face {
+        font-family: "Inter";
+        src: url("./fonts/InterVariable.woff2") format("woff2");
+        font-weight: 100 900;
+        font-style: normal;
+        font-display: swap;
+      }
+
+      :root {
+        --font-sans:
+          "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+        --font-mono:
+          ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo,
+          Consolas, monospace;
+
+        --background: 220 16% 99%;
+        --card: 0 0% 100%;
+        --foreground: 224 12% 12%;
+        --foreground-secondary: 222 8% 42%;
+        --foreground-tertiary: 220 6% 56%;
+        --secondary: 220 12% 96%;
+        --accent: 220 12% 95%;
+        --border-subtle: 220 10% 93%;
+        --border: 222 10% 88%;
+        --ring: 224 10% 26%;
+
+        --success: 152 46% 38%;
+        --warning: 36 80% 42%;
+        --danger: 0 58% 52%;
+        --sync: 24 78% 48%;
+        --review: 188 58% 36%;
+
+        --shadow-raised: 0 1px 2px hsl(224 20% 10% / 0.05);
+        --shadow-overlay:
+          0 4px 16px hsl(224 20% 10% / 0.08), 0 1px 3px hsl(224 20% 10% / 0.06);
+        --shadow-popover:
+          0 12px 32px hsl(224 20% 10% / 0.12), 0 2px 8px hsl(224 20% 10% / 0.08);
+
+        --duration-micro: 120ms;
+        --duration-fast: 180ms;
+        --duration-panel: 240ms;
+        --duration-large: 320ms;
+        --ease-standard: cubic-bezier(0.25, 0.1, 0.25, 1);
+        --ease-enter: cubic-bezier(0.16, 1, 0.3, 1);
+        --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+
+        color-scheme: light;
+      }
+
+      html[data-theme="dark"] {
+        --background: 224 14% 8%;
+        --card: 224 12% 10%;
+        --foreground: 216 12% 92%;
+        --foreground-secondary: 218 8% 64%;
+        --foreground-tertiary: 220 6% 48%;
+        --secondary: 222 10% 14%;
+        --accent: 222 10% 16%;
+        --border-subtle: 220 8% 14%;
+        --border: 220 8% 19%;
+        --ring: 216 10% 70%;
+
+        --success: 152 44% 52%;
+        --warning: 40 78% 58%;
+        --danger: 0 62% 60%;
+        --sync: 26 84% 58%;
+        --review: 188 56% 48%;
+
+        --shadow-raised: 0 1px 2px hsl(224 40% 2% / 0.32);
+        --shadow-overlay:
+          0 4px 16px hsl(224 40% 2% / 0.4), 0 1px 3px hsl(224 40% 2% / 0.32);
+        --shadow-popover:
+          0 12px 32px hsl(224 40% 2% / 0.5), 0 2px 8px hsl(224 40% 2% / 0.4);
+
+        color-scheme: dark;
+      }
+
+      html[data-font="system"] {
+        --font-sans:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+      }
+
+      /* ============ 基础与字阶 ============ */
+      * {
+        box-sizing: border-box;
+        margin: 0;
+      }
+      html,
+      body {
+        height: 100%;
+        overflow: hidden;
+      }
+      body {
+        background: hsl(var(--background));
+        color: hsl(var(--foreground));
+        font-family: var(--font-sans);
+        font-size: 13px;
+        line-height: 20px;
+        font-weight: 450;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      .t-display {
+        font-size: 24px;
+        line-height: 32px;
+        font-weight: 560;
+        letter-spacing: -0.022em;
+      }
+      .t-title {
+        font-size: 16px;
+        line-height: 24px;
+        font-weight: 560;
+        letter-spacing: -0.011em;
+      }
+      .t-heading {
+        font-size: 14px;
+        line-height: 20px;
+        font-weight: 560;
+        letter-spacing: -0.006em;
+      }
+      .t-body {
+        font-size: 13px;
+        line-height: 20px;
+        font-weight: 450;
+      }
+      .t-label {
+        font-size: 12px;
+        line-height: 16px;
+        font-weight: 500;
+        letter-spacing: 0.003em;
+      }
+      .t-caption {
+        font-size: 12px;
+        line-height: 16px;
+        font-weight: 450;
+      }
+      .t-mono {
+        font-family: var(--font-mono);
+        font-size: 12px;
+        line-height: 18px;
+        font-weight: 450;
+      }
+      .num {
+        font-variant-numeric: tabular-nums;
+        font-feature-settings: "tnum";
+      }
+      .c-secondary {
+        color: hsl(var(--foreground-secondary));
+      }
+      .c-tertiary {
+        color: hsl(var(--foreground-tertiary));
+      }
+      .truncate {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      svg.ic {
+        width: 14px;
+        height: 14px;
+        flex-shrink: 0;
+        stroke: currentColor;
+        stroke-width: 1.8;
+        fill: none;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      svg.ic-16 {
+        width: 16px;
+        height: 16px;
+      }
+      svg.ic-20 {
+        width: 20px;
+        height: 20px;
+      }
+
+      /* ============ 应用框架 ============ */
+      .app {
+        display: flex;
+        height: 100vh;
+        min-height: 0;
+      }
+
+      /* ---- 侧栏 ---- */
+      .sidebar {
+        display: flex;
+        flex-direction: column;
+        width: 264px;
+        flex-shrink: 0;
+        border-right: 1px solid hsl(var(--border-subtle));
+        background: hsl(var(--background));
+      }
+      .project-head {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        height: 64px;
+        padding: 0 12px;
+        border-bottom: 1px solid hsl(var(--border-subtle));
+        flex-shrink: 0;
+      }
+      .project-icon {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 36px;
+        height: 36px;
+        border-radius: 8px;
+        border: 1px solid hsl(var(--border-subtle));
+        background: hsl(var(--card));
+        color: hsl(var(--foreground-secondary));
+        flex-shrink: 0;
+      }
+      .project-meta {
+        flex: 1;
+        min-width: 0;
+      }
+      .project-name {
+        font-size: 13px;
+        line-height: 18px;
+        font-weight: 560;
+        letter-spacing: -0.004em;
+      }
+      .sync-dot {
+        position: absolute;
+        top: 5px;
+        right: 5px;
+        width: 7px;
+        height: 7px;
+        border-radius: 999px;
+        background: hsl(var(--sync));
+        border: 1.5px solid hsl(var(--background));
+      }
+
+      .sidebar-scroll {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        padding: 8px 8px 12px;
+      }
+      .group-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px 8px 4px;
+      }
+      .group-head .actions {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+      }
+      .count-chip {
+        padding: 1px 6px;
+        border-radius: 999px;
+        background: hsl(var(--secondary));
+        color: hsl(var(--foreground-tertiary));
+        font-size: 12px;
+        line-height: 16px;
+        font-weight: 500;
+      }
+
+      .row {
+        position: relative;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 32px;
+        padding: 0 8px;
+        border-radius: 6px;
+        color: hsl(var(--foreground-secondary));
+        cursor: default;
+        transition:
+          background var(--duration-micro) var(--ease-standard),
+          color var(--duration-micro) var(--ease-standard);
+      }
+      .row:hover {
+        background: hsl(var(--accent));
+        color: hsl(var(--foreground));
+      }
+      .row .grow {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 13px;
+        line-height: 20px;
+        font-weight: 450;
+        color: hsl(var(--foreground));
+      }
+      .row.selected {
+        background: hsl(var(--accent));
+      }
+      .row.selected::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 7px;
+        bottom: 7px;
+        width: 2px;
+        border-radius: 2px;
+        background: hsl(var(--foreground));
+      }
+      .row.selected .ic {
+        color: hsl(var(--foreground));
+      }
+      .badge-delta {
+        font-size: 12px;
+        line-height: 16px;
+        font-weight: 450;
+        color: hsl(var(--foreground-tertiary));
+        white-space: nowrap;
+      }
+      .badge-delta .up {
+        color: hsl(var(--sync));
+      }
+
+      .review-block {
+        padding: 8px 12px;
+        flex-shrink: 0;
+      }
+      .review-btn {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        width: 100%;
+        height: 36px;
+        border: 0;
+        border-radius: 8px;
+        background: linear-gradient(
+          135deg,
+          hsl(188 58% 36%) 0%,
+          hsl(192 64% 30%) 100%
+        );
+        color: #fff;
+        font: inherit;
+        font-weight: 560;
+        cursor: pointer;
+        transition: filter var(--duration-micro) var(--ease-standard);
+      }
+      .review-btn:hover {
+        filter: brightness(1.08);
+      }
+      .sidebar-foot {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        padding: 6px 8px;
+        border-top: 1px solid hsl(var(--border-subtle));
+        flex-shrink: 0;
+      }
+
+      .icon-btn {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 28px;
+        height: 28px;
+        border: 0;
+        border-radius: 6px;
+        background: transparent;
+        color: hsl(var(--foreground-tertiary));
+        cursor: pointer;
+        transition:
+          background var(--duration-micro) var(--ease-standard),
+          color var(--duration-micro) var(--ease-standard);
+      }
+      .icon-btn:hover {
+        background: hsl(var(--accent));
+        color: hsl(var(--foreground));
+      }
+      .icon-btn.sm {
+        width: 22px;
+        height: 22px;
+        border-radius: 5px;
+      }
+
+      /* ---- 主区 ---- */
+      .main {
+        display: flex;
+        flex-direction: column;
+        flex: 1;
+        min-width: 0;
+      }
+      .progress-top {
+        height: 2px;
+        flex-shrink: 0;
+        overflow: hidden;
+        opacity: 0;
+        transition: opacity var(--duration-fast) var(--ease-standard);
+      }
+      .progress-top.on {
+        opacity: 1;
+      }
+      .progress-top::before {
+        content: "";
+        position: absolute;
+        width: 40%;
+        height: 2px;
+        border-radius: 2px;
+        background: hsl(var(--sync));
+        animation: indeterminate 1200ms var(--ease-standard) infinite;
+      }
+      .progress-wrap {
+        position: relative;
+        height: 2px;
+        flex-shrink: 0;
+      }
+
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        height: 48px;
+        padding: 0 16px;
+        border-bottom: 1px solid hsl(var(--border-subtle));
+        flex-shrink: 0;
+      }
+      .tabs {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+      }
+      .tab {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        height: 30px;
+        padding: 0 10px;
+        border: 0;
+        border-radius: 6px;
+        background: transparent;
+        color: hsl(var(--foreground-tertiary));
+        font: inherit;
+        font-weight: 500;
+        cursor: pointer;
+        transition:
+          background var(--duration-micro) var(--ease-standard),
+          color var(--duration-micro) var(--ease-standard);
+      }
+      .tab:hover {
+        color: hsl(var(--foreground));
+      }
+      .tab.active {
+        background: hsl(var(--accent));
+        color: hsl(var(--foreground));
+      }
+      .tab .chip {
+        padding: 0 5px;
+        border-radius: 999px;
+        background: hsl(var(--secondary));
+        color: hsl(var(--foreground-secondary));
+        font-size: 12px;
+        line-height: 16px;
+        font-weight: 500;
+      }
+      .tab.active .chip {
+        background: hsl(var(--background));
+      }
+      .busy-area {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+      }
+      .spin {
+        animation: rotate 1100ms linear infinite;
+      }
+      @keyframes rotate {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      .content {
+        flex: 1;
+        min-height: 0;
+        padding: 16px;
+        display: flex;
+      }
+
+      /* ---- 历史卡片 ---- */
+      .history-card {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        flex: 1;
+        min-width: 0;
+        border: 1px solid hsl(var(--border-subtle));
+        border-radius: 10px;
+        background: hsl(var(--card));
+        overflow: hidden;
+      }
+      .history-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 12px 16px;
+        border-bottom: 1px solid hsl(var(--border-subtle));
+        flex-shrink: 0;
+      }
+      .history-title-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+      }
+      .history-tools {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-shrink: 0;
+      }
+      .search-box {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        height: 30px;
+        width: 220px;
+        padding: 0 10px;
+        border: 1px solid hsl(var(--border));
+        border-radius: 6px;
+        background: hsl(var(--background));
+        color: hsl(var(--foreground-tertiary));
+      }
+      .branch-filter {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        height: 30px;
+        padding: 0 10px;
+        border: 1px solid hsl(var(--border));
+        border-radius: 6px;
+        background: hsl(var(--card));
+        color: hsl(var(--foreground));
+        font: inherit;
+        font-weight: 500;
+        cursor: pointer;
+      }
+      .branch-filter:hover {
+        background: hsl(var(--accent));
+      }
+
+      .col-head {
+        display: grid;
+        grid-template-columns: 112px minmax(0, 1fr) 160px 120px;
+        gap: 0;
+        padding: 6px 16px;
+        border-bottom: 1px solid hsl(var(--border-subtle));
+        flex-shrink: 0;
+      }
+
+      .history-scroll {
+        position: relative;
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+      }
+      .history-scroll::before,
+      .history-scroll::after {
+        content: "";
+        position: sticky;
+        left: 0;
+        right: 0;
+        display: block;
+        height: 12px;
+        z-index: 2;
+        pointer-events: none;
+      }
+      .history-scroll::before {
+        top: 0;
+        margin-bottom: -12px;
+        background: linear-gradient(
+          to bottom,
+          hsl(var(--card)),
+          hsl(var(--card) / 0)
+        );
+      }
+      .history-scroll::after {
+        bottom: 0;
+        margin-top: -12px;
+        background: linear-gradient(
+          to top,
+          hsl(var(--card)),
+          hsl(var(--card) / 0)
+        );
+      }
+      .rows {
+        position: relative;
+      }
+      .graph-svg {
+        position: absolute;
+        top: 0;
+        left: 16px;
+        width: 112px;
+        height: 100%;
+        pointer-events: none;
+        z-index: 1;
+      }
+
+      .commit-row {
+        position: relative;
+        display: grid;
+        grid-template-columns: 112px minmax(0, 1fr) 160px 120px;
+        align-items: center;
+        height: 48px;
+        padding: 0 16px;
+        border: 0;
+        border-bottom: 1px solid hsl(var(--border-subtle) / 0.6);
+        background: transparent;
+        font: inherit;
+        text-align: left;
+        cursor: pointer;
+        transition: background var(--duration-micro) var(--ease-standard);
+      }
+      .commit-row:hover {
+        background: hsl(var(--accent) / 0.55);
+      }
+      .commit-row.selected {
+        background: hsl(var(--accent));
+      }
+      .commit-row.selected::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width: 2px;
+        background: hsl(var(--foreground));
+      }
+      .commit-row.unsynced {
+        background: hsl(var(--warning) / 0.08);
+      }
+      .commit-row.unsynced:hover {
+        background: hsl(var(--warning) / 0.14);
+      }
+
+      .commit-cell {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+      }
+      .avatar {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 24px;
+        height: 24px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 560;
+        flex-shrink: 0;
+      }
+      .commit-msg {
+        font-size: 13px;
+        line-height: 18px;
+        font-weight: 500;
+        color: hsl(var(--foreground));
+      }
+      .refs {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        margin-top: 3px;
+        overflow: hidden;
+      }
+      .ref-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 0 6px;
+        height: 18px;
+        border-radius: 5px;
+        font-size: 12px;
+        line-height: 16px;
+        font-weight: 500;
+        white-space: nowrap;
+      }
+      .ref-local {
+        background: hsl(var(--secondary));
+        color: hsl(var(--foreground));
+      }
+      .ref-remote {
+        border: 1px solid hsl(var(--border-subtle));
+        color: hsl(var(--foreground-tertiary));
+      }
+      .ref-tag {
+        background: hsl(var(--warning) / 0.14);
+        color: hsl(var(--warning));
+      }
+
+      .history-foot {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 44px;
+        border-top: 1px solid hsl(var(--border-subtle));
+        flex-shrink: 0;
+      }
+
+      /* ---- 按钮 ---- */
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        height: 30px;
+        padding: 0 12px;
+        border: 1px solid transparent;
+        border-radius: 6px;
+        font: inherit;
+        font-weight: 500;
+        cursor: pointer;
+        white-space: nowrap;
+        transition:
+          background var(--duration-micro) var(--ease-standard),
+          border-color var(--duration-micro) var(--ease-standard),
+          filter var(--duration-micro) var(--ease-standard);
+      }
+      .btn-secondary {
+        background: hsl(var(--secondary));
+        color: hsl(var(--foreground));
+        border-color: hsl(var(--border-subtle));
+      }
+      .btn-secondary:hover {
+        background: hsl(var(--accent));
+        border-color: hsl(var(--border));
+      }
+      .btn-ghost {
+        background: transparent;
+        color: hsl(var(--foreground-secondary));
+      }
+      .btn-ghost:hover {
+        background: hsl(var(--accent));
+        color: hsl(var(--foreground));
+      }
+      .btn-danger-ghost {
+        background: transparent;
+        color: hsl(var(--danger));
+      }
+      .btn-danger-ghost:hover {
+        background: hsl(var(--danger) / 0.1);
+      }
+
+      /* ---- 提交详情面板 ---- */
+      .detail-panel {
+        position: absolute;
+        top: 12px;
+        right: 12px;
+        bottom: 12px;
+        width: 340px;
+        display: flex;
+        flex-direction: column;
+        border: 1px solid hsl(var(--border));
+        border-radius: 10px;
+        background: hsl(var(--card));
+        box-shadow: var(--shadow-popover);
+        z-index: 10;
+        overflow: hidden;
+      }
+      .detail-panel.entering {
+        animation: overlay-in var(--duration-panel) var(--ease-enter);
+      }
+      .detail-panel[hidden] {
+        display: none;
+      }
+      .detail-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px 12px 12px 16px;
+        border-bottom: 1px solid hsl(var(--border-subtle));
+      }
+      .detail-body {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        padding: 16px;
+      }
+      .detail-foot {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        padding: 12px 16px;
+        border-top: 1px solid hsl(var(--border-subtle));
+      }
+      .kv {
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+        padding: 5px 0;
+      }
+      .kv .k {
+        width: 56px;
+        flex-shrink: 0;
+      }
+      .file-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 30px;
+        padding: 0 8px;
+        border-radius: 6px;
+      }
+      .file-row:hover {
+        background: hsl(var(--accent));
+      }
+      .stat-add {
+        color: hsl(var(--success));
+      }
+      .stat-del {
+        color: hsl(var(--danger));
+      }
+
+      /* ---- 骨架屏 ---- */
+      .skeleton {
+        border-radius: 4px;
+        background: hsl(var(--secondary));
+        animation: pulse 1800ms ease-in-out infinite;
+      }
+      .sk-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        height: 48px;
+        padding: 0 16px;
+        border-bottom: 1px solid hsl(var(--border-subtle) / 0.6);
+      }
+      .sk-side {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 32px;
+        padding: 0 8px;
+      }
+
+      /* ---- 浮动控制台 ---- */
+      .controls {
+        position: fixed;
+        right: 16px;
+        bottom: 16px;
+        z-index: 50;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        padding: 12px;
+        border: 1px solid hsl(var(--border));
+        border-radius: 10px;
+        background: hsl(var(--card));
+        box-shadow: var(--shadow-popover);
+        width: 300px;
+      }
+      .controls .line {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .segmented {
+        display: inline-flex;
+        padding: 2px;
+        border: 1px solid hsl(var(--border-subtle));
+        border-radius: 7px;
+        background: hsl(var(--secondary));
+      }
+      .segmented button {
+        border: 0;
+        border-radius: 5px;
+        padding: 3px 10px;
+        background: transparent;
+        color: hsl(var(--foreground-secondary));
+        font: inherit;
+        font-size: 12px;
+        font-weight: 500;
+        cursor: pointer;
+        transition:
+          background var(--duration-micro) var(--ease-standard),
+          color var(--duration-micro) var(--ease-standard);
+      }
+      .segmented button[aria-pressed="true"] {
+        background: hsl(var(--card));
+        color: hsl(var(--foreground));
+        box-shadow: var(--shadow-raised);
+      }
+      .toggle-chip {
+        padding: 3px 10px;
+        border: 1px solid hsl(var(--border));
+        border-radius: 999px;
+        background: transparent;
+        color: hsl(var(--foreground-secondary));
+        font: inherit;
+        font-size: 12px;
+        font-weight: 500;
+        cursor: pointer;
+        transition:
+          background var(--duration-micro) var(--ease-standard),
+          color var(--duration-micro) var(--ease-standard),
+          border-color var(--duration-micro) var(--ease-standard);
+      }
+      .toggle-chip[aria-pressed="true"] {
+        background: hsl(var(--foreground));
+        border-color: hsl(var(--foreground));
+        color: hsl(var(--background));
+      }
+      a.navlink {
+        color: hsl(var(--foreground-tertiary));
+        text-decoration: none;
+      }
+      a.navlink:hover {
+        color: hsl(var(--foreground));
+      }
+
+      /* ---- 关键帧 ---- */
+      @keyframes overlay-in {
+        from {
+          opacity: 0;
+          transform: translateY(4px) scale(0.98);
+        }
+      }
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.5;
+        }
+      }
+      @keyframes indeterminate {
+        from {
+          left: -40%;
+        }
+        to {
+          left: 100%;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          animation-duration: 1ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 1ms !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <!-- ============ 侧栏 ============ -->
+      <aside class="sidebar">
+        <div class="project-head">
+          <div class="project-icon">
+            <svg class="ic ic-20" viewBox="0 0 24 24">
+              <path
+                d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"
+              />
+            </svg>
+          </div>
+          <div class="project-meta">
+            <div class="project-name truncate">水墨丹青 Ink Wash</div>
+            <div class="t-caption c-tertiary truncate">~/Projects/ink-wash</div>
+          </div>
+          <button class="icon-btn" aria-label="同步全部" title="同步全部">
+            <svg class="ic ic-16" viewBox="0 0 24 24">
+              <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
+              <path d="M21 3v5h-5" />
+              <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
+              <path d="M8 16H3v5" />
+            </svg>
+            <span class="sync-dot"></span>
+          </button>
+        </div>
+
+        <div class="sidebar-scroll" id="sidebarScroll">
+          <div class="group-head">
+            <span class="t-label c-tertiary">分支</span>
+            <span class="actions">
+              <span class="count-chip num">4</span>
+              <button class="icon-btn sm" aria-label="搜索分支">
+                <svg class="ic" viewBox="0 0 24 24">
+                  <circle cx="11" cy="11" r="8" />
+                  <path d="m21 21-4.3-4.3" />
+                </svg>
+              </button>
+              <button class="icon-btn sm" aria-label="创建分支">
+                <svg class="ic" viewBox="0 0 24 24">
+                  <path d="M5 12h14" />
+                  <path d="M12 5v14" />
+                </svg>
+              </button>
+            </span>
+          </div>
+          <div id="branchList">
+            <div class="row selected">
+              <svg class="ic" viewBox="0 0 24 24">
+                <line x1="6" x2="6" y1="3" y2="15" />
+                <circle cx="18" cy="6" r="3" />
+                <circle cx="6" cy="18" r="3" />
+                <path d="M18 9a9 9 0 0 1-9 9" />
+              </svg>
+              <span class="grow">main</span>
+              <span class="badge-delta num"><span class="up">↑2</span></span>
+            </div>
+            <div class="row">
+              <svg class="ic" viewBox="0 0 24 24">
+                <line x1="6" x2="6" y1="3" y2="15" />
+                <circle cx="18" cy="6" r="3" />
+                <circle cx="6" cy="18" r="3" />
+                <path d="M18 9a9 9 0 0 1-9 9" />
+              </svg>
+              <span class="grow">feature/笔刷引擎</span>
+              <span class="badge-delta num">
+                <span class="up">↑12</span> <span>↓1</span>
+              </span>
+            </div>
+            <div class="row">
+              <svg class="ic" viewBox="0 0 24 24">
+                <line x1="6" x2="6" y1="3" y2="15" />
+                <circle cx="18" cy="6" r="3" />
+                <circle cx="6" cy="18" r="3" />
+                <path d="M18 9a9 9 0 0 1-9 9" />
+              </svg>
+              <span class="grow">feature/材质库导入</span>
+              <span class="badge-delta num">↓4</span>
+            </div>
+            <div class="row">
+              <svg class="ic" viewBox="0 0 24 24">
+                <line x1="6" x2="6" y1="3" y2="15" />
+                <circle cx="18" cy="6" r="3" />
+                <circle cx="6" cy="18" r="3" />
+                <path d="M18 9a9 9 0 0 1-9 9" />
+              </svg>
+              <span class="grow">fix/导出闪退</span>
+              <span class="badge-delta c-tertiary t-caption">3 天前</span>
+            </div>
+          </div>
+
+          <div class="group-head">
+            <span class="t-label c-tertiary">储藏</span>
+            <span class="actions"><span class="count-chip num">2</span></span>
+          </div>
+          <div id="stashList">
+            <div class="row">
+              <svg class="ic" viewBox="0 0 24 24">
+                <rect width="20" height="5" x="2" y="3" rx="1" />
+                <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" />
+                <path d="M10 12h4" />
+              </svg>
+              <span class="grow">未完成的贴图调整</span>
+              <span class="badge-delta c-tertiary t-caption">昨天</span>
+            </div>
+            <div class="row">
+              <svg class="ic" viewBox="0 0 24 24">
+                <rect width="20" height="5" x="2" y="3" rx="1" />
+                <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" />
+                <path d="M10 12h4" />
+              </svg>
+              <span class="grow">WIP: 宣纸材质实验</span>
+              <span class="badge-delta c-tertiary t-caption">周一</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="review-block">
+          <button class="review-btn">
+            <svg class="ic ic-16" viewBox="0 0 24 24" style="color: #fff">
+              <path d="M3 7V5a2 2 0 0 1 2-2h2" />
+              <path d="M17 3h2a2 2 0 0 1 2 2v2" />
+              <path d="M21 17v2a2 2 0 0 1-2 2h-2" />
+              <path d="M7 21H5a2 2 0 0 1-2-2v-2" />
+              <circle cx="12" cy="12" r="3.2" />
+            </svg>
+            审查模式
+          </button>
+        </div>
+        <div class="sidebar-foot">
+          <button class="icon-btn" aria-label="项目设置" title="项目设置">
+            <svg class="ic ic-16" viewBox="0 0 24 24">
+              <line x1="21" x2="14" y1="4" y2="4" />
+              <line x1="10" x2="3" y1="4" y2="4" />
+              <line x1="21" x2="12" y1="12" y2="12" />
+              <line x1="8" x2="3" y1="12" y2="12" />
+              <line x1="21" x2="16" y1="20" y2="20" />
+              <line x1="12" x2="3" y1="20" y2="20" />
+              <line x1="14" x2="14" y1="2" y2="6" />
+              <line x1="8" x2="8" y1="10" y2="14" />
+              <line x1="16" x2="16" y1="18" y2="22" />
+            </svg>
+          </button>
+          <button
+            class="icon-btn"
+            aria-label="查看安全备份"
+            title="查看安全备份"
+          >
+            <svg class="ic ic-16" viewBox="0 0 24 24">
+              <path
+                d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"
+              />
+            </svg>
+          </button>
+        </div>
+      </aside>
+
+      <!-- ============ 主区 ============ -->
+      <div class="main">
+        <div class="progress-wrap">
+          <div class="progress-top" id="progressTop"></div>
+        </div>
+        <header class="topbar">
+          <nav class="tabs" aria-label="仓库选项卡">
+            <button class="tab active">
+              <svg class="ic" viewBox="0 0 24 24">
+                <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+                <path d="M3 3v5h5" />
+                <path d="M12 7v5l4 2" />
+              </svg>
+              历史
+            </button>
+            <button class="tab">
+              <svg class="ic" viewBox="0 0 24 24">
+                <path
+                  d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"
+                />
+                <path d="M14 2v4a2 2 0 0 0 2 2h4" />
+                <path d="M10 9H8" />
+                <path d="M16 13H8" />
+                <path d="M16 17H8" />
+              </svg>
+              本地更改
+              <span class="chip num">3</span>
+            </button>
+          </nav>
+          <div class="busy-area t-body c-tertiary" id="busyArea" hidden>
+            <svg class="ic spin" viewBox="0 0 24 24">
+              <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+            </svg>
+            <span>正在同步 main…</span>
+            <button class="btn btn-ghost" style="height: 26px; padding: 0 8px">
+              取消
+            </button>
+          </div>
+        </header>
+
+        <div class="content">
+          <section class="history-card" aria-label="提交历史">
+            <header class="history-head">
+              <div class="history-title-row">
+                <div>
+                  <h1 class="t-heading">提交历史</h1>
+                  <p class="t-caption c-tertiary">浏览、搜索和比较项目版本</p>
+                </div>
+              </div>
+              <div class="history-tools">
+                <button class="branch-filter">
+                  <svg class="ic" viewBox="0 0 24 24">
+                    <line x1="6" x2="6" y1="3" y2="15" />
+                    <circle cx="18" cy="6" r="3" />
+                    <circle cx="6" cy="18" r="3" />
+                    <path d="M18 9a9 9 0 0 1-9 9" />
+                  </svg>
+                  main
+                  <svg class="ic" viewBox="0 0 24 24" style="width: 12px">
+                    <path d="m6 9 6 6 6-6" />
+                  </svg>
+                </button>
+                <div class="search-box t-body">
+                  <svg class="ic" viewBox="0 0 24 24">
+                    <circle cx="11" cy="11" r="8" />
+                    <path d="m21 21-4.3-4.3" />
+                  </svg>
+                  <span class="c-tertiary">搜索提交…</span>
+                </div>
+              </div>
+            </header>
+
+            <div class="col-head t-label c-tertiary">
+              <span>图表</span>
+              <span>提交</span>
+              <span>作者</span>
+              <span>时间</span>
+            </div>
+
+            <div class="history-scroll">
+              <div class="rows" id="historyRows">
+                <svg class="graph-svg" viewBox="0 0 112 576" aria-hidden="true">
+                  <!-- 主干线 -->
+                  <path
+                    d="M28 0 V576"
+                    stroke="hsl(var(--foreground) / 0.18)"
+                    stroke-width="1.5"
+                    fill="none"
+                  />
+                  <!-- 分支线：row8 分出 → row7/6/5 → row3 合入 -->
+                  <path
+                    d="M28 408 C 28 384, 52 384, 52 360 V264 C 52 216, 28 216, 28 168"
+                    stroke="hsl(var(--review) / 0.55)"
+                    stroke-width="1.5"
+                    fill="none"
+                  />
+                  <!-- 分支节点 -->
+                  <circle
+                    cx="52"
+                    cy="264"
+                    r="3.5"
+                    fill="hsl(var(--card))"
+                    stroke="hsl(var(--review) / 0.8)"
+                    stroke-width="1.5"
+                  />
+                  <circle
+                    cx="52"
+                    cy="312"
+                    r="3.5"
+                    fill="hsl(var(--card))"
+                    stroke="hsl(var(--review) / 0.8)"
+                    stroke-width="1.5"
+                  />
+                  <circle
+                    cx="52"
+                    cy="360"
+                    r="3.5"
+                    fill="hsl(var(--card))"
+                    stroke="hsl(var(--review) / 0.8)"
+                    stroke-width="1.5"
+                  />
+                  <!-- 主干节点（未同步 3 个为橙色） -->
+                  <circle cx="28" cy="24" r="4.5" fill="hsl(var(--sync))" />
+                  <circle cx="28" cy="72" r="4" fill="hsl(var(--sync))" />
+                  <circle cx="28" cy="120" r="4" fill="hsl(var(--sync))" />
+                  <!-- 合并节点（双环） -->
+                  <circle
+                    cx="28"
+                    cy="168"
+                    r="5"
+                    fill="hsl(var(--card))"
+                    stroke="hsl(var(--foreground) / 0.6)"
+                    stroke-width="1.5"
+                  />
+                  <circle
+                    cx="28"
+                    cy="168"
+                    r="2"
+                    fill="hsl(var(--foreground) / 0.6)"
+                  />
+                  <circle
+                    cx="28"
+                    cy="216"
+                    r="4"
+                    fill="hsl(var(--foreground) / 0.5)"
+                  />
+                  <circle
+                    cx="28"
+                    cy="264"
+                    r="4"
+                    fill="hsl(var(--foreground) / 0.5)"
+                  />
+                  <circle
+                    cx="28"
+                    cy="312"
+                    r="4"
+                    fill="hsl(var(--foreground) / 0.5)"
+                  />
+                  <circle
+                    cx="28"
+                    cy="360"
+                    r="4"
+                    fill="hsl(var(--foreground) / 0.5)"
+                  />
+                  <circle
+                    cx="28"
+                    cy="408"
+                    r="4"
+                    fill="hsl(var(--foreground) / 0.5)"
+                  />
+                  <circle
+                    cx="28"
+                    cy="456"
+                    r="4"
+                    fill="hsl(var(--foreground) / 0.5)"
+                  />
+                  <circle
+                    cx="28"
+                    cy="504"
+                    r="4"
+                    fill="hsl(var(--foreground) / 0.5)"
+                  />
+                  <circle
+                    cx="28"
+                    cy="552"
+                    r="4"
+                    fill="hsl(var(--foreground) / 0.5)"
+                  />
+                </svg>
+
+                <button class="commit-row unsynced selected" data-commit>
+                  <span></span>
+                  <span class="commit-cell">
+                    <span
+                      class="avatar"
+                      style="
+                        background: hsl(210 40% 92%);
+                        color: hsl(210 40% 32%);
+                      "
+                      >林</span
+                    >
+                    <span style="min-width: 0">
+                      <span class="commit-msg truncate" style="display: block"
+                        >完善宣纸纹理的笔触感，收尾本里程碑</span
+                      >
+                      <span class="refs">
+                        <span class="ref-badge ref-local">main</span>
+                      </span>
+                    </span>
+                  </span>
+                  <span class="t-body c-secondary truncate">林小墨</span>
+                  <span class="t-caption c-tertiary num">2 小时前</span>
+                </button>
+
+                <button class="commit-row unsynced" data-commit>
+                  <span></span>
+                  <span class="commit-cell">
+                    <span
+                      class="avatar"
+                      style="
+                        background: hsl(152 32% 90%);
+                        color: hsl(152 40% 30%);
+                      "
+                      >苏</span
+                    >
+                    <span style="min-width: 0">
+                      <span class="commit-msg truncate" style="display: block"
+                        >调整山水笔刷的压力曲线</span
+                      >
+                    </span>
+                  </span>
+                  <span class="t-body c-secondary truncate">苏青</span>
+                  <span class="t-caption c-tertiary num">5 小时前</span>
+                </button>
+
+                <button class="commit-row unsynced" data-commit>
+                  <span></span>
+                  <span class="commit-cell">
+                    <span
+                      class="avatar"
+                      style="
+                        background: hsl(210 40% 92%);
+                        color: hsl(210 40% 32%);
+                      "
+                      >林</span
+                    >
+                    <span style="min-width: 0">
+                      <span class="commit-msg truncate" style="display: block"
+                        >新增 4K 宣纸材质 6 张</span
+                      >
+                      <span class="refs">
+                        <span class="ref-badge ref-remote">origin/main</span>
+                      </span>
+                    </span>
+                  </span>
+                  <span class="t-body c-secondary truncate">林小墨</span>
+                  <span class="t-caption c-tertiary num">昨天 18:40</span>
+                </button>
+
+                <button class="commit-row" data-commit>
+                  <span></span>
+                  <span class="commit-cell">
+                    <span
+                      class="avatar"
+                      style="
+                        background: hsl(36 45% 90%);
+                        color: hsl(36 50% 30%);
+                      "
+                      >陈</span
+                    >
+                    <span style="min-width: 0">
+                      <span class="commit-msg truncate" style="display: block"
+                        >合并分支 feature/笔刷引擎</span
+                      >
+                      <span class="refs">
+                        <span class="ref-badge ref-tag">v0.8-rc</span>
+                      </span>
+                    </span>
+                  </span>
+                  <span class="t-body c-secondary truncate">陈白</span>
+                  <span class="t-caption c-tertiary num">昨天 16:02</span>
+                </button>
+
+                <button class="commit-row" data-commit>
+                  <span></span>
+                  <span class="commit-cell">
+                    <span
+                      class="avatar"
+                      style="
+                        background: hsl(210 40% 92%);
+                        color: hsl(210 40% 32%);
+                      "
+                      >林</span
+                    >
+                    <span style="min-width: 0">
+                      <span class="commit-msg truncate" style="display: block"
+                        >修复 PSD 导出时的颜色偏移</span
+                      >
+                    </span>
+                  </span>
+                  <span class="t-body c-secondary truncate">林小墨</span>
+                  <span class="t-caption c-tertiary num">昨天 11:27</span>
+                </button>
+
+                <button class="commit-row" data-commit>
+                  <span></span>
+                  <span class="commit-cell">
+                    <span
+                      class="avatar"
+                      style="
+                        background: hsl(152 32% 90%);
+                        color: hsl(152 40% 30%);
+                      "
+                      >苏</span
+                    >
+                    <span style="min-width: 0">
+                      <span class="commit-msg truncate" style="display: block"
+                        >笔刷引擎：湿度模拟初版</span
+                      >
+                    </span>
+                  </span>
+                  <span class="t-body c-secondary truncate">苏青</span>
+                  <span class="t-caption c-tertiary num">3 天前</span>
+                </button>
+
+                <button class="commit-row" data-commit>
+                  <span></span>
+                  <span class="commit-cell">
+                    <span
+                      class="avatar"
+                      style="
+                        background: hsl(152 32% 90%);
+                        color: hsl(152 40% 30%);
+                      "
+                      >苏</span
+                    >
+                    <span style="min-width: 0">
+                      <span class="commit-msg truncate" style="display: block"
+                        >重构图层合成管线</span
+                      >
+                    </span>
+                  </span>
+                  <span class="t-body c-secondary truncate">苏青</span>
+                  <span class="t-caption c-tertiary num">3 天前</span>
+                </button>
+
+                <button class="commit-row" data-commit>
+                  <span></span>
+                  <span class="commit-cell">
+                    <span
+                      class="avatar"
+                      style="
+                        background: hsl(36 45% 90%);
+                        color: hsl(36 50% 30%);
+                      "
+                      >陈</span
+                    >
+                    <span style="min-width: 0">
+                      <span class="commit-msg truncate" style="display: block"
+                        >更新贴图：松烟墨颗粒感</span
+                      >
+                    </span>
+                  </span>
+                  <span class="t-body c-secondary truncate">陈白</span>
+                  <span class="t-caption c-tertiary num">4 天前</span>
+                </button>
+
+                <button class="commit-row" data-commit>
+                  <span></span>
+                  <span class="commit-cell">
+                    <span
+                      class="avatar"
+                      style="
+                        background: hsl(210 40% 92%);
+                        color: hsl(210 40% 32%);
+                      "
+                      >林</span
+                    >
+                    <span style="min-width: 0">
+                      <span class="commit-msg truncate" style="display: block"
+                        >初版笔刷引擎</span
+                      >
+                    </span>
+                  </span>
+                  <span class="t-body c-secondary truncate">林小墨</span>
+                  <span class="t-caption c-tertiary num">上周</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="history-foot">
+              <button class="btn btn-secondary">加载更多提交</button>
+            </div>
+          </section>
+
+          <!-- 提交详情面板 -->
+          <aside class="detail-panel" id="detailPanel" aria-label="提交详情">
+            <div class="detail-head">
+              <span class="t-mono c-secondary">a3f9c21</span>
+              <span style="display: flex; gap: 2px">
+                <button
+                  class="icon-btn sm"
+                  aria-label="复制提交号"
+                  title="复制提交号"
+                >
+                  <svg class="ic" viewBox="0 0 24 24">
+                    <rect width="14" height="14" x="8" y="8" rx="2" />
+                    <path
+                      d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"
+                    />
+                  </svg>
+                </button>
+                <button
+                  class="icon-btn sm"
+                  id="closeDetail"
+                  aria-label="关闭提交详情"
+                  title="关闭"
+                >
+                  <svg class="ic" viewBox="0 0 24 24">
+                    <path d="M18 6 6 18" />
+                    <path d="m6 6 12 12" />
+                  </svg>
+                </button>
+              </span>
+            </div>
+            <div class="detail-body">
+              <h2 class="t-heading">完善宣纸纹理的笔触感，收尾本里程碑</h2>
+              <p class="t-body c-secondary" style="margin-top: 8px">
+                调整了纤维层的采样密度，浓墨时的飞白效果更自然。本里程碑全部内容已完成，等待审查。
+              </p>
+              <div
+                style="
+                  margin: 16px 0;
+                  border-top: 1px solid hsl(var(--border-subtle));
+                "
+              ></div>
+              <div class="kv">
+                <span class="k t-caption c-tertiary">作者</span>
+                <span class="t-body">林小墨 &lt;lin@studio.example&gt;</span>
+              </div>
+              <div class="kv">
+                <span class="k t-caption c-tertiary">时间</span>
+                <span class="t-body num">2026-07-24 12:32</span>
+              </div>
+              <div class="kv">
+                <span class="k t-caption c-tertiary">提交号</span>
+                <span class="t-mono c-secondary">a3f9c21e8b…</span>
+              </div>
+              <div
+                style="
+                  margin: 16px 0 8px;
+                  border-top: 1px solid hsl(var(--border-subtle));
+                "
+              ></div>
+              <div class="t-label c-tertiary" style="margin-bottom: 6px">
+                变更文件 <span class="num">4</span>
+              </div>
+              <div class="file-row">
+                <span class="t-mono grow truncate c-secondary"
+                  >assets/材质/宣纸_4k.psd</span
+                >
+                <span class="t-caption c-tertiary num">2.4 MB</span>
+              </div>
+              <div class="file-row">
+                <span class="t-mono grow truncate c-secondary"
+                  >assets/笔刷/山水_皴法.brush</span
+                >
+                <span class="t-caption num"
+                  ><span class="stat-add">+128</span>
+                  <span class="stat-del">−64</span></span
+                >
+              </div>
+              <div class="file-row">
+                <span class="t-mono grow truncate c-secondary"
+                  >src/合成/图层混合.ts</span
+                >
+                <span class="t-caption num"
+                  ><span class="stat-add">+42</span>
+                  <span class="stat-del">−18</span></span
+                >
+              </div>
+              <div class="file-row">
+                <span class="t-mono grow truncate c-secondary"
+                  >docs/材质清单.md</span
+                >
+                <span class="t-caption num"
+                  ><span class="stat-add">+6</span>
+                  <span class="stat-del">−2</span></span
+                >
+              </div>
+            </div>
+            <div class="detail-foot">
+              <button class="btn btn-danger-ghost">撤回提交</button>
+              <button class="btn btn-secondary">复制提交号</button>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ 浮动控制台 ============ -->
+    <div class="controls">
+      <div class="line">
+        <span class="t-label c-tertiary">主界面预览 · 数据为虚构</span>
+        <a class="t-caption navlink" href="./preview.html">← 设计语言</a>
+      </div>
+      <div class="line">
+        <span class="t-caption c-secondary">主题</span>
+        <div class="segmented" role="group" aria-label="主题">
+          <button id="themeLight" aria-pressed="true">浅色</button>
+          <button id="themeDark" aria-pressed="false">深色</button>
+        </div>
+      </div>
+      <div class="line">
+        <span class="t-caption c-secondary">字体</span>
+        <div class="segmented" role="group" aria-label="字体">
+          <button id="fontInter" aria-pressed="true">Inter</button>
+          <button id="fontSystem" aria-pressed="false">系统字体</button>
+        </div>
+      </div>
+      <div class="line">
+        <span class="t-caption c-secondary">状态演示</span>
+        <span style="display: flex; gap: 6px">
+          <button class="toggle-chip" id="toggleLoading" aria-pressed="false">
+            加载态
+          </button>
+          <button class="toggle-chip" id="toggleSync" aria-pressed="false">
+            同步中
+          </button>
+          <button class="toggle-chip" id="toggleDetail" aria-pressed="true">
+            详情
+          </button>
+        </span>
+      </div>
+    </div>
+
+    <script>
+      const root = document.documentElement;
+
+      // 主题：默认跟随系统
+      const prefersDark = window.matchMedia("(prefers-color-scheme: dark)");
+      function setTheme(theme) {
+        root.dataset.theme = theme;
+        themeLight.setAttribute("aria-pressed", String(theme === "light"));
+        themeDark.setAttribute("aria-pressed", String(theme === "dark"));
+      }
+      setTheme(prefersDark.matches ? "dark" : "light");
+      themeLight.onclick = () => setTheme("light");
+      themeDark.onclick = () => setTheme("dark");
+
+      // 字体 A/B
+      function setFont(font) {
+        root.dataset.font = font;
+        fontInter.setAttribute("aria-pressed", String(font === "inter"));
+        fontSystem.setAttribute("aria-pressed", String(font === "system"));
+      }
+      fontInter.onclick = () => setFont("inter");
+      fontSystem.onclick = () => setFont("system");
+
+      // 提交详情面板
+      const detailPanel = document.getElementById("detailPanel");
+      function setDetail(open) {
+        detailPanel.hidden = !open;
+        toggleDetail.setAttribute("aria-pressed", String(open));
+        if (open) {
+          detailPanel.classList.remove("entering");
+          void detailPanel.offsetWidth;
+          detailPanel.classList.add("entering");
+        }
+      }
+      toggleDetail.onclick = () => setDetail(detailPanel.hidden);
+      closeDetail.onclick = () => setDetail(false);
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") setDetail(false);
+      });
+
+      // 提交行选中
+      const commitRows = [...document.querySelectorAll("[data-commit]")];
+      commitRows.forEach((row) => {
+        row.addEventListener("click", () => {
+          commitRows.forEach((r) => r.classList.remove("selected"));
+          row.classList.add("selected");
+          setDetail(true);
+        });
+      });
+
+      // 同步中演示
+      toggleSync.onclick = () => {
+        const on = progressTop.classList.toggle("on");
+        busyArea.hidden = !on;
+        toggleSync.setAttribute("aria-pressed", String(on));
+      };
+
+      // 加载态演示：骨架屏 ↔ 内容
+      const historyRows = document.getElementById("historyRows");
+      const branchList = document.getElementById("branchList");
+      const stashList = document.getElementById("stashList");
+      const saved = {
+        history: historyRows.innerHTML,
+        branch: branchList.innerHTML,
+        stash: stashList.innerHTML,
+      };
+      const skLine = (w) =>
+        `<div class="skeleton" style="width: ${w}; height: 12px"></div>`;
+      toggleLoading.onclick = () => {
+        const on = toggleLoading.getAttribute("aria-pressed") !== "true";
+        toggleLoading.setAttribute("aria-pressed", String(on));
+        if (on) {
+          historyRows.innerHTML = Array.from({ length: 8 })
+            .map(
+              (_, i) => `
+            <div class="sk-row">
+              <div class="skeleton" style="width: 24px; height: 24px; border-radius: 999px; margin-left: 96px"></div>
+              <div style="flex: 1; display: flex; flex-direction: column; gap: 6px">
+                ${skLine(`${46 + ((i * 13) % 30)}%`)}
+                ${skLine(`${20 + ((i * 7) % 18)}%`)}
+              </div>
+              ${skLine("56px")}
+              ${skLine("44px")}
+            </div>`,
+            )
+            .join("");
+          branchList.innerHTML = Array.from({ length: 4 })
+            .map(
+              (_, i) => `
+            <div class="sk-side">
+              <div class="skeleton" style="width: 14px; height: 14px; border-radius: 999px"></div>
+              ${skLine(`${52 + ((i * 11) % 28)}%`)}
+            </div>`,
+            )
+            .join("");
+          stashList.innerHTML = `
+            <div class="sk-side">
+              <div class="skeleton" style="width: 14px; height: 14px; border-radius: 999px"></div>
+              ${skLine("58%")}
+            </div>`;
+        } else {
+          historyRows.innerHTML = saved.history;
+          branchList.innerHTML = saved.branch;
+          stashList.innerHTML = saved.stash;
+          // 重新绑定行选中
+          savedHistoryRebind();
+        }
+      };
+      function savedHistoryRebind() {
+        const rows = [...document.querySelectorAll("[data-commit]")];
+        rows.forEach((row) => {
+          row.addEventListener("click", () => {
+            rows.forEach((r) => r.classList.remove("selected"));
+            row.classList.add("selected");
+            setDetail(true);
+          });
+        });
+      }
+    </script>
+  </body>
+</html>
