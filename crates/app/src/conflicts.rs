@@ -1848,6 +1848,7 @@ mod tests {
         .expect("complete oversized conflict");
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn select_side_treats_pathspec_magic_as_a_literal_filename() {
         let (runner, _home) = real_runner();

@@ -320,8 +320,8 @@
   - LFS 场景同样真实跑。
 - 认证栈测试：本地起 `git http-backend` + Basic Auth 模拟 HTTPS 401/凭据流程；SSH 流程用本地 sshd 容器（仅 Linux CI 跑）。
 - 前端单元测试：Vitest + Testing Library（组件逻辑、状态管理）。
-- E2E：`tauri-driver` + WebdriverIO，驱动真实应用操作真实临时仓库，跑通“克隆→修改→提交→同事推送→同步→冲突→解决→撤回”全链路。
-  - 现实约束：tauri-driver 不支持 macOS（WKWebView 无 WebDriver），E2E 在 Linux + Windows CI 上跑，macOS 由 Rust 集成测试兜底（核心 git 逻辑与平台无关）。
+- E2E：内嵌 WebDriver + WebdriverIO，驱动真实应用操作真实临时仓库，跑通“克隆→修改→提交→同事推送→同步→冲突→解决→撤回”全链路。
+  - 发布门禁当前在 Linux + Windows CI 上运行；内嵌提供器直接使用各平台原生 WebView 接口，不依赖外部浏览器驱动。macOS 仍由 Rust 集成测试兜底（核心 git 逻辑与平台无关）。
 - CI：GitHub Actions——单元 + 集成测试跑全部三平台矩阵，E2E 跑 Linux/Windows；每个 job 恢复仓库本地工具链 cache 后执行 ensure/verify，cache miss 时就地构建，不消费跨 workflow 的完整工具链 artifact。
 
 # 构建与发布

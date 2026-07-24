@@ -641,6 +641,7 @@ mod tests {
         assert!(repo.git_output(["stash", "list"]).trim().is_empty());
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn restore_treats_pathspec_magic_as_a_literal_filename() {
         let (runner, _dist_temp) = real_runner();

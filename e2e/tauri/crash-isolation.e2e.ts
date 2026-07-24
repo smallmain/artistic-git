@@ -51,7 +51,7 @@ type WindowWithTauriInternals = Window & {
 type CrashInjectionRuntimeReport = {
   checkedAt: string;
   command: "inject_renderer_crash";
-  driver: "tauri-driver";
+  driver: "embedded-webdriver";
   kind: "phase9-crash-isolation-runtime";
   observations: {
     crashDetailsVisible: boolean;
@@ -61,13 +61,13 @@ type CrashInjectionRuntimeReport = {
   };
   platform: NodeJS.Platform;
   result: "passed" | "failed";
-  schemaVersion: 1;
+  schemaVersion: 2;
   summary: string;
   taskCheckable: boolean;
 };
 
 const crashSummary =
-  "Phase 9C tauri-driver renderer crash injection reloaded this window.";
+  "Phase 9C embedded WebDriver crash injection reloaded this window.";
 
 let runtimeReport: CrashInjectionRuntimeReport | null = null;
 let lastCrashState: CrashDialogState | null = null;
@@ -78,7 +78,7 @@ describe("Artistic Git Tauri crash isolation", () => {
       writeCrashInjectionRuntimeReport({
         checkedAt: new Date().toISOString(),
         command: "inject_renderer_crash",
-        driver: "tauri-driver",
+        driver: "embedded-webdriver",
         kind: "phase9-crash-isolation-runtime",
         observations: {
           crashDetailsVisible: false,
@@ -88,7 +88,7 @@ describe("Artistic Git Tauri crash isolation", () => {
         },
         platform: process.platform,
         result: "failed",
-        schemaVersion: 1,
+        schemaVersion: 2,
         summary: crashSummary,
         taskCheckable: false,
       });
@@ -156,7 +156,7 @@ describe("Artistic Git Tauri crash isolation", () => {
     writeCrashInjectionRuntimeReport({
       checkedAt: new Date().toISOString(),
       command: "inject_renderer_crash",
-      driver: "tauri-driver",
+      driver: "embedded-webdriver",
       kind: "phase9-crash-isolation-runtime",
       observations: {
         crashDetailsVisible: state.detailsVisible,
@@ -166,7 +166,7 @@ describe("Artistic Git Tauri crash isolation", () => {
       },
       platform: process.platform,
       result: "passed",
-      schemaVersion: 1,
+      schemaVersion: 2,
       summary: crashSummary,
       taskCheckable: true,
     });
@@ -230,7 +230,8 @@ async function injectRendererCrash(summary: string) {
           finish({ accepted: true, completed: true, error: null });
         })
         .catch((error) => {
-          const message = error instanceof Error ? error.message : String(error);
+          const message =
+            error instanceof Error ? error.message : String(error);
           targetWindow.__artisticGitCrashInjectionCompleted = true;
           targetWindow.__artisticGitCrashInjectionError = message;
           targetWindow.__artisticGitCrashInjectionState = "rejected";

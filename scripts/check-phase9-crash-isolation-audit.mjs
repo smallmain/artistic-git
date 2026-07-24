@@ -86,7 +86,7 @@ const evidenceChecks = [
       "native WebView crash hook support is platform-gated with explicit unsupported evidence",
     source: "tauriLib",
     pattern:
-      /native_renderer_crash_hook_gate\(\) -> &'static str[\s\S]*native-webview-process-terminate-hook:supported:macos-ios[\s\S]*native_renderer_crash_hook_gate\(\) -> &'static str[\s\S]*native-webview-process-terminate-hook:unsupported:windows-linux:requires-tauri-driver-crash-injection-evidence/,
+      /native_renderer_crash_hook_gate\(\) -> &'static str[\s\S]*native-webview-process-terminate-hook:supported:macos-ios[\s\S]*native_renderer_crash_hook_gate\(\) -> &'static str[\s\S]*native-webview-process-terminate-hook:unsupported:windows-linux:requires-embedded-webdriver-crash-injection-evidence/,
   },
   {
     id: "renderer-reload-target-window",
@@ -141,28 +141,28 @@ const evidenceChecks = [
     pattern: /opens a pending renderer crash after a window reload/,
   },
   {
-    id: "tauri-driver-crash-injection-e2e",
+    id: "embedded-webdriver-crash-injection-e2e",
     layer: "renderer",
     requirement:
-      "tauri-driver E2E invokes renderer crash injection through the live Tauri IPC bridge",
+      "embedded WebDriver E2E invokes renderer crash injection through the live Tauri IPC bridge",
     source: "crashInjectionE2e",
     pattern:
       /renderer crash injection did not reload into CrashDetailsDialog[\s\S]*__TAURI_INTERNALS__[\s\S]*invoke\("inject_renderer_crash"/,
   },
   {
-    id: "tauri-driver-crash-injection-dialog-assertion",
+    id: "embedded-webdriver-crash-injection-dialog-assertion",
     layer: "renderer",
     requirement:
-      "tauri-driver E2E observes reload into CrashDetailsDialog, expands technical details, and verifies the start screen after dismissal",
+      "embedded WebDriver E2E observes reload into CrashDetailsDialog, expands technical details, and verifies the start screen after dismissal",
     source: "crashInjectionE2e",
     pattern:
       /state\.diagnostics\.hasCrashDialogTestId[\s\S]*state\.diagnostics\.navigationType === "reload"[\s\S]*showCrashTechnicalDetails\(\)[\s\S]*state\.detailsVisible[\s\S]*assert\.equal\(state\.diagnostics\.navigationType, "reload"\)[\s\S]*dismissCrashDialogIfOpen\(\)[\s\S]*startScreenStillInteractive/,
   },
   {
-    id: "tauri-driver-crash-injection-runtime-report",
+    id: "embedded-webdriver-crash-injection-runtime-report",
     layer: "renderer",
     requirement:
-      "tauri-driver E2E writes a machine-readable crash injection runtime report",
+      "embedded WebDriver E2E writes a machine-readable crash injection runtime report",
     source: "crashInjectionE2e",
     pattern:
       /kind: "phase9-crash-isolation-runtime"[\s\S]*taskCheckable: true[\s\S]*ARTISTIC_GIT_PHASE9_CRASH_ISOLATION_E2E_REPORT/,
@@ -255,7 +255,7 @@ const gates = [
       "Windows/Linux native WebView crash detection is explicitly marked unsupported until platform hook or runtime evidence lands",
     source: "tauriLib",
     tokens: [
-      "native-webview-process-terminate-hook:unsupported:windows-linux:requires-tauri-driver-crash-injection-evidence",
+      "native-webview-process-terminate-hook:unsupported:windows-linux:requires-embedded-webdriver-crash-injection-evidence",
       '#[cfg(not(any(target_os = "macos", target_os = "ios")))]',
     ],
     forbidden: [
@@ -264,28 +264,33 @@ const gates = [
     ],
   },
   {
-    id: "tauri-driver-injection-gate",
+    id: "embedded-webdriver-injection-gate",
     requirement:
-      "CI keeps a tauri-driver transport gate available for renderer crash injection evidence",
+      "CI keeps an embedded WebDriver transport gate available for renderer crash injection evidence",
     source: "wdioConfig",
     tokens: [
       "@wdio/tauri-service",
-      'driverProvider: "external"',
-      "autoInstallTauriDriver: false",
-      "tauriDriverPath",
-      "TAURI_DRIVER",
-      "TAURI_DRIVER_PORT",
+      'driverProvider: "embedded"',
+      "embeddedPort",
+      "TAURI_WEBDRIVER_PORT",
+    ],
+    forbidden: [
+      /driverProvider: "external"/,
+      /tauriDriverPath|autoInstallTauriDriver|autoDownloadEdgeDriver/,
     ],
     extraSources: [
       {
         source: "ci",
         tokens: [
-          "Install tauri-driver",
-          "cargo install tauri-driver",
           "Run Tauri E2E on Linux",
           "Run Tauri E2E on Windows",
+          "TAURI_WEBDRIVER_PORT",
           "pnpm e2e:tauri:ci",
         ],
+      },
+      {
+        source: "tauriLib",
+        tokens: ["tauri_plugin_wdio_webdriver::init()"],
       },
     ],
     scriptTokens: {
@@ -293,9 +298,9 @@ const gates = [
     },
   },
   {
-    id: "tauri-driver-crash-injection-runtime-artifact",
+    id: "embedded-webdriver-crash-injection-runtime-artifact",
     requirement:
-      "Linux/Windows tauri-driver E2E uploads renderer crash injection runtime evidence",
+      "Linux/Windows embedded WebDriver E2E uploads renderer crash injection runtime evidence",
     source: "ci",
     tokens: [
       "ARTISTIC_GIT_PHASE9_CRASH_ISOLATION_E2E_REPORT",
@@ -371,14 +376,14 @@ const report = {
   runtimeEvidence: {
     nativeWebviewCrash:
       "not-run-by-audit; macOS/iOS native hook is statically wired, Windows/Linux native hook is unsupported in this code path",
-    tauriDriverCrashInjection:
-      "runtime-spec-wired; Linux/Windows CI now runs e2e/tauri/crash-isolation.e2e.ts through tauri-driver and uploads phase9-crash-isolation-e2e-* evidence; checking TASKS.md still requires a successful uploaded runtime artifact",
+    embeddedWebDriverCrashInjection:
+      "runtime-spec-wired; Linux/Windows CI runs e2e/tauri/crash-isolation.e2e.ts through the embedded WebDriver provider and uploads phase9-crash-isolation-e2e-* evidence; checking TASKS.md still requires a successful uploaded runtime artifact",
   },
-  schemaVersion: 2,
+  schemaVersion: 3,
   sources: sourceFiles,
   taskCheckable: false,
   taskCheckableReason:
-    "Static crash-isolation and CI wiring evidence passes, but this audit does not itself execute tauri-driver; check TASKS.md only after successful phase9-crash-isolation-e2e-* runtime artifacts exist.",
+    "Static crash-isolation and CI wiring evidence passes, but this audit does not itself execute embedded WebDriver; check TASKS.md only after successful phase9-crash-isolation-e2e-* runtime artifacts exist.",
 };
 
 writeReport(report);
@@ -402,14 +407,14 @@ console.log(
   "native hook: macOS/iOS WebView terminate hook is wired; Windows/Linux are explicitly unsupported without runtime evidence",
 );
 console.log(
-  "renderer reload: injection path and tauri-driver spec are wired, but a successful runtime artifact is still required",
+  "renderer reload: injection path and embedded WebDriver spec are wired, but a successful runtime artifact is still required",
 );
 console.log("react: per-root AppErrorBoundary isolation is covered");
 console.log(
   "rust: Tauri commands return AppResult and panic reports reach the crash dialog",
 );
 console.log(
-  "known gaps: Windows/Linux native WebView crash detection is unsupported in this Tauri hook path; tauri-driver crash-injection runtime is wired but still needs a successful uploaded CI artifact before checking TASKS.md",
+  "known gaps: Windows/Linux native WebView crash detection is unsupported in this Tauri hook path; embedded WebDriver crash-injection runtime is wired but still needs a successful uploaded CI artifact before checking TASKS.md",
 );
 
 function read(relativePath) {
@@ -548,13 +553,13 @@ function buildPlatformSupport(items) {
       nativeWebviewTerminationHook: "unsupported-by-current-tauri-hook",
       platform: "windows",
       requiredRuntimeEvidence:
-        "platform native hook implementation or successful tauri-driver crash-injection artifact",
+        "platform native hook implementation or successful embedded WebDriver crash-injection artifact",
     },
     {
       nativeWebviewTerminationHook: "unsupported-by-current-tauri-hook",
       platform: "linux",
       requiredRuntimeEvidence:
-        "platform native hook implementation or successful tauri-driver crash-injection artifact",
+        "platform native hook implementation or successful embedded WebDriver crash-injection artifact",
     },
   ];
 }
@@ -576,7 +581,7 @@ function buildKnownGaps() {
       status: "unsupported",
     },
     {
-      id: "tauri-driver-crash-injection-runtime-artifact",
+      id: "embedded-webdriver-crash-injection-runtime-artifact",
       platform: "linux/windows",
       requiredEvidence:
         "CI artifact from e2e/tauri/crash-isolation.e2e.ts invoking inject_renderer_crash and asserting reload plus CrashDetailsDialog",
@@ -657,20 +662,20 @@ function buildCoverageSegments({ commandReturnAudit, evidence, gates }) {
         "pending-crash-window-context",
         "pending-crash-frontend-dialog",
         "pending-crash-component-test",
-        "tauri-driver-crash-injection-e2e",
-        "tauri-driver-crash-injection-dialog-assertion",
-        "tauri-driver-crash-injection-runtime-report",
+        "embedded-webdriver-crash-injection-e2e",
+        "embedded-webdriver-crash-injection-dialog-assertion",
+        "embedded-webdriver-crash-injection-runtime-report",
       ],
       gateIds: [
-        "tauri-driver-injection-gate",
-        "tauri-driver-crash-injection-runtime-artifact",
+        "embedded-webdriver-injection-gate",
+        "embedded-webdriver-crash-injection-runtime-artifact",
       ],
       id: "renderer-reload-evidence",
       missingRuntimeEvidence:
         "A successful uploaded phase9-crash-isolation-e2e-* runtime artifact is still required before this task can be checked.",
       status: "runtime-artifact-pending",
       summary:
-        "Renderer crash injection reaches the shared reload path, stores a pending crash, reloads only the affected window, and has a tauri-driver spec wired for runtime evidence.",
+        "Renderer crash injection reaches the shared reload path, stores a pending crash, reloads only the affected window, and has an embedded WebDriver spec wired for runtime evidence.",
       title: "Renderer Reload Evidence",
     }),
     segment({

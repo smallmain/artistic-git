@@ -12,7 +12,7 @@
           "identifier": "wdio-e2e",
           "description": "WDIO bridge available only in debug E2E builds",
           "windows": ["*"],
-          "permissions": ["wdio:default"]
+          "permissions": ["wdio:default", "wdio-webdriver:default"]
         }
       ]
     }

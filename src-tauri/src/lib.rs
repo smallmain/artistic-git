@@ -2708,7 +2708,9 @@ pub fn run() {
         .on_window_event(handle_window_event);
 
     #[cfg(feature = "wdio-e2e")]
-    let builder = builder.plugin(tauri_plugin_wdio::init());
+    let builder = builder
+        .plugin(tauri_plugin_wdio::init())
+        .plugin(tauri_plugin_wdio_webdriver::init());
 
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     let builder = builder.on_web_content_process_terminate(handle_web_content_process_terminate);
@@ -2869,7 +2871,7 @@ fn native_renderer_crash_hook_gate() -> &'static str {
 
 #[cfg(not(any(target_os = "macos", target_os = "ios")))]
 fn native_renderer_crash_hook_gate() -> &'static str {
-    "native-webview-process-terminate-hook:unsupported:windows-linux:requires-tauri-driver-crash-injection-evidence"
+    "native-webview-process-terminate-hook:unsupported:windows-linux:requires-embedded-webdriver-crash-injection-evidence"
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -4954,7 +4956,7 @@ mod tests {
         #[cfg(not(any(target_os = "macos", target_os = "ios")))]
         {
             assert!(gate.contains("unsupported:windows-linux"));
-            assert!(gate.contains("requires-tauri-driver-crash-injection-evidence"));
+            assert!(gate.contains("requires-embedded-webdriver-crash-injection-evidence"));
         }
     }
 }

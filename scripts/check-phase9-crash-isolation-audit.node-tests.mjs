@@ -34,7 +34,7 @@ test("phase 9 crash isolation audit writes machine-readable gaps and gates", () 
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`.trim());
 
   const report = JSON.parse(readFileSync(reportPath, "utf8"));
-  assert.equal(report.schemaVersion, 2);
+  assert.equal(report.schemaVersion, 3);
   assert.equal(report.kind, "phase9-crash-isolation");
   assert.equal(report.result, "static-pass");
   assert.equal(report.taskCheckable, false);
@@ -93,27 +93,28 @@ test("phase 9 crash isolation audit writes machine-readable gaps and gates", () 
   assert.ok(
     report.gates.some(
       (gate) =>
-        gate.id === "tauri-driver-injection-gate" && gate.status === "pass",
+        gate.id === "embedded-webdriver-injection-gate" &&
+        gate.status === "pass",
     ),
   );
   assert.ok(
     report.gates.some(
       (gate) =>
-        gate.id === "tauri-driver-crash-injection-runtime-artifact" &&
+        gate.id === "embedded-webdriver-crash-injection-runtime-artifact" &&
         gate.status === "pass",
     ),
   );
   assert.ok(
     report.evidence.some(
       (item) =>
-        item.id === "tauri-driver-crash-injection-e2e" &&
+        item.id === "embedded-webdriver-crash-injection-e2e" &&
         item.status === "pass",
     ),
   );
   assert.ok(
     report.gaps.some(
       (gap) =>
-        gap.id === "tauri-driver-crash-injection-runtime-artifact" &&
+        gap.id === "embedded-webdriver-crash-injection-runtime-artifact" &&
         gap.status === "ci-wired-pending-successful-run",
     ),
   );

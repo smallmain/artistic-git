@@ -458,7 +458,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Install Linux Tauri and WebDriver dependencies
+      - name: Install Linux Tauri and E2E dependencies
         if: runner.os == 'Linux'
         run: |
           sudo find /etc/apt/sources.list.d -type f \( -iname '*microsoft*' -o -iname '*azure*' \) -print -delete
@@ -474,7 +474,6 @@ jobs:
             pipewire \
             pipewire-bin \
             pipewire-media-session \
-            webkit2gtk-driver \
             xvfb
 
       - name: Set up pnpm
@@ -531,20 +530,7 @@ jobs:
         id: real-git-e2e
         run: pnpm e2e:real-git:report
 
-      - name: Cache tauri-driver
-        id: tauri-driver-cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/tauri-driver
-            ~/.cargo/bin/tauri-driver.exe
-          key: tauri-driver-${{ runner.os }}-2.0.6
-
-      - name: Install tauri-driver
-        if: steps.tauri-driver-cache.outputs.cache-hit != 'true'
-        run: cargo install tauri-driver --version 2.0.6 --locked
-
-      - name: Diagnose Tauri WebDriver tools
+      - name: Diagnose Linux E2E environment
         if: runner.os == 'Linux'
         shell: bash
         run: |
@@ -553,10 +539,6 @@ jobs:
           echo "GDK_BACKEND=${GDK_BACKEND:-}"
           echo "GTK_USE_PORTAL=${GTK_USE_PORTAL:-}"
           echo "XDG_SESSION_TYPE=${XDG_SESSION_TYPE:-}"
-          command -v tauri-driver
-          tauri-driver --version || true
-          command -v WebKitWebDriver
-          WebKitWebDriver --version || true
           command -v pipewire || true
           pipewire --version || true
 
@@ -578,7 +560,7 @@ jobs:
           NO_AT_BRIDGE: "1"
           RUST_BACKTRACE: "1"
           RUST_LOG: info,artistic_git=debug
-          TAURI_DRIVER_PORT: "4444"
+          TAURI_WEBDRIVER_PORT: "4445"
           WEBKIT_DISABLE_COMPOSITING_MODE: "1"
           WEBKIT_DISABLE_DMABUF_RENDERER: "1"
           XDG_CACHE_HOME: ${{ runner.temp }}/tauri-e2e-cache/main
@@ -615,17 +597,13 @@ jobs:
             pnpm e2e:tauri:ci
           '
 
-      - name: Stop lingering Linux WebDriver processes
+      - name: Stop lingering Linux E2E processes
         if: always() && runner.os == 'Linux'
         shell: bash
         run: |
           set +e
-          pkill -TERM -x tauri-driver
-          pkill -TERM -x WebKitWebDriver
           pkill -TERM -f '/artistic-git-shell($| )'
           sleep 2
-          pkill -KILL -x tauri-driver
-          pkill -KILL -x WebKitWebDriver
           pkill -KILL -f '/artistic-git-shell($| )'
           exit 0
 
@@ -640,10 +618,11 @@ jobs:
           ARTISTIC_GIT_E2E_START_TIMEOUT_MS: "120000"
           ARTISTIC_GIT_E2E_CONNECTION_RETRY_TIMEOUT_MS: "240000"
           ARTISTIC_GIT_E2E_CONNECTION_RETRY_COUNT: "3"
+          TAURI_WEBDRIVER_PORT: "4445"
         run: |
           set -euo pipefail
-          # tauri-driver on Windows occasionally fails to become ready within the
-          # service's initial 10s probe; retry the suite once after a clean kill.
+          # Retry once after a clean app shutdown if the embedded server fails to
+          # become ready on a heavily loaded Windows runner.
           attempt=1
           max_attempts=2
           while true; do
@@ -655,8 +634,6 @@ jobs:
               exit 1
             fi
             echo "::warning::Windows Tauri E2E attempt ${attempt} failed; cleaning up and retrying"
-            taskkill //F //IM tauri-driver.exe //T >/dev/null 2>&1 || true
-            taskkill //F //IM msedgedriver.exe //T >/dev/null 2>&1 || true
             taskkill //F //IM artistic-git-shell.exe //T >/dev/null 2>&1 || true
             attempt=$((attempt + 1))
             sleep 5
@@ -680,7 +657,7 @@ jobs:
           NO_AT_BRIDGE: "1"
           RUST_BACKTRACE: "1"
           RUST_LOG: info,artistic_git=debug
-          TAURI_DRIVER_PORT: "4454"
+          TAURI_WEBDRIVER_PORT: "4455"
           WEBKIT_DISABLE_COMPOSITING_MODE: "1"
           WEBKIT_DISABLE_DMABUF_RENDERER: "1"
           XDG_CACHE_HOME: ${{ runner.temp }}/tauri-e2e-cache/crash
@@ -724,6 +701,7 @@ jobs:
           ARTISTIC_GIT_E2E_PROFILE_DIR: ${{ runner.temp }}/tauri-e2e-profile/crash
           ARTISTIC_GIT_E2E_SPEC_SET: crash
           ARTISTIC_GIT_PHASE9_CRASH_ISOLATION_E2E_REPORT: ${{ runner.temp }}/phase9-crash-isolation-e2e/phase9-crash-isolation-e2e-${{ runner.os }}.json
+          TAURI_WEBDRIVER_PORT: "4455"
         run: pnpm e2e:tauri:ci
 
       - name: Finalize phase 12 E2E runtime evidence

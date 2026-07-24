@@ -1,6 +1,5 @@
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -9,11 +8,11 @@ import { installDebugGitDist } from "./e2e/tauri/debug-resources";
 
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
 const gitDistDir = path.join(rootDir, "src-tauri", "resources", "git-dist");
-const driverHost = process.env.TAURI_DRIVER_HOST ?? "127.0.0.1";
-const driverPort = Number.parseInt(process.env.TAURI_DRIVER_PORT ?? "4444", 10);
+const embeddedPort = Number.parseInt(
+  process.env.TAURI_WEBDRIVER_PORT ?? "4445",
+  10,
+);
 const appBinaryPath = defaultTauriBinaryPath();
-const tauriDriverPath =
-  readNonEmptyEnv("TAURI_DRIVER") ?? defaultTauriDriverPath();
 const e2eLogDir = readNonEmptyEnv("ARTISTIC_GIT_E2E_LOG_DIR");
 const e2eProfile = createE2eProfile();
 const connectionRetryTimeout = readPositiveIntegerEnv(
@@ -42,19 +41,16 @@ const mochaTimeout = readPositiveIntegerEnv(
 );
 const tauriServiceOptions = {
   appBinaryPath,
-  autoDownloadEdgeDriver: true,
-  autoInstallTauriDriver: false,
   backendLogLevel: "debug",
   captureBackendLogs: true,
   captureFrontendLogs: true,
   commandTimeout,
-  driverProvider: "external",
-  env: tauriDriverEnvironment(e2eProfile.env),
+  driverProvider: "embedded",
+  embeddedPort,
+  env: tauriApplicationEnvironment(e2eProfile.env),
   frontendLogLevel: "debug",
   logLevel: wdioLogLevel,
   startTimeout,
-  tauriDriverPath,
-  tauriDriverPort: driverPort,
   ...(e2eLogDir ? { logDir: e2eLogDir } : {}),
 } as const;
 
@@ -63,9 +59,6 @@ export const config = {
   specs: e2eSpecs,
   ...(e2eLogDir ? { outputDir: e2eLogDir } : {}),
   maxInstances: 1,
-  hostname: driverHost,
-  port: driverPort,
-  path: "/",
   logLevel: wdioLogLevel,
   bail: 1,
   waitforTimeout: 10_000,
@@ -122,12 +115,10 @@ function readPositiveIntegerEnv(name: string, fallback: number) {
   return parsed;
 }
 
-function tauriDriverEnvironment(profileEnv: NodeJS.ProcessEnv) {
+function tauriApplicationEnvironment(profileEnv: NodeJS.ProcessEnv) {
   const env: NodeJS.ProcessEnv = {
     ...profileEnv,
   };
-  // tauri-service may prepend a matching EdgeDriver after this config loads.
-  // Keep PATH inherited at driver spawn time so that update is not overwritten.
   for (const name of [
     "APPDATA",
     "CI",
@@ -200,14 +191,6 @@ function defaultMochaTimeout(specSet: string | null) {
   }
 
   return 60_000;
-}
-
-function defaultTauriDriverPath() {
-  const executableName =
-    process.platform === "win32" ? "tauri-driver.exe" : "tauri-driver";
-  const cargoHome = process.env.CARGO_HOME ?? path.join(homedir(), ".cargo");
-  const cargoDriverPath = path.join(cargoHome, "bin", executableName);
-  return findExecutableOnPath(executableName) ?? cargoDriverPath;
 }
 
 function ensureTauriBinary() {

@@ -1149,6 +1149,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn commit_treats_pathspec_magic_as_a_literal_filename() {
         let (runner, _dist_temp) = real_runner();

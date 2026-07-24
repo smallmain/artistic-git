@@ -97,7 +97,10 @@ test("manual CI platform scope prunes runner matrices without weakening push CI"
     /PHASE12_PERF_PROFILE: >-\n\s+\$\{\{ inputs\.phase12_perf_profile == 'heavy' && 'heavy' \|\|\n\s+inputs\.phase12_perf_profile == 'light' && 'light' \|\|\n\s+\(github\.event_name != 'workflow_dispatch' \|\| inputs\.platform_scope == 'all'\) && 'heavy' \|\|\n\s+'light' \}\}/,
     "explicit profiles take precedence, while full CI auto-resolves to heavy and partial CI to light",
   );
-  assert.match(perfJob, /Verify phase 12 perf envelope\n\s+timeout-minutes: 30/);
+  assert.match(
+    perfJob,
+    /Verify phase 12 perf envelope\n\s+timeout-minutes: 30/,
+  );
   assert.doesNotMatch(
     testJob,
     /Verify phase 12 perf envelope/,
@@ -167,13 +170,24 @@ test("E2E instrumentation is explicit and excluded from release builds", async (
 
   assert.equal(packageJson.devDependencies["@wdio/tauri-plugin"], "1.2.0");
   assert.match(packageJson.scripts["build:e2e"], /vite build --mode e2e/);
-  assert.match(cargoToml, /wdio-e2e = \["dep:tauri-plugin-wdio"\]/);
+  assert.match(
+    cargoToml,
+    /wdio-e2e = \[\s*"dep:tauri-plugin-wdio",\s*"dep:tauri-plugin-wdio-webdriver",\s*\]/,
+  );
   assert.match(
     cargoToml,
     /tauri-plugin-wdio = \{ version = "=1\.2\.0", optional = true \}/,
   );
+  assert.match(
+    cargoToml,
+    /tauri-plugin-wdio-webdriver = \{ version = "=1\.2\.0", optional = true \}/,
+  );
   assert.match(shellSource, /feature = "wdio-e2e", not\(debug_assertions\)/);
-  assert.match(shellSource, /builder\.plugin\(tauri_plugin_wdio::init\(\)\)/);
+  assert.match(shellSource, /\.plugin\(tauri_plugin_wdio::init\(\)\)/);
+  assert.match(
+    shellSource,
+    /\.plugin\(tauri_plugin_wdio_webdriver::init\(\)\)/,
+  );
   assert.match(shellSource, /initialize_logging_with_existing_log_logger/);
   assert.match(loggingSource, /set_global_default\(subscriber\.finish\(\)\)/);
   assert.match(mainSource, /import\.meta\.env\.MODE === "e2e"/);
@@ -184,7 +198,8 @@ test("E2E instrumentation is explicit and excluded from release builds", async (
     e2eConfig.app.security.capabilities.some(
       (capability) =>
         typeof capability === "object" &&
-        capability.permissions.includes("wdio:default"),
+        capability.permissions.includes("wdio:default") &&
+        capability.permissions.includes("wdio-webdriver:default"),
     ),
   );
   for (const required of [
@@ -192,23 +207,20 @@ test("E2E instrumentation is explicit and excluded from release builds", async (
     '"wdio-e2e"',
     '"src-tauri/tauri.e2e.conf.json"',
     "installDebugGitDist(gitDistDir, appBinaryPath)",
-    "autoDownloadEdgeDriver: true",
+    'driverProvider: "embedded"',
+    "embeddedPort,",
   ]) {
     assert.ok(wdioConfig.includes(required), required);
   }
-  const driverEnvironmentStart = wdioConfig.indexOf(
-    "function tauriDriverEnvironment",
-  );
-  const driverEnvironmentEnd = wdioConfig.indexOf(
-    "function copyEnvIfSet",
-    driverEnvironmentStart,
-  );
-  assert.notEqual(driverEnvironmentStart, -1, "Tauri driver environment");
-  assert.notEqual(driverEnvironmentEnd, -1, "Tauri driver environment end");
   assert.doesNotMatch(
-    wdioConfig.slice(driverEnvironmentStart, driverEnvironmentEnd),
-    /"PATH"/,
-    "the driver must inherit PATH after tauri-service installs a matching EdgeDriver",
+    wdioConfig,
+    /tauriDriverPath|autoInstallTauriDriver|autoDownloadEdgeDriver|driverProvider: "external"/,
+    "embedded E2E must not depend on external WebDriver processes",
+  );
+  assert.doesNotMatch(
+    releaseWorkflow,
+    /tauri-driver|msedgedriver|webkit2gtk-driver/,
+    "release CI must use the embedded Tauri WebDriver provider",
   );
   assert.doesNotMatch(releaseWorkflow, /wdio-e2e|tauri\.e2e\.conf\.json/);
   assert.match(fullChainSource, /e2eTemporaryRoot\(process\.env, tmpdir\(\)\)/);
@@ -255,4 +267,5 @@ test("E2E instrumentation is explicit and excluded from release builds", async (
   );
   assert.equal(e2eTree.status, 0, e2eTree.stderr);
   assert.match(e2eTree.stdout, /tauri-plugin-wdio v1\.2\.0/);
+  assert.match(e2eTree.stdout, /tauri-plugin-wdio-webdriver v1\.2\.0/);
 });
