@@ -2,77 +2,111 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* Inter Variable（latin 子集，SIL OFL 1.1）——中文回落系统字体，见 redesign-spec §3.1 */
+@font-face {
+  font-family: "Inter";
+  src: url("./assets/fonts/InterVariable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
-  --background: 0 0% 100%;
-  --foreground: 0 0% 9%;
+  --font-sans:
+    "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --font-mono:
+    ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Consolas,
+    monospace;
+
+  --background: 220 16% 99%;
+  --foreground: 224 12% 12%;
+  --foreground-secondary: 222 8% 42%;
+  --foreground-tertiary: 220 6% 56%;
   --card: 0 0% 100%;
-  --card-foreground: 0 0% 9%;
-  --primary: 0 0% 9%;
-  --primary-foreground: 0 0% 98%;
-  --secondary: 0 0% 96%;
-  --secondary-foreground: 0 0% 9%;
-  --muted: 0 0% 96%;
-  --muted-foreground: 0 0% 45%;
-  --accent: 0 0% 96%;
-  --accent-foreground: 0 0% 9%;
-  --destructive: 0 84% 60%;
-  --destructive-foreground: 0 0% 98%;
-  --success: 142 69% 36%;
+  --card-foreground: 224 12% 12%;
+  --primary: 224 12% 12%;
+  --primary-foreground: 220 16% 99%;
+  --secondary: 220 12% 96%;
+  --secondary-foreground: 224 12% 12%;
+  --muted: 220 12% 96%;
+  --muted-foreground: var(--foreground-secondary);
+  --accent: 220 12% 95%;
+  --accent-foreground: 224 12% 12%;
+  --destructive: 0 58% 52%;
+  --destructive-foreground: 0 0% 100%;
+  --success: 152 46% 38%;
   --success-foreground: 0 0% 100%;
-  --warning: 42 91% 48%;
-  --warning-foreground: 0 0% 9%;
-  --danger: 0 84% 60%;
-  --danger-foreground: 0 0% 98%;
-  --sync: 24 95% 53%;
-  --sync-foreground: 0 0% 9%;
-  --review: 187 72% 39%;
+  --warning: 36 80% 42%;
+  --warning-foreground: 0 0% 100%;
+  --danger: 0 58% 52%;
+  --danger-foreground: 0 0% 100%;
+  --sync: 24 78% 48%;
+  --sync-foreground: 0 0% 100%;
+  --review: 188 58% 36%;
   --review-foreground: 0 0% 100%;
-  --border: 0 0% 90%;
-  --input: 0 0% 90%;
-  --ring: 0 0% 9%;
-  --shadow-floating-value: 0 18px 50px hsl(0 0% 0% / 0.14);
-  --duration-fast-value: 150ms;
-  --duration-panel-value: 220ms;
+  --border-subtle: 220 10% 93%;
+  --border: 222 10% 88%;
+  --input: 222 10% 88%;
+  --ring: 224 10% 26%;
+  --shadow-raised-value: 0 1px 2px hsl(224 20% 10% / 0.05);
+  --shadow-overlay-value:
+    0 4px 16px hsl(224 20% 10% / 0.08), 0 1px 3px hsl(224 20% 10% / 0.06);
+  --shadow-popover-value:
+    0 12px 32px hsl(224 20% 10% / 0.12), 0 2px 8px hsl(224 20% 10% / 0.08);
+  --shadow-floating-value: var(--shadow-popover-value);
+  --duration-micro-value: 120ms;
+  --duration-fast-value: 180ms;
+  --duration-panel-value: 240ms;
+  --duration-large-value: 320ms;
+  --ease-standard-value: cubic-bezier(0.25, 0.1, 0.25, 1);
   --ease-out-value: cubic-bezier(0.16, 1, 0.3, 1);
-  font-family:
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    sans-serif;
+  --ease-enter-value: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-exit-value: cubic-bezier(0.4, 0, 1, 1);
+  --z-dropdown: 20;
+  --z-overlay: 40;
+  --z-modal: 50;
+  --z-toast: 60;
+  --z-tooltip: 70;
 }
 
 :root[data-theme="dark"],
 .dark {
-  --background: 0 0% 7%;
-  --foreground: 0 0% 98%;
-  --card: 0 0% 10%;
-  --card-foreground: 0 0% 98%;
-  --primary: 0 0% 98%;
-  --primary-foreground: 0 0% 9%;
-  --secondary: 0 0% 16%;
-  --secondary-foreground: 0 0% 98%;
-  --muted: 0 0% 16%;
-  --muted-foreground: 0 0% 64%;
-  --accent: 0 0% 16%;
-  --accent-foreground: 0 0% 98%;
-  --destructive: 0 62% 50%;
-  --destructive-foreground: 0 0% 98%;
-  --success: 142 61% 45%;
-  --success-foreground: 0 0% 7%;
-  --warning: 45 91% 58%;
-  --warning-foreground: 0 0% 7%;
-  --danger: 0 72% 56%;
-  --danger-foreground: 0 0% 98%;
-  --sync: 28 92% 58%;
-  --sync-foreground: 0 0% 7%;
-  --review: 187 68% 48%;
+  --background: 224 14% 8%;
+  --foreground: 216 12% 92%;
+  --foreground-secondary: 218 8% 64%;
+  --foreground-tertiary: 220 6% 48%;
+  --card: 224 12% 10%;
+  --card-foreground: 216 12% 92%;
+  --primary: 216 12% 92%;
+  --primary-foreground: 224 14% 10%;
+  --secondary: 222 10% 14%;
+  --secondary-foreground: 216 12% 92%;
+  --muted: 222 10% 14%;
+  --muted-foreground: var(--foreground-secondary);
+  --accent: 222 10% 16%;
+  --accent-foreground: 216 12% 92%;
+  --destructive: 0 62% 60%;
+  --destructive-foreground: 224 14% 8%;
+  --success: 152 44% 52%;
+  --success-foreground: 224 14% 8%;
+  --warning: 40 78% 58%;
+  --warning-foreground: 224 14% 8%;
+  --danger: 0 62% 60%;
+  --danger-foreground: 224 14% 8%;
+  --sync: 26 84% 58%;
+  --sync-foreground: 224 14% 8%;
+  --review: 188 56% 48%;
   --review-foreground: 0 0% 100%;
-  --border: 0 0% 18%;
-  --input: 0 0% 18%;
-  --ring: 0 0% 80%;
-  --shadow-floating-value: 0 18px 50px hsl(0 0% 0% / 0.42);
+  --border-subtle: 220 8% 14%;
+  --border: 220 8% 19%;
+  --input: 220 8% 19%;
+  --ring: 216 10% 70%;
+  --shadow-raised-value: 0 1px 2px hsl(224 40% 2% / 0.32);
+  --shadow-overlay-value:
+    0 4px 16px hsl(224 40% 2% / 0.4), 0 1px 3px hsl(224 40% 2% / 0.32);
+  --shadow-popover-value:
+    0 12px 32px hsl(224 40% 2% / 0.5), 0 2px 8px hsl(224 40% 2% / 0.4);
 }
 
 @theme inline {
@@ -103,10 +137,23 @@
   --color-border: hsl(var(--border));
   --color-input: hsl(var(--input));
   --color-ring: hsl(var(--ring));
+  --color-foreground-secondary: hsl(var(--foreground-secondary));
+  --color-foreground-tertiary: hsl(var(--foreground-tertiary));
+  --color-border-subtle: hsl(var(--border-subtle));
   --shadow-floating: var(--shadow-floating-value);
+  --shadow-raised: var(--shadow-raised-value);
+  --shadow-overlay: var(--shadow-overlay-value);
+  --shadow-popover: var(--shadow-popover-value);
+  --duration-micro: var(--duration-micro-value);
   --duration-fast: var(--duration-fast-value);
   --duration-panel: var(--duration-panel-value);
+  --duration-large: var(--duration-large-value);
   --ease-out: var(--ease-out-value);
+  --ease-standard: var(--ease-standard-value);
+  --ease-enter: var(--ease-enter-value);
+  --ease-exit: var(--ease-exit-value);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
 }
 
 * {
@@ -219,6 +266,11 @@ body {
   min-width: 320px;
   min-height: 600px;
   margin: 0;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 450;
+  -webkit-font-smoothing: antialiased;
   -webkit-user-select: none;
   user-select: none;
 }
@@ -266,6 +318,47 @@ body {
 .text-numeric {
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum";
+}
+
+/* 语义字阶（redesign-spec §3.2，每级锁定 字号/行高/字重/字距） */
+.text-display {
+  font-size: 24px;
+  line-height: 32px;
+  font-weight: 560;
+  letter-spacing: -0.022em;
+}
+
+.text-title {
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 560;
+  letter-spacing: -0.011em;
+}
+
+.text-heading {
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 560;
+  letter-spacing: -0.006em;
+}
+
+.text-body {
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 450;
+}
+
+.text-label {
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 500;
+  letter-spacing: 0.003em;
+}
+
+.text-caption {
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 450;
 }
 
 .diff-checkerboard {
