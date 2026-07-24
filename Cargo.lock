@@ -86,7 +86,7 @@ dependencies = [
 
 [[package]]
 name = "artistic-git-app"
-version = "0.2.5"
+version = "0.3.0"
 dependencies = [
  "artistic-git-contracts",
  "artistic-git-core",
@@ -153,7 +153,7 @@ dependencies = [
 
 [[package]]
 name = "artistic-git-shell"
-version = "0.2.5"
+version = "0.3.0"
 dependencies = [
  "artistic-git-app",
  "artistic-git-contracts",
