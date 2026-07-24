@@ -126,6 +126,8 @@ function tauriDriverEnvironment(profileEnv: NodeJS.ProcessEnv) {
   const env: NodeJS.ProcessEnv = {
     ...profileEnv,
   };
+  // tauri-service may prepend a matching EdgeDriver after this config loads.
+  // Keep PATH inherited at driver spawn time so that update is not overwritten.
   for (const name of [
     "APPDATA",
     "CI",
@@ -140,7 +142,6 @@ function tauriDriverEnvironment(profileEnv: NodeJS.ProcessEnv) {
     "LOCALAPPDATA",
     "MESA_GL_VERSION_OVERRIDE",
     "NO_AT_BRIDGE",
-    "PATH",
     "PIPEWIRE_RUNTIME_DIR",
     "RUST_BACKTRACE",
     "RUST_LOG",

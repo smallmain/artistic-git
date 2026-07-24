@@ -2121,8 +2121,8 @@ mod tests {
             .join("share")
             .join("git-core")
             .join("templates");
-        let template_dir = runner
-            .environment_plan()
+        let environment_plan = runner.environment_plan();
+        let template_dir = environment_plan
             .variable("GIT_TEMPLATE_DIR")
             .expect("template directory");
 

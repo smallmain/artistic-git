@@ -486,7 +486,7 @@ function evaluateCiWorkflowContract(source) {
   );
   compareMatrixPlatforms(
     e2eJob,
-    [["ubuntu-22.04", "windows-2022"], ["windows-2022"], ["ubuntu-22.04"]],
+    [["ubuntu-22.04", "windows-latest"], ["windows-latest"], ["ubuntu-22.04"]],
     "e2e job",
     failures,
   );

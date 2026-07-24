@@ -55,8 +55,8 @@ test("manual CI platform scope prunes runner matrices without weakening push CI"
     ["macos-latest"],
   ]);
   assert.deepEqual(matrixPlatformOptions(e2eJob), [
-    ["ubuntu-22.04", "windows-2022"],
-    ["windows-2022"],
+    ["ubuntu-22.04", "windows-latest"],
+    ["windows-latest"],
     ["ubuntu-22.04"],
   ]);
   assert.match(
@@ -192,9 +192,24 @@ test("E2E instrumentation is explicit and excluded from release builds", async (
     '"wdio-e2e"',
     '"src-tauri/tauri.e2e.conf.json"',
     "installDebugGitDist(gitDistDir, appBinaryPath)",
+    "autoDownloadEdgeDriver: true",
   ]) {
     assert.ok(wdioConfig.includes(required), required);
   }
+  const driverEnvironmentStart = wdioConfig.indexOf(
+    "function tauriDriverEnvironment",
+  );
+  const driverEnvironmentEnd = wdioConfig.indexOf(
+    "function copyEnvIfSet",
+    driverEnvironmentStart,
+  );
+  assert.notEqual(driverEnvironmentStart, -1, "Tauri driver environment");
+  assert.notEqual(driverEnvironmentEnd, -1, "Tauri driver environment end");
+  assert.doesNotMatch(
+    wdioConfig.slice(driverEnvironmentStart, driverEnvironmentEnd),
+    /"PATH"/,
+    "the driver must inherit PATH after tauri-service installs a matching EdgeDriver",
+  );
   assert.doesNotMatch(releaseWorkflow, /wdio-e2e|tauri\.e2e\.conf\.json/);
   assert.match(fullChainSource, /e2eTemporaryRoot\(process\.env, tmpdir\(\)\)/);
   assert.match(
