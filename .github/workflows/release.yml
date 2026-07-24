@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: "Publish from main when ENABLE_MAIN_RELEASE=true."
+        description: "Publish from main or a codex/release-* branch when ENABLE_MAIN_RELEASE=true."
         type: boolean
         default: false
       package_audit:
@@ -111,6 +111,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
           ENABLE_MAIN_RELEASE: ${{ vars.ENABLE_MAIN_RELEASE }}
           DISPATCH_PUBLISH: ${{ github.event.inputs.publish || 'false' }}
           DISPATCH_PACKAGE_AUDIT: ${{ github.event.inputs.package_audit || 'false' }}
@@ -121,12 +122,19 @@ jobs:
           publish_release=false
           build_packages=false
           platform_scope=all
+          manual_publish_ref=false
           reason="dry-run: ENABLE_MAIN_RELEASE is not true or publish was not requested"
 
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             case "$DISPATCH_PLATFORM_SCOPE" in
               all|windows|linux|macos) platform_scope="$DISPATCH_PLATFORM_SCOPE" ;;
               *) echo "Invalid platform scope: $DISPATCH_PLATFORM_SCOPE" >&2; exit 1 ;;
+            esac
+          fi
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$REF_TYPE" = "branch" ]; then
+            case "$REF_NAME" in
+              main|codex/release-*) manual_publish_ref=true ;;
             esac
           fi
 
@@ -138,7 +146,7 @@ jobs:
             build_packages=true
             platform_scope=all
             reason="release: main push with ENABLE_MAIN_RELEASE=true"
-          elif [ "$HAS_CHANGES" = "true" ] && [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$REF_NAME" = "main" ] && [ "$DISPATCH_PUBLISH" = "true" ] && [ "$ENABLE_MAIN_RELEASE" = "true" ]; then
+          elif [ "$HAS_CHANGES" = "true" ] && [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$manual_publish_ref" = "true" ] && [ "$DISPATCH_PUBLISH" = "true" ] && [ "$ENABLE_MAIN_RELEASE" = "true" ]; then
             if [ "$DISPATCH_PLATFORM_SCOPE" != "all" ]; then
               echo "Publishing always builds every platform; set platform_scope=all to publish." >&2
               exit 1
@@ -439,9 +447,9 @@ jobs:
         include: >-
           ${{ fromJSON(
             (github.event_name != 'workflow_dispatch' || inputs.platform_scope == 'all') &&
-            '[{"os":"ubuntu-22.04","gitDistTarget":"linux-x86_64","rustTargets":"x86_64-unknown-linux-gnu"},{"os":"windows-latest","gitDistTarget":"windows-x86_64","rustTargets":"x86_64-pc-windows-msvc"}]' ||
+            '[{"os":"ubuntu-22.04","gitDistTarget":"linux-x86_64","rustTargets":"x86_64-unknown-linux-gnu"},{"os":"windows-2022","gitDistTarget":"windows-x86_64","rustTargets":"x86_64-pc-windows-msvc"}]' ||
             inputs.platform_scope == 'windows' &&
-            '[{"os":"windows-latest","gitDistTarget":"windows-x86_64","rustTargets":"x86_64-pc-windows-msvc"}]' ||
+            '[{"os":"windows-2022","gitDistTarget":"windows-x86_64","rustTargets":"x86_64-pc-windows-msvc"}]' ||
             inputs.platform_scope == 'linux' &&
             '[{"os":"ubuntu-22.04","gitDistTarget":"linux-x86_64","rustTargets":"x86_64-unknown-linux-gnu"}]'
           ) }}
@@ -1558,25 +1566,25 @@ jobs:
             --target "$GITHUB_SHA" \
             --notes-file release-plan/RELEASE_NOTES.md
 
-      - name: Commit released version to the default branch
+      - name: Commit released version to the release source branch
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ needs.plan.outputs.version }}
           TAG_NAME: ${{ needs.plan.outputs.tag }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_BRANCH: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          git fetch origin "$DEFAULT_BRANCH"
-          git checkout -B "release-version-$RELEASE_VERSION" "origin/$DEFAULT_BRANCH"
+          git fetch origin "$RELEASE_BRANCH"
+          git checkout -B "release-version-$RELEASE_VERSION" "origin/$RELEASE_BRANCH"
           node scripts/apply-release-version.mjs --version "$RELEASE_VERSION" --sync-cargo-lock
           cargo metadata --format-version 1 --no-deps >/dev/null
           if git diff --quiet -- package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml crates/app/Cargo.toml Cargo.lock; then
-            echo "Release version $RELEASE_VERSION is already committed on $DEFAULT_BRANCH."
+            echo "Release version $RELEASE_VERSION is already committed on $RELEASE_BRANCH."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml crates/app/Cargo.toml Cargo.lock
           git commit -m "chore(release): set version to $RELEASE_VERSION [skip ci]"
-          git push origin "HEAD:$DEFAULT_BRANCH"
+          git push origin "HEAD:$RELEASE_BRANCH"

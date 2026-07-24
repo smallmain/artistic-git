@@ -2235,7 +2235,7 @@ async fn complete_conflict_resolution(
     emit_repo_changed(
         &app_handle,
         repository_path,
-        vec![artistic_git_contracts::RepoQueryKind::LocalChanges],
+        conflict_resolution_changed_queries(),
     );
     Ok(response)
 }
@@ -2255,7 +2255,7 @@ async fn cancel_conflict_resolution(
     emit_repo_changed(
         &app_handle,
         repository_path,
-        vec![artistic_git_contracts::RepoQueryKind::LocalChanges],
+        conflict_resolution_changed_queries(),
     );
     Ok(response)
 }
@@ -4269,6 +4269,15 @@ fn emit_review_exit_events(
     );
 }
 
+fn conflict_resolution_changed_queries() -> Vec<artistic_git_contracts::RepoQueryKind> {
+    vec![
+        artistic_git_contracts::RepoQueryKind::Summary,
+        artistic_git_contracts::RepoQueryKind::Branches,
+        artistic_git_contracts::RepoQueryKind::History,
+        artistic_git_contracts::RepoQueryKind::LocalChanges,
+    ]
+}
+
 fn emit_repo_changed(
     app_handle: &tauri::AppHandle,
     repository_path: String,
@@ -4429,6 +4438,19 @@ fn emit_fetch_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn conflict_resolution_refreshes_operation_and_repository_state() {
+        assert_eq!(
+            conflict_resolution_changed_queries(),
+            vec![
+                artistic_git_contracts::RepoQueryKind::Summary,
+                artistic_git_contracts::RepoQueryKind::Branches,
+                artistic_git_contracts::RepoQueryKind::History,
+                artistic_git_contracts::RepoQueryKind::LocalChanges,
+            ],
+        );
+    }
 
     #[test]
     fn blocking_commands_run_outside_the_calling_thread() {

@@ -123,7 +123,7 @@ describe("Artistic Git Tauri real-git full chain", () => {
     });
 
     await recordStep("sync conflicting edit through UI", async () => {
-      await syncAllThroughUi();
+      await syncAllThroughUi("conflict");
     });
     await recordStep("wait for conflict overlay", async () => {
       await waitForConflictOverlay("tracked.txt");
@@ -485,13 +485,26 @@ async function commitThroughUi(
   await waitForCommitDialogClosedOrCommitted();
 }
 
-async function syncAllThroughUi() {
+async function syncAllThroughUi(
+  expectedCompletion: "ready" | "conflict" = "ready",
+) {
   const syncButton = await $('[data-testid="repository-sync-all"]');
   await browser.waitUntil(async () => syncButton.isEnabled(), {
     timeout: 30_000,
     timeoutMsg: "repository sync button was not enabled before click",
   });
   await syncButton.click();
+  if (expectedCompletion === "conflict") {
+    await browser.waitUntil(
+      async () =>
+        await $('[data-testid="conflict-resolution-overlay"]').isExisting(),
+      {
+        timeout: 90_000,
+        timeoutMsg: "repository sync did not enter conflict resolution",
+      },
+    );
+    return;
+  }
   await browser.waitUntil(
     async () => await $('[data-testid="repository-sync-all"]').isEnabled(),
     {

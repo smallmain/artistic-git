@@ -112,7 +112,7 @@ describe("Artistic Git Tauri crash isolation", () => {
           state.diagnostics.hasStartScreen &&
           state.diagnostics.navigationType === "reload" &&
           state.text.includes(crashSummary) &&
-          state.text.includes("Restart app")
+          state.text.includes("Reload window")
         );
       },
       {
@@ -261,7 +261,7 @@ function crashDialogState() {
     );
     const crashDialog =
       crashDialogByTestId ??
-      dialogs.find((dialog) => dialog.textContent?.includes("Restart app"));
+      dialogs.find((dialog) => dialog.textContent?.includes("Reload window"));
     const dialogTexts = dialogs.map((dialog) => dialog.textContent ?? "");
 
     return {
@@ -301,7 +301,7 @@ async function showCrashTechnicalDetails() {
     const dialogs = Array.from(document.querySelectorAll('[role="dialog"]'));
     const crashDialog =
       document.querySelector('[data-testid="crash-details-dialog"]') ??
-      dialogs.find((dialog) => dialog.textContent?.includes("Restart app"));
+      dialogs.find((dialog) => dialog.textContent?.includes("Reload window"));
     if (!crashDialog) {
       return false;
     }
@@ -333,7 +333,7 @@ async function dismissCrashDialogIfOpen() {
     const dialogs = Array.from(document.querySelectorAll('[role="dialog"]'));
     const crashDialog =
       document.querySelector('[data-testid="crash-details-dialog"]') ??
-      dialogs.find((dialog) => dialog.textContent?.includes("Restart app"));
+      dialogs.find((dialog) => dialog.textContent?.includes("Reload window"));
     const buttons = Array.from(crashDialog?.querySelectorAll("button") ?? []);
     const closeButton = buttons.find(
       (button) => button.textContent?.trim() === "Close",

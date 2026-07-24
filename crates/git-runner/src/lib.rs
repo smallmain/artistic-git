@@ -1240,10 +1240,8 @@ impl CommandEnvironmentPlan {
             format!("GIT_CONFIG_KEY_{index}"),
             OsString::from("http.version"),
         );
-        self.variables.insert(
-            format!("GIT_CONFIG_VALUE_{index}"),
-            OsString::from(version),
-        );
+        self.variables
+            .insert(format!("GIT_CONFIG_VALUE_{index}"), OsString::from(version));
         self.variables.insert(
             "GIT_CONFIG_COUNT".to_owned(),
             OsString::from((index + 1).to_string()),

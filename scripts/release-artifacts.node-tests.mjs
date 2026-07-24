@@ -642,7 +642,7 @@ test("release plan does not cache a pnpm store it never creates", () => {
   assert.ok(!planJob.includes("pnpm install"));
 });
 
-test("release workflow publishes only from main without environment approval", () => {
+test("release workflow publishes only from approved branches without environment approval", () => {
   assert.ok(!releaseWorkflow.includes("environment: release"));
   assert.ok(
     releaseWorkflow
@@ -659,8 +659,24 @@ test("release workflow publishes only from main without environment approval", (
   );
   assert.equal(
     releaseWorkflow.match(/\[ "\$REF_NAME" = "main" \]/g)?.length,
-    2,
-    "push and manual publishing must both require main",
+    1,
+    "automatic publishing must require main",
+  );
+  assert.ok(
+    releaseWorkflow.includes(
+      'if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$REF_TYPE" = "branch" ]; then',
+    ),
+  );
+  assert.ok(
+    releaseWorkflow.includes(
+      "main|codex/release-*) manual_publish_ref=true ;;",
+    ),
+  );
+  assert.ok(
+    releaseWorkflow.includes(
+      '[ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$manual_publish_ref" = "true" ]',
+    ),
+    "manual publishing must require main or a codex/release-* branch",
   );
 });
 
@@ -695,7 +711,7 @@ test("release workflow supports full package audits without publishing", () => {
     'if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$DISPATCH_PACKAGE_AUDIT" = "true" ]; then',
   );
   const manualPublishMode = releaseWorkflow.indexOf(
-    'elif [ "$HAS_CHANGES" = "true" ] && [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$REF_NAME" = "main" ] && [ "$DISPATCH_PUBLISH" = "true" ] && [ "$ENABLE_MAIN_RELEASE" = "true" ]; then',
+    'elif [ "$HAS_CHANGES" = "true" ] && [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$manual_publish_ref" = "true" ] && [ "$DISPATCH_PUBLISH" = "true" ] && [ "$ENABLE_MAIN_RELEASE" = "true" ]; then',
   );
   assert.notEqual(manualPublishMode, -1, "manual publish mode");
   assert.ok(
@@ -779,9 +795,16 @@ test("release workflow applies the release version to displayed app versions", (
   );
   assert.ok(
     releaseWorkflow.includes(
-      "Commit released version to the default branch",
+      "Commit released version to the release source branch",
     ),
   );
+  assert.ok(releaseWorkflow.includes("RELEASE_BRANCH: ${{ github.ref_name }}"));
+  assert.ok(
+    releaseWorkflow.includes(
+      'git checkout -B "release-version-$RELEASE_VERSION" "origin/$RELEASE_BRANCH"',
+    ),
+  );
+  assert.ok(releaseWorkflow.includes('git push origin "HEAD:$RELEASE_BRANCH"'));
   assert.ok(
     releaseWorkflow.includes(
       'git commit -m "chore(release): set version to $RELEASE_VERSION [skip ci]"',

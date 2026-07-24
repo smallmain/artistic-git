@@ -1,11 +1,6 @@
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use std::{
-    collections::BTreeMap,
-    env,
-    ffi::OsString,
-    process::Command,
-};
+use std::{collections::BTreeMap, env, ffi::OsString, process::Command};
 
 pub const PROXY_ENV_KEYS: [&str; 8] = [
     "http_proxy",
@@ -286,7 +281,9 @@ fn parse_windows_internet_settings_proxy(text: &str) -> Option<BTreeMap<String, 
             if let Some((scheme, endpoint)) = part.split_once('=') {
                 let url = normalize_proxy_endpoint(endpoint);
                 match scheme.to_ascii_lowercase().as_str() {
-                    "http" => insert_proxy_pair(&mut variables, "http_proxy", "HTTP_PROXY", Some(&url)),
+                    "http" => {
+                        insert_proxy_pair(&mut variables, "http_proxy", "HTTP_PROXY", Some(&url))
+                    }
                     "https" => {
                         insert_proxy_pair(&mut variables, "https_proxy", "HTTPS_PROXY", Some(&url))
                     }
@@ -395,24 +392,21 @@ pub fn validate_proxy_url(value: &str) -> bool {
     if value.chars().any(|character| character.is_whitespace()) {
         return false;
     }
-    let has_scheme = value.contains("://");
-    if !has_scheme
-        && !(value.starts_with("localhost")
-            || value.starts_with('[')
-            || value
-                .chars()
-                .next()
-                .is_some_and(|character| character.is_ascii_digit()))
-    {
+    let has_explicit_host_form = value.contains("://")
+        || value.starts_with("localhost")
+        || value.starts_with('[')
+        || value
+            .chars()
+            .next()
+            .is_some_and(|character| character.is_ascii_digit());
+    if !has_explicit_host_form {
         // Require a scheme for hostnames so free-form text is rejected.
         return false;
     }
     let Ok(url) = url_like_parts(value) else {
         return false;
     };
-    !url.host.is_empty()
-        && !url.host.contains(' ')
-        && url.port.map(|port| port > 0).unwrap_or(true)
+    !url.host.is_empty() && !url.host.contains(' ') && url.port.map(|port| port > 0).unwrap_or(true)
 }
 
 struct UrlLike {
@@ -425,11 +419,7 @@ fn url_like_parts(value: &str) -> Result<UrlLike, ()> {
         .split_once("://")
         .map(|(_, rest)| rest)
         .unwrap_or(value);
-    let authority = without_scheme
-        .split('/')
-        .next()
-        .unwrap_or_default()
-        .trim();
+    let authority = without_scheme.split('/').next().unwrap_or_default().trim();
     if authority.is_empty() {
         return Err(());
     }
@@ -539,7 +529,11 @@ mod tests {
         assert!(validate_proxy_url(""));
         assert!(validate_proxy_url("http://127.0.0.1:6152"));
         assert!(validate_proxy_url("socks5://127.0.0.1:6153"));
+        assert!(validate_proxy_url("localhost:6152"));
+        assert!(validate_proxy_url("127.0.0.1:6152"));
+        assert!(validate_proxy_url("[::1]:6152"));
         assert!(!validate_proxy_url("http://"));
+        assert!(!validate_proxy_url("proxy.example:6152"));
         assert!(!validate_proxy_url("not a url"));
     }
 }

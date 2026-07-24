@@ -55,8 +55,8 @@ test("manual CI platform scope prunes runner matrices without weakening push CI"
     ["macos-latest"],
   ]);
   assert.deepEqual(matrixPlatformOptions(e2eJob), [
-    ["ubuntu-22.04", "windows-latest"],
-    ["windows-latest"],
+    ["ubuntu-22.04", "windows-2022"],
+    ["windows-2022"],
     ["ubuntu-22.04"],
   ]);
   assert.match(
