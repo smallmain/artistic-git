@@ -1,0 +1,1452 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light" data-font="inter">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Artistic Git · 设计语言预览</title>
+    <style>
+      /* ============ 1. 令牌 ============ */
+      @font-face {
+        font-family: "Inter";
+        src: url("./fonts/InterVariable.woff2") format("woff2");
+        font-weight: 100 900;
+        font-style: normal;
+        font-display: swap;
+      }
+
+      :root {
+        --font-sans:
+          "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+        --font-mono:
+          ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo,
+          Consolas, monospace;
+
+        /* 浅色主题（冷灰阶） */
+        --background: 220 16% 99%;
+        --card: 0 0% 100%;
+        --foreground: 224 12% 12%;
+        --foreground-secondary: 222 8% 42%;
+        --foreground-tertiary: 220 6% 56%;
+        --secondary: 220 12% 96%;
+        --accent: 220 12% 95%;
+        --border-subtle: 220 10% 93%;
+        --border: 222 10% 88%;
+        --ring: 224 10% 26%;
+
+        --success: 152 46% 38%;
+        --warning: 36 80% 42%;
+        --danger: 0 58% 52%;
+        --sync: 24 78% 48%;
+        --review: 188 58% 36%;
+
+        --shadow-raised: 0 1px 2px hsl(224 20% 10% / 0.05);
+        --shadow-overlay:
+          0 4px 16px hsl(224 20% 10% / 0.08), 0 1px 3px hsl(224 20% 10% / 0.06);
+        --shadow-popover:
+          0 12px 32px hsl(224 20% 10% / 0.12), 0 2px 8px hsl(224 20% 10% / 0.08);
+
+        --duration-micro: 120ms;
+        --duration-fast: 180ms;
+        --duration-panel: 240ms;
+        --duration-large: 320ms;
+        --ease-standard: cubic-bezier(0.25, 0.1, 0.25, 1);
+        --ease-enter: cubic-bezier(0.16, 1, 0.3, 1);
+        --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+
+        color-scheme: light;
+      }
+
+      html[data-theme="dark"] {
+        --background: 224 14% 8%;
+        --card: 224 12% 10%;
+        --foreground: 216 12% 92%;
+        --foreground-secondary: 218 8% 64%;
+        --foreground-tertiary: 220 6% 48%;
+        --secondary: 222 10% 14%;
+        --accent: 222 10% 16%;
+        --border-subtle: 220 8% 14%;
+        --border: 220 8% 19%;
+        --ring: 216 10% 70%;
+
+        --success: 152 44% 52%;
+        --warning: 40 78% 58%;
+        --danger: 0 62% 60%;
+        --sync: 26 84% 58%;
+        --review: 188 56% 48%;
+
+        --shadow-raised: 0 1px 2px hsl(224 40% 2% / 0.32);
+        --shadow-overlay:
+          0 4px 16px hsl(224 40% 2% / 0.4), 0 1px 3px hsl(224 40% 2% / 0.32);
+        --shadow-popover:
+          0 12px 32px hsl(224 40% 2% / 0.5), 0 2px 8px hsl(224 40% 2% / 0.4);
+
+        color-scheme: dark;
+      }
+
+      html[data-font="system"] {
+        --font-sans:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+      }
+
+      /* ============ 2. 基础 ============ */
+      * {
+        box-sizing: border-box;
+        margin: 0;
+      }
+
+      body {
+        background: hsl(var(--background));
+        color: hsl(var(--foreground));
+        font-family: var(--font-sans);
+        font-size: 13px;
+        line-height: 20px;
+        font-weight: 450;
+        -webkit-font-smoothing: antialiased;
+        transition: background var(--duration-panel) var(--ease-standard);
+      }
+
+      /* 语义字阶 */
+      .t-display {
+        font-size: 24px;
+        line-height: 32px;
+        font-weight: 560;
+        letter-spacing: -0.022em;
+      }
+      .t-title {
+        font-size: 16px;
+        line-height: 24px;
+        font-weight: 560;
+        letter-spacing: -0.011em;
+      }
+      .t-heading {
+        font-size: 14px;
+        line-height: 20px;
+        font-weight: 560;
+        letter-spacing: -0.006em;
+      }
+      .t-body {
+        font-size: 13px;
+        line-height: 20px;
+        font-weight: 450;
+      }
+      .t-label {
+        font-size: 12px;
+        line-height: 16px;
+        font-weight: 500;
+        letter-spacing: 0.003em;
+      }
+      .t-caption {
+        font-size: 12px;
+        line-height: 16px;
+        font-weight: 450;
+      }
+      .t-mono {
+        font-family: var(--font-mono);
+        font-size: 12px;
+        line-height: 18px;
+        font-weight: 450;
+      }
+      .num {
+        font-variant-numeric: tabular-nums;
+        font-feature-settings: "tnum";
+      }
+      .c-secondary {
+        color: hsl(var(--foreground-secondary));
+      }
+      .c-tertiary {
+        color: hsl(var(--foreground-tertiary));
+      }
+
+      /* ============ 3. 布局 ============ */
+      .topbar {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px 24px;
+        border-bottom: 1px solid hsl(var(--border-subtle));
+        background: hsl(var(--background) / 0.86);
+        backdrop-filter: blur(12px);
+      }
+      .controls {
+        display: flex;
+        gap: 12px;
+      }
+      .segmented {
+        display: inline-flex;
+        padding: 2px;
+        border: 1px solid hsl(var(--border-subtle));
+        border-radius: 8px;
+        background: hsl(var(--secondary));
+      }
+      .segmented button {
+        border: 0;
+        border-radius: 6px;
+        padding: 4px 10px;
+        background: transparent;
+        color: hsl(var(--foreground-secondary));
+        font: inherit;
+        font-size: 12px;
+        font-weight: 500;
+        cursor: pointer;
+        transition:
+          background var(--duration-micro) var(--ease-standard),
+          color var(--duration-micro) var(--ease-standard);
+      }
+      .segmented button[aria-pressed="true"] {
+        background: hsl(var(--card));
+        color: hsl(var(--foreground));
+        box-shadow: var(--shadow-raised);
+      }
+
+      main {
+        max-width: 880px;
+        margin: 0 auto;
+        padding: 40px 24px 96px;
+      }
+      section {
+        margin-bottom: 64px;
+      }
+      .section-head {
+        margin-bottom: 20px;
+      }
+      .section-head .t-caption {
+        margin-top: 4px;
+      }
+      .spec-label {
+        width: 168px;
+        flex-shrink: 0;
+        padding-top: 2px;
+      }
+      .spec-row {
+        display: flex;
+        gap: 24px;
+        padding: 12px 0;
+        border-top: 1px solid hsl(var(--border-subtle));
+      }
+      .spec-row:first-of-type {
+        border-top: 0;
+      }
+
+      /* ============ 4. 色板 ============ */
+      .swatches {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+        gap: 8px;
+      }
+      .swatch {
+        border: 1px solid hsl(var(--border-subtle));
+        border-radius: 8px;
+        overflow: hidden;
+      }
+      .swatch .chip {
+        height: 48px;
+      }
+      .swatch .meta {
+        padding: 6px 8px;
+      }
+      .dot {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+      }
+
+      /* ============ 5. 阴影/圆角 ============ */
+      .cards {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 16px;
+      }
+      .elevation-card {
+        border: 1px solid hsl(var(--border-subtle));
+        border-radius: 8px;
+        background: hsl(var(--card));
+        padding: 16px;
+      }
+
+      /* ============ 6. 按钮 ============ */
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        border: 1px solid transparent;
+        border-radius: 6px;
+        font-family: inherit;
+        font-size: 13px;
+        line-height: 20px;
+        font-weight: 500;
+        cursor: pointer;
+        white-space: nowrap;
+        transition:
+          background var(--duration-micro) var(--ease-standard),
+          filter var(--duration-micro) var(--ease-standard),
+          border-color var(--duration-micro) var(--ease-standard);
+      }
+      .btn-sm {
+        height: 28px;
+        padding: 0 10px;
+      }
+      .btn-md {
+        height: 32px;
+        padding: 0 12px;
+      }
+      .btn-lg {
+        height: 36px;
+        padding: 0 16px;
+      }
+      .btn-primary {
+        background: hsl(var(--foreground));
+        color: hsl(var(--background));
+        font-weight: 560;
+      }
+      .btn-primary:hover {
+        filter: brightness(1.18);
+      }
+      html[data-theme="light"] .btn-primary:hover {
+        filter: brightness(1.28);
+      }
+      .btn-primary:active {
+        filter: brightness(1.05);
+      }
+      .btn-secondary {
+        background: hsl(var(--secondary));
+        color: hsl(var(--foreground));
+        border-color: hsl(var(--border-subtle));
+      }
+      .btn-secondary:hover {
+        background: hsl(var(--accent));
+        border-color: hsl(var(--border));
+      }
+      .btn-ghost {
+        background: transparent;
+        color: hsl(var(--foreground-secondary));
+      }
+      .btn-ghost:hover {
+        background: hsl(var(--accent));
+        color: hsl(var(--foreground));
+      }
+      .btn-danger {
+        background: hsl(var(--danger));
+        color: #fff;
+        font-weight: 560;
+      }
+      .btn-danger:hover {
+        filter: brightness(1.08);
+      }
+      .btn:disabled {
+        opacity: 0.4;
+        pointer-events: none;
+      }
+      .btn:focus-visible,
+      .icon-btn:focus-visible,
+      .segmented button:focus-visible {
+        outline: 2px solid hsl(var(--ring));
+        outline-offset: 2px;
+      }
+
+      .icon-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 28px;
+        height: 28px;
+        border: 0;
+        border-radius: 6px;
+        background: transparent;
+        color: hsl(var(--foreground-tertiary));
+        cursor: pointer;
+        transition:
+          background var(--duration-micro) var(--ease-standard),
+          color var(--duration-micro) var(--ease-standard);
+      }
+      .icon-btn:hover {
+        background: hsl(var(--accent));
+        color: hsl(var(--foreground));
+      }
+
+      /* CSS tooltip */
+      [data-tooltip] {
+        position: relative;
+      }
+      [data-tooltip]::after {
+        content: attr(data-tooltip);
+        position: absolute;
+        bottom: calc(100% + 6px);
+        left: 50%;
+        transform: translateX(-50%) scale(0.96);
+        padding: 5px 8px;
+        border: 1px solid hsl(var(--border-subtle));
+        border-radius: 6px;
+        background: hsl(var(--card));
+        box-shadow: var(--shadow-overlay);
+        color: hsl(var(--foreground));
+        font-size: 12px;
+        line-height: 16px;
+        white-space: nowrap;
+        opacity: 0;
+        pointer-events: none;
+        transition:
+          opacity var(--duration-fast) var(--ease-enter) 300ms,
+          transform var(--duration-fast) var(--ease-enter) 300ms;
+      }
+      [data-tooltip]:hover::after {
+        opacity: 1;
+        transform: translateX(-50%) scale(1);
+      }
+
+      .matrix {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 12px;
+      }
+
+      /* ============ 7. 列表行 ============ */
+      .list-frame {
+        border: 1px solid hsl(var(--border-subtle));
+        border-radius: 8px;
+        background: hsl(var(--card));
+        padding: 6px;
+        width: 320px;
+      }
+      .group-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px 8px 4px;
+      }
+      .row {
+        position: relative;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 32px;
+        padding: 0 8px;
+        border-radius: 6px;
+        cursor: default;
+        transition: background var(--duration-micro) var(--ease-standard);
+      }
+      .row:hover {
+        background: hsl(var(--accent));
+      }
+      .row.selected {
+        background: hsl(var(--accent));
+      }
+      .row.selected::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 7px;
+        bottom: 7px;
+        width: 2px;
+        border-radius: 2px;
+        background: hsl(var(--foreground));
+      }
+      .row .grow {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .row .meta {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-shrink: 0;
+      }
+
+      /* ============ 8. 对话框 / Toast / 骨架 / 进度 ============ */
+      .dialog-host {
+        position: fixed;
+        inset: 0;
+        z-index: 50;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        background: hsl(224 30% 10% / 0.28);
+      }
+      html[data-theme="dark"] .dialog-host {
+        background: hsl(224 40% 2% / 0.55);
+      }
+      .dialog-host[hidden] {
+        display: none;
+      }
+      .dialog-host.entering {
+        animation: fade-in var(--duration-fast) var(--ease-standard);
+      }
+      .dialog {
+        width: 100%;
+        max-width: 420px;
+        border: 1px solid hsl(var(--border));
+        border-radius: 12px;
+        background: hsl(var(--card));
+        box-shadow: var(--shadow-popover);
+        padding: 24px;
+      }
+      .dialog-host.entering .dialog {
+        animation: overlay-in var(--duration-panel) var(--ease-enter);
+      }
+      .dialog .desc {
+        margin-top: 8px;
+      }
+      .dialog .footer {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        margin-top: 24px;
+      }
+
+      .toast-host {
+        position: fixed;
+        bottom: 24px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 60;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 8px;
+        pointer-events: none;
+      }
+      .toast {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 14px;
+        border: 1px solid hsl(var(--border));
+        border-radius: 8px;
+        background: hsl(var(--card));
+        box-shadow: var(--shadow-popover);
+        animation: toast-in var(--duration-panel) var(--ease-enter);
+      }
+      .toast.leaving {
+        animation: fade-out 120ms var(--ease-exit) forwards;
+      }
+
+      .skeleton {
+        border-radius: 4px;
+        background: hsl(var(--secondary));
+        animation: pulse 1800ms ease-in-out infinite;
+      }
+      .skeleton-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 32px;
+        padding: 0 8px;
+      }
+
+      .progress-demo {
+        position: relative;
+        overflow: hidden;
+        border: 1px solid hsl(var(--border-subtle));
+        border-radius: 8px;
+        background: hsl(var(--card));
+        width: 480px;
+        max-width: 100%;
+        height: 120px;
+      }
+      .progress-top {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 2px;
+        overflow: hidden;
+        opacity: 0;
+        transition: opacity var(--duration-fast) var(--ease-standard);
+      }
+      .progress-top.on {
+        opacity: 1;
+      }
+      .progress-top::before {
+        content: "";
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        width: 40%;
+        border-radius: 2px;
+        background: hsl(var(--sync));
+        animation: indeterminate 1200ms var(--ease-standard) infinite;
+      }
+
+      /* ============ 9. 动效演示 ============ */
+      .ease-track {
+        position: relative;
+        height: 28px;
+        flex: 1;
+        border-radius: 6px;
+        background: hsl(var(--secondary));
+        overflow: hidden;
+      }
+      .ease-dot {
+        position: absolute;
+        top: 6px;
+        left: 4px;
+        width: 16px;
+        height: 16px;
+        border-radius: 999px;
+        background: hsl(var(--foreground));
+      }
+      .ease-track.play .ease-dot {
+        animation: slide 900ms var(--dot-ease, var(--ease-standard)) forwards;
+      }
+      .duration-bar {
+        height: 6px;
+        width: 0;
+        border-radius: 3px;
+        background: hsl(var(--foreground-secondary));
+      }
+      .duration-bar.play {
+        animation: grow var(--bar-duration, 240ms) var(--ease-enter) forwards;
+      }
+
+      .stagger-list .row {
+        opacity: 0;
+      }
+      .stagger-list.play .row {
+        animation: overlay-in var(--duration-panel) var(--ease-enter) forwards;
+        animation-delay: calc(var(--i) * 24ms);
+      }
+
+      .popover-demo {
+        position: relative;
+        display: inline-block;
+      }
+      .popover-panel {
+        position: absolute;
+        top: calc(100% + 6px);
+        left: 0;
+        z-index: 10;
+        width: 200px;
+        border: 1px solid hsl(var(--border));
+        border-radius: 8px;
+        background: hsl(var(--card));
+        box-shadow: var(--shadow-overlay);
+        padding: 6px;
+        transform-origin: top left;
+        animation: popover-in var(--duration-fast) var(--ease-enter);
+      }
+      .popover-panel[hidden] {
+        display: none;
+      }
+
+      /* ============ 10. 关键帧 ============ */
+      @keyframes fade-in {
+        from {
+          opacity: 0;
+        }
+      }
+      @keyframes fade-out {
+        to {
+          opacity: 0;
+        }
+      }
+      @keyframes overlay-in {
+        from {
+          opacity: 0;
+          transform: translateY(4px) scale(0.98);
+        }
+      }
+      @keyframes popover-in {
+        from {
+          opacity: 0;
+          transform: scale(0.96);
+        }
+      }
+      @keyframes toast-in {
+        from {
+          opacity: 0;
+          transform: translateY(8px);
+        }
+      }
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.5;
+        }
+      }
+      @keyframes slide {
+        to {
+          left: calc(100% - 20px);
+        }
+      }
+      @keyframes grow {
+        to {
+          width: 100%;
+        }
+      }
+      @keyframes indeterminate {
+        from {
+          left: -40%;
+        }
+        to {
+          left: 100%;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          animation-duration: 1ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 1ms !important;
+        }
+      }
+
+      footer {
+        border-top: 1px solid hsl(var(--border-subtle));
+        padding-top: 20px;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="t-label">
+        Artistic Git · 设计语言预览
+        <span class="c-tertiary">Design Language v2</span>
+      </div>
+      <div class="controls">
+        <div class="segmented" role="group" aria-label="字体">
+          <button id="fontInter" aria-pressed="true">Inter</button>
+          <button id="fontSystem" aria-pressed="false">系统字体</button>
+        </div>
+        <div class="segmented" role="group" aria-label="主题">
+          <button id="themeLight" aria-pressed="true">浅色</button>
+          <button id="themeDark" aria-pressed="false">深色</button>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <!-- ============ 原则 ============ -->
+      <section>
+        <div class="section-head">
+          <h1 class="t-display">大道至简，内敛精致</h1>
+          <p class="t-body c-secondary" style="margin-top: 8px">
+            以 Linear
+            为参照：层级靠排版而非分割线，边框如发丝，阴影低而柔，动效有语义。
+            本页所有元素均由
+            <code class="t-mono">docs/design/redesign-spec.md</code>
+            中的令牌直接渲染。
+          </p>
+        </div>
+      </section>
+
+      <!-- ============ 排版 ============ -->
+      <section id="typography">
+        <div class="section-head">
+          <h2 class="t-title">排版 Typography</h2>
+          <p class="t-caption c-tertiary">
+            6 级字阶，每级锁定 字号/行高/字重/字距 四参数 · 中文回落系统字体
+          </p>
+        </div>
+
+        <div class="spec-row">
+          <div class="spec-label t-caption c-tertiary">
+            display<br />24/32 · 560 · -0.022em
+          </div>
+          <div class="t-display">让版本管理隐形 Disappear</div>
+        </div>
+        <div class="spec-row">
+          <div class="spec-label t-caption c-tertiary">
+            title<br />16/24 · 560 · -0.011em
+          </div>
+          <div class="t-title">删除分支 Delete branch</div>
+        </div>
+        <div class="spec-row">
+          <div class="spec-label t-caption c-tertiary">
+            heading<br />14/20 · 560 · -0.006em
+          </div>
+          <div class="t-heading">本地变更 Local changes</div>
+        </div>
+        <div class="spec-row">
+          <div class="spec-label t-caption c-tertiary">
+            body<br />13/20 · 450 · 0
+          </div>
+          <div class="t-body">
+            共 128 个文件已暂存，等待提交。Staged files are ready to commit.
+          </div>
+        </div>
+        <div class="spec-row">
+          <div class="spec-label t-caption c-tertiary">
+            label<br />12/16 · 500 · 0.003em
+          </div>
+          <div class="t-label c-secondary">分支 BRANCHES</div>
+        </div>
+        <div class="spec-row">
+          <div class="spec-label t-caption c-tertiary">
+            caption<br />12/16 · 450 · 0（恒配三级色）
+          </div>
+          <div class="t-caption c-tertiary">
+            3 小时前 · 由 smallmain 提交 · Last sync 2 min ago
+          </div>
+        </div>
+        <div class="spec-row">
+          <div class="spec-label t-caption c-tertiary">
+            mono<br />12/18 · ui-monospace
+          </div>
+          <div class="t-mono c-secondary">
+            a3f9c21 · assets/材质/水墨_宣纸_4k.psd
+          </div>
+        </div>
+
+        <!-- 数字等宽 -->
+        <div class="spec-row" style="align-items: flex-start">
+          <div class="spec-label t-caption c-tertiary">
+            数字等宽<br />tabular-nums
+          </div>
+          <div style="display: flex; gap: 48px">
+            <div>
+              <div class="t-caption c-tertiary" style="margin-bottom: 4px">
+                开启 tnum（右列对齐）
+              </div>
+              <div class="t-body num" style="text-align: right">↑ 1,280</div>
+              <div class="t-body num" style="text-align: right">↑ 1,111</div>
+              <div class="t-body num" style="text-align: right">
+                ↑&nbsp;&nbsp;&nbsp;&nbsp;999
+              </div>
+            </div>
+            <div>
+              <div class="t-caption c-tertiary" style="margin-bottom: 4px">
+                未开启（错位）
+              </div>
+              <div
+                class="t-body"
+                style="font-variant-numeric: normal; text-align: right"
+              >
+                ↑ 1,280
+              </div>
+              <div
+                class="t-body"
+                style="font-variant-numeric: normal; text-align: right"
+              >
+                ↑ 1,111
+              </div>
+              <div
+                class="t-body"
+                style="font-variant-numeric: normal; text-align: right"
+              >
+                ↑&nbsp;&nbsp;&nbsp;&nbsp;999
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 中英混排基线 -->
+        <div class="spec-row">
+          <div class="spec-label t-caption c-tertiary">
+            中英混排<br />基线协调
+          </div>
+          <div>
+            <div class="t-title">水墨 Ink Wash · 材质库 v3</div>
+            <div class="t-body c-secondary" style="margin-top: 4px">
+              提交 commit、分支 branch、推送 push —— 中文与 Latin
+              同行时基线平稳、行高恒定。
+            </div>
+            <div class="t-caption c-tertiary" style="margin-top: 4px">
+              2026-07-24 14:32 · Synced with origin/main · 与远程同步完成
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 色彩 ============ -->
+      <section id="color">
+        <div class="section-head">
+          <h2 class="t-title">色彩 Color</h2>
+          <p class="t-caption c-tertiary">
+            微冷灰阶 · 三级文本色 · 语义色降饱和，仅小面积状态指示
+          </p>
+        </div>
+        <div class="swatches" id="graySwatches"></div>
+        <div
+          style="display: flex; gap: 24px; margin-top: 20px; flex-wrap: wrap"
+        >
+          <span class="t-body"
+            ><span class="dot" style="background: hsl(var(--success))"></span
+            >&nbsp;&nbsp;成功 Success</span
+          >
+          <span class="t-body"
+            ><span class="dot" style="background: hsl(var(--warning))"></span
+            >&nbsp;&nbsp;警告 Warning</span
+          >
+          <span class="t-body"
+            ><span class="dot" style="background: hsl(var(--danger))"></span
+            >&nbsp;&nbsp;危险 Danger</span
+          >
+          <span class="t-body"
+            ><span class="dot" style="background: hsl(var(--sync))"></span
+            >&nbsp;&nbsp;待同步 Sync</span
+          >
+          <span class="t-body"
+            ><span class="dot" style="background: hsl(var(--review))"></span
+            >&nbsp;&nbsp;审查 Review</span
+          >
+        </div>
+      </section>
+
+      <!-- ============ 形状 ============ -->
+      <section id="elevation">
+        <div class="section-head">
+          <h2 class="t-title">形状 Shape</h2>
+          <p class="t-caption c-tertiary">
+            圆角 6/8/12 · 发丝边框二级 · 阴影三级仅用于浮层
+          </p>
+        </div>
+        <div class="cards">
+          <div class="elevation-card" style="box-shadow: var(--shadow-raised)">
+            <div class="t-label">raised</div>
+            <div class="t-caption c-tertiary" style="margin-top: 4px">
+              下拉、轻抬升
+            </div>
+          </div>
+          <div class="elevation-card" style="box-shadow: var(--shadow-overlay)">
+            <div class="t-label">overlay</div>
+            <div class="t-caption c-tertiary" style="margin-top: 4px">
+              浮层、tooltip
+            </div>
+          </div>
+          <div
+            class="elevation-card"
+            style="box-shadow: var(--shadow-popover); border-radius: 12px"
+          >
+            <div class="t-label">popover</div>
+            <div class="t-caption c-tertiary" style="margin-top: 4px">
+              对话框、Toast
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 动效 ============ -->
+      <section id="motion">
+        <div class="section-head">
+          <h2 class="t-title">动效 Motion</h2>
+          <p class="t-caption c-tertiary">
+            进入减速、退出加速、悬停 ≤120ms ·
+            尊重系统「减少动态效果」（当前：<span id="rmState">检测中</span>）
+          </p>
+        </div>
+
+        <div class="spec-row">
+          <div class="spec-label t-caption c-tertiary">
+            三条曲线<br />900ms 慢放对比
+          </div>
+          <div style="flex: 1; display: flex; flex-direction: column; gap: 8px">
+            <div style="display: flex; align-items: center; gap: 12px">
+              <span class="t-caption c-tertiary" style="width: 96px"
+                >enter 减速</span
+              >
+              <div class="ease-track" style="--dot-ease: var(--ease-enter)">
+                <div class="ease-dot"></div>
+              </div>
+            </div>
+            <div style="display: flex; align-items: center; gap: 12px">
+              <span class="t-caption c-tertiary" style="width: 96px"
+                >standard</span
+              >
+              <div class="ease-track" style="--dot-ease: var(--ease-standard)">
+                <div class="ease-dot"></div>
+              </div>
+            </div>
+            <div style="display: flex; align-items: center; gap: 12px">
+              <span class="t-caption c-tertiary" style="width: 96px"
+                >exit 加速</span
+              >
+              <div class="ease-track" style="--dot-ease: var(--ease-exit)">
+                <div class="ease-dot"></div>
+              </div>
+            </div>
+            <div>
+              <button class="btn btn-secondary btn-sm" id="replayEase">
+                重播
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="spec-row">
+          <div class="spec-label t-caption c-tertiary">
+            时长阶梯<br />真实时长
+          </div>
+          <div
+            style="flex: 1; display: flex; flex-direction: column; gap: 10px"
+          >
+            <div style="display: flex; align-items: center; gap: 12px">
+              <span class="t-caption c-tertiary num" style="width: 96px"
+                >120 micro</span
+              >
+              <div
+                class="duration-bar"
+                style="--bar-duration: 120ms; flex: 1"
+              ></div>
+            </div>
+            <div style="display: flex; align-items: center; gap: 12px">
+              <span class="t-caption c-tertiary num" style="width: 96px"
+                >180 fast</span
+              >
+              <div
+                class="duration-bar"
+                style="--bar-duration: 180ms; flex: 1"
+              ></div>
+            </div>
+            <div style="display: flex; align-items: center; gap: 12px">
+              <span class="t-caption c-tertiary num" style="width: 96px"
+                >240 panel</span
+              >
+              <div
+                class="duration-bar"
+                style="--bar-duration: 240ms; flex: 1"
+              ></div>
+            </div>
+            <div style="display: flex; align-items: center; gap: 12px">
+              <span class="t-caption c-tertiary num" style="width: 96px"
+                >320 large</span
+              >
+              <div
+                class="duration-bar"
+                style="--bar-duration: 320ms; flex: 1"
+              ></div>
+            </div>
+            <div>
+              <button class="btn btn-secondary btn-sm" id="replayDuration">
+                重播
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="spec-row">
+          <div class="spec-label t-caption c-tertiary">
+            进入模式<br />overlay / popover / stagger
+          </div>
+          <div
+            style="
+              flex: 1;
+              display: flex;
+              flex-wrap: wrap;
+              gap: 12px;
+              align-items: flex-start;
+            "
+          >
+            <button class="btn btn-secondary btn-md" id="openDialog">
+              打开对话框（overlay）
+            </button>
+            <div class="popover-demo">
+              <button class="btn btn-secondary btn-md" id="togglePopover">
+                打开浮层（popover）
+              </button>
+              <div class="popover-panel" id="popoverPanel" hidden>
+                <div class="row">
+                  <span class="grow t-body">拉取 Pull</span
+                  ><span class="t-caption c-tertiary">⌘P</span>
+                </div>
+                <div class="row">
+                  <span class="grow t-body">推送 Push</span
+                  ><span class="t-caption c-tertiary">⌘U</span>
+                </div>
+                <div class="row">
+                  <span class="grow t-body">同步全部 Sync all</span>
+                </div>
+              </div>
+            </div>
+            <button class="btn btn-secondary btn-md" id="replayStagger">
+              列表 stagger
+            </button>
+          </div>
+        </div>
+
+        <div class="spec-row">
+          <div class="spec-label t-caption c-tertiary">
+            stagger 预览<br />≤24ms/项 · 仅前 12 项
+          </div>
+          <div
+            class="list-frame stagger-list"
+            id="staggerList"
+            style="flex: 0 0 320px"
+          >
+            <div class="row" style="--i: 0">
+              <span class="grow t-body">main</span
+              ><span class="t-caption c-tertiary num">↑2</span>
+            </div>
+            <div class="row" style="--i: 1">
+              <span class="grow t-body">feature/笔刷引擎</span
+              ><span class="t-caption c-tertiary num">↑12 ↓1</span>
+            </div>
+            <div class="row" style="--i: 2">
+              <span class="grow t-body">feature/材质导入</span
+              ><span class="t-caption c-tertiary num">↓4</span>
+            </div>
+            <div class="row" style="--i: 3">
+              <span class="grow t-body">fix/闪退修复</span
+              ><span class="t-caption c-tertiary">3 天前</span>
+            </div>
+            <div class="row" style="--i: 4">
+              <span class="grow t-body">release/0.2.5</span
+              ><span class="t-caption c-tertiary">上周</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 组件 ============ -->
+      <section id="components">
+        <div class="section-head">
+          <h2 class="t-title">组件 Components</h2>
+          <p class="t-caption c-tertiary">
+            按钮尺寸阶梯 28/32/36 · 列表行统一规格 · 骨架屏无扫光
+          </p>
+        </div>
+
+        <div class="spec-row">
+          <div class="spec-label t-caption c-tertiary">
+            按钮<br />variants × sizes
+          </div>
+          <div class="matrix">
+            <button class="btn btn-primary btn-md">提交 Commit</button>
+            <button class="btn btn-secondary btn-md">同步 Sync</button>
+            <button class="btn btn-ghost btn-md">忽略</button>
+            <button class="btn btn-danger btn-md">删除</button>
+            <button class="btn btn-secondary btn-md" disabled>不可用</button>
+          </div>
+        </div>
+        <div class="spec-row">
+          <div class="spec-label t-caption c-tertiary">
+            尺寸阶梯<br />28 / 32 / 36
+          </div>
+          <div class="matrix">
+            <button class="btn btn-secondary btn-sm">小 sm</button>
+            <button class="btn btn-secondary btn-md">中 md</button>
+            <button class="btn btn-secondary btn-lg">大 lg</button>
+          </div>
+        </div>
+        <div class="spec-row">
+          <div class="spec-label t-caption c-tertiary">
+            图标按钮<br />悬停看 tooltip（300ms 延迟）
+          </div>
+          <div class="matrix">
+            <button
+              class="icon-btn"
+              data-tooltip="获取 Fetch"
+              aria-label="获取"
+            >
+              ⟳
+            </button>
+            <button
+              class="icon-btn"
+              data-tooltip="新建分支"
+              aria-label="新建分支"
+            >
+              ＋
+            </button>
+            <button
+              class="icon-btn"
+              data-tooltip="项目设置"
+              aria-label="项目设置"
+            >
+              ⚙
+            </button>
+            <button class="icon-btn" data-tooltip="删除储藏" aria-label="删除">
+              🗑
+            </button>
+          </div>
+        </div>
+
+        <div class="spec-row" style="align-items: flex-start">
+          <div class="spec-label t-caption c-tertiary">
+            侧栏片段<br />列表行统一规格
+          </div>
+          <div class="list-frame">
+            <div class="group-head">
+              <span class="t-label c-tertiary">分支</span>
+              <button
+                class="icon-btn"
+                style="width: 22px; height: 22px"
+                aria-label="新建分支"
+              >
+                ＋
+              </button>
+            </div>
+            <div class="row selected">
+              <span class="grow t-body">main</span>
+              <span class="meta"
+                ><span class="t-caption c-tertiary num">↑2</span></span
+              >
+            </div>
+            <div class="row">
+              <span class="grow t-body">feature/笔刷引擎</span>
+              <span class="meta"
+                ><span class="t-caption c-tertiary num">↑12 ↓1</span></span
+              >
+            </div>
+            <div class="row">
+              <span class="grow t-body">fix/导出闪退</span>
+              <span class="meta"
+                ><span class="t-caption c-tertiary">3 天前</span></span
+              >
+            </div>
+            <div class="group-head">
+              <span class="t-label c-tertiary">储藏</span>
+            </div>
+            <div class="row">
+              <span class="grow t-body">未完成的贴图调整</span>
+              <span class="meta"
+                ><span class="t-caption c-tertiary">昨天 18:02</span></span
+              >
+            </div>
+            <div class="row">
+              <span class="grow t-body c-secondary">WIP: 宣纸材质实验</span>
+              <span class="meta"
+                ><span class="t-caption c-tertiary">周一</span></span
+              >
+            </div>
+          </div>
+        </div>
+
+        <div class="spec-row" style="align-items: flex-start">
+          <div class="spec-label t-caption c-tertiary">
+            加载<br />骨架 pulse → 内容
+          </div>
+          <div style="flex: 0 0 320px">
+            <div class="list-frame" id="skeletonFrame">
+              <div class="skeleton-row">
+                <div
+                  class="skeleton"
+                  style="width: 16px; height: 16px; border-radius: 999px"
+                ></div>
+                <div class="skeleton" style="width: 45%; height: 12px"></div>
+              </div>
+              <div class="skeleton-row">
+                <div
+                  class="skeleton"
+                  style="width: 16px; height: 16px; border-radius: 999px"
+                ></div>
+                <div class="skeleton" style="width: 62%; height: 12px"></div>
+              </div>
+              <div class="skeleton-row">
+                <div
+                  class="skeleton"
+                  style="width: 16px; height: 16px; border-radius: 999px"
+                ></div>
+                <div class="skeleton" style="width: 38%; height: 12px"></div>
+              </div>
+            </div>
+            <div style="margin-top: 8px">
+              <button class="btn btn-secondary btn-sm" id="simulateLoad">
+                模拟加载（1.2s）
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="spec-row">
+          <div class="spec-label t-caption c-tertiary">
+            进度反馈<br />顶部 2px 细条
+          </div>
+          <div>
+            <div class="progress-demo">
+              <div class="progress-top" id="progressTop"></div>
+              <div style="padding: 16px" class="t-caption c-tertiary">
+                fetch / sync / clone 期间显示，不定态滑动 1200ms
+              </div>
+            </div>
+            <div style="margin-top: 8px">
+              <button class="btn btn-secondary btn-sm" id="runProgress">
+                模拟同步（3s）
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="spec-row">
+          <div class="spec-label t-caption c-tertiary">Toast<br />点击触发</div>
+          <div>
+            <button class="btn btn-secondary btn-md" id="showToast">
+              触发同步完成 Toast
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <footer>
+        <p class="t-caption c-tertiary">
+          规格文档：docs/design/redesign-spec.md · 字体：Inter Variable（SIL OFL
+          1.1，本地内嵌，design/fonts/）· 中文：系统字体回落 ·
+          全部资源本地加载，无任何网络请求
+        </p>
+      </footer>
+    </main>
+
+    <!-- 对话框示例 -->
+    <div class="dialog-host" id="dialogHost" hidden>
+      <div
+        class="dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="dlgTitle"
+      >
+        <h3 class="t-title" id="dlgTitle">删除分支</h3>
+        <p class="t-body c-secondary desc">
+          确定删除分支
+          <span class="t-mono">feature/笔刷引擎</span> 吗？该分支领先 main 12
+          个提交，删除后将无法恢复。
+        </p>
+        <div class="footer">
+          <button class="btn btn-ghost btn-md" id="cancelDialog">取消</button>
+          <button class="btn btn-danger btn-md" id="confirmDialog">
+            删除分支
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="toast-host" id="toastHost"></div>
+
+    <script>
+      const root = document.documentElement;
+
+      // 主题：默认跟随系统
+      const prefersDark = window.matchMedia("(prefers-color-scheme: dark)");
+      const themeBtns = { light: themeLight, dark: themeDark };
+      function setTheme(theme) {
+        root.dataset.theme = theme;
+        for (const [key, btn] of Object.entries(themeBtns)) {
+          btn.setAttribute("aria-pressed", String(key === theme));
+        }
+      }
+      setTheme(prefersDark.matches ? "dark" : "light");
+      themeLight.onclick = () => setTheme("light");
+      themeDark.onclick = () => setTheme("dark");
+
+      // 字体 A/B
+      function setFont(font) {
+        root.dataset.font = font;
+        fontInter.setAttribute("aria-pressed", String(font === "inter"));
+        fontSystem.setAttribute("aria-pressed", String(font === "system"));
+      }
+      fontInter.onclick = () => setFont("inter");
+      fontSystem.onclick = () => setFont("system");
+
+      // 减少动效状态展示
+      rmState.textContent = window.matchMedia(
+        "(prefers-reduced-motion: reduce)",
+      ).matches
+        ? "已开启（动画已降级）"
+        : "未开启";
+
+      // 色板
+      const grayTokens = [
+        "background",
+        "card",
+        "secondary",
+        "accent",
+        "border-subtle",
+        "border",
+        "foreground-tertiary",
+        "foreground-secondary",
+        "foreground",
+      ];
+      graySwatches.innerHTML = grayTokens
+        .map(
+          (token) => `
+        <div class="swatch">
+          <div class="chip" style="background: hsl(var(--${token}))"></div>
+          <div class="meta"><div class="t-caption">--${token}</div></div>
+        </div>`,
+        )
+        .join("");
+
+      // 重播工具
+      function replay(nodes) {
+        nodes.forEach((el) => {
+          el.classList.remove("play");
+          void el.offsetWidth;
+          el.classList.add("play");
+        });
+      }
+      replayEase.onclick = () =>
+        replay([...document.querySelectorAll(".ease-track")]);
+      replayDuration.onclick = () =>
+        replay([...document.querySelectorAll(".duration-bar")]);
+      replayStagger.onclick = () => replay([staggerList]);
+
+      // 浮层
+      togglePopover.onclick = () => {
+        popoverPanel.hidden = !popoverPanel.hidden;
+      };
+      document.addEventListener("click", (event) => {
+        if (!popoverPanel.hidden && !event.target.closest(".popover-demo")) {
+          popoverPanel.hidden = true;
+        }
+      });
+
+      // 对话框
+      function setDialog(open) {
+        dialogHost.hidden = !open;
+        if (open) {
+          dialogHost.classList.remove("entering");
+          void dialogHost.offsetWidth;
+          dialogHost.classList.add("entering");
+        }
+      }
+      openDialog.onclick = () => setDialog(true);
+      cancelDialog.onclick = () => setDialog(false);
+      confirmDialog.onclick = () => setDialog(false);
+      dialogHost.addEventListener("click", (event) => {
+        if (event.target === dialogHost) setDialog(false);
+      });
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+          setDialog(false);
+          popoverPanel.hidden = true;
+        }
+      });
+
+      // Toast
+      showToast.onclick = () => {
+        const toast = document.createElement("div");
+        toast.className = "toast";
+        toast.innerHTML =
+          '<span class="dot" style="background: hsl(var(--success))"></span><span class="t-body">已同步分支 main，2 个提交已推送</span>';
+        toastHost.appendChild(toast);
+        setTimeout(() => {
+          toast.classList.add("leaving");
+          setTimeout(() => toast.remove(), 160);
+        }, 3200);
+      };
+
+      // 骨架 → 内容
+      simulateLoad.onclick = () => {
+        skeletonFrame.innerHTML = `
+          <div class="skeleton-row"><div class="skeleton" style="width: 16px; height: 16px; border-radius: 999px"></div><div class="skeleton" style="width: 45%; height: 12px"></div></div>
+          <div class="skeleton-row"><div class="skeleton" style="width: 16px; height: 16px; border-radius: 999px"></div><div class="skeleton" style="width: 62%; height: 12px"></div></div>
+          <div class="skeleton-row"><div class="skeleton" style="width: 16px; height: 16px; border-radius: 999px"></div><div class="skeleton" style="width: 38%; height: 12px"></div></div>`;
+        setTimeout(() => {
+          skeletonFrame.innerHTML = `
+            <div class="row"><span class="grow t-body">main</span><span class="meta"><span class="t-caption c-tertiary num">↑2</span></span></div>
+            <div class="row"><span class="grow t-body">feature/笔刷引擎</span><span class="meta"><span class="t-caption c-tertiary num">↑12 ↓1</span></span></div>
+            <div class="row"><span class="grow t-body">fix/导出闪退</span><span class="meta"><span class="t-caption c-tertiary">3 天前</span></span></div>`;
+        }, 1200);
+      };
+
+      // 进度条
+      runProgress.onclick = () => {
+        progressTop.classList.add("on");
+        setTimeout(() => progressTop.classList.remove("on"), 3000);
+      };
+    </script>
+  </body>
+</html>
