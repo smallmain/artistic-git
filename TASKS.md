@@ -164,7 +164,7 @@ graph TD
 
 依赖：阶段 0.5；与 1A 仅固定目录布局契约（开发期使用 `src-tauri/resources/git-dist`）。
 
-- [x] runner：`std::process::Command` 调用内嵌 git；显式内嵌路径，隔离并重建受控 `GIT_EXEC_PATH`/`GIT_TEMPLATE_DIR`/`GITPERLLIB`/`PATH`，**绝不回退系统 git**；`GIT_CONFIG_NOSYSTEM=1` + 受控 `HOME`；全局身份 fallback 由专用只读逻辑读取真实 `~/.gitconfig`
+- [x] runner：`std::process::Command` 调用内嵌 git；显式内嵌路径，隔离并重建受控 `GIT_EXEC_PATH`/`GIT_TEMPLATE_DIR`/`GITPERLLIB`/`PATH`，**绝不回退系统 git**；`GIT_CONFIG_NOSYSTEM=1` + 受控 `HOME`；当前默认作者同步到受控全局 config，真实 Git 全局身份仅由设置专用路径读写
   - 修复备注（2026-07-08）：runner 现在会创建受控 HOME/.config，PATH 以 embedded `git/bin`、`git/libexec/git-core`、`git-lfs` 目录优先并仅追加平台 shell 工具目录，注入 `init.defaultBranch=main`，并设置 embedded Git resource env；同时修复 standalone `git-lfs` 不支持 `-C` 的调用方式，改为 cwd 或 `git -C ... lfs`。
 - [x] 运行期自检：启动执行 `git --version` / `git lfs version`，不符或不可执行 → 致命错误崩溃弹窗
 - [x] 命令级注入约定（`-c`，不落盘）：`credential.helper`、`core.sshCommand`、`core.longpaths=true`（仅 Windows）、rename detection、`--progress`
@@ -200,7 +200,7 @@ graph TD
 依赖：1B、1C。
 
 - [x] 打开校验：非 Git 目录报错「不是有效的 Git 项目」（不提供 init）；子目录经 `git rev-parse --show-toplevel` 静默解析到仓库根；bare 仓库与 linked worktree 拒绝（「不是受支持的 Git 项目类型」）；存在多个 remote 时仅管理 `origin` 并给非阻塞提示，无 `origin` 即进入无远程模式
-- [x] 打开流程：以工具身份写仓库级 `user.name/user.email`（**仅不同才写，只动 `.git/config`**，工具无身份则跳过）；存在 LFS 规则时自动 `git lfs install --local`（允许按需写仓库级 `filter.lfs.*`）；只清理工具创建的临时 worktree 残留；记录 projects.json 最近打开时间
+- [x] 打开流程：不修改仓库作者信息；存在 LFS 规则时自动 `git lfs install --local`（允许按需写仓库级 `filter.lfs.*`）；只清理工具创建的临时 worktree 残留；记录 projects.json 最近打开时间
 - [x] 健康检查：游离 HEAD（提示 + 新建分支/切换引导）；外部残留 rebase/merge/cherry-pick 中间态（提示 + 放弃恢复 abort 按钮）；空仓库 unborn HEAD 语义（显示 unborn 分支名 + 历史空态 + 分支切换/删除/新建禁用）；`.git/index.lock` 残留**永不自动清除**，引导式提示（mtime 年龄 + 警示文案 + 用户显式确认后删除）；无法自动修复的归入致命错误
 - [x] 分支列表查询：本地/远程合并显示、去 `origin/` 前缀、三种存在状态、当前分支置顶其余按最近提交时间降序、每分支 ahead/behind、仅远程分支无 Badge；`backup/*` 默认过滤（5D 提供查看入口）
 - [x] 本地更改查询：`status --porcelain -z`、严格遵循 .gitignore、未跟踪未忽略显示为「新增」、rename detection（`--find-renames`，含二进制相似度）识别为「重命名」记录
@@ -333,18 +333,18 @@ graph TD
 依赖：1B、1D。
 
 - [x] 设置 Modal 框架：左侧栏分区导航 + 右侧面板（基本设置/项目设置/关于）
-- [x] 基本设置（本阶段项）：Git 用户信息（用户名/邮箱）；SSH Key 展示 + 复制 + 生成按钮；语言（跟随系统/中文/English）；主题（跟随系统/浅色/深色）；Gravatar 开关（默认关）——HTTPS 凭据列表、Fetch 间隔、自动检查更新分别随 4B/4E/11 接入
-- [x] 项目设置（本阶段项）：大文件检查开关 + 阈值（MB，默认 50）；.gitignore 编辑器（查看/修改，保存后成为一条本地更改待提交，界面明示）——远程地址、自动跟踪随 4E/5C 接入
+- [x] 基本设置（本阶段项）：默认作者信息（跟随 Git 全局配置/单独工具级配置，输入框始终可编辑）；SSH Key 展示 + 复制 + 生成按钮；语言（跟随系统/中文/English）；主题（跟随系统/浅色/深色）；Gravatar 开关（默认关）——HTTPS 凭据列表、Fetch 间隔、自动检查更新分别随 4B/4E/11 接入
+- [x] 项目设置（本阶段项）：仓库作者信息（跟随工具全局配置/单独仓库级配置）；大文件检查开关 + 阈值（MB，默认 50）；.gitignore 编辑器（查看/修改，保存后成为一条本地更改待提交，界面明示）——远程地址、自动跟踪随 4E/5C 接入
 - [x] 关于分区骨架：当前版本号（检查更新/更新日志 11 接入）
 - [x] 向导两步式 + 右下角跳过（跳过用系统既有配置，之后可在设置补填）：
-  - 第一步作者信息：通过专用只读逻辑预填真实系统 `~/.gitconfig` 现有身份值；邮箱格式校验
+  - 第一步默认作者信息：跟随 Git 全局配置（默认）/单独工具级配置；输入框始终可编辑，并从所选目的地读取和保存；邮箱格式校验
   - 第二步 SSH Key：检测 `~/.ssh/` 常见私钥（id_ed25519/id_rsa/id_ecdsa）；完全没有才显示生成按钮 + 作用说明；生成弹窗固定 ed25519 / `~/.ssh/id_ed25519` / 注释=第一步邮箱，唯一输入=密码短语（默认留空 + 「留空则日常无需重复输入（推荐个人电脑）」小字）；生成后/已有 Key 显示复制公钥按钮 + 添加到 Git 平台说明
 - [x] 向导可重入（起始界面入口，不受 onboarded 影响）；完成/跳过置 `onboarded: true`
-- [x] 身份数据源与广播：设置修改身份 → 落盘 + 广播所有窗口 + 对每个已打开仓库执行「不同才写」仓库级 config（绝不改全局 `~/.gitconfig`）
-- [x] 身份懒校验（挂 1C 写锁入口）：流程含 commit/stash 步骤时校验仓库级→全局 fallback 有效身份；全局 fallback 由工具专用只读逻辑读取真实 `~/.gitconfig`，不让 Git Runner 读取用户全局 config；缺失弹「完善身份信息」（用户名+邮箱，写入仓库级后继续原操作，取消中止）；只读与纯引用操作不校验
+- [x] 身份数据源与广播：默认作者来源决定真实 Git 全局 config 或工具 `settings.json` 的读写；保存后同步受控默认作者并广播所有窗口；项目设置可显式读写仓库级身份或清除本地覆盖以跟随默认作者
+- [x] 身份懒校验（挂 1C 写锁入口）：流程含 commit/stash 步骤时按仓库级→受控默认作者校验有效身份；缺失时引导完善作者信息，取消则中止；只读与纯引用操作不校验
 - [x] 设置变更即时生效：语言/主题广播所有窗口
 
-**验收**：组件测试 + 集成测试：身份写入时机矩阵（打开/修改/懒校验触发场景全覆盖）/真实 `ssh-keygen` 生成与检测/gitignore 保存成为本地更改。
+**验收**：组件测试 + 集成测试：身份目的地矩阵（Git 全局/工具级/仓库级/跟随默认）与打开/克隆不写身份/懒校验场景全覆盖；真实 `ssh-keygen` 生成与检测；gitignore 保存成为本地更改。
 
 ---
 

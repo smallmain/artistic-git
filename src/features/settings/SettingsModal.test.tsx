@@ -31,12 +31,14 @@ const commandMocks = vi.hoisted(() => ({
   listHttpsCredentials: vi.fn(),
   loadGitignore: vi.fn(),
   loadProjectSettings: vi.fn(),
+  loadRepositoryAuthorSettings: vi.fn(),
   loadRemoteSettings: vi.fn(),
   openUpdateReleasePage: vi.fn(),
   saveAppSettings: vi.fn(),
   saveGitignore: vi.fn(),
   saveHttpsCredential: vi.fn(),
   saveProjectSettings: vi.fn(),
+  saveRepositoryAuthorSettings: vi.fn(),
   saveRemoteSettings: vi.fn(),
   settingsSnapshot: vi.fn(),
 }));
@@ -86,6 +88,23 @@ beforeEach(() => {
     largeFileCheck: { enabled: true, thresholdMb: 50 },
     path: "/repo/art",
   });
+  commandMocks.loadRepositoryAuthorSettings.mockResolvedValue({
+    defaultAuthor: { email: null, name: null },
+    repositoryAuthor: { email: null, name: null },
+    repositoryPath: "/repo/art",
+    settings: defaultAppSettings,
+    source: "toolDefault",
+  });
+  commandMocks.saveRepositoryAuthorSettings.mockImplementation(
+    ({ author, repositoryPath, source }) =>
+      Promise.resolve({
+        defaultAuthor: source === "toolDefault" ? author : {},
+        repositoryAuthor: source === "repository" ? author : {},
+        repositoryPath,
+        settings: defaultAppSettings,
+        source,
+      }),
+  );
   commandMocks.loadGitignore.mockResolvedValue({
     content: "",
     exists: true,
@@ -156,7 +175,7 @@ describe("SettingsModal", () => {
         await screen.findByRole("heading", { name: "Couldn't load settings" }),
       ).toBeVisible();
       expect(
-        screen.queryByRole("button", { name: "Save identity" }),
+        screen.queryByRole("button", { name: "Save author information" }),
       ).not.toBeInTheDocument();
       expect(
         screen.queryByRole("button", { name: "Save project settings" }),
@@ -189,12 +208,86 @@ describe("SettingsModal", () => {
     );
 
     fireEvent.click(
-      await screen.findByRole("button", { name: "Save identity" }),
+      await screen.findByRole("button", { name: "Save author information" }),
     );
 
     expect(
       screen.getAllByText("Enter both author name and email before saving."),
     ).toHaveLength(1);
+  });
+
+  it("keeps default author drafts separate and saves the selected destination", async () => {
+    commandMocks.settingsSnapshot.mockResolvedValueOnce({
+      appVersion: "0.2.5",
+      identitySources: {
+        globalGitconfig: {
+          email: "global@example.test",
+          name: "Global Author",
+        },
+        globalGitconfigPath: "/home/artist/.gitconfig",
+        settings: {
+          email: "tool@example.test",
+          name: "Tool Author",
+        },
+      },
+      settings: defaultAppSettings,
+      sshKey: {
+        exists: false,
+        privateKeyPath: null,
+        publicKey: null,
+        publicKeyPath: null,
+      },
+    });
+    render(
+      <TestProviders>
+        <SettingsModal onOpenChange={vi.fn()} open />
+      </TestProviders>,
+    );
+
+    expect(await screen.findByLabelText("Name")).toHaveValue("Global Author");
+    expect(screen.getByLabelText("Email")).toHaveValue("global@example.test");
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Separate tool-level configuration",
+      }),
+    );
+    expect(screen.getByLabelText("Name")).toHaveValue("Tool Author");
+    expect(screen.getByLabelText("Email")).toHaveValue("tool@example.test");
+    fireEvent.change(screen.getByLabelText("Name"), {
+      target: { value: "Edited Tool Author" },
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Follow global Git configuration" }),
+    );
+    expect(screen.getByLabelText("Name")).toHaveValue("Global Author");
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Separate tool-level configuration",
+      }),
+    );
+    expect(screen.getByLabelText("Name")).toHaveValue("Edited Tool Author");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Save author information" }),
+    );
+    await waitFor(() =>
+      expect(commandMocks.saveAppSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          author: {
+            email: "tool@example.test",
+            name: "Edited Tool Author",
+          },
+          settings: expect.objectContaining({
+            git: expect.objectContaining({
+              defaultAuthorSource: "tool",
+            }),
+          }),
+          validateIdentity: true,
+        }),
+      ),
+    );
   });
 
   it("loads repository branches only when project settings are opened", async () => {
@@ -216,6 +309,58 @@ describe("SettingsModal", () => {
     expect(commandMocks.listBranches).toHaveBeenCalledWith({
       repositoryPath: "/repo/art",
     });
+  });
+
+  it("saves a separate repository-level author", async () => {
+    commandMocks.loadRepositoryAuthorSettings.mockResolvedValueOnce({
+      defaultAuthor: {
+        email: "default@example.test",
+        name: "Default Author",
+      },
+      repositoryAuthor: { email: null, name: null },
+      repositoryPath: "/repo/art",
+      settings: defaultAppSettings,
+      source: "toolDefault",
+    });
+    render(
+      <TestProviders
+        initialWindowState={{
+          activeRepositoryPath: "/repo/art",
+          settingsSection: "project",
+        }}
+      >
+        <SettingsModal onOpenChange={vi.fn()} open />
+      </TestProviders>,
+    );
+
+    expect(await screen.findByLabelText("Name")).toHaveValue("Default Author");
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Separate repository-level configuration",
+      }),
+    );
+    fireEvent.change(screen.getByLabelText("Name"), {
+      target: { value: "Repository Author" },
+    });
+    fireEvent.change(screen.getByLabelText("Email"), {
+      target: { value: "repository@example.test" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Save repository author information",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(commandMocks.saveRepositoryAuthorSettings).toHaveBeenCalledWith({
+        author: {
+          email: "repository@example.test",
+          name: "Repository Author",
+        },
+        repositoryPath: "/repo/art",
+        source: "repository",
+      }),
+    );
   });
 
   it("preserves unsaved project drafts when switching settings sections", async () => {

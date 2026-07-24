@@ -2521,6 +2521,30 @@ async fn save_app_settings(
 }
 
 #[tauri::command]
+async fn load_repository_author_settings(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_app::RepositoryAuthorSettingsRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_app::RepositoryAuthorSettingsResponse> {
+    let backend = backend.inner().clone();
+    run_blocking_command("loadRepositoryAuthorSettings", move || {
+        backend.load_repository_author_settings(request)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn save_repository_author_settings(
+    backend: State<'_, artistic_git_app::RepositoryBackend>,
+    request: artistic_git_app::SaveRepositoryAuthorSettingsRequest,
+) -> artistic_git_contracts::AppResult<artistic_git_app::RepositoryAuthorSettingsResponse> {
+    let backend = backend.inner().clone();
+    run_blocking_command("saveRepositoryAuthorSettings", move || {
+        backend.save_repository_author_settings(request)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn load_project_settings(
     backend: State<'_, artistic_git_app::RepositoryBackend>,
     request: artistic_git_app::ProjectSettingsRequest,
@@ -2805,6 +2829,8 @@ pub fn run() {
             forget_recent_project,
             clear_recent_projects,
             save_app_settings,
+            load_repository_author_settings,
+            save_repository_author_settings,
             load_project_settings,
             save_project_settings,
             load_gitignore,
@@ -3785,7 +3811,6 @@ fn open_second_instance_repository(
         .clone();
     let opened = backend.open_repository(artistic_git_contracts::OpenRepositoryRequest {
         path: repository_path,
-        tool_identity: None,
         operation_id: None,
     })?;
     let project_settings =
@@ -4066,6 +4091,9 @@ fn repository_backend(
         ))?;
     if let Ok(settings) = config.settings() {
         artistic_git_app::apply_network_settings_to_runtime(&runner, &settings.network);
+        if let Err(error) = artistic_git_app::apply_author_settings_to_runtime(&runner, &settings) {
+            eprintln!("failed to initialize the default Git author: {error:?}");
+        }
     }
     let app_handle = app.handle().clone();
     config.subscribe(Arc::new(move |event| {

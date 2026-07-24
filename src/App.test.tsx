@@ -511,7 +511,6 @@ describe("App", () => {
     await waitFor(() =>
       expect(commandMocks.saveAppSettings).toHaveBeenCalledWith(
         expect.objectContaining({
-          openRepositoryPaths: ["/repo/art-project"],
           settings: expect.objectContaining({
             appearance: expect.objectContaining({ theme: "dark" }),
           }),

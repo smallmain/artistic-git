@@ -45,10 +45,7 @@ import type {
 import { cn } from "@/lib/utils";
 import { showToast } from "@/lib/toast";
 import { dispatchErrorGroup } from "@/lib/runtime-errors";
-import {
-  normalizeAppSettings,
-  toolIdentityFromSettings,
-} from "@/features/settings/settings-model";
+import { normalizeAppSettings } from "@/features/settings/settings-model";
 import { recentProjectLimit, useWindowStore } from "@/store/window-store";
 import { WindowCloseGuard } from "@/features/window-close-guard/WindowCloseGuard";
 
@@ -219,7 +216,6 @@ export function StartScreen() {
       };
       setAppSettings(nextSettings);
       void saveAppSettings({
-        openRepositoryPaths: [],
         settings: nextSettings,
         validateIdentity: false,
       })
@@ -254,7 +250,6 @@ export function StartScreen() {
         const response = await openRepository({
           operationId,
           path,
-          toolIdentity: toolIdentityFromSettings(appSettings),
         });
         reportNonFatalRepositoryErrors(
           response.nonFatalErrors,
@@ -377,7 +372,6 @@ export function StartScreen() {
             : null,
         operationId,
         targetParentDirectory: parentDirectory,
-        toolIdentity: toolIdentityFromSettings(appSettings),
         url: cloneUrl.trim(),
       });
       reportNonFatalRepositoryErrors(

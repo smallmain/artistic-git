@@ -1068,6 +1068,28 @@ impl RepositoryBackend {
         crate::settings::save_app_settings(&self.runner, self.config.as_ref(), request)
     }
 
+    pub fn load_repository_author_settings(
+        &self,
+        request: crate::settings::RepositoryAuthorSettingsRequest,
+    ) -> AppResult<crate::settings::RepositoryAuthorSettingsResponse> {
+        crate::settings::load_repository_author_settings(
+            &self.runner,
+            self.config.as_ref(),
+            request,
+        )
+    }
+
+    pub fn save_repository_author_settings(
+        &self,
+        request: crate::settings::SaveRepositoryAuthorSettingsRequest,
+    ) -> AppResult<crate::settings::RepositoryAuthorSettingsResponse> {
+        crate::settings::save_repository_author_settings(
+            &self.runner,
+            self.config.as_ref(),
+            request,
+        )
+    }
+
     pub fn load_project_settings(
         &self,
         request: crate::settings::ProjectSettingsRequest,
@@ -1382,22 +1404,7 @@ fn open_repository_impl(
     let mut non_fatal_errors = Vec::new();
     clean_tool_worktree_residue(&git_common_dir);
     crate::sync::cleanup_sync_worktree_residue(runner, &root);
-    if acquire_write_lock {
-        if let Err(error) = apply_tool_identity(
-            runner,
-            &root,
-            request.tool_identity.as_ref(),
-            "openRepository",
-        ) {
-            non_fatal_errors.push(error);
-        }
-    } else {
-        apply_tool_identity(
-            runner,
-            &root,
-            request.tool_identity.as_ref(),
-            "openRepository",
-        )?;
+    if !acquire_write_lock {
         install_lfs_if_needed(runner, &root)?;
         update_submodules_after_checkout(runner, &root, "openRepository", operation_id, progress)?;
     }
@@ -1561,7 +1568,6 @@ where
         config,
         OpenRepositoryRequest {
             path: display_path(&target.path),
-            tool_identity: request.tool_identity,
             operation_id: operation_id.clone(),
         },
         operation_id.as_ref(),
@@ -4275,26 +4281,6 @@ fn reject_unsupported_repository_type(
     Ok(())
 }
 
-fn apply_tool_identity(
-    runner: &GitRunner,
-    root: &Path,
-    identity: Option<&artistic_git_contracts::ToolGitIdentity>,
-    operation_name: &str,
-) -> AppResult<()> {
-    let Some(identity) = identity else {
-        return Ok(());
-    };
-
-    if let Some(name) = identity.name.as_deref().filter(|value| !value.is_empty()) {
-        write_local_config_if_changed(runner, root, "user.name", name, operation_name)?;
-    }
-    if let Some(email) = identity.email.as_deref().filter(|value| !value.is_empty()) {
-        write_local_config_if_changed(runner, root, "user.email", email, operation_name)?;
-    }
-
-    Ok(())
-}
-
 pub fn apply_git_user_settings_to_repository(
     runner: &GitRunner,
     repository_path: &str,
@@ -4317,6 +4303,30 @@ pub fn apply_git_user_settings_to_repository(
         write_local_config_if_changed(runner, &root, "user.email", email.trim(), operation_name)?;
     }
 
+    Ok(())
+}
+
+pub fn clear_local_git_identity(
+    runner: &GitRunner,
+    repository_path: &str,
+    operation_name: &str,
+) -> AppResult<()> {
+    let root = canonical_repository_path(repository_path, operation_name)?;
+    for key in ["user.name", "user.email"] {
+        let (plan, output) = crate::git_ops::run_git_raw(
+            runner,
+            Some(&root),
+            ["config", "--local", "--unset-all", key],
+            operation_name,
+        )?;
+        if !output.status.success() && !output.stderr.is_empty() {
+            return Err(crate::git_ops::command_failure(
+                &plan,
+                output,
+                operation_name,
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -7589,7 +7599,6 @@ mod tests {
             OpenRepositoryRequest {
                 operation_id: None,
                 path: display_path(&repo.path.join("nested")),
-                tool_identity: None,
             },
         )
         .expect("open repo");
@@ -7647,10 +7656,6 @@ mod tests {
                 branch_name: None,
                 target_parent_directory: display_path(parent.path()),
                 directory_name: "cloned-art".to_owned(),
-                tool_identity: Some(artistic_git_contracts::ToolGitIdentity {
-                    name: Some("Artistic Git".to_owned()),
-                    email: Some("tool@example.test".to_owned()),
-                }),
                 operation_id: None,
             })
             .expect("clone repository through backend");
@@ -7671,15 +7676,10 @@ mod tests {
             .iter()
             .any(|remote| remote.name == "origin" && remote.url == bare_path));
         assert_eq!(
-            git_stdout(
-                &runner,
-                Some(&target),
-                ["config", "--local", "--get", "user.name"],
-                "test",
-            )
-            .expect("local user name")
-            .trim(),
-            "Artistic Git"
+            read_local_git_identity(&runner, &display_path(&target), "test")
+                .expect("read cloned repository identity"),
+            GitUserSettings::default(),
+            "cloning must not create a repository-local author"
         );
     }
 
@@ -7729,7 +7729,6 @@ mod tests {
                 branch_name: Some("feature/gallery".to_owned()),
                 target_parent_directory: display_path(parent.path()),
                 directory_name: "selected-branch".to_owned(),
-                tool_identity: None,
                 operation_id: None,
             },
         )
@@ -7883,7 +7882,6 @@ mod tests {
                 branch_name: Some("release".to_owned()),
                 target_parent_directory: display_path(parent.path()),
                 directory_name: "tag-is-not-branch".to_owned(),
-                tool_identity: None,
                 operation_id: None,
             },
         )
@@ -7943,7 +7941,6 @@ mod tests {
                 branch_name: None,
                 target_parent_directory: display_path(parent.path()),
                 directory_name: "progress-clone".to_owned(),
-                tool_identity: None,
                 operation_id: Some(OperationId::new("clone-progress-test")),
             },
             &CancelToken::new(),
@@ -7978,7 +7975,6 @@ mod tests {
                 branch_name: None,
                 target_parent_directory: display_path(parent.path()),
                 directory_name: "cancel-after-download".to_owned(),
-                tool_identity: None,
                 operation_id: Some(OperationId::new("clone-open-cancel-test")),
             },
             &cancel_token,
@@ -8187,7 +8183,6 @@ mod tests {
             OpenRepositoryRequest {
                 operation_id: Some(OperationId::new("open-existing-submodule")),
                 path: display_path(&repo.path),
-                tool_identity: None,
             },
             |event| events.borrow_mut().push(event),
         )
@@ -8375,7 +8370,6 @@ mod tests {
                 branch_name: None,
                 target_parent_directory: display_path(parent.path()),
                 directory_name: "existing".to_owned(),
-                tool_identity: None,
                 operation_id: None,
             },
         )
@@ -8399,7 +8393,6 @@ mod tests {
                 branch_name: None,
                 target_parent_directory: display_path(parent.path()),
                 directory_name: "cancelled".to_owned(),
-                tool_identity: None,
                 operation_id: None,
             },
             &token,
@@ -8422,7 +8415,6 @@ mod tests {
             OpenRepositoryRequest {
                 operation_id: None,
                 path: display_path(&repo.path),
-                tool_identity: None,
             },
         )
         .expect_err("bare repo should be rejected");
@@ -8445,7 +8437,6 @@ mod tests {
             OpenRepositoryRequest {
                 operation_id: None,
                 path: display_path(&repo.path),
-                tool_identity: None,
             },
         )
         .expect("open unborn repo");
@@ -9061,7 +9052,6 @@ size 16\n"
             OpenRepositoryRequest {
                 operation_id: None,
                 path: display_path(linked.path()),
-                tool_identity: None,
             },
         )
         .expect_err("linked worktree should be rejected");
@@ -9082,7 +9072,6 @@ size 16\n"
             OpenRepositoryRequest {
                 operation_id: None,
                 path: display_path(&repo.path),
-                tool_identity: None,
             },
         )
         .expect("open detached repo");
@@ -9116,7 +9105,6 @@ size 16\n"
             OpenRepositoryRequest {
                 operation_id: None,
                 path: display_path(&repo.path),
-                tool_identity: None,
             },
         )
         .expect("open repo with remotes");
@@ -9136,7 +9124,7 @@ size 16\n"
     }
 
     #[test]
-    fn writes_tool_identity_only_to_local_config() {
+    fn opening_repository_does_not_write_local_identity() {
         let (runner, _dist_temp) = real_runner();
         let repo = TestRepo::new(&runner);
         repo.git(["init", "-b", "main"]);
@@ -9147,23 +9135,14 @@ size 16\n"
             OpenRepositoryRequest {
                 operation_id: None,
                 path: display_path(&repo.path),
-                tool_identity: Some(artistic_git_contracts::ToolGitIdentity {
-                    name: Some("Artistic Git".to_owned()),
-                    email: Some("tool@example.test".to_owned()),
-                }),
             },
         )
-        .expect("open with identity");
+        .expect("open repository");
 
         assert_eq!(
-            repo.git_output(["config", "--local", "--get", "user.name"])
-                .trim(),
-            "Artistic Git"
-        );
-        assert_eq!(
-            repo.git_output(["config", "--local", "--get", "user.email"])
-                .trim(),
-            "tool@example.test"
+            read_local_git_identity(&runner, &display_path(&repo.path), "test")
+                .expect("read repository identity"),
+            GitUserSettings::default()
         );
     }
 

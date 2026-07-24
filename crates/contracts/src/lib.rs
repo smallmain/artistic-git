@@ -742,16 +742,8 @@ pub struct LfsLockStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
-pub struct ToolGitIdentity {
-    pub name: Option<String>,
-    pub email: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
-#[serde(rename_all = "camelCase")]
 pub struct OpenRepositoryRequest {
     pub path: String,
-    pub tool_identity: Option<ToolGitIdentity>,
     pub operation_id: Option<OperationId>,
 }
 
@@ -779,7 +771,6 @@ pub struct CloneRepositoryRequest {
     pub branch_name: Option<String>,
     pub target_parent_directory: String,
     pub directory_name: String,
-    pub tool_identity: Option<ToolGitIdentity>,
     pub operation_id: Option<OperationId>,
 }
 

@@ -172,7 +172,6 @@ export type CloneRepositoryRequest = {
   branchName: string | null;
   targetParentDirectory: string;
   directoryName: string;
-  toolIdentity: ToolGitIdentity | null;
   operationId: OperationId | null;
 };
 
@@ -428,6 +427,8 @@ export type CreateStashResponse = {
   stdout: string;
 };
 
+export type DefaultAuthorSource = "gitGlobal" | "tool";
+
 export type DeleteBranchRequest = {
   repositoryPath: string;
   branchName: string;
@@ -572,6 +573,7 @@ export type GitDistPaths = {
 export type GitSettings = {
   autoFetch?: boolean;
   fetchIntervalSeconds?: number;
+  defaultAuthorSource?: DefaultAuthorSource;
   user?: GitUserSettings;
   rememberSshPassphrase?: boolean;
 };
@@ -628,7 +630,7 @@ export type HttpsCredentialScope = "host" | "path";
 
 export type IdentityField = "name" | "email";
 
-export type IdentitySource = "repository" | "globalGitconfig" | "missing";
+export type IdentitySource = "repository" | "default" | "missing";
 
 export type IdentitySourcesResponse = {
   settings: GitUserSettings;
@@ -763,7 +765,6 @@ export type OpenLogDirResponse = {
 
 export type OpenRepositoryRequest = {
   path: string;
-  toolIdentity: ToolGitIdentity | null;
   operationId: OperationId | null;
 };
 
@@ -888,6 +889,20 @@ export type RepoChangedEvent = {
 
 export type RepoQueryKind =
   "summary" | "branches" | "stashes" | "localChanges" | "history";
+
+export type RepositoryAuthorSettingsRequest = {
+  repositoryPath: string;
+};
+
+export type RepositoryAuthorSettingsResponse = {
+  repositoryPath: string;
+  source: RepositoryAuthorSource;
+  defaultAuthor: GitUserSettings;
+  repositoryAuthor: GitUserSettings;
+  settings: AppSettings;
+};
+
+export type RepositoryAuthorSource = "toolDefault" | "repository";
 
 export type RepositoryHeadState =
   | { kind: "branch"; name: string; oid: string | null }
@@ -1072,7 +1087,7 @@ export type SafetyBackupSummary = {
 
 export type SaveAppSettingsRequest = {
   settings: AppSettings;
-  openRepositoryPaths?: string[];
+  author?: GitUserSettings | null;
   validateIdentity?: boolean;
 };
 
@@ -1102,6 +1117,12 @@ export type SaveRemoteSettingsRequest = {
   repositoryPath: string;
   originUrl: string | null;
   removeOrigin?: boolean;
+};
+
+export type SaveRepositoryAuthorSettingsRequest = {
+  repositoryPath: string;
+  source: RepositoryAuthorSource;
+  author: GitUserSettings;
 };
 
 export type SettingsSnapshot = {
@@ -1276,11 +1297,6 @@ export type SyncReviewModeResponse = {
 };
 
 export type ThemePreference = "system" | "light" | "dark";
-
-export type ToolGitIdentity = {
-  name: string | null;
-  email: string | null;
-};
 
 export type UpdateSettings = {
   autoCheck?: boolean;

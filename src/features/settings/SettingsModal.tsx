@@ -32,12 +32,15 @@ import type {
   AppSettings,
   AutoTrackingRule,
   BranchSummary,
+  DefaultAuthorSource,
   GitUserSettings,
   GitignoreFileResponse,
   HttpsCredentialEntry,
   HttpsCredentialListResponse,
   IdentitySourcesResponse,
   ProjectSettings,
+  RepositoryAuthorSettingsResponse,
+  RepositoryAuthorSource,
   RemoteSettingsResponse,
   SshKeyStatus,
 } from "@/lib/ipc/generated";
@@ -52,12 +55,14 @@ import {
   listBranches,
   loadGitignore,
   loadProjectSettings,
+  loadRepositoryAuthorSettings,
   loadRemoteSettings,
   openUpdateReleasePage,
   saveAppSettings,
   saveGitignore,
   saveHttpsCredential,
   saveProjectSettings,
+  saveRepositoryAuthorSettings,
   saveRemoteSettings,
   settingsSnapshot,
 } from "@/lib/ipc/commands";
@@ -71,13 +76,14 @@ import { useTheme } from "@/theme/ThemeProvider";
 import {
   appLanguageToUiLanguage,
   appThemeToUiTheme,
+  cleanGitUser,
   defaultLargeFileCheck,
   gitUserFromSettings,
-  identityRepositoryPaths,
   isValidEmail,
   normalizeAppSettings,
   normalizeProjectSettings,
   settingsWithFetchPreferences,
+  settingsWithDefaultAuthorSource,
   settingsWithLanguage,
   settingsWithNetworkPreferences,
   settingsWithRememberSshPassphrase,
@@ -155,6 +161,21 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
   );
   const [identitySources, setIdentitySources] =
     React.useState<IdentitySourcesResponse | null>(null);
+  const [defaultAuthorSource, setDefaultAuthorSource] =
+    React.useState<DefaultAuthorSource>(
+      normalizeAppSettings(appSettings).git?.defaultAuthorSource ?? "gitGlobal",
+    );
+  const [toolAuthorDraft, setToolAuthorDraft] = React.useState<GitUserSettings>(
+    () => gitUserFromSettings(appSettings),
+  );
+  const [gitGlobalAuthorDraft, setGitGlobalAuthorDraft] =
+    React.useState<GitUserSettings>({ name: null, email: null });
+  const [repositoryAuthorSettings, setRepositoryAuthorSettings] =
+    React.useState<RepositoryAuthorSettingsResponse | null>(null);
+  const [repositoryAuthorSource, setRepositoryAuthorSource] =
+    React.useState<RepositoryAuthorSource>("toolDefault");
+  const [repositoryAuthorDraft, setRepositoryAuthorDraft] =
+    React.useState<GitUserSettings>({ name: null, email: null });
   const [sshKey, setSshKey] = React.useState<SshKeyStatus | null>(null);
   const [project, setProject] = React.useState<ProjectSettings | null>(null);
   const [gitignore, setGitignore] =
@@ -175,6 +196,8 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
     React.useState<unknown>(null);
   const [sshKeyFailure, setSshKeyFailure] = React.useState<unknown>(null);
   const [loadingProject, setLoadingProject] = React.useState(false);
+  const [loadingRepositoryAuthor, setLoadingRepositoryAuthor] =
+    React.useState(false);
   const [projectLoadResolvedPath, setProjectLoadResolvedPath] = React.useState<
     string | null
   >(null);
@@ -182,6 +205,8 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
     error: unknown;
     path: string;
   } | null>(null);
+  const [repositoryAuthorLoadFailure, setRepositoryAuthorLoadFailure] =
+    React.useState<unknown>(null);
   const [gitignoreLoadFailure, setGitignoreLoadFailure] =
     React.useState<unknown>(null);
   const [remoteLoadFailure, setRemoteLoadFailure] =
@@ -192,6 +217,8 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
   const [loadingRemote, setLoadingRemote] = React.useState(false);
   const [loadingBranches, setLoadingBranches] = React.useState(false);
   const [projectLoadAttempt, setProjectLoadAttempt] = React.useState(0);
+  const [repositoryAuthorLoadAttempt, setRepositoryAuthorLoadAttempt] =
+    React.useState(0);
   const [gitignoreLoadAttempt, setGitignoreLoadAttempt] = React.useState(0);
   const [remoteLoadAttempt, setRemoteLoadAttempt] = React.useState(0);
   const [branchLoadAttempt, setBranchLoadAttempt] = React.useState(0);
@@ -201,6 +228,8 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
   const [credentialLoadAttempt, setCredentialLoadAttempt] = React.useState(0);
   const [savingSettings, setSavingSettings] = React.useState(false);
   const [savingProject, setSavingProject] = React.useState(false);
+  const [savingRepositoryAuthor, setSavingRepositoryAuthor] =
+    React.useState(false);
   const [savingGitignore, setSavingGitignore] = React.useState(false);
   const [savingRemote, setSavingRemote] = React.useState(false);
   const [savingCredential, setSavingCredential] = React.useState(false);
@@ -222,6 +251,7 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
   const manualUpdateCheckRef = React.useRef(false);
   const credentialLoadRequestKeyRef = React.useRef<string | null>(null);
   const projectLoadRequestKeyRef = React.useRef<string | null>(null);
+  const repositoryAuthorLoadRequestKeyRef = React.useRef<string | null>(null);
   const gitignoreLoadRequestKeyRef = React.useRef<string | null>(null);
   const remoteLoadRequestKeyRef = React.useRef<string | null>(null);
   const branchLoadRequestKeyRef = React.useRef<string | null>(null);
@@ -258,6 +288,11 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
         setAppSettings(normalized);
         setAppVersion(snapshot.appVersion);
         setIdentitySources(snapshot.identitySources);
+        setDefaultAuthorSource(
+          normalized.git?.defaultAuthorSource ?? "gitGlobal",
+        );
+        setToolAuthorDraft(snapshot.identitySources.settings);
+        setGitGlobalAuthorDraft(snapshot.identitySources.globalGitconfig);
         setSshKey(snapshot.sshKey);
         setIdentitySourceFailure(snapshot.identitySourcesError);
         setSshKeyFailure(snapshot.sshKeyError);
@@ -382,15 +417,19 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
     });
     void loadProjectSettings({ repositoryPath: activeRepositoryPath })
       .then((loadedProject) => {
+        finished = true;
         if (active) {
           setProject(loadedProject);
           setProjectSettings(activeRepositoryPath, loadedProject);
           setProjectLoadResolvedPath(activeRepositoryPath);
+          setLoadingProject(false);
         }
       })
       .catch((error) => {
+        finished = true;
         if (active) {
           setProjectLoadFailure({ error, path: activeRepositoryPath });
+          setLoadingProject(false);
           window.dispatchEvent(
             new CustomEvent("artistic-git:error", { detail: error }),
           );
@@ -427,6 +466,93 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
       return;
     }
 
+    const requestKey = `${activeRepositoryPath}\0${repositoryAuthorLoadAttempt}`;
+    if (repositoryAuthorLoadRequestKeyRef.current === requestKey) {
+      return;
+    }
+    repositoryAuthorLoadRequestKeyRef.current = requestKey;
+    let active = true;
+    let finished = false;
+    void Promise.resolve().then(() => {
+      if (active) {
+        setLoadingRepositoryAuthor(true);
+        setRepositoryAuthorLoadFailure(null);
+        setRepositoryAuthorSettings(null);
+      }
+    });
+    void loadRepositoryAuthorSettings({
+      repositoryPath: activeRepositoryPath,
+    })
+      .then((loaded) => {
+        finished = true;
+        if (!active) {
+          return;
+        }
+        const normalized = normalizeAppSettings(loaded.settings);
+        setRepositoryAuthorSettings(loaded);
+        setRepositoryAuthorSource(loaded.source);
+        setRepositoryAuthorDraft(
+          loaded.source === "repository"
+            ? loaded.repositoryAuthor
+            : loaded.defaultAuthor,
+        );
+        setDraft(normalized);
+        setAppSettings(normalized);
+        setDefaultAuthorSource(
+          normalized.git?.defaultAuthorSource ?? "gitGlobal",
+        );
+        setToolAuthorDraft(gitUserFromSettings(normalized));
+        if (normalized.git?.defaultAuthorSource === "gitGlobal") {
+          setGitGlobalAuthorDraft(loaded.defaultAuthor);
+        }
+        setLoadingRepositoryAuthor(false);
+      })
+      .catch((error) => {
+        finished = true;
+        if (active) {
+          setRepositoryAuthorLoadFailure(error);
+          setRepositoryAuthorSettings(null);
+          setLoadingRepositoryAuthor(false);
+          window.dispatchEvent(
+            new CustomEvent("artistic-git:error", { detail: error }),
+          );
+        }
+      })
+      .finally(() => {
+        finished = true;
+        if (active) {
+          setLoadingRepositoryAuthor(false);
+        }
+      });
+
+    return () => {
+      active = false;
+      if (
+        !finished &&
+        repositoryAuthorLoadRequestKeyRef.current === requestKey
+      ) {
+        repositoryAuthorLoadRequestKeyRef.current = null;
+      }
+    };
+  }, [
+    activeRepositoryPath,
+    open,
+    repositoryAuthorLoadAttempt,
+    section,
+    setAppSettings,
+    settingsLoadReady,
+  ]);
+
+  React.useEffect(() => {
+    if (
+      !open ||
+      !settingsLoadReady ||
+      !activeRepositoryPath ||
+      section !== "project"
+    ) {
+      return;
+    }
+
     const requestKey = `${activeRepositoryPath}\0${gitignoreLoadAttempt}`;
     if (gitignoreLoadRequestKeyRef.current === requestKey) {
       return;
@@ -444,14 +570,18 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
     });
     void loadGitignore({ repositoryPath: activeRepositoryPath })
       .then((loadedGitignore) => {
+        finished = true;
         if (active) {
           setGitignore(loadedGitignore);
           setGitignoreDraft(loadedGitignore.content);
+          setLoadingGitignore(false);
         }
       })
       .catch((error) => {
+        finished = true;
         if (active) {
           setGitignoreLoadFailure(error);
+          setLoadingGitignore(false);
           window.dispatchEvent(
             new CustomEvent("artistic-git:error", { detail: error }),
           );
@@ -505,15 +635,19 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
     });
     void loadRemoteSettings({ repositoryPath: activeRepositoryPath })
       .then((loadedRemoteSettings) => {
+        finished = true;
         if (active) {
           setRemoteSettings(loadedRemoteSettings);
           setRemoteUrlDraft(loadedRemoteSettings.originUrl ?? "");
           setRemoteRemoveArmed(false);
+          setLoadingRemote(false);
         }
       })
       .catch((error) => {
+        finished = true;
         if (active) {
           setRemoteLoadFailure(error);
+          setLoadingRemote(false);
           window.dispatchEvent(
             new CustomEvent("artistic-git:error", { detail: error }),
           );
@@ -566,13 +700,17 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
     });
     void listBranches({ repositoryPath: activeRepositoryPath })
       .then((loadedBranches) => {
+        finished = true;
         if (active) {
           setBranchOptions(loadedBranches.branches);
+          setLoadingBranches(false);
         }
       })
       .catch((error) => {
+        finished = true;
         if (active) {
           setBranchLoadFailure(error);
+          setLoadingBranches(false);
           window.dispatchEvent(
             new CustomEvent("artistic-git:error", { detail: error }),
           );
@@ -614,9 +752,13 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
   const normalizedProject = normalizeProjectSettings(visibleProject);
   const largeFileCheck =
     normalizedProject.largeFileCheck ?? defaultLargeFileCheck;
-  const gitUser = gitUserFromSettings(draft);
+  const gitUser =
+    defaultAuthorSource === "gitGlobal"
+      ? gitGlobalAuthorDraft
+      : toolAuthorDraft;
   const email = gitUser.email ?? "";
   const identityValidation = validateGitUser(gitUser);
+  const repositoryAuthorValidation = validateGitUser(repositoryAuthorDraft);
   const fetchIntervalValidation = validateFetchIntervalSeconds(
     draft.git?.fetchIntervalSeconds,
   );
@@ -627,6 +769,7 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
   const mutationBusy =
     savingSettings ||
     savingProject ||
+    savingRepositoryAuthor ||
     savingGitignore ||
     savingRemote ||
     savingCredential ||
@@ -652,21 +795,22 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
 
   const updateDraftUser = (user: GitUserSettings) => {
     setIdentityTouched(true);
-    setDraft((current) => ({
-      ...normalizeAppSettings(current),
-      git: {
-        ...normalizeAppSettings(current).git,
-        user,
-      },
-    }));
+    if (defaultAuthorSource === "gitGlobal") {
+      setGitGlobalAuthorDraft(user);
+    } else {
+      setToolAuthorDraft(user);
+    }
   };
 
   const persistSettings = async (
     nextSettings = draft,
-    options: { validateIdentity?: boolean } = {},
+    options: {
+      author?: GitUserSettings;
+      validateIdentity?: boolean;
+    } = {},
   ) => {
-    if (options.validateIdentity || identityTouched) {
-      const validation = validateGitUser(gitUserFromSettings(nextSettings));
+    if (options.validateIdentity) {
+      const validation = validateGitUser(options.author ?? gitUser);
       if (!validation.valid) {
         setIdentitySaveAttempted(true);
         return null;
@@ -686,14 +830,22 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
     setStatus(null);
     try {
       const saved = await saveAppSettings({
+        author: options.author,
         settings: normalizeAppSettings(nextSettings),
-        openRepositoryPaths: identityRepositoryPaths([activeRepositoryPath]),
         validateIdentity: options.validateIdentity,
       });
       const normalized = normalizeAppSettings(saved);
       setDraft(normalized);
       setAppSettings(normalized);
       if (options.validateIdentity) {
+        const savedSource = normalized.git?.defaultAuthorSource ?? "gitGlobal";
+        const savedAuthor = cleanGitUser(options.author ?? gitUser);
+        setDefaultAuthorSource(savedSource);
+        if (savedSource === "gitGlobal") {
+          setGitGlobalAuthorDraft(savedAuthor);
+        } else {
+          setToolAuthorDraft(gitUserFromSettings(normalized));
+        }
         setIdentityTouched(false);
         setIdentitySaveAttempted(false);
         setIdentitySources((current) =>
@@ -701,6 +853,10 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
             ? {
                 ...current,
                 settings: gitUserFromSettings(normalized),
+                globalGitconfig:
+                  savedSource === "gitGlobal"
+                    ? savedAuthor
+                    : current.globalGitconfig,
               }
             : current,
         );
@@ -755,6 +911,62 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
       );
     } finally {
       setSavingProject(false);
+      endMutation();
+    }
+  };
+
+  const persistRepositoryAuthor = async () => {
+    if (
+      !activeRepositoryPath ||
+      !repositoryAuthorValidation.valid ||
+      !beginMutation()
+    ) {
+      return;
+    }
+    setSavingRepositoryAuthor(true);
+    setStatus(null);
+    try {
+      const saved = await saveRepositoryAuthorSettings({
+        author: repositoryAuthorDraft,
+        repositoryPath: activeRepositoryPath,
+        source: repositoryAuthorSource,
+      });
+      const normalized = normalizeAppSettings(saved.settings);
+      setRepositoryAuthorSettings(saved);
+      setRepositoryAuthorSource(saved.source);
+      setRepositoryAuthorDraft(
+        saved.source === "repository"
+          ? saved.repositoryAuthor
+          : saved.defaultAuthor,
+      );
+      setDraft(normalized);
+      setAppSettings(normalized);
+      setDefaultAuthorSource(
+        normalized.git?.defaultAuthorSource ?? "gitGlobal",
+      );
+      setToolAuthorDraft(gitUserFromSettings(normalized));
+      if (normalized.git?.defaultAuthorSource === "gitGlobal") {
+        setGitGlobalAuthorDraft(saved.defaultAuthor);
+      }
+      setIdentitySources((current) =>
+        current
+          ? {
+              ...current,
+              settings: gitUserFromSettings(normalized),
+              globalGitconfig:
+                normalized.git?.defaultAuthorSource === "gitGlobal"
+                  ? saved.defaultAuthor
+                  : current.globalGitconfig,
+            }
+          : current,
+      );
+      showSettingsResult(t("settings.status.repositoryAuthorSaved"));
+    } catch (error) {
+      window.dispatchEvent(
+        new CustomEvent("artistic-git:error", { detail: error }),
+      );
+    } finally {
+      setSavingRepositoryAuthor(false);
       endMutation();
     }
   };
@@ -1049,18 +1261,18 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
     >
       <div aria-busy={operationBusy} className="relative flex min-h-0 flex-1">
         <div
-          className="grid min-h-0 min-w-0 flex-1 grid-cols-[220px_minmax(0,1fr)] gap-5 overflow-hidden"
+          className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-hidden sm:grid sm:grid-cols-[220px_minmax(0,1fr)] sm:gap-5"
           data-testid="settings-content"
           inert={operationBusy}
         >
           <nav
             aria-label={t("settings.navigation")}
-            className="flex min-h-0 flex-col gap-1 border-r pr-4"
+            className="flex shrink-0 gap-1 overflow-x-auto border-b pb-3 sm:min-h-0 sm:flex-col sm:border-b-0 sm:border-r sm:pb-0 sm:pr-4"
           >
             {sections.map((item) => (
               <button
                 className={cn(
-                  "flex h-10 items-center gap-3 rounded-md px-3 text-left text-sm",
+                  "flex h-10 min-w-0 flex-1 items-center justify-center gap-2 rounded-md px-2 text-left text-sm sm:flex-none sm:justify-start sm:gap-3 sm:px-3",
                   section === item.key
                     ? "bg-secondary text-secondary-foreground"
                     : "text-muted-foreground hover:bg-accent hover:text-foreground",
@@ -1127,6 +1339,7 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
 
             {settingsLoadReady && section === "general" ? (
               <GeneralSettings
+                defaultAuthorSource={defaultAuthorSource}
                 draft={draft}
                 fetchIntervalValidation={fetchIntervalValidation}
                 gitUser={gitUser}
@@ -1137,8 +1350,19 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
                 onGenerateSshKey={createSshKey}
                 onGravatarChange={persistGravatar}
                 onLanguageChange={persistLanguage}
+                onDefaultAuthorSourceChange={(source) => {
+                  setDefaultAuthorSource(source);
+                  setIdentityTouched(true);
+                  setIdentitySaveAttempted(false);
+                }}
                 onSave={() =>
-                  void persistSettings(draft, { validateIdentity: true })
+                  void persistSettings(
+                    settingsWithDefaultAuthorSource(draft, defaultAuthorSource),
+                    {
+                      author: gitUser,
+                      validateIdentity: true,
+                    },
+                  )
                 }
                 onSaveFetch={() => void persistSettings(draft)}
                 onSaveNetwork={() => void persistSettings(draft)}
@@ -1199,6 +1423,7 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
                 loadingBranches={loadingBranches}
                 loadingGitignore={loadingGitignore}
                 loadingProject={loadingProject}
+                loadingRepositoryAuthor={loadingRepositoryAuthor}
                 loadingRemote={loadingRemote}
                 onAutoTrackingRulesChange={(autoTrackingRules) => {
                   setProject((current) => ({
@@ -1229,18 +1454,45 @@ export function SettingsModal({ onOpenChange, open }: SettingsModalProps) {
                 onRetryProject={() =>
                   setProjectLoadAttempt((current) => current + 1)
                 }
+                onRetryRepositoryAuthor={() =>
+                  setRepositoryAuthorLoadAttempt((current) => current + 1)
+                }
                 onRetryRemote={() =>
                   setRemoteLoadAttempt((current) => current + 1)
                 }
                 onSaveRemote={() => void persistRemote()}
                 onSaveGitignore={() => void persistGitignore()}
                 onSaveProject={() => void persistProject()}
+                onSaveRepositoryAuthor={() => void persistRepositoryAuthor()}
+                onRepositoryAuthorChange={setRepositoryAuthorDraft}
+                onRepositoryAuthorSourceChange={(source) => {
+                  const emptyAuthor = { name: null, email: null };
+                  const defaultAuthor =
+                    repositoryAuthorSettings?.defaultAuthor ?? emptyAuthor;
+                  const repositoryAuthor =
+                    repositoryAuthorSettings?.repositoryAuthor ?? emptyAuthor;
+                  const hasRepositoryAuthor = Boolean(
+                    repositoryAuthor.name || repositoryAuthor.email,
+                  );
+                  setRepositoryAuthorSource(source);
+                  setRepositoryAuthorDraft(
+                    source === "repository" && hasRepositoryAuthor
+                      ? repositoryAuthor
+                      : defaultAuthor,
+                  );
+                }}
                 remoteRemoveArmed={remoteRemoveArmed}
                 remoteLoadFailure={remoteLoadFailure}
                 remoteSettings={visibleRemoteSettings}
                 remoteUrlDraft={visibleRemoteUrlDraft}
                 savingGitignore={savingGitignore}
                 savingProject={savingProject}
+                repositoryAuthorDraft={repositoryAuthorDraft}
+                repositoryAuthorLoadFailure={repositoryAuthorLoadFailure}
+                repositoryAuthorSettings={repositoryAuthorSettings}
+                repositoryAuthorSource={repositoryAuthorSource}
+                repositoryAuthorValidation={repositoryAuthorValidation}
+                savingRepositoryAuthor={savingRepositoryAuthor}
                 savingRemote={savingRemote}
                 projectLoadFailure={projectLoadFailure?.error ?? null}
               />
@@ -1313,6 +1565,7 @@ function GeneralSettings({
   credentialDraft,
   credentialRemoveArmed,
   credentials,
+  defaultAuthorSource,
   deletingCredentialKey,
   draft,
   fetchIntervalValidation,
@@ -1328,6 +1581,7 @@ function GeneralSettings({
   onGravatarChange,
   onAutoUpdateCheckChange,
   onLanguageChange,
+  onDefaultAuthorSourceChange,
   onRememberSshPassphraseChange,
   onSave,
   onSaveCredential,
@@ -1351,6 +1605,7 @@ function GeneralSettings({
   credentialDraft: HttpsCredentialDraft | null;
   credentialRemoveArmed: string | null;
   credentials: HttpsCredentialEntry[];
+  defaultAuthorSource: DefaultAuthorSource;
   deletingCredentialKey: string | null;
   draft: AppSettings;
   fetchIntervalValidation: FetchIntervalValidation;
@@ -1366,6 +1621,7 @@ function GeneralSettings({
   onGravatarChange: (checked: boolean) => void;
   onAutoUpdateCheckChange: (checked: boolean) => void;
   onLanguageChange: (value: "system" | "en" | "zh-CN") => void;
+  onDefaultAuthorSourceChange: (source: DefaultAuthorSource) => void;
   onRememberSshPassphraseChange: (checked: boolean) => void;
   onNewCredential: () => void;
   onRetryCredentials: () => void;
@@ -1415,6 +1671,23 @@ function GeneralSettings({
             title={t("settings.general.identitySourcesLoadFailed")}
           />
         ) : null}
+        <SegmentedControl
+          ariaLabel={t("settings.general.authorSource")}
+          onChange={(value) =>
+            onDefaultAuthorSourceChange(value as DefaultAuthorSource)
+          }
+          options={[
+            {
+              label: t("settings.general.authorSourceGitGlobal"),
+              value: "gitGlobal",
+            },
+            {
+              label: t("settings.general.authorSourceTool"),
+              value: "tool",
+            },
+          ]}
+          value={defaultAuthorSource}
+        />
         <div className="grid gap-3 sm:grid-cols-2">
           <TextField
             invalid={showIdentityValidation && identityValidation.nameMissing}
@@ -1438,7 +1711,8 @@ function GeneralSettings({
             {t(identityValidation.messageKey)}
           </p>
         ) : null}
-        {identitySources?.globalGitconfigPath ? (
+        {defaultAuthorSource === "gitGlobal" &&
+        identitySources?.globalGitconfigPath ? (
           <p className="text-sm text-muted-foreground">
             {t("settings.general.globalGitconfig", {
               path: identitySources.globalGitconfigPath,
@@ -1986,6 +2260,7 @@ function ProjectSettingsPanel({
   loadingBranches,
   loadingGitignore,
   loadingProject,
+  loadingRepositoryAuthor,
   loadingRemote,
   onAutoTrackingRulesChange,
   onGitignoreChange,
@@ -1995,16 +2270,26 @@ function ProjectSettingsPanel({
   onRetryBranches,
   onRetryGitignore,
   onRetryProject,
+  onRetryRepositoryAuthor,
   onRetryRemote,
   onSaveGitignore,
   onSaveProject,
+  onSaveRepositoryAuthor,
   onSaveRemote,
+  onRepositoryAuthorChange,
+  onRepositoryAuthorSourceChange,
   remoteRemoveArmed,
   remoteLoadFailure,
   remoteSettings,
   remoteUrlDraft,
   savingGitignore,
   savingProject,
+  repositoryAuthorDraft,
+  repositoryAuthorLoadFailure,
+  repositoryAuthorSettings,
+  repositoryAuthorSource,
+  repositoryAuthorValidation,
+  savingRepositoryAuthor,
   savingRemote,
   projectLoadFailure,
 }: {
@@ -2019,6 +2304,7 @@ function ProjectSettingsPanel({
   loadingBranches: boolean;
   loadingGitignore: boolean;
   loadingProject: boolean;
+  loadingRepositoryAuthor: boolean;
   loadingRemote: boolean;
   onAutoTrackingRulesChange: (rules: AutoTrackingRule[]) => void;
   onGitignoreChange: (value: string) => void;
@@ -2030,16 +2316,26 @@ function ProjectSettingsPanel({
   onRetryBranches: () => void;
   onRetryGitignore: () => void;
   onRetryProject: () => void;
+  onRetryRepositoryAuthor: () => void;
   onRetryRemote: () => void;
   onSaveGitignore: () => void;
   onSaveProject: () => void;
+  onSaveRepositoryAuthor: () => void;
   onSaveRemote: () => void;
+  onRepositoryAuthorChange: (author: GitUserSettings) => void;
+  onRepositoryAuthorSourceChange: (source: RepositoryAuthorSource) => void;
   remoteRemoveArmed: boolean;
   remoteLoadFailure: unknown;
   remoteSettings: RemoteSettingsResponse | null;
   remoteUrlDraft: string;
   savingGitignore: boolean;
   savingProject: boolean;
+  repositoryAuthorDraft: GitUserSettings;
+  repositoryAuthorLoadFailure: unknown;
+  repositoryAuthorSettings: RepositoryAuthorSettingsResponse | null;
+  repositoryAuthorSource: RepositoryAuthorSource;
+  repositoryAuthorValidation: GitUserValidation;
+  savingRepositoryAuthor: boolean;
   savingRemote: boolean;
   projectLoadFailure: unknown;
 }) {
@@ -2083,6 +2379,10 @@ function ProjectSettingsPanel({
     targetOptions,
   );
   const projectReady = !loadingProject && !projectLoadFailure;
+  const repositoryAuthorReady =
+    !loadingRepositoryAuthor &&
+    !repositoryAuthorLoadFailure &&
+    repositoryAuthorSettings !== null;
   const gitignoreReady = !loadingGitignore && !gitignoreLoadFailure;
   const remoteReady = !loadingRemote && !remoteLoadFailure;
   const branchesReady = !loadingBranches && !branchLoadFailure;
@@ -2097,6 +2397,81 @@ function ProjectSettingsPanel({
 
   return (
     <section className="space-y-6">
+      <SettingsGroup
+        icon={<UserRound className="size-4" aria-hidden="true" />}
+        title={t("settings.project.repositoryAuthor")}
+      >
+        <ProjectSourceStatus
+          error={repositoryAuthorLoadFailure}
+          loading={loadingRepositoryAuthor}
+          onRetry={onRetryRepositoryAuthor}
+        />
+        {repositoryAuthorReady ? (
+          <>
+            <SegmentedControl
+              ariaLabel={t("settings.project.repositoryAuthorSource")}
+              onChange={(value) =>
+                onRepositoryAuthorSourceChange(value as RepositoryAuthorSource)
+              }
+              options={[
+                {
+                  label: t("settings.project.authorSourceToolDefault"),
+                  value: "toolDefault",
+                },
+                {
+                  label: t("settings.project.authorSourceRepository"),
+                  value: "repository",
+                },
+              ]}
+              value={repositoryAuthorSource}
+            />
+            <div className="grid gap-3 sm:grid-cols-2">
+              <TextField
+                invalid={repositoryAuthorValidation.nameMissing}
+                label={t("settings.general.name")}
+                onChange={(name) =>
+                  onRepositoryAuthorChange({
+                    ...repositoryAuthorDraft,
+                    name,
+                  })
+                }
+                value={repositoryAuthorDraft.name ?? ""}
+              />
+              <TextField
+                invalid={
+                  repositoryAuthorValidation.emailMissing ||
+                  repositoryAuthorValidation.emailInvalid
+                }
+                label={t("settings.general.email")}
+                onChange={(email) =>
+                  onRepositoryAuthorChange({
+                    ...repositoryAuthorDraft,
+                    email,
+                  })
+                }
+                value={repositoryAuthorDraft.email ?? ""}
+              />
+            </div>
+            {repositoryAuthorValidation.messageKey ? (
+              <p className="text-sm text-destructive">
+                {t(repositoryAuthorValidation.messageKey)}
+              </p>
+            ) : null}
+            <Button
+              className="gap-2"
+              disabled={
+                savingRepositoryAuthor || !repositoryAuthorValidation.valid
+              }
+              onClick={onSaveRepositoryAuthor}
+              type="button"
+            >
+              <Save className="size-4" aria-hidden="true" />
+              {t("settings.project.saveRepositoryAuthor")}
+            </Button>
+          </>
+        ) : null}
+      </SettingsGroup>
+
       <SettingsGroup title={t("settings.project.largeFiles")}>
         <ProjectSourceStatus
           error={projectLoadFailure}
@@ -2795,6 +3170,46 @@ function SettingsGroup({
       </h3>
       <div className="space-y-3">{children}</div>
     </section>
+  );
+}
+
+function SegmentedControl({
+  ariaLabel,
+  onChange,
+  options,
+  value,
+}: {
+  ariaLabel: string;
+  onChange: (value: string) => void;
+  options: Array<{ label: string; value: string }>;
+  value: string;
+}) {
+  return (
+    <div
+      aria-label={ariaLabel}
+      className="grid grid-cols-2 rounded-md border bg-muted/40 p-0.5"
+      role="group"
+    >
+      {options.map((option) => {
+        const selected = option.value === value;
+        return (
+          <button
+            aria-pressed={selected}
+            className={cn(
+              "min-h-9 px-3 py-1.5 text-sm",
+              selected
+                ? "rounded bg-background font-medium text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+            key={option.value}
+            onClick={() => onChange(option.value)}
+            type="button"
+          >
+            {option.label}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 

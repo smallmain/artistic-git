@@ -125,12 +125,61 @@ describe("OnboardingWizard", () => {
     await waitFor(() =>
       expect(commandMocks.saveAppSettings).toHaveBeenCalledWith(
         expect.objectContaining({
+          author: {
+            email: "artist@example.test",
+            name: "Artist",
+          },
           settings: expect.objectContaining({
             git: expect.objectContaining({
-              user: {
-                email: "artist@example.test",
-                name: "Artist",
-              },
+              defaultAuthorSource: "gitGlobal",
+            }),
+          }),
+          validateIdentity: true,
+        }),
+      ),
+    );
+  });
+
+  it("switches between Git global and tool-level author drafts", async () => {
+    commandMocks.settingsSnapshot.mockResolvedValueOnce({
+      ...settingsSnapshot,
+      identitySources: {
+        ...settingsSnapshot.identitySources,
+        globalGitconfig: {
+          email: "global@example.test",
+          name: "Global Author",
+        },
+        settings: {
+          email: "tool@example.test",
+          name: "Tool Author",
+        },
+      },
+    });
+    renderWizard();
+
+    expect(await screen.findByLabelText("Name")).toHaveValue("Global Author");
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Separate tool-level configuration",
+      }),
+    );
+    expect(screen.getByLabelText("Name")).toHaveValue("Tool Author");
+    expect(screen.getByLabelText("Email")).toHaveValue("tool@example.test");
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Skip SSH setup" }),
+    );
+
+    await waitFor(() =>
+      expect(commandMocks.saveAppSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          author: {
+            email: "tool@example.test",
+            name: "Tool Author",
+          },
+          settings: expect.objectContaining({
+            git: expect.objectContaining({
+              defaultAuthorSource: "tool",
             }),
           }),
           validateIdentity: true,
@@ -148,8 +197,13 @@ describe("OnboardingWizard", () => {
     const handleAppError = vi.fn();
     commandMocks.settingsSnapshot.mockResolvedValueOnce({
       ...settingsSnapshot,
+      identitySources: {
+        ...settingsSnapshot.identitySources,
+        settings: { email: "artist@example.test", name: "Artist" },
+      },
       settings: {
         git: {
+          defaultAuthorSource: "tool",
           user: { email: "artist@example.test", name: "Artist" },
         },
       },

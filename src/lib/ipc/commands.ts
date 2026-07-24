@@ -81,6 +81,8 @@ import type {
   RenormalizePreviewRequest,
   RenormalizePreviewResponse,
   RepositoryPathRequest,
+  RepositoryAuthorSettingsRequest,
+  RepositoryAuthorSettingsResponse,
   RepositorySummary,
   RestoreChangesRequest,
   RestoreChangesResponse,
@@ -95,6 +97,7 @@ import type {
   SaveGitignoreRequest,
   SaveHttpsCredentialRequest,
   SaveProjectSettingsRequest,
+  SaveRepositoryAuthorSettingsRequest,
   SaveRemoteSettingsRequest,
   SafetyBackupListResponse,
   SettingsSnapshot,
@@ -193,6 +196,12 @@ export interface AppCommandArgs {
   forget_recent_project: { request: ForgetRecentProjectRequest };
   clear_recent_projects: undefined;
   save_app_settings: { request: SaveAppSettingsRequest };
+  load_repository_author_settings: {
+    request: RepositoryAuthorSettingsRequest;
+  };
+  save_repository_author_settings: {
+    request: SaveRepositoryAuthorSettingsRequest;
+  };
   load_project_settings: { request: ProjectSettingsRequest };
   save_project_settings: { request: SaveProjectSettingsRequest };
   load_gitignore: { request: GitignoreRequest };
@@ -289,6 +298,8 @@ export interface AppCommandResponses {
   forget_recent_project: void;
   clear_recent_projects: void;
   save_app_settings: AppSettings;
+  load_repository_author_settings: RepositoryAuthorSettingsResponse;
+  save_repository_author_settings: RepositoryAuthorSettingsResponse;
   load_project_settings: ProjectSettings;
   save_project_settings: ProjectSettings;
   load_gitignore: GitignoreFileResponse;
@@ -809,6 +820,18 @@ export function saveAppSettings(
   request: SaveAppSettingsRequest,
 ): Promise<AppSettings> {
   return invokeAppCommand("save_app_settings", { request });
+}
+
+export function loadRepositoryAuthorSettings(
+  request: RepositoryAuthorSettingsRequest,
+): Promise<RepositoryAuthorSettingsResponse> {
+  return invokeAppCommand("load_repository_author_settings", { request });
+}
+
+export function saveRepositoryAuthorSettings(
+  request: SaveRepositoryAuthorSettingsRequest,
+): Promise<RepositoryAuthorSettingsResponse> {
+  return invokeAppCommand("save_repository_author_settings", { request });
 }
 
 export function loadProjectSettings(

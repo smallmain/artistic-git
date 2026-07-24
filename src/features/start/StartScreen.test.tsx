@@ -238,7 +238,6 @@ describe("StartScreen open repository close guard", () => {
       expect(commandMocks.openRepository).toHaveBeenCalledWith({
         operationId: expect.stringMatching(/^open-repository-/),
         path: "/selected/art-project",
-        toolIdentity: null,
       }),
     );
     await waitFor(() =>
@@ -366,7 +365,6 @@ describe("StartScreen open repository close guard", () => {
       expect(commandMocks.openRepository).toHaveBeenCalledWith({
         operationId: expect.stringMatching(/^open-repository-/),
         path: "/projects/menu-repository",
-        toolIdentity: null,
       }),
     );
   });
@@ -500,7 +498,6 @@ describe("StartScreen clone flow", () => {
         directoryName: "art-project",
         operationId: expect.stringMatching(/^clone-/),
         targetParentDirectory: "/projects",
-        toolIdentity: null,
         url: "https://github.com/studio/art-project.git",
       });
     });

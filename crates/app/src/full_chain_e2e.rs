@@ -3,7 +3,7 @@ use artistic_git_contracts::{
     CloneRepositoryRequest, CommitRequest, CommitResponse, ConflictCompleteRequest,
     ConflictSaveResolutionRequest, LargeFileDecision, OpenRepositoryRequest, OperationId,
     RepositoryRemoteMode, RevertCommitRequest, RevertCommitResponse, SyncCurrentBranchRequest,
-    SyncCurrentBranchStatus, ToolGitIdentity,
+    SyncCurrentBranchStatus,
 };
 use artistic_git_git_runner::{GitDistribution, GitRunner};
 use artistic_git_test_support::{require_git_dist, TestTempDir};
@@ -21,7 +21,6 @@ fn backend_full_chain_uses_real_temporary_remote_from_clone_to_revert() {
         OpenRepositoryRequest {
             operation_id: None,
             path: display_path(&local.path),
-            tool_identity: Some(tool_identity()),
         },
     )
     .expect("open cloned repository");
@@ -231,7 +230,6 @@ impl FullChainFixture {
                 branch_name: None,
                 target_parent_directory: display_path(self.parent.path()),
                 directory_name: directory_name.to_owned(),
-                tool_identity: Some(tool_identity()),
                 operation_id: Some(OperationId(format!(
                     "phase-12-full-chain-clone-{directory_name}"
                 ))),
@@ -344,13 +342,6 @@ fn assert_clean(repo: &TestRepo) {
     assert!(status.trim().is_empty(), "repository is dirty:\n{status}");
 }
 
-fn tool_identity() -> ToolGitIdentity {
-    ToolGitIdentity {
-        name: Some("Artistic Git Test".to_owned()),
-        email: Some("artistic-git-test@example.test".to_owned()),
-    }
-}
-
 fn real_runner() -> (GitRunner, TestTempDir) {
     let dist = require_git_dist().expect("load embedded git distribution");
     let distribution =
@@ -359,5 +350,24 @@ fn real_runner() -> (GitRunner, TestTempDir) {
     let home = temp.path().join("home");
     fs::create_dir_all(&home).expect("create runner home");
     let runner = GitRunner::from_distribution(distribution, home);
+    git_stdout(
+        &runner,
+        None,
+        ["config", "--global", "user.name", "Artistic Git Test"],
+        "phase12FullChainTest",
+    )
+    .expect("set default test author name");
+    git_stdout(
+        &runner,
+        None,
+        [
+            "config",
+            "--global",
+            "user.email",
+            "artistic-git-test@example.test",
+        ],
+        "phase12FullChainTest",
+    )
+    .expect("set default test author email");
     (runner, temp)
 }

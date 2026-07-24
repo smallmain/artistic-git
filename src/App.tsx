@@ -160,7 +160,6 @@ function AppMenuBridge() {
     setThemePreference(nextTheme);
     void saveAppSettings({
       settings: next,
-      openRepositoryPaths: activeRepositoryPath ? [activeRepositoryPath] : [],
     })
       .then((saved) => {
         if (themeSaveSequence.current !== sequence) {
@@ -177,13 +176,7 @@ function AppMenuBridge() {
         }
         dispatchAppError(error);
       });
-  }, [
-    activeRepositoryPath,
-    appSettings,
-    resolvedTheme,
-    setAppSettings,
-    setThemePreference,
-  ]);
+  }, [appSettings, resolvedTheme, setAppSettings, setThemePreference]);
 
   React.useEffect(() => {
     const handleMenuAction = (id: string) => {

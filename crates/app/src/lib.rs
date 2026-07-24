@@ -115,15 +115,17 @@ pub use review::{
     review_mode_recovery, start_review_mode, sync_review_mode,
 };
 pub use settings::{
-    apply_network_settings_to_runtime, clear_recent_projects, forget_recent_project,
-    generate_ssh_key, identity_sources, list_recent_projects, load_app_settings, load_gitignore,
-    load_project_settings, save_app_settings, save_gitignore, save_project_settings,
+    apply_author_settings_to_runtime, apply_network_settings_to_runtime, clear_recent_projects,
+    forget_recent_project, generate_ssh_key, identity_sources, list_recent_projects,
+    load_app_settings, load_gitignore, load_project_settings, load_repository_author_settings,
+    save_app_settings, save_gitignore, save_project_settings, save_repository_author_settings,
     settings_snapshot, ssh_key_status, validate_identity_for_write, ForgetRecentProjectRequest,
     GenerateSshKeyRequest, GitignoreFileResponse, GitignoreRequest, IdentitySourcesResponse,
-    IdentityValidationRequest,
-    IdentityValidationResponse, ProjectSettingsRequest, RecentProjectEntry, RecentProjectsRequest,
-    SaveAppSettingsRequest, SaveGitignoreRequest, SaveProjectSettingsRequest, SettingsSnapshot,
-    SshKeyStatus,
+    IdentityValidationRequest, IdentityValidationResponse, ProjectSettingsRequest,
+    RecentProjectEntry, RecentProjectsRequest, RepositoryAuthorSettingsRequest,
+    RepositoryAuthorSettingsResponse, RepositoryAuthorSource, SaveAppSettingsRequest,
+    SaveGitignoreRequest, SaveProjectSettingsRequest, SaveRepositoryAuthorSettingsRequest,
+    SettingsSnapshot, SshKeyStatus,
 };
 pub use ssh_auth::SshPassphrasePromptRequest;
 pub use stash::{

@@ -13,6 +13,7 @@ import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import type {
   AppSettings,
+  DefaultAuthorSource,
   GitUserSettings,
   SshKeyStatus,
 } from "@/lib/ipc/generated";
@@ -28,7 +29,7 @@ import {
   gitUserFromSettings,
   isValidEmail,
   normalizeAppSettings,
-  settingsWithGitUser,
+  settingsWithDefaultAuthorSource,
   settingsWithOnboarded,
   validateGitUser,
 } from "@/features/settings/settings-model";
@@ -48,8 +49,17 @@ export function OnboardingWizard() {
   const [settings, setSettings] = React.useState<AppSettings>(() =>
     normalizeAppSettings(appSettings),
   );
-  const [user, setUser] = React.useState<GitUserSettings>(() =>
+  const [defaultAuthorSource, setDefaultAuthorSource] =
+    React.useState<DefaultAuthorSource>(
+      () =>
+        normalizeAppSettings(appSettings).git?.defaultAuthorSource ??
+        "gitGlobal",
+    );
+  const [toolAuthor, setToolAuthor] = React.useState<GitUserSettings>(() =>
     gitUserFromSettings(appSettings),
+  );
+  const [gitGlobalAuthor, setGitGlobalAuthor] = React.useState<GitUserSettings>(
+    {},
   );
   const [sshKey, setSshKey] = React.useState<SshKeyStatus | null>(null);
   const [identitySourceFailure, setIdentitySourceFailure] =
@@ -68,6 +78,8 @@ export function OnboardingWizard() {
   const busyRef = React.useRef(true);
   const mountedRef = React.useRef(true);
   const snapshotRequestRef = React.useRef(0);
+  const user =
+    defaultAuthorSource === "gitGlobal" ? gitGlobalAuthor : toolAuthor;
   const email = user.email ?? "";
   const identityValidation = validateGitUser(user);
   const showIdentityValidation =
@@ -85,13 +97,15 @@ export function OnboardingWizard() {
   const applySnapshot = React.useCallback(
     (snapshot: Awaited<ReturnType<typeof settingsSnapshot>>) => {
       const normalized = normalizeAppSettings(snapshot.settings);
-      const sourceUser =
-        normalized.git?.user?.name || normalized.git?.user?.email
-          ? gitUserFromSettings(normalized)
-          : snapshot.identitySources.globalGitconfig;
       setSettings(normalized);
       setAppSettings(normalized);
-      setUser(cleanGitUser(sourceUser));
+      setDefaultAuthorSource(
+        normalized.git?.defaultAuthorSource ?? "gitGlobal",
+      );
+      setToolAuthor(cleanGitUser(snapshot.identitySources.settings));
+      setGitGlobalAuthor(
+        cleanGitUser(snapshot.identitySources.globalGitconfig),
+      );
       setSshKey(snapshot.sshKey);
       setIdentitySourceFailure(snapshot.identitySourcesError);
       setSshKeyFailure(snapshot.sshKeyError);
@@ -177,16 +191,17 @@ export function OnboardingWizard() {
       return;
     }
 
-    const withUser = saveIdentity
-      ? settingsWithGitUser(settings, user)
+    const withAuthorSource = saveIdentity
+      ? settingsWithDefaultAuthorSource(settings, defaultAuthorSource)
       : settings;
-    const next = settingsWithOnboarded(withUser, true);
+    const next = settingsWithOnboarded(withAuthorSource, true);
     busyRef.current = true;
     setBusyState("saving");
     setStatus(null);
     try {
       const saved = await saveAppSettings({
         settings: next,
+        author: saveIdentity ? cleanGitUser(user) : undefined,
         validateIdentity: saveIdentity,
       });
       const normalized = normalizeAppSettings(saved);
@@ -368,6 +383,16 @@ export function OnboardingWizard() {
                 message={t("onboarding.identitySourceLoadFailed")}
               />
             ) : null}
+            <AuthorSourceControl
+              disabled={busyState !== null}
+              onChange={(source) => {
+                setDefaultAuthorSource(source);
+                setIdentityTouched(true);
+                setIdentityAttempted(false);
+                setStatus(null);
+              }}
+              value={defaultAuthorSource}
+            />
             <label className="grid gap-1 text-sm">
               <span className="font-medium">{t("settings.general.name")}</span>
               <input
@@ -383,10 +408,12 @@ export function OnboardingWizard() {
                 disabled={busyState !== null}
                 onChange={(event) => {
                   setIdentityTouched(true);
-                  setUser((current) => ({
-                    ...current,
-                    name: event.target.value,
-                  }));
+                  const next = { ...user, name: event.target.value };
+                  if (defaultAuthorSource === "gitGlobal") {
+                    setGitGlobalAuthor(next);
+                  } else {
+                    setToolAuthor(next);
+                  }
                 }}
                 value={user.name ?? ""}
               />
@@ -409,10 +436,12 @@ export function OnboardingWizard() {
                 disabled={busyState !== null}
                 onChange={(event) => {
                   setIdentityTouched(true);
-                  setUser((current) => ({
-                    ...current,
-                    email: event.target.value,
-                  }));
+                  const next = { ...user, email: event.target.value };
+                  if (defaultAuthorSource === "gitGlobal") {
+                    setGitGlobalAuthor(next);
+                  } else {
+                    setToolAuthor(next);
+                  }
                 }}
                 value={user.email ?? ""}
               />
@@ -541,6 +570,57 @@ export function OnboardingWizard() {
         ) : null}
       </section>
     </main>
+  );
+}
+
+function AuthorSourceControl({
+  disabled,
+  onChange,
+  value,
+}: {
+  disabled: boolean;
+  onChange: (value: DefaultAuthorSource) => void;
+  value: DefaultAuthorSource;
+}) {
+  const { t } = useTranslation();
+  const options: Array<{ label: string; value: DefaultAuthorSource }> = [
+    {
+      label: t("settings.general.authorSourceGitGlobal"),
+      value: "gitGlobal",
+    },
+    {
+      label: t("settings.general.authorSourceTool"),
+      value: "tool",
+    },
+  ];
+
+  return (
+    <div
+      aria-label={t("settings.general.authorSource")}
+      className="grid grid-cols-2 rounded-md border bg-muted/40 p-0.5"
+      role="group"
+    >
+      {options.map((option) => {
+        const selected = option.value === value;
+        return (
+          <button
+            aria-pressed={selected}
+            className={cn(
+              "min-h-9 px-3 py-1.5 text-sm",
+              selected
+                ? "rounded bg-background font-medium text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+            disabled={disabled}
+            key={option.value}
+            onClick={() => onChange(option.value)}
+            type="button"
+          >
+            {option.label}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 

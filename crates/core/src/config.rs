@@ -96,6 +96,7 @@ pub enum ThemePreference {
 pub struct GitSettings {
     pub auto_fetch: bool,
     pub fetch_interval_seconds: u32,
+    pub default_author_source: DefaultAuthorSource,
     pub user: GitUserSettings,
     pub remember_ssh_passphrase: bool,
 }
@@ -105,10 +106,19 @@ impl Default for GitSettings {
         Self {
             auto_fetch: true,
             fetch_interval_seconds: DEFAULT_FETCH_INTERVAL_SECONDS,
+            default_author_source: DefaultAuthorSource::default(),
             user: GitUserSettings::default(),
             remember_ssh_passphrase: false,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum DefaultAuthorSource {
+    #[default]
+    GitGlobal,
+    Tool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -911,6 +921,10 @@ mod tests {
         assert_eq!(
             settings.git.fetch_interval_seconds,
             DEFAULT_FETCH_INTERVAL_SECONDS
+        );
+        assert_eq!(
+            settings.git.default_author_source,
+            DefaultAuthorSource::GitGlobal
         );
         assert_eq!(settings.git.user, GitUserSettings::default());
         assert!(!settings.git.remember_ssh_passphrase);

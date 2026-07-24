@@ -50,7 +50,7 @@
   - 构建期校验（按平台细化）：预编译产物（Windows MinGit、全平台 git-lfs）校验发布页**二进制 SHA-256**；macOS/Linux 自建的 git 则钉死**官方源码 tarball 的 SHA-256 + 完整编译配方（flags/容器镜像）**以可复现。防止供应链污染或下载损坏。
   - 运行期自检：启动时执行 `git --version` / `git lfs version`，确认可执行且版本符合预期；不符或无法执行则致命错误崩溃弹窗。
   - 隔离系统 git：所有调用显式使用内嵌路径，隔离 `GIT_EXEC_PATH`/`PATH`，绝不回退到用户系统 git；git-lfs 通过内嵌 git 的 filter 配置指向内嵌 lfs。
-  - 配置隔离：调用时用受控环境（`GIT_CONFIG_NOSYSTEM=1` 忽略系统级 config、`HOME` 指向受控目录，实际 Git 命令不读取用户全局 Git config）。向导预填与身份懒校验需要全局身份时，由工具通过专用只读路径显式读取真实 `~/.gitconfig` 的 `user.name`/`user.email`，不让用户全局配置影响核心 Git 命令行为。
+  - 配置隔离：调用时用受控环境（`GIT_CONFIG_NOSYSTEM=1` 忽略系统级 config、`HOME` 指向受控目录，核心 Git 命令不直接读取用户全局 Git config）。工具把当前选中的“默认作者信息”同步到受控 HOME 的全局 config，使 Git 自然按“仓库级 > 受控默认作者”解析身份；仅在用户选择“跟随 Git 全局配置”并显式读取/保存作者信息时，通过专用路径访问真实全局 Git config。
 - 远程仓库地址：工具只管理一个远程仓库地址，名称为 `origin`；即使仓库存在多个 remote，也只对 `origin` 执行显示、Fetch、同步、推送和项目设置修改。
   - 若存在 `origin` 以外的 remote，允许打开并在项目设置或打开提示中说明“仅管理 origin，其它远程不会被操作”。
   - 若没有 `origin` 但存在其它 remote，仍按**无远程模式**处理，并提示用户可在项目设置中配置 origin。
@@ -269,7 +269,7 @@
 
 # 数据存储
 
-- 全局设置（语言、主题、Fetch 间隔、Git 用户信息）：Tauri `appConfigDir/settings.json`。
+- 全局设置（语言、主题、Fetch 间隔、默认作者来源，以及选择工具级来源时的作者信息）：Tauri `appConfigDir/settings.json`。
 - 项目级数据（自动跟踪规则、侧栏比例、最近打开时间）：`appDataDir/projects.json`，按规范化绝对路径为 key；绝不写入仓库内部，避免影响同事。
 - 最近项目列表：由 projects.json 派生（按最近打开时间排序）。
 - HTTPS 凭据：系统钥匙串（已在认证设计中定义），默认按 host 共享，并允许 `protocol + host + path` 级覆盖。
@@ -277,11 +277,12 @@
 - 钥匙串访问：HTTPS 凭据与（可选的）SSH 密码短语经 `keyring` crate 存取系统钥匙串。
 - 窗口尺寸/位置：**按项目存**（放入 `projects.json`，每个项目窗口恢复自己上次的大小/位置，契合多窗口多项目）；仅“起始/新建窗口”用一份全局默认几何。
 - 配置并发（单进程多窗口）：`settings.json` 与 `projects.json` 是多窗口共享文件，所有读写走**唯一的 Rust 侧配置 actor**——内存唯一模型 + mutex 串行写 + 写临时文件 rename 原子落盘 + 高频更新（如拖分隔条比例）防抖；projects.json 走“读改写结构化模型”只改动对应项目条目，杜绝盲覆盖丢更新。全局设置变更后除落盘外向**所有窗口**广播事件即时生效。
-- Git 用户信息：工具配置为唯一数据源，打开/克隆项目时以工具身份为准写入仓库级 `.git/config`（user.name/user.email）——**仅当当前仓库值与之不同才实际写（含覆盖仓库既有的不同身份），只动 `.git/config`、绝不改全局 `~/.gitconfig`**；若工具尚无身份（跳过了向导）则不写，交由“身份懒校验”在首次需要时补齐。向导首次运行与身份懒校验需要全局 fallback 时，工具通过专用只读逻辑读取真实 `~/.gitconfig` 的身份字段，而不是让 Git Runner 在受控 `HOME` 外读取全局配置。在全局设置中修改身份后，广播所有窗口并立即对每个已打开仓库执行同样的“不同才写”逻辑，消除“设置已改、当前项目仍用旧身份”的窗口期。
+- 默认作者信息：全局设置与向导均提供“跟随 Git 全局配置”（默认）和“单独工具级配置”。两种模式始终显示可编辑的用户名/邮箱输入框；选项只决定读取和保存目的地，分别为真实 Git 全局 config 或 `settings.json`。保存后把选中的默认作者同步到内嵌 Git 的受控全局 config，并广播设置变更。
+- 仓库作者信息：项目设置提供“跟随工具全局配置”和“单独仓库级配置”。前者读取/修改当前默认作者并移除仓库本地 `user.name`/`user.email` 覆盖；后者读取/修改仓库 `.git/config`。打开或克隆仓库不会写入作者信息，提交时由 Git 自然采用“仓库级 > 默认作者”的优先级。
 - SSH Key：使用标准位置 `~/.ssh/`（检测 id_ed25519/id_rsa 等常见名称），生成时默认 ed25519 类型存到 `~/.ssh/id_ed25519`，与系统生态互通。
 - 工具主动写入的仓库级 `.git/config` 项（清单）：
-  - 自动（打开/克隆时）：`user.name`/`user.email`（身份）；`filter.lfs.*`（`git lfs install --local`）。
-  - 用户显式发起：`remote.origin.url`（项目设置修改远程地址）；`commit.gpgsign`/`tag.gpgsign`（仅签名导致提交失败、用户确认后写入 false）。
+  - 自动（打开/克隆时）：`filter.lfs.*`（`git lfs install --local`）。
+  - 用户显式发起：`user.name`/`user.email`（项目设置选择单独仓库级作者）；`remote.origin.url`（项目设置修改远程地址）；`commit.gpgsign`/`tag.gpgsign`（仅签名导致提交失败、用户确认后写入 false）。
   - 命令级注入不持久化：`credential.helper`、`core.sshCommand`（accept-new）、`core.longpaths=true`（仅 Windows，深路径美术仓库的高频翻车点，应用打包同时启用 long path aware）、rename detection、`--progress` 等仅通过 `-c` 传入，不写入 config。
 
 # 内部安全产物的生命周期
@@ -363,9 +364,9 @@
 
 两步式向导，右下角有“跳过”按钮（跳过则使用系统已有配置，之后可在设置中补填）；完成后进入起始界面。
 
-- 第一步：作者信息
-  - 要求用户输入 Git 使用的用户名和邮箱地址，这会存储起来，工具内部的操作均使用这些信息。
-  - 自动预填系统 `~/.gitconfig` 中的现有值；邮箱做格式校验。
+- 第一步：默认作者信息
+  - 提供“跟随 Git 全局配置”（默认）和“单独工具级配置”；输入框始终可编辑，切换时分别显示两个目的地中的作者信息。
+  - 保存时把用户名和邮箱写入选中的目的地；邮箱做格式校验。
 - 第二步：SSH Key
   - 检测用户是否有 Git 能使用的 SSH Key，如果没有则显示生成 SSH Key 按钮，并附上 SSH Key 作用说明。
     点击按钮会弹出窗口让用户输入信息以生成 SSH Key（尽量提供合理、常见的默认值让用户少输入）。

@@ -1,14 +1,17 @@
 use artistic_git_contracts::{AppError, AppResult, GitCommandError, OperationContext};
 use artistic_git_core::config::{
-    normalize_project_path_key, AppSettings, ConfigActor, GitUserSettings, LargeFileCheckSettings,
-    LocalChangesViewMode, ProjectSettings, SidebarLayoutSettings, WindowGeometry,
+    normalize_project_path_key, AppSettings, ConfigActor, DefaultAuthorSource, GitUserSettings,
+    LargeFileCheckSettings, LocalChangesViewMode, ProjectSettings, SidebarLayoutSettings,
+    WindowGeometry,
 };
 use artistic_git_git_runner::{GitRunner, IdentityValidationHook, WriteOperationRequest};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::{
-    collections::BTreeSet,
-    env, fs,
+    collections::BTreeMap,
+    env,
+    ffi::OsString,
+    fs,
     io::{self, Read},
     path::{Path, PathBuf},
     process::{Command, ExitStatus, Output, Stdio},
@@ -62,7 +65,7 @@ pub struct ForgetRecentProjectRequest {
 pub struct SaveAppSettingsRequest {
     pub settings: AppSettings,
     #[serde(default)]
-    pub open_repository_paths: Vec<String>,
+    pub author: Option<GitUserSettings>,
     #[serde(default)]
     pub validate_identity: bool,
 }
@@ -114,11 +117,42 @@ pub struct IdentitySourcesResponse {
     pub global_gitconfig_path: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum RepositoryAuthorSource {
+    ToolDefault,
+    Repository,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryAuthorSettingsRequest {
+    pub repository_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveRepositoryAuthorSettingsRequest {
+    pub repository_path: String,
+    pub source: RepositoryAuthorSource,
+    pub author: GitUserSettings,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryAuthorSettingsResponse {
+    pub repository_path: String,
+    pub source: RepositoryAuthorSource,
+    pub default_author: GitUserSettings,
+    pub repository_author: GitUserSettings,
+    pub settings: AppSettings,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum IdentitySource {
     Repository,
-    GlobalGitconfig,
+    Default,
     Missing,
 }
 
@@ -175,12 +209,12 @@ pub struct GenerateSshKeyRequest {
 
 pub fn settings_snapshot(
     config: Option<&ConfigActor>,
-    _runner: &GitRunner,
+    runner: &GitRunner,
 ) -> AppResult<SettingsSnapshot> {
     let settings = require_config(config, "loadAppSettings")?
         .settings()
         .map_err(|source| config_error(source, "loadAppSettings"))?;
-    let (identity_sources, identity_sources_error) = match identity_sources(config) {
+    let (identity_sources, identity_sources_error) = match identity_sources(runner, config) {
         Ok(sources) => (sources, None),
         Err(error) => (
             IdentitySourcesResponse {
@@ -270,7 +304,6 @@ pub fn save_app_settings(
 ) -> AppResult<AppSettings> {
     let config = require_config(config, "saveAppSettings")?;
     let mut next_settings = request.settings;
-    next_settings.git.user = clean_identity(next_settings.git.user);
     crate::fetch::validate_fetch_interval_seconds(
         next_settings.git.fetch_interval_seconds,
         "saveAppSettings",
@@ -279,10 +312,32 @@ pub fn save_app_settings(
     let previous_settings = config
         .settings()
         .map_err(|source| config_error(source, "saveAppSettings"))?;
-    let identity_changed = previous_settings.git.user != next_settings.git.user;
-    let should_apply_identity = request.validate_identity || identity_changed;
-    if should_apply_identity {
-        validate_identity_for_settings(&next_settings.git.user, "saveAppSettings")?;
+
+    let selected_author = if request.validate_identity {
+        let author = clean_identity(request.author.ok_or_else(|| {
+            crate::logged_app_error(AppError::expected(
+                "Git author identity is required",
+                "saveAppSettings",
+            ))
+        })?);
+        validate_identity_for_settings(&author, "saveAppSettings")?;
+        Some(author)
+    } else {
+        next_settings.git.default_author_source = previous_settings.git.default_author_source;
+        next_settings.git.user = previous_settings.git.user.clone();
+        None
+    };
+
+    if let Some(author) = selected_author.as_ref() {
+        match next_settings.git.default_author_source {
+            DefaultAuthorSource::GitGlobal => {
+                write_real_global_gitconfig_user(runner, author, "saveAppSettings")?;
+                next_settings.git.user = previous_settings.git.user;
+            }
+            DefaultAuthorSource::Tool => {
+                next_settings.git.user = author.clone();
+            }
+        }
     }
 
     let settings = config
@@ -292,20 +347,8 @@ pub fn save_app_settings(
         .map_err(|source| config_error(source, "saveAppSettings"))?;
 
     apply_network_settings_to_runtime(runner, &settings.network);
-
-    if should_apply_identity {
-        let mut seen_paths = BTreeSet::new();
-        for repository_path in request.open_repository_paths {
-            let repository_path = repository_path.trim();
-            if !repository_path.is_empty() && seen_paths.insert(repository_path.to_owned()) {
-                crate::repository::apply_git_user_settings_to_repository(
-                    runner,
-                    repository_path,
-                    &settings.git.user,
-                    "saveAppSettings",
-                )?;
-            }
-        }
+    if selected_author.is_some() {
+        apply_author_settings_to_runtime(runner, &settings)?;
     }
 
     Ok(settings)
@@ -476,24 +519,77 @@ fn read_utf8_file_with_limit(path: &Path, limit_bytes: usize) -> io::Result<Stri
     })
 }
 
-pub fn identity_sources(config: Option<&ConfigActor>) -> AppResult<IdentitySourcesResponse> {
+pub fn identity_sources(
+    runner: &GitRunner,
+    config: Option<&ConfigActor>,
+) -> AppResult<IdentitySourcesResponse> {
     let settings = config
         .map(|config| config.settings())
         .transpose()
         .map_err(|source| config_error(source, "loadIdentitySources"))?
         .unwrap_or_default();
     let global_gitconfig_path = real_global_gitconfig_path();
-    let global_gitconfig = global_gitconfig_path
-        .as_deref()
-        .map(|path| read_global_gitconfig_user(path, "loadIdentitySources"))
-        .transpose()?
-        .unwrap_or_default();
+    let global_gitconfig = read_real_global_gitconfig_user(runner, "loadIdentitySources")?;
 
     Ok(IdentitySourcesResponse {
         settings: settings.git.user,
         global_gitconfig,
         global_gitconfig_path: global_gitconfig_path.as_deref().map(display_path),
     })
+}
+
+pub fn load_repository_author_settings(
+    runner: &GitRunner,
+    config: Option<&ConfigActor>,
+    request: RepositoryAuthorSettingsRequest,
+) -> AppResult<RepositoryAuthorSettingsResponse> {
+    repository_author_settings_response(
+        runner,
+        require_config(config, "loadRepositoryAuthorSettings")?,
+        &request.repository_path,
+        "loadRepositoryAuthorSettings",
+    )
+}
+
+pub fn save_repository_author_settings(
+    runner: &GitRunner,
+    config: Option<&ConfigActor>,
+    request: SaveRepositoryAuthorSettingsRequest,
+) -> AppResult<RepositoryAuthorSettingsResponse> {
+    let operation_name = "saveRepositoryAuthorSettings";
+    let config = require_config(config, operation_name)?;
+    let author = clean_identity(request.author);
+    validate_identity_for_settings(&author, operation_name)?;
+    let _permit = runner
+        .operation_concurrency()
+        .try_begin_write()
+        .map_err(|_| {
+            crate::logged_app_error(AppError::expected(
+                "another Git write operation is already in progress",
+                operation_name,
+            ))
+        })?;
+
+    match request.source {
+        RepositoryAuthorSource::ToolDefault => {
+            save_selected_default_author(runner, config, author, operation_name)?;
+            crate::repository::clear_local_git_identity(
+                runner,
+                &request.repository_path,
+                operation_name,
+            )?;
+        }
+        RepositoryAuthorSource::Repository => {
+            crate::repository::apply_git_user_settings_to_repository(
+                runner,
+                &request.repository_path,
+                &author,
+                operation_name,
+            )?;
+        }
+    }
+
+    repository_author_settings_response(runner, config, &request.repository_path, operation_name)
 }
 
 pub fn validate_identity_for_write(
@@ -514,7 +610,7 @@ pub fn validate_identity_for_write(
             .transpose()?;
         resolve_identity(
             repository.unwrap_or_default(),
-            read_real_global_gitconfig_user("validateIdentityForWrite")?,
+            read_runtime_default_git_identity(runner, "validateIdentityForWrite")?,
         )
     } else {
         ResolvedGitIdentity {
@@ -978,7 +1074,7 @@ fn resolve_identity(repository: GitUserSettings, global: GitUserSettings) -> Res
         if has_repository_identity {
             IdentitySource::Repository
         } else {
-            IdentitySource::GlobalGitconfig
+            IdentitySource::Default
         }
     } else {
         IdentitySource::Missing
@@ -1021,34 +1117,256 @@ fn clean_optional_value(value: String) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
-fn read_real_global_gitconfig_user(operation_name: &str) -> AppResult<GitUserSettings> {
-    real_global_gitconfig_path()
-        .as_deref()
-        .map(|path| read_global_gitconfig_user(path, operation_name))
-        .transpose()
-        .map(|identity| identity.unwrap_or_default())
+fn repository_author_settings_response(
+    runner: &GitRunner,
+    config: &ConfigActor,
+    repository_path: &str,
+    operation_name: &str,
+) -> AppResult<RepositoryAuthorSettingsResponse> {
+    let settings = config
+        .settings()
+        .map_err(|source| config_error(source, operation_name))?;
+    let repository_author =
+        crate::repository::read_local_git_identity(runner, repository_path, operation_name)?;
+    let source = if repository_author.name.is_some() || repository_author.email.is_some() {
+        RepositoryAuthorSource::Repository
+    } else {
+        RepositoryAuthorSource::ToolDefault
+    };
+    let default_author = selected_default_author(runner, &settings, operation_name)?;
+
+    Ok(RepositoryAuthorSettingsResponse {
+        repository_path: repository_path.trim().to_owned(),
+        source,
+        default_author,
+        repository_author,
+        settings,
+    })
 }
 
-fn read_global_gitconfig_user(path: &Path, operation_name: &str) -> AppResult<GitUserSettings> {
-    match read_utf8_file_with_limit(path, GITIGNORE_FILE_LIMIT_BYTES) {
-        Ok(content) => Ok(parse_gitconfig_user(&content)),
-        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(GitUserSettings::default()),
-        Err(source) => Err(crate::logged_app_error(AppError::expected(
-            format!(
-                "failed to read global Git configuration at {}: {source}",
-                display_path(path)
-            ),
+fn save_selected_default_author(
+    runner: &GitRunner,
+    config: &ConfigActor,
+    author: GitUserSettings,
+    operation_name: &str,
+) -> AppResult<AppSettings> {
+    let current = config
+        .settings()
+        .map_err(|source| config_error(source, operation_name))?;
+    if current.git.default_author_source == DefaultAuthorSource::GitGlobal {
+        write_real_global_gitconfig_user(runner, &author, operation_name)?;
+    }
+    let settings = config
+        .update_settings(|settings| {
+            if settings.git.default_author_source == DefaultAuthorSource::Tool {
+                settings.git.user = author.clone();
+            }
+        })
+        .map_err(|source| config_error(source, operation_name))?;
+    apply_author_settings_to_runtime(runner, &settings)?;
+    Ok(settings)
+}
+
+fn selected_default_author(
+    runner: &GitRunner,
+    settings: &AppSettings,
+    operation_name: &str,
+) -> AppResult<GitUserSettings> {
+    match settings.git.default_author_source {
+        DefaultAuthorSource::GitGlobal => read_real_global_gitconfig_user(runner, operation_name),
+        DefaultAuthorSource::Tool => Ok(clean_identity(settings.git.user.clone())),
+    }
+}
+
+pub fn apply_author_settings_to_runtime(
+    runner: &GitRunner,
+    settings: &AppSettings,
+) -> AppResult<()> {
+    sync_runtime_default_git_identity(runner, &GitUserSettings::default())?;
+    let identity = selected_default_author(runner, settings, "applyAuthorSettings")?;
+    sync_runtime_default_git_identity(runner, &identity)
+}
+
+fn read_real_global_gitconfig_user(
+    runner: &GitRunner,
+    operation_name: &str,
+) -> AppResult<GitUserSettings> {
+    Ok(GitUserSettings {
+        name: real_global_config_get(runner, "user.name", operation_name)?,
+        email: real_global_config_get(runner, "user.email", operation_name)?,
+    })
+}
+
+fn write_real_global_gitconfig_user(
+    runner: &GitRunner,
+    identity: &GitUserSettings,
+    operation_name: &str,
+) -> AppResult<()> {
+    let Some(name) = identity.name.as_deref() else {
+        return Err(crate::logged_app_error(AppError::expected(
+            "Git author name is required",
             operation_name,
-        ))),
+        )));
+    };
+    let Some(email) = identity.email.as_deref() else {
+        return Err(crate::logged_app_error(AppError::expected(
+            "Git author email is required",
+            operation_name,
+        )));
+    };
+    run_real_global_config_write(runner, "user.name", name, operation_name)?;
+    run_real_global_config_write(runner, "user.email", email, operation_name)
+}
+
+fn read_runtime_default_git_identity(
+    runner: &GitRunner,
+    operation_name: &str,
+) -> AppResult<GitUserSettings> {
+    Ok(GitUserSettings {
+        name: runtime_global_config_get(runner, "user.name", operation_name)?,
+        email: runtime_global_config_get(runner, "user.email", operation_name)?,
+    })
+}
+
+fn sync_runtime_default_git_identity(
+    runner: &GitRunner,
+    identity: &GitUserSettings,
+) -> AppResult<()> {
+    for (key, value) in [
+        ("user.name", identity.name.as_deref()),
+        ("user.email", identity.email.as_deref()),
+    ] {
+        unset_runtime_global_config(runner, key, "applyAuthorSettings")?;
+        if let Some(value) = value {
+            crate::git_ops::git_stdout(
+                runner,
+                None,
+                ["config", "--global", key, value],
+                "applyAuthorSettings",
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn runtime_global_config_get(
+    runner: &GitRunner,
+    key: &str,
+    operation_name: &str,
+) -> AppResult<Option<String>> {
+    let plan = runner.git_command_plan(["config", "--global", "--get", key]);
+    optional_config_output(plan, operation_name)
+}
+
+fn real_global_config_get(
+    runner: &GitRunner,
+    key: &str,
+    operation_name: &str,
+) -> AppResult<Option<String>> {
+    let plan = real_global_git_plan(runner, ["config", "--global", "--get", key], operation_name)?;
+    optional_config_output(plan, operation_name)
+}
+
+fn run_real_global_config_write(
+    runner: &GitRunner,
+    key: &str,
+    value: &str,
+    operation_name: &str,
+) -> AppResult<()> {
+    let plan = real_global_git_plan(
+        runner,
+        ["config", "--global", "--replace-all", key, value],
+        operation_name,
+    )?;
+    crate::git_ops::run_planned_command(plan.to_command(), &plan, operation_name).map(|_| ())
+}
+
+fn real_global_git_plan<I, S>(
+    runner: &GitRunner,
+    args: I,
+    operation_name: &str,
+) -> AppResult<artistic_git_git_runner::GitCommandPlan>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<OsString>,
+{
+    let home = real_git_home().ok_or_else(|| {
+        crate::logged_app_error(AppError::expected(
+            "the user home directory could not be resolved",
+            operation_name,
+        ))
+    })?;
+    let mut overrides = BTreeMap::new();
+    overrides.insert("HOME".to_owned(), home.clone().into_os_string());
+    overrides.insert(
+        "XDG_CONFIG_HOME".to_owned(),
+        env::var_os("XDG_CONFIG_HOME")
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| home.join(".config").into_os_string()),
+    );
+    #[cfg(windows)]
+    overrides.insert("USERPROFILE".to_owned(), home.into_os_string());
+
+    let mut plan = runner.git_command_plan(args);
+    plan.environment = plan.environment.with_overrides(overrides);
+    Ok(plan)
+}
+
+fn optional_config_output(
+    plan: artistic_git_git_runner::GitCommandPlan,
+    operation_name: &str,
+) -> AppResult<Option<String>> {
+    let output = plan.to_command().output().map_err(|source| {
+        crate::logged_app_error(AppError::expected(
+            format!("failed to execute Git configuration command: {source}"),
+            operation_name,
+        ))
+    })?;
+    if output.status.success() {
+        let value = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        return Ok((!value.is_empty()).then_some(value));
+    }
+    if output.status.code() == Some(1) && output.stderr.is_empty() {
+        return Ok(None);
+    }
+    Err(crate::git_ops::command_failure(
+        &plan,
+        output,
+        operation_name,
+    ))
+}
+
+fn unset_runtime_global_config(
+    runner: &GitRunner,
+    key: &str,
+    operation_name: &str,
+) -> AppResult<()> {
+    let (plan, output) = crate::git_ops::run_git_raw(
+        runner,
+        None,
+        ["config", "--global", "--unset-all", key],
+        operation_name,
+    )?;
+    if output.status.success() || output.stderr.is_empty() {
+        Ok(())
+    } else {
+        Err(crate::git_ops::command_failure(
+            &plan,
+            output,
+            operation_name,
+        ))
     }
 }
 
 fn real_global_gitconfig_path() -> Option<PathBuf> {
+    real_git_home().map(|home| home.join(".gitconfig"))
+}
+
+fn real_git_home() -> Option<PathBuf> {
     env::var_os("HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .or_else(|| env::var_os("USERPROFILE").map(PathBuf::from))
-        .map(|home| home.join(".gitconfig"))
 }
 
 fn default_ssh_private_key_path() -> Option<PathBuf> {
@@ -1161,28 +1479,30 @@ mod tests {
 
     #[test]
     fn missing_global_gitconfig_is_treated_as_empty() {
-        let temp = TestTempDir::new("ag-settings-missing-gitconfig").expect("temp");
-        let identity = read_global_gitconfig_user(
-            &temp.path().join("missing.gitconfig"),
-            "loadIdentitySources",
-        )
-        .expect("missing config should be empty");
+        let (runner, _dist_temp) = real_runner();
+        let _env_lock = ENV_LOCK.lock().expect("lock env");
+        let real_home = TestTempDir::new("ag-settings-missing-gitconfig").expect("temp");
+        let _home = EnvGuard::set("HOME", real_home.path().as_os_str());
+        let identity = read_real_global_gitconfig_user(&runner, "loadIdentitySources")
+            .expect("missing config should be empty");
 
         assert_eq!(identity, GitUserSettings::default());
     }
 
     #[test]
-    fn invalid_global_gitconfig_preserves_the_read_error() {
-        let temp = TestTempDir::new("ag-settings-invalid-gitconfig").expect("temp");
-        let path = temp.path().join("invalid.gitconfig");
-        fs::write(&path, [0xff, 0xfe]).expect("write invalid UTF-8 fixture");
+    fn invalid_global_gitconfig_preserves_the_git_error() {
+        let (runner, _dist_temp) = real_runner();
+        let _env_lock = ENV_LOCK.lock().expect("lock env");
+        let real_home = TestTempDir::new("ag-settings-invalid-gitconfig").expect("temp");
+        fs::write(real_home.path().join(".gitconfig"), "[user\n")
+            .expect("write invalid config fixture");
+        let _home = EnvGuard::set("HOME", real_home.path().as_os_str());
 
-        let error = read_global_gitconfig_user(&path, "loadIdentitySources")
+        let error = read_real_global_gitconfig_user(&runner, "loadIdentitySources")
             .expect_err("invalid config should fail");
 
         assert_eq!(error.context.operation_name, "loadIdentitySources");
-        assert!(error.summary.contains("invalid.gitconfig"));
-        assert!(error.summary.contains("UTF-8"));
+        assert!(error.git.is_some());
     }
 
     #[test]
@@ -1369,7 +1689,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_identity_for_write_reads_real_global_gitconfig_fallback() {
+    fn validate_identity_for_write_reads_the_selected_default_identity() {
         let (runner, _dist_temp) = real_runner();
         let _env_lock = ENV_LOCK.lock().expect("lock env");
         let real_home = TestTempDir::new("ag-settings-real-home").expect("temp home");
@@ -1381,6 +1701,8 @@ mod tests {
         let _home = EnvGuard::set("HOME", real_home.path().as_os_str());
         let repo = TestRepo::new(&runner);
         repo.init();
+        apply_author_settings_to_runtime(&runner, &AppSettings::default())
+            .expect("sync selected author into runtime");
 
         let response = validate_identity_for_write(
             &runner,
@@ -1397,7 +1719,7 @@ mod tests {
             response.identity.email.as_deref(),
             Some("global@example.test")
         );
-        assert_eq!(response.identity.source, IdentitySource::GlobalGitconfig);
+        assert_eq!(response.identity.source, IdentitySource::Default);
         assert!(response.identity.complete);
     }
 
@@ -1429,7 +1751,7 @@ mod tests {
     }
 
     #[test]
-    fn save_app_settings_broadcasts_and_applies_identity_to_open_repositories() {
+    fn save_app_settings_writes_git_global_author_and_runtime_default() {
         let (runner, _dist_temp) = real_runner();
         let _env_lock = ENV_LOCK.lock().expect("lock env");
         let real_home = TestTempDir::new("ag-settings-save-home").expect("temp home");
@@ -1447,13 +1769,8 @@ mod tests {
                 captured_events.lock().expect("events lock").push(event);
             }))
             .expect("subscribe");
-        let repo_one = TestRepo::new(&runner);
-        repo_one.init();
-        let repo_two = TestRepo::new(&runner);
-        repo_two.init();
 
-        let mut settings = AppSettings::default();
-        settings.git.user = GitUserSettings {
+        let author = GitUserSettings {
             name: Some("Art User".to_owned()),
             email: Some("art@example.test".to_owned()),
         };
@@ -1461,46 +1778,146 @@ mod tests {
             &runner,
             Some(&config),
             SaveAppSettingsRequest {
-                settings,
-                open_repository_paths: vec![
-                    display_path(&repo_one.path),
-                    "  ".to_owned(),
-                    display_path(&repo_two.path),
-                    display_path(&repo_one.path),
-                ],
+                settings: AppSettings::default(),
+                author: Some(author.clone()),
                 validate_identity: true,
             },
         )
         .expect("save app settings");
 
-        assert_eq!(saved.git.user.name.as_deref(), Some("Art User"));
-        assert_eq!(saved.git.user.email.as_deref(), Some("art@example.test"));
         assert_eq!(
-            repo_one.local_config("user.name").as_deref(),
-            Some("Art User")
+            saved.git.default_author_source,
+            DefaultAuthorSource::GitGlobal
+        );
+        assert_eq!(saved.git.user, GitUserSettings::default());
+        assert_eq!(
+            read_real_global_gitconfig_user(&runner, "test").expect("read real global"),
+            author
         );
         assert_eq!(
-            repo_one.local_config("user.email").as_deref(),
-            Some("art@example.test")
-        );
-        assert_eq!(
-            repo_two.local_config("user.name").as_deref(),
-            Some("Art User")
-        );
-        assert_eq!(
-            repo_two.local_config("user.email").as_deref(),
-            Some("art@example.test")
-        );
-        assert!(
-            !real_home.path().join(".gitconfig").exists(),
-            "settings save must not write the user's global gitconfig"
+            read_runtime_default_git_identity(&runner, "test").expect("read runtime global"),
+            author
         );
         let events = events.lock().expect("events lock");
         assert!(matches!(
             events.as_slice(),
             [ConfigChangeEvent::SettingsUpdated { settings }]
-                if settings.git.user.name.as_deref() == Some("Art User")
+                if settings.git.default_author_source == DefaultAuthorSource::GitGlobal
         ));
+    }
+
+    #[test]
+    fn save_app_settings_writes_tool_author_without_touching_real_global() {
+        let (runner, _dist_temp) = real_runner();
+        let _env_lock = ENV_LOCK.lock().expect("lock env");
+        let real_home = TestTempDir::new("ag-settings-tool-home").expect("temp home");
+        let _home = EnvGuard::set("HOME", real_home.path().as_os_str());
+        let config_dir = TestTempDir::new("ag-settings-tool-config").expect("temp config");
+        let config = ConfigActor::load(ConfigPaths::new(
+            config_dir.path().join("settings.json"),
+            config_dir.path().join("projects.json"),
+        ))
+        .expect("load config actor");
+        let author = GitUserSettings {
+            name: Some("Tool User".to_owned()),
+            email: Some("tool@example.test".to_owned()),
+        };
+        let mut settings = AppSettings::default();
+        settings.git.default_author_source = DefaultAuthorSource::Tool;
+
+        let saved = save_app_settings(
+            &runner,
+            Some(&config),
+            SaveAppSettingsRequest {
+                settings,
+                author: Some(author.clone()),
+                validate_identity: true,
+            },
+        )
+        .expect("save tool author");
+
+        assert_eq!(saved.git.default_author_source, DefaultAuthorSource::Tool);
+        assert_eq!(saved.git.user, author);
+        assert_eq!(
+            read_runtime_default_git_identity(&runner, "test").expect("read runtime global"),
+            author
+        );
+        assert!(
+            !real_home.path().join(".gitconfig").exists(),
+            "tool-level author must not write the user's global gitconfig"
+        );
+    }
+
+    #[test]
+    fn repository_author_can_switch_from_local_to_tool_default() {
+        let (runner, _dist_temp) = real_runner();
+        let _env_lock = ENV_LOCK.lock().expect("lock env");
+        let real_home = TestTempDir::new("ag-settings-repo-author-home").expect("temp home");
+        let _home = EnvGuard::set("HOME", real_home.path().as_os_str());
+        let config_dir = TestTempDir::new("ag-settings-repo-author-config").expect("temp config");
+        let config = ConfigActor::load(ConfigPaths::new(
+            config_dir.path().join("settings.json"),
+            config_dir.path().join("projects.json"),
+        ))
+        .expect("load config actor");
+        let repo = TestRepo::new(&runner);
+        repo.init();
+        let repository_author = GitUserSettings {
+            name: Some("Repository User".to_owned()),
+            email: Some("repository@example.test".to_owned()),
+        };
+        let repository_saved = save_repository_author_settings(
+            &runner,
+            Some(&config),
+            SaveRepositoryAuthorSettingsRequest {
+                repository_path: display_path(&repo.path),
+                source: RepositoryAuthorSource::Repository,
+                author: repository_author.clone(),
+            },
+        )
+        .expect("write repository author");
+        assert_eq!(repository_saved.source, RepositoryAuthorSource::Repository);
+        config
+            .update_settings(|settings| {
+                settings.git.default_author_source = DefaultAuthorSource::Tool;
+            })
+            .expect("select tool author");
+
+        let loaded = load_repository_author_settings(
+            &runner,
+            Some(&config),
+            RepositoryAuthorSettingsRequest {
+                repository_path: display_path(&repo.path),
+            },
+        )
+        .expect("load repository author");
+        assert_eq!(loaded.source, RepositoryAuthorSource::Repository);
+        assert_eq!(loaded.repository_author, repository_author);
+
+        let default_author = GitUserSettings {
+            name: Some("Tool Default".to_owned()),
+            email: Some("default@example.test".to_owned()),
+        };
+        let saved = save_repository_author_settings(
+            &runner,
+            Some(&config),
+            SaveRepositoryAuthorSettingsRequest {
+                repository_path: display_path(&repo.path),
+                source: RepositoryAuthorSource::ToolDefault,
+                author: default_author.clone(),
+            },
+        )
+        .expect("follow tool default");
+
+        assert_eq!(saved.source, RepositoryAuthorSource::ToolDefault);
+        assert_eq!(saved.default_author, default_author);
+        assert_eq!(saved.repository_author, GitUserSettings::default());
+        assert_eq!(repo.local_config("user.name"), None);
+        assert_eq!(repo.local_config("user.email"), None);
+        assert_eq!(
+            config.settings().expect("load settings").git.user,
+            default_author
+        );
     }
 
     fn real_runner() -> (GitRunner, TestTempDir) {

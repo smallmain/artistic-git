@@ -7,7 +7,6 @@ import type {
   LocalChangesViewMode,
   ProjectSettings,
   SidebarLayoutSettings,
-  ToolGitIdentity,
 } from "@/lib/ipc/generated";
 import type {
   LanguagePreference as UiLanguagePreference,
@@ -26,6 +25,7 @@ export const defaultAppSettings: AppSettings = {
   git: {
     autoFetch: true,
     fetchIntervalSeconds: DEFAULT_FETCH_INTERVAL_SECONDS,
+    defaultAuthorSource: "gitGlobal",
     user: { name: null, email: null },
     rememberSshPassphrase: false,
   },
@@ -218,6 +218,22 @@ export function settingsWithGitUser(
     git: {
       ...normalized.git,
       user: cleanGitUser(user),
+    },
+  };
+}
+
+export function settingsWithDefaultAuthorSource(
+  settings: AppSettings | null | undefined,
+  defaultAuthorSource: NonNullable<
+    NonNullable<AppSettings["git"]>["defaultAuthorSource"]
+  >,
+): AppSettings {
+  const normalized = normalizeAppSettings(settings);
+  return {
+    ...normalized,
+    git: {
+      ...normalized.git,
+      defaultAuthorSource,
     },
   };
 }
@@ -420,18 +436,6 @@ export function isValidEmail(email: string): boolean {
     parts[1].includes(".") &&
     !parts[1].endsWith(".")
   );
-}
-
-export function toolIdentityFromSettings(
-  settings: AppSettings | null | undefined,
-): ToolGitIdentity | null {
-  const user = gitUserFromSettings(settings);
-  const identity: ToolGitIdentity = {
-    name: user.name ?? null,
-    email: user.email ?? null,
-  };
-
-  return identity.name || identity.email ? identity : null;
 }
 
 export function languageLabelKey(language: UiLanguagePreference): string {

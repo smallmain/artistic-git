@@ -4,9 +4,10 @@ use artistic_git_app::{
     HttpsCredentialListResponse, HttpsCredentialPromptReason, HttpsCredentialPromptRequest,
     HttpsCredentialScope, IdentitySourcesResponse, IdentityValidationRequest,
     IdentityValidationResponse, OpenLogDirResponse, ProjectSettingsRequest, RecentProjectEntry,
-    RecentProjectsRequest, SaveAppSettingsRequest, SaveGitignoreRequest,
-    SaveHttpsCredentialRequest, SaveProjectSettingsRequest, SettingsSnapshot, SshKeyStatus,
-    SshPassphrasePromptRequest,
+    RecentProjectsRequest, RepositoryAuthorSettingsRequest, RepositoryAuthorSettingsResponse,
+    RepositoryAuthorSource, SaveAppSettingsRequest, SaveGitignoreRequest,
+    SaveHttpsCredentialRequest, SaveProjectSettingsRequest, SaveRepositoryAuthorSettingsRequest,
+    SettingsSnapshot, SshKeyStatus, SshPassphrasePromptRequest,
 };
 use artistic_git_contracts::{
     AbortRevertRequest, AbortRevertResponse, AcceptRemoteHistoryRequest,
@@ -142,6 +143,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register::<RecentProjectEntry>()
         .register::<ForgetRecentProjectRequest>()
         .register::<SaveAppSettingsRequest>()
+        .register::<RepositoryAuthorSource>()
+        .register::<RepositoryAuthorSettingsRequest>()
+        .register::<SaveRepositoryAuthorSettingsRequest>()
+        .register::<RepositoryAuthorSettingsResponse>()
         .register::<ProjectSettingsRequest>()
         .register::<SaveProjectSettingsRequest>()
         .register::<GitignoreRequest>()
