@@ -230,7 +230,8 @@ async function injectRendererCrash(summary: string) {
           finish({ accepted: true, completed: true, error: null });
         })
         .catch((error) => {
-          const message = error instanceof Error ? error.message : String(error);
+          const message =
+            error instanceof Error ? error.message : String(error);
           targetWindow.__artisticGitCrashInjectionCompleted = true;
           targetWindow.__artisticGitCrashInjectionError = message;
           targetWindow.__artisticGitCrashInjectionState = "rejected";

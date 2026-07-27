@@ -42,7 +42,11 @@ export function validateReleaseVersion(version) {
   return normalized;
 }
 
-export function replaceJsonVersionField(raw, version, filePath = "package.json") {
+export function replaceJsonVersionField(
+  raw,
+  version,
+  filePath = "package.json",
+) {
   const packageVersion = /^([ \t]*"version"[ \t]*:[ \t]*")([^"]*)(")/m;
   if (!packageVersion.test(raw)) {
     throw new Error(`Missing package version in ${filePath}`);
@@ -106,7 +110,11 @@ export async function applyReleaseVersion({
     let next;
 
     if (manifest.kind === "json") {
-      next = replaceJsonVersionField(previous, normalizedVersion, manifest.path);
+      next = replaceJsonVersionField(
+        previous,
+        normalizedVersion,
+        manifest.path,
+      );
     } else if (manifest.kind === "cargo") {
       cargoPackageNames.push(readCargoPackageName(previous, manifest.path));
       next = replaceCargoPackageVersion(

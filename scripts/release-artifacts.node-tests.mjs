@@ -778,9 +778,7 @@ test("release workflow applies the release version to displayed app versions", (
     ),
   );
   assert.ok(
-    releaseWorkflow.includes(
-      "Commit released version to the default branch",
-    ),
+    releaseWorkflow.includes("Commit released version to the default branch"),
   );
   assert.ok(
     releaseWorkflow.includes(
@@ -1085,7 +1083,7 @@ test("release and audit workflows enforce the pinned embedded toolchain", () => 
     "pattern: release-rehearsal-*",
     "path: ${{ runner.temp }}/phase12-evidence-input",
     "Readiness summary will include same-run release rehearsal evidence.",
-    "ARTISTIC_GIT_READINESS_SOFT_OPERATOR_BLOCKERS: \"1\"",
+    'ARTISTIC_GIT_READINESS_SOFT_OPERATOR_BLOCKERS: "1"',
     "Generate release rehearsal dry-run checklist",
     "Generate release rehearsal package checklist",
     "Upload release rehearsal package checklist",

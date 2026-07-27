@@ -445,10 +445,14 @@ function evaluateCiWorkflowContract(source) {
     "perf job",
   );
   if (/Verify phase 12 perf envelope/.test(testJob)) {
-    failures.push("test job must not serialize phase 12 perf behind unit tests");
+    failures.push(
+      "test job must not serialize phase 12 perf behind unit tests",
+    );
   }
   if (/\n\s+needs:/.test(perfJob)) {
-    failures.push("perf job must run in parallel and must not need other gates");
+    failures.push(
+      "perf job must run in parallel and must not need other gates",
+    );
   }
   requireTokens(
     e2eJob,
@@ -516,7 +520,9 @@ function evaluateCiWorkflowContract(source) {
   }
   if (
     summaryJob.includes("release_rehearsal_run_id:") ||
-    summaryJob.includes("run-id: ${{ steps.release-rehearsal-evidence.outputs.run_id }}") ||
+    summaryJob.includes(
+      "run-id: ${{ steps.release-rehearsal-evidence.outputs.run_id }}",
+    ) ||
     summaryJob.includes("ARTISTIC_GIT_RELEASE_REHEARSAL_RUN_ID")
   ) {
     failures.push(

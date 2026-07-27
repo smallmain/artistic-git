@@ -97,7 +97,10 @@ test("manual CI platform scope prunes runner matrices without weakening push CI"
     /PHASE12_PERF_PROFILE: >-\n\s+\$\{\{ inputs\.phase12_perf_profile == 'heavy' && 'heavy' \|\|\n\s+inputs\.phase12_perf_profile == 'light' && 'light' \|\|\n\s+\(github\.event_name != 'workflow_dispatch' \|\| inputs\.platform_scope == 'all'\) && 'heavy' \|\|\n\s+'light' \}\}/,
     "explicit profiles take precedence, while full CI auto-resolves to heavy and partial CI to light",
   );
-  assert.match(perfJob, /Verify phase 12 perf envelope\n\s+timeout-minutes: 30/);
+  assert.match(
+    perfJob,
+    /Verify phase 12 perf envelope\n\s+timeout-minutes: 30/,
+  );
   assert.doesNotMatch(
     testJob,
     /Verify phase 12 perf envelope/,

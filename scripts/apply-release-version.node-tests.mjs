@@ -15,7 +15,10 @@ import {
 } from "./apply-release-version.mjs";
 
 test("rejects missing and invalid release versions", () => {
-  assert.throws(() => validateReleaseVersion(""), /release version is required/);
+  assert.throws(
+    () => validateReleaseVersion(""),
+    /release version is required/,
+  );
   assert.throws(
     () => validateReleaseVersion("v0.2.2"),
     /invalid release version/,
