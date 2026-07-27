@@ -189,7 +189,7 @@ export function FloatingPanel({
       aria-label={ariaLabel}
       aria-modal={ariaModal}
       className={cn(
-        "fixed z-[80] rounded-md border bg-card text-card-foreground shadow-floating",
+        "animate-popover-enter fixed z-[80] rounded-md border bg-card text-card-foreground shadow-floating",
         className,
       )}
       data-dialog-portal="true"

@@ -8,6 +8,10 @@ import {
   defaultToastDurationMs,
   type ToastRequest,
 } from "@/lib/toast";
+import { cn } from "@/lib/utils";
+
+/** Toast 退出淡出时长（redesign-spec §5.2：退出 120ms，留 20ms 缓冲卸载）。 */
+export const toastExitAnimationMs = 140;
 
 interface ToastItem extends Required<Pick<ToastRequest, "message" | "tone">> {
   id: string;
@@ -40,20 +44,59 @@ function toastDuration(request: ToastRequest) {
 export function ToastViewport() {
   const { t } = useTranslation();
   const [toasts, setToasts] = React.useState<ToastItem[]>([]);
+  const [leavingIds, setLeavingIds] = React.useState<ReadonlySet<string>>(
+    new Set(),
+  );
   const toastsRef = React.useRef<ToastItem[]>([]);
   const timersRef = React.useRef(new Map<string, ToastTimer>());
+  const leaveTimeoutsRef = React.useRef(new Map<string, number>());
   const viewportRef = React.useRef<HTMLDivElement>(null);
 
-  const dismissToast = React.useCallback((id: string) => {
+  const removeToastNow = React.useCallback((id: string) => {
     const timer = timersRef.current.get(id);
     if (timer?.timeoutId !== null && timer?.timeoutId !== undefined) {
       window.clearTimeout(timer.timeoutId);
     }
     timersRef.current.delete(id);
+    const leaveTimeout = leaveTimeoutsRef.current.get(id);
+    if (leaveTimeout !== undefined) {
+      window.clearTimeout(leaveTimeout);
+      leaveTimeoutsRef.current.delete(id);
+    }
     const next = toastsRef.current.filter((toast) => toast.id !== id);
     toastsRef.current = next;
     setToasts(next);
+    setLeavingIds((current) => {
+      if (!current.has(id)) {
+        return current;
+      }
+      const updated = new Set(current);
+      updated.delete(id);
+      return updated;
+    });
   }, []);
+
+  const dismissToast = React.useCallback(
+    (id: string) => {
+      // 已在退出动画中，避免重复调度
+      if (leaveTimeoutsRef.current.has(id)) {
+        return;
+      }
+      const timer = timersRef.current.get(id);
+      if (timer?.timeoutId !== null && timer?.timeoutId !== undefined) {
+        window.clearTimeout(timer.timeoutId);
+      }
+      // 手动关闭即清除计时记录，同 key 重建时不继承暂停状态
+      timersRef.current.delete(id);
+      setLeavingIds((current) => new Set(current).add(id));
+      const timeoutId = window.setTimeout(() => {
+        leaveTimeoutsRef.current.delete(id);
+        removeToastNow(id);
+      }, toastExitAnimationMs);
+      leaveTimeoutsRef.current.set(id, timeoutId);
+    },
+    [removeToastNow],
+  );
 
   const startToastTimer = React.useCallback(
     (
@@ -136,6 +179,20 @@ export function ToastViewport() {
         window.clearTimeout(previousTimer.timeoutId);
       }
       timers.delete(id);
+      // 同 key 重新出现：取消未完成的退出动画，避免误删新 Toast
+      const pendingLeave = leaveTimeoutsRef.current.get(id);
+      if (pendingLeave !== undefined) {
+        window.clearTimeout(pendingLeave);
+        leaveTimeoutsRef.current.delete(id);
+        setLeavingIds((current) => {
+          if (!current.has(id)) {
+            return current;
+          }
+          const updated = new Set(current);
+          updated.delete(id);
+          return updated;
+        });
+      }
 
       const item: ToastItem = {
         id,
@@ -160,6 +217,10 @@ export function ToastViewport() {
           timers.delete(toast.id);
         }
       }
+      for (const leaveTimeout of leaveTimeoutsRef.current.values()) {
+        window.clearTimeout(leaveTimeout);
+      }
+      leaveTimeoutsRef.current.clear();
       toastsRef.current = visible;
       setToasts(visible);
       startToastTimer(id, toastDuration(request), previousPauseReasons);
@@ -198,7 +259,12 @@ export function ToastViewport() {
     >
       {toasts.map((toast) => (
         <div
-          className="flex max-h-[min(24rem,calc(100vh-2rem))] shrink-0 items-start gap-3 overflow-y-auto rounded-lg border bg-card p-3 text-sm text-card-foreground shadow-floating"
+          className={cn(
+            "flex max-h-[min(24rem,calc(100vh-2rem))] shrink-0 items-start gap-3 overflow-y-auto rounded-lg border bg-card p-3 text-sm text-card-foreground shadow-floating",
+            leavingIds.has(toast.id)
+              ? "animate-fade-exit"
+              : "animate-toast-enter",
+          )}
           data-testid="app-toast"
           key={toast.id}
           onBlurCapture={(event) => {

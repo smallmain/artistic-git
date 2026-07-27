@@ -4,6 +4,7 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
 } from "@testing-library/react";
 import { I18nextProvider } from "react-i18next";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -11,7 +12,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createI18n } from "@/i18n/i18n";
 import { showToast } from "@/lib/toast";
 
-import { ToastViewport } from "./toast-viewport";
+import { ToastViewport, toastExitAnimationMs } from "./toast-viewport";
 
 function renderViewport() {
   return render(
@@ -27,7 +28,7 @@ afterEach(() => {
 });
 
 describe("ToastViewport", () => {
-  it("replaces a keyed toast and supports manual dismissal", () => {
+  it("replaces a keyed toast and supports manual dismissal", async () => {
     renderViewport();
 
     act(() => {
@@ -40,7 +41,9 @@ describe("ToastViewport", () => {
     expect(toast).toHaveTextContent("Latest result");
 
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
-    expect(screen.queryByTestId("app-toast")).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByTestId("app-toast")).not.toBeInTheDocument();
+    });
   });
 
   it("dismisses a toast after its requested duration", () => {
@@ -53,7 +56,7 @@ describe("ToastViewport", () => {
     expect(screen.getByText("Temporary result")).toBeInTheDocument();
 
     act(() => {
-      vi.advanceTimersByTime(1_000);
+      vi.advanceTimersByTime(1_000 + toastExitAnimationMs);
     });
     expect(screen.queryByText("Temporary result")).not.toBeInTheDocument();
   });
@@ -75,7 +78,7 @@ describe("ToastViewport", () => {
 
     fireEvent.mouseLeave(toast);
     act(() => {
-      vi.advanceTimersByTime(1_000);
+      vi.advanceTimersByTime(1_000 + toastExitAnimationMs);
     });
     expect(screen.queryByText("Readable result")).not.toBeInTheDocument();
   });
@@ -97,7 +100,7 @@ describe("ToastViewport", () => {
 
     fireEvent.blur(closeButton);
     act(() => {
-      vi.advanceTimersByTime(1_000);
+      vi.advanceTimersByTime(1_000 + toastExitAnimationMs);
     });
     expect(screen.queryByText("Keyboard result")).not.toBeInTheDocument();
   });
@@ -123,7 +126,7 @@ describe("ToastViewport", () => {
         key: "reusable-result",
         message: "Later result",
       });
-      vi.advanceTimersByTime(1_000);
+      vi.advanceTimersByTime(1_000 + toastExitAnimationMs);
     });
 
     expect(screen.queryByText("Later result")).not.toBeInTheDocument();

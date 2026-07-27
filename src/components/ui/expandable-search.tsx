@@ -65,7 +65,7 @@ export function ExpandableSearch({
   return (
     <div
       className={cn(
-        "relative flex items-center justify-end overflow-hidden transition-[width,max-width,flex-basis,flex-grow,flex-shrink] duration-200 ease-out",
+        "relative flex items-center justify-end overflow-hidden transition-[width,max-width,flex-basis,flex-grow,flex-shrink] duration-panel ease-standard",
         open
           ? cn("min-w-0", expandedClassName ?? "w-44 flex-none")
           : cn(controlSizeClass, "flex-none"),

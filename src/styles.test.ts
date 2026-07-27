@@ -114,4 +114,30 @@ describe("design token contract (redesign-spec)", () => {
       /body\s*\{[^}]*font-family:\s*var\(--font-sans\)[^}]*font-size:\s*13px[^}]*line-height:\s*20px[^}]*font-weight:\s*450/s,
     );
   });
+
+  it("provides a dialog scrim token in both themes", () => {
+    expect(styles).toContain("--scrim:");
+    expect(darkBlock?.[0]).toContain("--scrim:");
+    expect(styles).toContain("--color-scrim: hsl(var(--scrim));");
+  });
+
+  it("provides the motion pattern primitives from the spec", () => {
+    const primitives = [
+      ".animate-overlay-backdrop-in",
+      ".animate-overlay-enter",
+      ".animate-popover-enter",
+      ".animate-toast-enter",
+      ".animate-fade-exit",
+    ];
+
+    for (const primitive of primitives) {
+      expect(styles).toContain(primitive);
+    }
+    expect(styles).toMatch(
+      /@keyframes overlay-enter\s*\{[^}]*transform:\s*translateY\(4px\)\s*scale\(0\.98\)/s,
+    );
+    expect(styles).toMatch(
+      /@keyframes popover-enter\s*\{[^}]*transform:\s*scale\(0\.96\)/s,
+    );
+  });
 });

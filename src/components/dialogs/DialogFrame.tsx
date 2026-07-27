@@ -47,13 +47,13 @@ export function DialogFrame({
 
   return (
     <DialogLayerContext.Provider value={dialogId}>
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-6">
+      <div className="animate-overlay-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-scrim p-6">
         <div
           aria-describedby={descriptionId}
           aria-labelledby={titleId}
           aria-modal="true"
           className={cn(
-            "flex max-h-full w-full max-w-2xl flex-col rounded-xl border bg-card text-card-foreground shadow-floating focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            "animate-overlay-enter flex max-h-full w-full max-w-2xl flex-col rounded-xl border bg-card text-card-foreground shadow-floating focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
             className,
           )}
           data-testid={testId}

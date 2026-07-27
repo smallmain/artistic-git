@@ -3879,7 +3879,9 @@ describe("RepositoryShell branch flow", () => {
       await act(async () => {
         (toastTimer?.[0] as () => void)();
       });
-      expect(screen.queryByTestId("app-toast")).not.toBeInTheDocument();
+      await waitFor(() =>
+        expect(screen.queryByTestId("app-toast")).not.toBeInTheDocument(),
+      );
     } finally {
       timeoutSpy.mockRestore();
     }
@@ -4011,7 +4013,9 @@ describe("RepositoryShell branch flow", () => {
       "Sync",
     );
     fireEvent.click(within(toast).getByRole("button", { name: "Close" }));
-    expect(screen.queryByTestId("app-toast")).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByTestId("app-toast")).not.toBeInTheDocument(),
+    );
   });
 
   it("syncs only the selected branch from a branch row action", async () => {

@@ -33,6 +33,8 @@ export function Tooltip({
   > | null>(null);
   const isOpen =
     (hasFocus || isTooltipHovered || isTriggerHovered) && !isDismissed;
+  // 悬停触发延迟 300ms 淡入（redesign-spec §6.3）；键盘聚焦立即显示
+  const openedViaHover = isTriggerHovered || isTooltipHovered;
 
   const cancelPendingHoverClose = React.useCallback(() => {
     if (hoverCloseTimeoutRef.current === null) {
@@ -174,6 +176,7 @@ export function Tooltip({
             className={cn(
               "pointer-events-none fixed z-[60] max-h-[calc(100vh-1rem)] w-max max-w-[min(20rem,calc(100vw-1rem))] overflow-y-auto whitespace-normal rounded-md border bg-card px-2 py-1 text-xs text-card-foreground opacity-0 shadow-floating transition-opacity duration-fast ease-out",
               isOpen && position && "pointer-events-auto opacity-100",
+              isOpen && position && (openedViaHover ? "delay-300" : "delay-0"),
               tooltipClassName,
             )}
             data-side={position?.side}

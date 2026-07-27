@@ -49,6 +49,7 @@
   --border: 222 10% 88%;
   --input: 222 10% 88%;
   --ring: 224 10% 26%;
+  --scrim: 224 30% 10% / 0.28;
   --shadow-raised-value: 0 1px 2px hsl(224 20% 10% / 0.05);
   --shadow-overlay-value:
     0 4px 16px hsl(224 20% 10% / 0.08), 0 1px 3px hsl(224 20% 10% / 0.06);
@@ -102,6 +103,7 @@
   --border: 220 8% 19%;
   --input: 220 8% 19%;
   --ring: 216 10% 70%;
+  --scrim: 224 40% 2% / 0.55;
   --shadow-raised-value: 0 1px 2px hsl(224 40% 2% / 0.32);
   --shadow-overlay-value:
     0 4px 16px hsl(224 40% 2% / 0.4), 0 1px 3px hsl(224 40% 2% / 0.32);
@@ -137,6 +139,7 @@
   --color-border: hsl(var(--border));
   --color-input: hsl(var(--input));
   --color-ring: hsl(var(--ring));
+  --color-scrim: hsl(var(--scrim));
   --color-foreground-secondary: hsl(var(--foreground-secondary));
   --color-foreground-tertiary: hsl(var(--foreground-tertiary));
   --color-border-subtle: hsl(var(--border-subtle));
@@ -359,6 +362,67 @@ body {
   font-size: 12px;
   line-height: 16px;
   font-weight: 450;
+}
+
+/* 动效原语（redesign-spec §5.2 模式库；reduced-motion 由全局规则降级） */
+@keyframes overlay-backdrop-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes overlay-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+}
+
+@keyframes popover-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
+@keyframes toast-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+@keyframes fade-exit {
+  to {
+    opacity: 0;
+  }
+}
+
+/* 对话框/覆盖层背景：淡入 180ms */
+.animate-overlay-backdrop-in {
+  animation: overlay-backdrop-in var(--duration-fast-value)
+    var(--ease-standard-value);
+}
+
+/* 覆盖层进入：fade + scale 0.98 + y 4px，240ms 减速 */
+.animate-overlay-enter {
+  animation: overlay-enter var(--duration-panel-value) var(--ease-enter-value);
+}
+
+/* 浮层进入：fade + scale 0.96，180ms 减速 */
+.animate-popover-enter {
+  animation: popover-enter var(--duration-fast-value) var(--ease-enter-value);
+}
+
+/* Toast 进入：fade + y 8px，240ms 减速 */
+.animate-toast-enter {
+  animation: toast-enter var(--duration-panel-value) var(--ease-enter-value);
+}
+
+/* 退出：仅快速淡出 120ms（forwards 保持终态，配合延迟卸载） */
+.animate-fade-exit {
+  animation: fade-exit var(--duration-micro-value) var(--ease-exit-value)
+    forwards;
 }
 
 .diff-checkerboard {
