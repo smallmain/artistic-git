@@ -832,7 +832,10 @@ function SidebarSection({
 /** 骨架行：形状对齐 40px 列表行（redesign-spec §7.1）。 */
 function SidebarSectionSkeleton() {
   return (
-    <div className="flex flex-col gap-0.5 py-0.5" data-testid="sidebar-skeleton">
+    <div
+      className="flex flex-col gap-0.5 py-0.5"
+      data-testid="sidebar-skeleton"
+    >
       {[0, 1, 2, 3, 4].map((row) => (
         <div className="flex h-10 items-center gap-2 px-2" key={row}>
           <Skeleton className="size-4 shrink-0 rounded-full" />

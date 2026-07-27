@@ -86,7 +86,9 @@ describe("design token contract (redesign-spec)", () => {
     expect(styles).toContain(
       "--color-foreground-tertiary: hsl(var(--foreground-tertiary));",
     );
-    expect(styles).toContain("--color-border-subtle: hsl(var(--border-subtle));");
+    expect(styles).toContain(
+      "--color-border-subtle: hsl(var(--border-subtle));",
+    );
     expect(styles).toContain("--shadow-popover: var(--shadow-popover-value);");
     expect(styles).toContain("--duration-micro: var(--duration-micro-value);");
     expect(styles).toContain("--ease-enter: var(--ease-enter-value);");
