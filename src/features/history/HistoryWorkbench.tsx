@@ -24,6 +24,7 @@ import { ExpandableSearch } from "@/components/ui/expandable-search";
 import { FloatingPanel } from "@/components/ui/floating-panel";
 import { IconButton } from "@/components/ui/icon-button";
 import { OverlayScrollArea } from "@/components/ui/overlay-scroll-area";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip } from "@/components/ui/tooltip";
 import { TruncatedText } from "@/components/ui/truncated-text";
 import { DiffViewer } from "@/features/diff";
@@ -866,11 +867,35 @@ export function HistoryWorkbench({
           </div>
         ) : null}
         {visibleRows.length === 0 && !historyLoadError ? (
-          <div className="absolute inset-0 flex items-center justify-center px-4 pb-14 text-center text-sm text-muted-foreground">
-            {isHistoryContentLoading
-              ? t("history.loading")
-              : t("history.empty")}
-          </div>
+          isHistoryContentLoading ? (
+            <div
+              aria-hidden="true"
+              className="absolute inset-0 px-4"
+              data-testid="history-skeleton"
+            >
+              {[0, 1, 2, 3, 4, 5, 6, 7].map((row) => (
+                <div
+                  className="grid h-[52px] items-center border-b border-border-subtle [grid-template-columns:112px_minmax(0,1fr)_180px_140px]"
+                  key={row}
+                >
+                  <span />
+                  <span className="flex items-center gap-3">
+                    <Skeleton className="size-6 shrink-0 rounded-full" />
+                    <Skeleton
+                      className="h-3"
+                      style={{ width: `${38 + ((row * 13) % 34)}%` }}
+                    />
+                  </span>
+                  <Skeleton className="h-3 w-20" />
+                  <Skeleton className="h-3 w-14" />
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="absolute inset-0 flex items-center justify-center px-4 pb-14 text-center text-sm text-muted-foreground">
+              {t("history.empty")}
+            </div>
+          )
         ) : null}
         {canLoadMore && !isFetchingNextPage && !historyLoadError ? (
           <div className="relative z-10 flex h-12 items-center justify-center border-t bg-card/95">

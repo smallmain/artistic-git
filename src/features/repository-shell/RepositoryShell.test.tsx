@@ -2584,7 +2584,9 @@ describe("RepositoryShell close guard", () => {
 
     const progress = screen.getByRole("progressbar");
     expect(progress).not.toHaveAttribute("aria-valuenow");
-    expect(progress.firstElementChild).toHaveClass("animate-pulse");
+    expect(progress.firstElementChild).toHaveClass(
+      "animate-indeterminate-slide",
+    );
     expect(progress.firstElementChild).not.toHaveStyle({ width: "42%" });
 
     fireEvent.click(

@@ -425,6 +425,35 @@ body {
     forwards;
 }
 
+/* 骨架屏：克制 pulse，1800ms，无 shimmer 扫光（redesign-spec §7.1） */
+@keyframes skeleton-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.animate-skeleton-pulse {
+  animation: skeleton-pulse 1800ms ease-in-out infinite;
+}
+
+/* 顶部进度条不定态：2px 细条左右滑动 1200ms（redesign-spec §7.2） */
+@keyframes indeterminate-slide {
+  from {
+    left: -40%;
+  }
+  to {
+    left: 100%;
+  }
+}
+
+.animate-indeterminate-slide {
+  animation: indeterminate-slide 1200ms var(--ease-standard-value) infinite;
+}
+
 .diff-checkerboard {
   background-color: hsl(var(--background));
   background-image:

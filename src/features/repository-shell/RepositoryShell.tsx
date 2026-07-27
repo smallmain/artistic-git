@@ -2331,25 +2331,18 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
                 ? activeOperation.progress.value
                 : undefined
             }
-            className="h-1 shrink-0 overflow-hidden bg-secondary"
+            className="h-0.5 shrink-0 overflow-hidden bg-secondary"
             role="progressbar"
           >
-            <div
-              className={cn(
-                "h-full bg-primary",
-                activeOperation.progress.kind === "percent" &&
-                  activeOperation.progress.value !== null
-                  ? "transition-[width]"
-                  : "w-1/2 animate-pulse",
-              )}
-              style={{
-                width:
-                  activeOperation.progress.kind === "percent" &&
-                  activeOperation.progress.value !== null
-                    ? `${activeOperation.progress.value}%`
-                    : undefined,
-              }}
-            />
+            {activeOperation.progress.kind === "percent" &&
+            activeOperation.progress.value !== null ? (
+              <div
+                className="h-full bg-sync transition-[width] duration-fast"
+                style={{ width: `${activeOperation.progress.value}%` }}
+              />
+            ) : (
+              <div className="animate-indeterminate-slide relative h-full w-2/5 rounded-full bg-sync" />
+            )}
           </div>
         ) : null}
 

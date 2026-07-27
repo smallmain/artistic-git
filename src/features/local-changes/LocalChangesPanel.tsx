@@ -6,7 +6,6 @@ import {
   FolderTree,
   GitCommit,
   List,
-  Loader2,
   MoreHorizontal,
   RefreshCw,
   Search,
@@ -20,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { FloatingPanel } from "@/components/ui/floating-panel";
 import { IconButton } from "@/components/ui/icon-button";
 import { OverlayScrollArea } from "@/components/ui/overlay-scroll-area";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip } from "@/components/ui/tooltip";
 import { DiffViewer } from "@/features/diff";
 import { cn } from "@/lib/utils";
@@ -553,12 +553,19 @@ export function LocalChangesPanel({
       )}
 
       {loading ? (
-        <div
-          className="absolute inset-0 z-20 flex items-center justify-center gap-2 bg-card/80 text-sm font-medium"
-          role="status"
-        >
-          <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-          {t("localChanges.loading")}
+        <div className="absolute inset-0 z-20 bg-card px-4 py-3" role="status">
+          <span className="sr-only">{t("localChanges.loading")}</span>
+          <div aria-hidden="true" className="flex flex-col gap-1">
+            {[0, 1, 2, 3, 4, 5, 6, 7].map((row) => (
+              <div className="flex h-9 items-center gap-3" key={row}>
+                <Skeleton className="size-4 shrink-0 rounded-sm" />
+                <Skeleton
+                  className="h-3"
+                  style={{ width: `${34 + ((row * 17) % 40)}%` }}
+                />
+              </div>
+            ))}
+          </div>
         </div>
       ) : null}
 
@@ -585,12 +592,18 @@ function LocalChangeDetailLoading() {
   const { t } = useTranslation();
 
   return (
-    <div
-      className="flex min-h-full items-center justify-center gap-2 p-6 text-sm font-medium text-muted-foreground"
-      role="status"
-    >
-      <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-      {t("localChanges.previewLoading")}
+    <div className="min-h-full p-4" role="status">
+      <span className="sr-only">{t("localChanges.previewLoading")}</span>
+      <div aria-hidden="true" className="flex flex-col gap-2.5">
+        <Skeleton className="h-3 w-1/3" />
+        {[0, 1, 2, 3, 4, 5].map((row) => (
+          <Skeleton
+            className="h-3"
+            key={row}
+            style={{ width: `${52 + ((row * 19) % 42)}%` }}
+          />
+        ))}
+      </div>
     </div>
   );
 }

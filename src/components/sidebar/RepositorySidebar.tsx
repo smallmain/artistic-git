@@ -20,6 +20,7 @@ import { useTranslation } from "react-i18next";
 import { ExpandableSearch } from "@/components/ui/expandable-search";
 import { IconButton } from "@/components/ui/icon-button";
 import { OverlayScrollArea } from "@/components/ui/overlay-scroll-area";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   FloatingPanel,
   type FloatingPanelAnchor,
@@ -441,6 +442,7 @@ export function RepositorySidebar({
           }
           filteredCount={filteredBranches.length}
           icon={<GitBranch className="size-4" aria-hidden="true" />}
+          loading={branchesLoading}
           maxHeight={`${sidebarLayout.branchSectionRatioPercent}%`}
           onCollapseChange={(branchesCollapsed) => {
             resetBranchScroll();
@@ -521,6 +523,7 @@ export function RepositorySidebar({
                   : t("repository.noStashes")
           }
           filteredCount={filteredStashes.length}
+          loading={stashesLoading}
           icon={<Layers className="size-4" aria-hidden="true" />}
           maxHeight={`${100 - sidebarLayout.branchSectionRatioPercent}%`}
           onCollapseChange={(stashesCollapsed) => {
@@ -734,6 +737,7 @@ interface SidebarSectionProps {
   emptyLabel: string;
   filteredCount: number;
   icon: React.ReactNode;
+  loading?: boolean;
   maxHeight: string;
   onCollapseChange: (collapsed: boolean) => void;
   onQueryChange: (query: string) => void;
@@ -751,6 +755,7 @@ function SidebarSection({
   emptyLabel,
   filteredCount,
   icon,
+  loading = false,
   maxHeight,
   onCollapseChange,
   onQueryChange,
@@ -805,15 +810,39 @@ function SidebarSection({
           ref={scrollViewportRef}
         >
           {filteredCount === 0 ? (
-            <p className="px-2 py-6 text-center text-sm text-muted-foreground">
-              {emptyLabel}
-            </p>
+            loading ? (
+              <div role="status">
+                <span className="sr-only">{emptyLabel}</span>
+                <SidebarSectionSkeleton />
+              </div>
+            ) : (
+              <p className="px-2 py-6 text-center text-sm text-muted-foreground">
+                {emptyLabel}
+              </p>
+            )
           ) : (
             children
           )}
         </OverlayScrollArea>
       )}
     </section>
+  );
+}
+
+/** 骨架行：形状对齐 40px 列表行（redesign-spec §7.1）。 */
+function SidebarSectionSkeleton() {
+  return (
+    <div className="flex flex-col gap-0.5 py-0.5" data-testid="sidebar-skeleton">
+      {[0, 1, 2, 3, 4].map((row) => (
+        <div className="flex h-10 items-center gap-2 px-2" key={row}>
+          <Skeleton className="size-4 shrink-0 rounded-full" />
+          <Skeleton
+            className="h-3"
+            style={{ width: `${52 + ((row * 11) % 28)}%` }}
+          />
+        </div>
+      ))}
+    </div>
   );
 }
 
