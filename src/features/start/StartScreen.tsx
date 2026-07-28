@@ -790,10 +790,8 @@ export function StartScreen() {
                 <FolderGit2 className="size-5" aria-hidden="true" />
               </div>
               <div className="min-w-0">
-                <h1 className="truncate text-2xl font-semibold">
-                  {t("app.name")}
-                </h1>
-                <p className="truncate text-sm text-muted-foreground">
+                <h1 className="text-display truncate">{t("app.name")}</h1>
+                <p className="text-body truncate text-foreground-secondary">
                   {t("app.tagline")}
                 </p>
               </div>
@@ -913,7 +911,7 @@ export function StartScreen() {
 
         <section className="flex min-w-0 flex-col pb-6 md:py-12">
           <div className="mb-4 flex items-center justify-between gap-4">
-            <h2 className="text-base font-medium">{t("app.recentProjects")}</h2>
+            <h2 className="text-heading">{t("app.recentProjects")}</h2>
             {recentProjectsRuntime.status === "ready" &&
             visibleRecentProjects.length > 0 ? (
               <button
@@ -1015,11 +1013,11 @@ export function StartScreen() {
                           aria-hidden="true"
                         />
                         <span className="min-w-0">
-                          <span className="block truncate text-sm font-medium">
+                          <span className="block truncate text-[13px] font-medium">
                             {project.displayName}
                           </span>
                           <TruncatedText
-                            className="block text-xs text-muted-foreground"
+                            className="text-caption block text-foreground-tertiary"
                             normalizePath
                             text={project.path}
                           />

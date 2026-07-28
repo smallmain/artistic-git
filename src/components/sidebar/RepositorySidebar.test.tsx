@@ -65,10 +65,9 @@ describe("RepositorySidebar", () => {
     expect(settingsArea).toContainElement(safetyBackupsButton);
     expect(reviewButton).toHaveClass(
       "w-full",
-      "bg-review",
+      "bg-review-gradient",
       "text-review-foreground",
     );
-    expect(reviewButton.className).not.toMatch(/gradient/i);
     expect(reviewButton.querySelector("svg")).not.toBeNull();
     expect(settingsButton).toHaveClass("size-9");
     expect(settingsButton).not.toHaveTextContent("Settings");
@@ -184,9 +183,9 @@ describe("RepositorySidebar", () => {
     const branchRows = screen.getAllByTestId("branch-row");
     const stashRows = screen.getAllByTestId("stash-row");
 
-    expect(branchRows[0]).toHaveStyle({ height: "40px", top: "0px" });
-    expect(branchRows[1]).toHaveStyle({ height: "40px", top: "40px" });
-    expect(stashRows[0]).toHaveStyle({ height: "40px", top: "0px" });
+    expect(branchRows[0]).toHaveStyle({ height: "36px", top: "0px" });
+    expect(branchRows[1]).toHaveStyle({ height: "36px", top: "36px" });
+    expect(stashRows[0]).toHaveStyle({ height: "36px", top: "0px" });
     expect(screen.getByTestId("sidebar-branches-scroll")).toHaveClass(
       "overlay-scrollbar-viewport",
     );
@@ -406,7 +405,7 @@ describe("RepositorySidebar", () => {
     });
     fireEvent.scroll(viewport);
 
-    expect(screen.getAllByTestId("branch-row").length).toBeLessThanOrEqual(23);
+    expect(screen.getAllByTestId("branch-row").length).toBeLessThanOrEqual(26);
     expect(screen.getByText("branch-0999")).toBeInTheDocument();
     expect(screen.getByText("branch-0999").closest("li")).toHaveAttribute(
       "aria-setsize",
@@ -469,7 +468,7 @@ describe("RepositorySidebar", () => {
     });
     fireEvent.scroll(viewport);
 
-    expect(screen.getAllByTestId("stash-row").length).toBeLessThanOrEqual(23);
+    expect(screen.getAllByTestId("stash-row").length).toBeLessThanOrEqual(26);
     expect(screen.getByText("stash-0999")).toBeInTheDocument();
     expect(screen.getByText("stash-0999").closest("li")).toHaveAttribute(
       "aria-setsize",

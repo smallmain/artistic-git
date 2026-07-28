@@ -2346,7 +2346,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
           </div>
         ) : null}
 
-        <header className="flex h-12 shrink-0 items-center justify-between border-b px-4">
+        <header className="flex h-12 shrink-0 items-center justify-between border-b border-border-subtle px-4">
           <nav
             className="flex items-center gap-1"
             aria-label={t("repository.tabs")}
@@ -2369,7 +2369,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
           </nav>
           <div
             aria-live="polite"
-            className="flex min-w-0 items-center gap-2 text-numeric text-sm text-muted-foreground"
+            className="flex min-w-0 items-center gap-2 text-numeric text-caption text-foreground-secondary"
           >
             <span className="truncate">
               {cancellingOperationId
@@ -4791,10 +4791,10 @@ function TabButton({
   return (
     <button
       className={cn(
-        "flex h-9 items-center gap-2 rounded-md px-3 text-sm",
+        "flex h-8 items-center gap-1.5 rounded-md px-2.5 text-[13px] font-medium transition-colors duration-micro",
         active
-          ? "bg-secondary text-secondary-foreground"
-          : "text-muted-foreground hover:bg-accent hover:text-foreground",
+          ? "bg-accent text-foreground"
+          : "text-foreground-tertiary hover:bg-accent hover:text-foreground",
       )}
       data-testid={testId}
       onClick={onClick}
@@ -4803,7 +4803,7 @@ function TabButton({
       {icon}
       <span>{label}</span>
       {badge > 0 ? (
-        <span className="text-numeric rounded bg-background px-1.5 py-0.5 text-xs">
+        <span className="text-numeric text-caption rounded-full bg-secondary px-1.5 text-foreground-secondary">
           {badge}
         </span>
       ) : null}

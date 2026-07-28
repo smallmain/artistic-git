@@ -712,17 +712,18 @@ export function HistoryWorkbench({
   return (
     <section
       aria-label={t("history.title")}
-      className="isolate flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border bg-card text-card-foreground"
+      className="isolate flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-[10px] border border-border-subtle bg-card text-card-foreground"
       data-testid="history-frame"
     >
-      <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
+      <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-border-subtle px-4 py-3">
         <div className="flex min-w-0 items-center gap-2">
-          <GitPullRequest className="size-5 shrink-0 text-muted-foreground" />
+          <GitPullRequest
+            className="size-4 shrink-0 text-foreground-tertiary"
+            aria-hidden="true"
+          />
           <div className="min-w-0">
-            <h2 className="truncate text-base font-semibold">
-              {t("history.title")}
-            </h2>
-            <p className="truncate text-xs text-muted-foreground">
+            <h2 className="text-heading truncate">{t("history.title")}</h2>
+            <p className="text-caption truncate text-foreground-tertiary">
               {t("history.subtitle")}
             </p>
           </div>
@@ -817,7 +818,7 @@ export function HistoryWorkbench({
       ) : null}
 
       <div
-        className="grid shrink-0 border-b bg-muted/35 px-4 py-2 text-xs font-medium text-muted-foreground [grid-template-columns:112px_minmax(0,1fr)_180px_140px]"
+        className="text-label grid shrink-0 border-b border-border-subtle px-4 py-1.5 text-foreground-tertiary [grid-template-columns:112px_minmax(0,1fr)_180px_140px]"
         data-testid="history-column-header"
       >
         <span>{t("history.columns.graph")}</span>
@@ -1226,10 +1227,10 @@ function HistoryCommitRow({
   return (
     <button
       className={cn(
-        "absolute left-0 right-0 grid border-b px-4 text-left transition-colors [grid-template-columns:112px_minmax(0,1fr)_180px_140px]",
+        "absolute left-0 right-0 grid border-b border-border-subtle px-4 text-left transition-colors duration-micro [grid-template-columns:112px_minmax(0,1fr)_180px_140px]",
         unsynced
-          ? "bg-warning/15 hover:bg-warning/25"
-          : "bg-card hover:bg-accent/45",
+          ? "bg-warning/10 hover:bg-warning/15"
+          : "bg-card hover:bg-accent/55",
       )}
       data-commit-id={commit.id}
       data-commit-message={commit.message}
@@ -1247,8 +1248,11 @@ function HistoryCommitRow({
         <Avatar author={commit.author} gravatarEnabled={gravatarEnabled} />
         <span className="min-w-0 flex-1">
           <span className="flex min-w-0 items-center gap-2">
-            <GitCommitHorizontal className="size-4 shrink-0 text-muted-foreground" />
-            <span className="truncate text-sm font-medium">
+            <GitCommitHorizontal
+              className="size-4 shrink-0 text-foreground-tertiary"
+              aria-hidden="true"
+            />
+            <span className="truncate text-[13px] font-medium">
               {commit.message}
             </span>
           </span>
@@ -1285,11 +1289,11 @@ function HistoryCommitRow({
           </span>
         </span>
       </span>
-      <span className="flex min-w-0 items-center text-sm">
+      <span className="flex min-w-0 items-center text-[13px] text-foreground-secondary">
         <TruncatedText text={commit.author.name} />
       </span>
       <time
-        className="flex items-center text-sm text-muted-foreground"
+        className="text-numeric text-caption flex items-center text-foreground-tertiary"
         dateTime={commit.authoredAt}
         title={formatters.formatDate(commit.authoredAt, {
           dateStyle: "full",
@@ -1316,7 +1320,7 @@ function Avatar({
     return (
       <img
         alt=""
-        className="size-9 rounded-full border object-cover"
+        className="size-6 rounded-full border object-cover"
         onError={() => {
           setFailed(true);
         }}
@@ -1328,7 +1332,7 @@ function Avatar({
   return (
     <span
       aria-hidden="true"
-      className="flex size-9 shrink-0 items-center justify-center rounded-full text-xs font-semibold text-white"
+      className="text-caption flex size-6 shrink-0 items-center justify-center rounded-full font-semibold text-white"
       style={{ backgroundColor: presentation.background }}
     >
       {presentation.initials}
@@ -1346,12 +1350,12 @@ function RefBadge({ refItem }: { refItem: HistoryCommit["refs"][number] }) {
   return (
     <span
       className={cn(
-        "inline-flex max-w-44 items-center gap-1 truncate rounded px-1.5 py-0.5 text-[11px] font-medium",
+        "text-caption inline-flex max-w-44 items-center gap-1 truncate rounded-[5px] px-1.5 py-0 font-medium",
         isTag
-          ? "bg-warning/20 text-foreground"
+          ? "bg-warning/15 text-warning"
           : isRemoteBranch
-            ? "bg-muted text-foreground"
-            : "bg-sync/15 text-foreground",
+            ? "border border-border-subtle text-foreground-tertiary"
+            : "bg-secondary text-foreground",
       )}
       data-remote={isRemoteBranch ? "true" : undefined}
       data-testid="history-ref-badge"

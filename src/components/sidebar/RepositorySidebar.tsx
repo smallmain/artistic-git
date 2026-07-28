@@ -92,10 +92,10 @@ const minSidebarWidth = 260;
 const maxSidebarWidth = 460;
 const minBranchRatio = 35;
 const maxBranchRatio = 78;
-const branchRowHeight = 40;
+const branchRowHeight = 36;
 const branchVirtualOverscan = 6;
 const defaultBranchViewportHeight = 720;
-const stashRowHeight = 40;
+const stashRowHeight = 36;
 const stashVirtualOverscan = 6;
 /** Shared edge-fade hover action cluster for list rows. */
 const hoverActionGroupClassName =
@@ -384,19 +384,22 @@ export function RepositorySidebar({
 
   return (
     <aside
-      className="relative flex min-h-0 shrink-0 flex-col overflow-hidden bg-card text-card-foreground"
+      className="relative flex min-h-0 shrink-0 flex-col overflow-hidden border-r border-border-subtle bg-background text-foreground"
       style={{ width: sidebarLayout.widthPx }}
     >
-      <section className="flex h-20 shrink-0 items-center gap-3 border-b px-4">
-        <div className="flex size-10 shrink-0 items-center justify-center rounded-md border bg-background">
-          <GitFork className="size-5" aria-hidden="true" />
+      <section className="flex h-16 shrink-0 items-center gap-2.5 border-b border-border-subtle px-3">
+        <div className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border-subtle bg-card">
+          <GitFork
+            className="size-4 text-foreground-secondary"
+            aria-hidden="true"
+          />
         </div>
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium">
+          <p className="truncate text-[13px] font-[560] leading-[18px]">
             {repository.projectName}
           </p>
           <TruncatedText
-            className="block text-xs text-muted-foreground"
+            className="text-caption block text-foreground-tertiary"
             normalizePath
             text={repository.path}
           />
@@ -410,7 +413,7 @@ export function RepositorySidebar({
           {repository.hasRemote ? (
             <IconButton
               className={
-                hasPendingSync ? "text-warning hover:bg-warning/10" : undefined
+                hasPendingSync ? "text-sync hover:bg-sync/10" : undefined
               }
               data-testid="repository-sync-all"
               disabled={busy || !onFetch}
@@ -579,11 +582,11 @@ export function RepositorySidebar({
       </div>
 
       <section
-        className="shrink-0 border-t px-3 py-2"
+        className="shrink-0 border-t border-border-subtle px-3 py-2"
         data-testid="sidebar-review-action"
       >
         <button
-          className="flex h-9 w-full items-center justify-center gap-2 rounded-lg bg-review px-3 text-sm font-medium text-review-foreground transition-colors hover:bg-review/90 active:bg-review/85 disabled:cursor-not-allowed disabled:opacity-60"
+          className="bg-review-gradient flex h-9 w-full items-center justify-center gap-2 rounded-lg px-3 text-[13px] font-[560] text-review-foreground transition-[filter] duration-micro hover:brightness-110 active:brightness-95 disabled:cursor-not-allowed disabled:opacity-60"
           disabled={busy || !onReviewMode}
           onClick={(event) => onReviewMode?.(event.currentTarget)}
           title={
@@ -597,7 +600,7 @@ export function RepositorySidebar({
       </section>
 
       <section
-        className="flex shrink-0 items-center gap-1 border-t px-3 py-2"
+        className="flex shrink-0 items-center gap-1 border-t border-border-subtle px-3 py-2"
         data-testid="sidebar-settings-action"
       >
         <IconButton
@@ -775,7 +778,7 @@ function SidebarSection({
     >
       <div className="flex h-8 items-center gap-2">
         <button
-          className="flex min-w-0 flex-1 items-center gap-2 text-left text-sm font-medium"
+          className="text-label flex min-w-0 flex-1 items-center gap-2 text-left text-foreground-tertiary transition-colors duration-micro hover:text-foreground-secondary"
           onClick={() => {
             onCollapseChange(!collapsed);
           }}
@@ -916,7 +919,7 @@ function BranchRow({
       style={style}
     >
       <button
-        className="grid h-10 w-full grid-cols-[14px_auto_1fr_auto] items-center gap-2 rounded-md px-2 text-left text-sm transition-colors group-hover:bg-accent group-focus-within:bg-accent"
+        className="grid h-9 w-full grid-cols-[14px_auto_1fr_auto] items-center gap-2 rounded-md px-2 text-left text-[13px] transition-colors duration-micro group-hover:bg-accent group-focus-within:bg-accent"
         onClick={() => {
           onFocus(branch);
         }}
@@ -930,22 +933,34 @@ function BranchRow({
           )}
         />
         {branch.remoteOnly ? (
-          <Cloud className="size-4 text-muted-foreground" aria-hidden="true" />
+          <Cloud
+            className="size-4 text-foreground-tertiary"
+            aria-hidden="true"
+          />
         ) : (
           <GitBranch
-            className="size-4 text-muted-foreground"
+            className="size-4 text-foreground-tertiary"
             aria-hidden="true"
           />
         )}
-        <span className="min-w-0 truncate">{branch.name}</span>
+        <span
+          className={cn(
+            "min-w-0 truncate",
+            branch.current ? "font-[560]" : undefined,
+          )}
+        >
+          {branch.name}
+        </span>
         {hasRemote && (branch.ahead > 0 || branch.behind > 0) ? (
           <Tooltip content={syncLabel}>
             {({ describedBy }) => (
               <span
                 aria-describedby={describedBy}
-                className="text-numeric rounded bg-secondary px-1.5 py-0.5 text-xs"
+                className="text-numeric text-caption text-foreground-tertiary"
               >
-                {branch.ahead > 0 ? `↑${branch.ahead}` : ""}
+                {branch.ahead > 0 ? (
+                  <span className="text-sync">↑{branch.ahead}</span>
+                ) : null}
                 {branch.behind > 0 ? ` ↓${branch.behind}` : ""}
               </span>
             )}
@@ -1049,7 +1064,7 @@ function MenuButton({
 }) {
   return (
     <button
-      className="block h-8 w-full rounded px-2 text-left text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+      className="block h-8 w-full rounded px-2 text-left text-[13px] text-foreground-secondary transition-colors duration-micro hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
       disabled={disabled}
       onClick={onClick}
       role="menuitem"
@@ -1090,14 +1105,19 @@ function StashRow({
       style={style}
     >
       <button
-        className="grid h-10 w-full grid-cols-[auto_1fr_auto] items-center gap-2 rounded-md px-2 text-left text-sm transition-colors group-hover:bg-accent group-focus-within:bg-accent"
+        className="grid h-9 w-full grid-cols-[auto_1fr_auto] items-center gap-2 rounded-md px-2 text-left text-[13px] transition-colors duration-micro group-hover:bg-accent group-focus-within:bg-accent"
         disabled={busy || !onDetails}
         onClick={onDetails ? () => onDetails(stash) : undefined}
         type="button"
       >
-        <Layers className="size-4 text-muted-foreground" aria-hidden="true" />
+        <Layers
+          className="size-4 text-foreground-tertiary"
+          aria-hidden="true"
+        />
         <span className="min-w-0 truncate">{stash.name}</span>
-        <span className="text-xs text-muted-foreground">{stash.timeLabel}</span>
+        <span className="text-caption text-foreground-tertiary">
+          {stash.timeLabel}
+        </span>
       </button>
       <div
         className={hoverActionGroupClassName}

@@ -61,13 +61,13 @@ export function DialogFrame({
           role="dialog"
           tabIndex={-1}
         >
-          <div className="flex items-start justify-between gap-4 border-b p-5">
+          <div className="flex items-start justify-between gap-4 border-b border-border-subtle px-6 py-5">
             <div className="min-w-0">
-              <h2 className="text-lg font-semibold" id={titleId}>
+              <h2 className="text-title" id={titleId}>
                 {title}
               </h2>
               <p
-                className="mt-1 text-sm text-muted-foreground"
+                className="text-body mt-1 text-foreground-secondary"
                 id={descriptionId}
               >
                 {description}
@@ -90,13 +90,17 @@ export function DialogFrame({
           <OverlayScrollArea
             className={contentClassName}
             viewportClassName={cn(
-              "flex flex-col gap-4 p-5",
+              "flex flex-col gap-4 p-6",
               contentViewportClassName,
             )}
           >
             {children}
           </OverlayScrollArea>
-          {footer ? <div className="border-t p-5">{footer}</div> : null}
+          {footer ? (
+            <div className="border-t border-border-subtle px-6 py-4">
+              {footer}
+            </div>
+          ) : null}
         </div>
       </div>
     </DialogLayerContext.Provider>

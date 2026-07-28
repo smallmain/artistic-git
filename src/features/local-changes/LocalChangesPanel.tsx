@@ -323,8 +323,11 @@ export function LocalChangesPanel({
         </div>
       ) : (
         <>
-          <aside className="flex min-h-0 flex-col bg-card" inert={loading}>
-            <header className="space-y-3 border-b p-3">
+          <aside
+            className="flex min-h-0 flex-col border-r border-border-subtle bg-card"
+            inert={loading}
+          >
+            <header className="space-y-3 border-b border-border-subtle p-3">
               <div className="flex items-center justify-between gap-2">
                 <TriStateCheckbox
                   ariaLabel={t("localChanges.selectAll")}
@@ -356,14 +359,14 @@ export function LocalChangesPanel({
                   </IconButton>
                 </div>
               </div>
-              <label className="flex h-9 items-center gap-2 rounded-md border bg-background px-3 text-sm">
+              <label className="flex h-8 items-center gap-2 rounded-md border border-border-subtle bg-background px-3 text-[13px]">
                 <Search
-                  className="size-4 text-muted-foreground"
+                  className="size-4 text-foreground-tertiary"
                   aria-hidden="true"
                 />
                 <input
                   aria-label={t("localChanges.search")}
-                  className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+                  className="min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-foreground-tertiary"
                   data-app-search="current"
                   onChange={(event) => setSearchTerm(event.target.value)}
                   placeholder={t("localChanges.search")}
@@ -412,7 +415,7 @@ export function LocalChangesPanel({
 
             <OverlayScrollArea className="min-h-0 flex-1" ref={changeListRef}>
               {filteredChanges.length === 0 ? (
-                <div className="p-4 text-sm text-muted-foreground">
+                <div className="text-body p-4 text-foreground-tertiary">
                   {t("localChanges.empty")}
                 </div>
               ) : effectiveViewMode === "flat" ? (
@@ -455,7 +458,7 @@ export function LocalChangesPanel({
                   >
                     <ChevronLeft className="size-4" aria-hidden="true" />
                   </IconButton>
-                  <span className="text-xs text-muted-foreground">
+                  <span className="text-numeric text-caption text-foreground-tertiary">
                     {t("localChanges.page", {
                       page: renderPageIndex + 1,
                       total: renderPageCount,
@@ -487,8 +490,8 @@ export function LocalChangesPanel({
               ) : null}
             </OverlayScrollArea>
 
-            <footer className="flex items-center justify-between gap-3 border-t p-3">
-              <span className="text-sm text-muted-foreground">
+            <footer className="flex items-center justify-between gap-3 border-t border-border-subtle p-3">
+              <span className="text-caption text-foreground-tertiary">
                 {t("localChanges.selectedCount", { count: checkedIds.size })}
               </span>
               <Button
@@ -770,7 +773,7 @@ function TreeNodeRow({
   return (
     <li>
       <div
-        className="flex h-9 items-center gap-2 px-2 text-sm hover:bg-accent"
+        className="flex h-9 items-center gap-2 px-2 text-[13px] transition-colors duration-micro hover:bg-accent"
         onContextMenu={(event) => onContextMenu(event, itemIds)}
       >
         <button
@@ -884,12 +887,12 @@ function ChangeRow({
           >
             <span className="flex min-w-0 items-center gap-2">
               <ChangeKindBadge change={change} />
-              <span className="truncate text-sm font-medium">
+              <span className="truncate text-[13px] font-medium">
                 {displayName}
               </span>
             </span>
             <span className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5">
-              <span className="min-w-0 truncate text-xs text-muted-foreground">
+              <span className="text-caption min-w-0 truncate text-foreground-tertiary">
                 {displayPath}
               </span>
               {change.submodule ? (

@@ -392,13 +392,12 @@ function createCodeMirrorExtensions(language?: string): Extension[] {
         minHeight: "100%",
       },
       ".cm-gutters": {
-        backgroundColor: "hsl(var(--muted) / 0.35)",
-        borderRight: "1px solid hsl(var(--border))",
-        color: "hsl(var(--muted-foreground))",
+        backgroundColor: "transparent",
+        borderRight: "1px solid hsl(var(--border-subtle))",
+        color: "hsl(var(--foreground-tertiary))",
       },
       ".cm-scroller": {
-        fontFamily:
-          "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+        fontFamily: "var(--font-mono)",
         fontSize: "12px",
       },
     }),
