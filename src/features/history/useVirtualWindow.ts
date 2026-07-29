@@ -10,6 +10,11 @@ export interface VirtualItem {
 export interface VirtualWindow {
   items: VirtualItem[];
   onScroll: React.UIEventHandler<HTMLElement>;
+  /**
+   * Syncs the window after a programmatic scroll, which cannot rely on the
+   * viewport's scroll event having been delivered yet.
+   */
+  setScrollOffset: (offset: number) => void;
   totalSize: number;
 }
 
@@ -53,6 +58,7 @@ export function useVirtualWindow({
     onScroll: (event) => {
       setScrollTop(event.currentTarget.scrollTop);
     },
+    setScrollOffset: setScrollTop,
     totalSize,
   };
 }

@@ -750,6 +750,11 @@ export const resources = {
         loadError: "Could not load commit history.",
         limitReached:
           "Showing the first {{count}} commits to keep this view responsive. Choose a branch or search to find older commits.",
+        locate: {
+          local: "Go to local tip of {{branch}}",
+          remote: "Go to remote tip of {{branch}}",
+          top: "Back to newest commit",
+        },
         loadMore: "Load more commits",
         loadMoreError: "Could not load more commits.",
         loading: "Loading history...",
@@ -1726,6 +1731,11 @@ export const resources = {
         loadError: "无法加载提交历史。",
         limitReached:
           "为保持界面流畅，仅显示前 {{count}} 条提交。可选择分支或搜索更早的提交。",
+        locate: {
+          local: "定位到 {{branch}} 的本地位置",
+          remote: "定位到 {{branch}} 的远程位置",
+          top: "回到最新提交",
+        },
         loadMore: "加载更多提交",
         loadMoreError: "无法加载更多提交。",
         loading: "正在加载历史...",

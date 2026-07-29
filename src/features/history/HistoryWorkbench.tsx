@@ -1,5 +1,6 @@
 import {
   AlertTriangle,
+  ArrowUp,
   Check,
   ChevronDown,
   Cloud,
@@ -103,6 +104,8 @@ const commitDetailFileLimit = 5_000;
 const commitDetailDefaultHeightPercent = 90;
 const commitDetailMinHeightPercent = 40;
 const commitDetailMaxHeightPercent = 100;
+/** Dead zone so the back-to-top action does not flicker on sub-pixel scrolling. */
+const scrollToTopRevealPx = 8;
 type RevertUnavailableReason = RevertDisabledReason | "missingRepository";
 
 interface HistoryWorkbenchProps {
@@ -321,6 +324,7 @@ export function HistoryWorkbench({
   );
   const commitDetailReturnFocusRef = React.useRef<HTMLElement | null>(null);
   const historyViewportRef = React.useRef<HTMLDivElement>(null);
+  const [historyScrollTop, setHistoryScrollTop] = React.useState(0);
   const [historyViewportHeight, measureHistoryViewport] =
     useObservedViewportHeight(historyViewportRef, fallbackViewportHeight);
   const repositoryPath = useWindowStore((state) => state.activeRepositoryPath);
@@ -692,10 +696,64 @@ export function HistoryWorkbench({
     (event) => {
       measureHistoryViewport(event.currentTarget);
       virtual.onScroll(event);
+      setHistoryScrollTop(event.currentTarget.scrollTop);
       maybeLoadNextPage(event.currentTarget);
     },
     [maybeLoadNextPage, measureHistoryViewport, virtual],
   );
+  const scrollHistoryTo = React.useCallback(
+    (top: number) => {
+      const viewport = historyViewportRef.current;
+      if (!viewport) {
+        return;
+      }
+      const maximumTop = Math.max(
+        0,
+        viewport.scrollHeight - viewport.clientHeight,
+      );
+      const nextTop = Math.min(Math.max(0, top), maximumTop);
+      viewport.scrollTop = nextTop;
+      // The viewport's scroll event is not guaranteed to have been delivered by
+      // the time the next render runs, so the window is synced explicitly.
+      virtual.setScrollOffset(nextTop);
+      setHistoryScrollTop(nextTop);
+    },
+    [virtual],
+  );
+  const scrollHistoryToRow = React.useCallback(
+    (rowIndex: number) => {
+      // Centre the target row so its surrounding history stays readable.
+      const viewportHeight =
+        historyViewportRef.current?.clientHeight ?? historyViewportHeight;
+      scrollHistoryTo(rowIndex * rowHeight - (viewportHeight - rowHeight) / 2);
+    },
+    [historyViewportHeight, scrollHistoryTo],
+  );
+  const branchTipRowIndices = React.useMemo(() => {
+    if (singleHistoryBranchName === null) {
+      return { local: -1, remote: -1 };
+    }
+
+    let local = -1;
+    let remote = -1;
+    for (const [index, row] of visibleRows.entries()) {
+      for (const ref of row.commit.refs) {
+        if (ref.type !== "branch" || ref.name !== singleHistoryBranchName) {
+          continue;
+        }
+        if (ref.remote) {
+          remote = remote < 0 ? index : remote;
+        } else {
+          local = local < 0 ? index : local;
+        }
+      }
+      if (local >= 0 && remote >= 0) {
+        break;
+      }
+    }
+
+    return { local, remote };
+  }, [singleHistoryBranchName, visibleRows]);
   // A branch that is far behind or ahead keeps one of its tips several pages
   // deep, and divergence cannot be classified until both are loaded. Page ahead
   // on the branch's behalf so the unsynced highlight does not wait for the user
@@ -862,99 +920,154 @@ export function HistoryWorkbench({
         <span>{t("history.columns.time")}</span>
       </div>
 
-      <OverlayScrollArea
-        className="min-h-0 flex-1"
-        data-testid="history-scroll-viewport"
-        onScroll={handleScroll}
-        ref={historyViewportRef}
-        viewportClassName="overscroll-contain"
-      >
-        <span
-          aria-hidden="true"
-          className="pointer-events-none sticky inset-x-0 top-0 z-[2] -mb-3 block h-3 bg-gradient-to-b from-card to-transparent"
-        />
-        <div className="relative" style={{ height: historyContentHeight }}>
-          {virtual.items.map((item) => {
-            const row = visibleRows[item.index];
-            return (
-              <HistoryCommitRow
-                gravatarEnabled={gravatarEnabled}
-                key={row.commit.id}
-                now={effectiveNow}
-                onSelect={(commitId, trigger) => {
-                  commitDetailReturnFocusRef.current = trigger;
-                  setSelectedCommitId(commitId);
-                }}
-                row={row}
-                style={{
-                  height: item.size,
-                  transform: `translateY(${item.start}px)`,
-                }}
-                unsynced={unsyncedCommitIds.has(row.commit.id)}
-              />
-            );
-          })}
-          <HistoryGraphSvg
-            rows={visibleRows}
-            unsyncedCommitIds={unsyncedCommitIds}
-            virtualItems={virtual.items}
-            width={112}
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <OverlayScrollArea
+          className="min-h-0 flex-1"
+          data-testid="history-scroll-viewport"
+          onScroll={handleScroll}
+          ref={historyViewportRef}
+          viewportClassName="overscroll-contain"
+        >
+          <span
+            aria-hidden="true"
+            className="pointer-events-none sticky inset-x-0 top-0 z-[2] -mb-3 block h-3 bg-gradient-to-b from-card to-transparent"
           />
-        </div>
-        {isFetchingNextPage ? (
-          <div className="sticky bottom-0 flex h-10 items-center justify-center gap-2 border-t bg-card/95 text-xs text-muted-foreground">
-            <Loader2 className="size-3.5 animate-spin" />
-            {t("history.loadingMore")}
+          <div className="relative" style={{ height: historyContentHeight }}>
+            {virtual.items.map((item) => {
+              const row = visibleRows[item.index];
+              return (
+                <HistoryCommitRow
+                  gravatarEnabled={gravatarEnabled}
+                  key={row.commit.id}
+                  now={effectiveNow}
+                  onSelect={(commitId, trigger) => {
+                    commitDetailReturnFocusRef.current = trigger;
+                    setSelectedCommitId(commitId);
+                  }}
+                  row={row}
+                  style={{
+                    height: item.size,
+                    transform: `translateY(${item.start}px)`,
+                  }}
+                  unsynced={unsyncedCommitIds.has(row.commit.id)}
+                />
+              );
+            })}
+            <HistoryGraphSvg
+              rows={visibleRows}
+              unsyncedCommitIds={unsyncedCommitIds}
+              virtualItems={virtual.items}
+              width={112}
+            />
           </div>
-        ) : null}
-        {visibleRows.length === 0 && !historyLoadError ? (
-          isHistoryContentLoading ? (
-            <div
-              aria-hidden="true"
-              className="absolute inset-0 px-4"
-              data-testid="history-skeleton"
-            >
-              {[0, 1, 2, 3, 4, 5, 6, 7].map((row) => (
-                <div
-                  className="grid h-12 items-center border-b border-border-subtle [grid-template-columns:112px_minmax(0,1fr)_160px_120px]"
-                  key={row}
-                >
-                  <span />
-                  <span className="flex items-center gap-3">
-                    <Skeleton className="size-6 shrink-0 rounded-full" />
-                    <Skeleton
-                      className="h-3"
-                      style={{ width: `${38 + ((row * 13) % 34)}%` }}
-                    />
-                  </span>
-                  <Skeleton className="h-3 w-20" />
-                  <Skeleton className="h-3 w-14" />
-                </div>
-              ))}
+          {isFetchingNextPage ? (
+            <div className="sticky bottom-0 flex h-10 items-center justify-center gap-2 border-t bg-card/95 text-xs text-muted-foreground">
+              <Loader2 className="size-3.5 animate-spin" />
+              {t("history.loadingMore")}
             </div>
-          ) : (
-            <div className="absolute inset-0 flex items-center justify-center px-4 pb-14 text-center text-sm text-muted-foreground">
-              {t("history.empty")}
+          ) : null}
+          {visibleRows.length === 0 && !historyLoadError ? (
+            isHistoryContentLoading ? (
+              <div
+                aria-hidden="true"
+                className="absolute inset-0 px-4"
+                data-testid="history-skeleton"
+              >
+                {[0, 1, 2, 3, 4, 5, 6, 7].map((row) => (
+                  <div
+                    className="grid h-12 items-center border-b border-border-subtle [grid-template-columns:112px_minmax(0,1fr)_160px_120px]"
+                    key={row}
+                  >
+                    <span />
+                    <span className="flex items-center gap-3">
+                      <Skeleton className="size-6 shrink-0 rounded-full" />
+                      <Skeleton
+                        className="h-3"
+                        style={{ width: `${38 + ((row * 13) % 34)}%` }}
+                      />
+                    </span>
+                    <Skeleton className="h-3 w-20" />
+                    <Skeleton className="h-3 w-14" />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="absolute inset-0 flex items-center justify-center px-4 pb-14 text-center text-sm text-muted-foreground">
+                {t("history.empty")}
+              </div>
+            )
+          ) : null}
+          {canLoadMore && !isFetchingNextPage && !historyLoadError ? (
+            <div className="relative z-10 flex h-12 items-center justify-center border-t bg-card/95">
+              <Button
+                data-testid="history-load-more"
+                onClick={requestNextPage}
+                type="button"
+                variant="secondary"
+              >
+                {t("history.loadMore")}
+              </Button>
             </div>
-          )
-        ) : null}
-        {canLoadMore && !isFetchingNextPage && !historyLoadError ? (
-          <div className="relative z-10 flex h-12 items-center justify-center border-t bg-card/95">
-            <Button
-              data-testid="history-load-more"
-              onClick={requestNextPage}
+          ) : null}
+          <span
+            aria-hidden="true"
+            className="pointer-events-none sticky inset-x-0 bottom-0 z-[2] -mt-3 block h-3 bg-gradient-to-t from-card to-transparent"
+          />
+        </OverlayScrollArea>
+        <div
+          className="pointer-events-none absolute bottom-4 right-4 z-[3] flex items-center gap-2"
+          data-testid="history-quick-actions"
+        >
+          {singleHistoryBranchName !== null &&
+          branchTipRowIndices.local >= 0 ? (
+            <IconButton
+              className="pointer-events-auto size-8 rounded-full shadow-raised"
+              data-testid="history-locate-local"
+              label={t("history.locate.local", {
+                branch: singleHistoryBranchName,
+              })}
+              onClick={() => {
+                scrollHistoryToRow(branchTipRowIndices.local);
+              }}
               type="button"
               variant="secondary"
             >
-              {t("history.loadMore")}
-            </Button>
-          </div>
-        ) : null}
-        <span
-          aria-hidden="true"
-          className="pointer-events-none sticky inset-x-0 bottom-0 z-[2] -mt-3 block h-3 bg-gradient-to-t from-card to-transparent"
-        />
-      </OverlayScrollArea>
+              <GitBranch aria-hidden="true" className="size-4" />
+            </IconButton>
+          ) : null}
+          {singleHistoryBranchName !== null &&
+          branchTipRowIndices.remote >= 0 ? (
+            <IconButton
+              className="pointer-events-auto size-8 rounded-full shadow-raised"
+              data-testid="history-locate-remote"
+              label={t("history.locate.remote", {
+                branch: singleHistoryBranchName,
+              })}
+              onClick={() => {
+                scrollHistoryToRow(branchTipRowIndices.remote);
+              }}
+              type="button"
+              variant="secondary"
+            >
+              <Cloud aria-hidden="true" className="size-4" />
+            </IconButton>
+          ) : null}
+          {historyScrollTop > scrollToTopRevealPx ? (
+            <IconButton
+              className="pointer-events-auto size-8 rounded-full shadow-raised"
+              data-testid="history-scroll-to-top"
+              label={t("history.locate.top")}
+              onClick={() => {
+                scrollHistoryTo(0);
+              }}
+              type="button"
+              variant="secondary"
+            >
+              <ArrowUp aria-hidden="true" className="size-4" />
+            </IconButton>
+          ) : null}
+        </div>
+      </div>
 
       {selectedCommit ? (
         <CommitDetailPanel

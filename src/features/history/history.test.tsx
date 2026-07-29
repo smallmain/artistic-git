@@ -969,6 +969,60 @@ describe("HistoryWorkbench", () => {
     expect(screen.getAllByTestId("history-commit-row").length).toBeLessThan(40);
   });
 
+  it("offers quick actions for the branch tips and for returning to the top", () => {
+    const rows = attachGraphRows(
+      Array.from({ length: 200 }, (_, index) => ({
+        ...mockHistoryCommits[0],
+        id: `quick-${index}`,
+        message: `Commit ${index}`,
+        parents: index === 199 ? [] : [`quick-${index + 1}`],
+        refs:
+          index === 0
+            ? [{ name: "main", remote: "origin", type: "branch" as const }]
+            : index === 120
+              ? [{ current: true, name: "main", type: "branch" as const }]
+              : [],
+        shortId: `quick-${index}`,
+      })),
+    );
+    renderWithProviders(
+      <HistoryWorkbench activeBranchName="main" rows={rows} />,
+    );
+
+    const viewport = screen.getByTestId("history-scroll-viewport");
+    Object.defineProperties(viewport, {
+      clientHeight: { configurable: true, value: 480 },
+      scrollHeight: { configurable: true, value: 200 * 48 },
+    });
+
+    // Back-to-top only appears once the list has actually been scrolled.
+    expect(screen.queryByTestId("history-scroll-to-top")).toBeNull();
+    fireEvent.scroll(viewport, { target: { scrollTop: 900 } });
+    expect(screen.getByTestId("history-scroll-to-top")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("history-locate-local"));
+    expect(viewport.scrollTop).toBe(120 * 48 - (480 - 48) / 2);
+    expect(screen.getByText("Commit 120")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("history-locate-remote"));
+    expect(viewport.scrollTop).toBe(0);
+    expect(screen.getByText("Commit 0")).toBeInTheDocument();
+    expect(screen.queryByTestId("history-scroll-to-top")).toBeNull();
+  });
+
+  it("hides the branch tip quick actions without a single branch in scope", () => {
+    renderWithProviders(
+      <HistoryWorkbench
+        rows={attachGraphRows(
+          mockHistoryCommits.map((commit) => ({ ...commit, refs: [] })),
+        )}
+      />,
+    );
+
+    expect(screen.queryByTestId("history-locate-local")).toBeNull();
+    expect(screen.queryByTestId("history-locate-remote")).toBeNull();
+  });
+
   it("keeps a long current branch name inside the history toolbar", () => {
     const branchName = `feature/${"long-name-".repeat(30)}`;
     renderWithProviders(
