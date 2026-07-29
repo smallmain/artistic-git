@@ -160,6 +160,8 @@ describe("history commit refs", () => {
       parseCommitRefs([
         "HEAD -> main",
         "origin/main",
+        "origin/HEAD",
+        "refs/remotes/upstream/main",
         "feature/lookdev",
         "origin/feature/lookdev",
         "tag: v1.4.0-rc.1",
@@ -167,9 +169,10 @@ describe("history commit refs", () => {
       ]),
     ).toEqual([
       { current: true, name: "main", type: "branch" },
-      { name: "main", remote: true, type: "branch" },
+      { name: "main", remote: "origin", type: "branch" },
+      { name: "main", remote: "upstream", type: "branch" },
       { name: "feature/lookdev", type: "branch" },
-      { name: "feature/lookdev", remote: true, type: "branch" },
+      { name: "feature/lookdev", remote: "origin", type: "branch" },
       { name: "v1.4.0-rc.1", type: "tag" },
     ]);
 
@@ -184,7 +187,7 @@ describe("history commit refs", () => {
     });
     expect(commit.refs).toEqual([
       { current: true, name: "main", type: "branch" },
-      { name: "main", remote: true, type: "branch" },
+      { name: "main", remote: "origin", type: "branch" },
     ]);
   });
 
@@ -207,7 +210,7 @@ describe("history commit refs", () => {
       ...shared,
       id: "remote-only",
       parents: [shared.id],
-      refs: [{ name: "main", remote: true, type: "branch" as const }],
+      refs: [{ name: "main", remote: "origin", type: "branch" as const }],
       shortId: "remote-only",
     };
 
@@ -227,7 +230,7 @@ describe("history commit refs", () => {
             ...shared,
             refs: [
               { current: true, name: "main", type: "branch" as const },
-              { name: "main", remote: true, type: "branch" as const },
+              { name: "main", remote: "origin", type: "branch" as const },
             ],
           },
         ]),
@@ -544,6 +547,56 @@ describe("HistoryWorkbench", () => {
     expect(
       await screen.findByText("Loaded from the next backend page"),
     ).toBeInTheDocument();
+  });
+
+  it("pages ahead on its own until both branch tips are loaded", async () => {
+    vi.useRealTimers();
+    const remoteTip = createCommitSummary({
+      oid: "cccccccccccccccccccccccccccccccccccccccc",
+      refs: ["origin/main"],
+      subject: "Remote tip waiting to be pulled",
+      time: 1_783_491_600,
+    });
+    const localTip = createCommitSummary({
+      oid: "dddddddddddddddddddddddddddddddddddddddd",
+      refs: ["HEAD -> main"],
+      subject: "Local tip several pages down",
+      time: 1_783_488_000,
+    });
+    logPageMock
+      .mockResolvedValueOnce({ commits: [remoteTip], nextAfter: "200" })
+      .mockResolvedValueOnce({ commits: [localTip], nextAfter: null });
+
+    renderWithProviders(
+      <HistoryWorkbench
+        activeBranchName="main"
+        branches={[
+          {
+            current: true,
+            name: "main",
+            remoteRevision: "refs/remotes/origin/main",
+            revision: "refs/heads/main",
+          },
+        ]}
+        historyRepositoryPath="/repo/art"
+        rows={[]}
+      />,
+    );
+
+    // No scrolling: the second page is requested because the local tip is still
+    // missing, and the divergent commit turns unsynced once it arrives.
+    expect(
+      await screen.findByText("Local tip several pages down"),
+    ).toBeInTheDocument();
+    expect(logPageMock).toHaveBeenCalledTimes(2);
+    await waitFor(() => {
+      expect(
+        screen
+          .getAllByTestId("history-commit-row")
+          .filter((row) => row.dataset.unsynced === "true")
+          .map((row) => row.dataset.commitShortId),
+      ).toEqual([remoteTip.oid.slice(0, 7), localTip.oid.slice(0, 7)]);
+    });
   });
 
   it("caps loaded history and explains how to find older commits", async () => {
@@ -1039,7 +1092,7 @@ describe("HistoryWorkbench", () => {
         ...mockHistoryRows[0].commit,
         refs: [
           { current: true, name: "main", type: "branch" as const },
-          { name: "main", remote: true, type: "branch" as const },
+          { name: "main", remote: "origin", type: "branch" as const },
           { name: "v1.4.0-rc.1", type: "tag" as const },
         ],
       },
@@ -1083,7 +1136,7 @@ describe("HistoryWorkbench", () => {
       id: "remote-only",
       message: "Unsynced remote commit",
       parents: [shared.id],
-      refs: [{ name: "main", remote: true, type: "branch" as const }],
+      refs: [{ name: "main", remote: "origin", type: "branch" as const }],
       shortId: "remote-only",
     };
 
@@ -1141,7 +1194,7 @@ describe("HistoryWorkbench", () => {
       id: "remote-only",
       message: "Unsynced remote commit",
       parents: [shared.id],
-      refs: [{ name: "main", remote: true, type: "branch" as const }],
+      refs: [{ name: "main", remote: "origin", type: "branch" as const }],
       shortId: "remote-only",
     };
 
@@ -1990,12 +2043,14 @@ function createCommitSummary({
   author = "Mira Chen",
   oid,
   parent,
+  refs = [],
   subject,
   time,
 }: {
   author?: string;
   oid: string;
   parent?: string;
+  refs?: string[];
   subject: string;
   time: number;
 }): CommitSummary {
@@ -2005,7 +2060,7 @@ function createCommitSummary({
     authoredAtUnixSeconds: String(time),
     oid,
     parents: parent ? [parent] : [],
-    refs: [],
+    refs,
     subject,
   };
 }

@@ -56,6 +56,7 @@ import { showToast } from "@/lib/toast";
 import { resolveAvatarPresentation } from "./avatar";
 import {
   collectUnsyncedCommitIds,
+  hasBothBranchTips,
   mapCommitChangedFile,
   mapCommitSummaryToHistoryCommit,
   toCommitChangedFile,
@@ -543,22 +544,22 @@ export function HistoryWorkbench({
     activeHistoryBranchName,
   );
   const visibleRows = React.useMemo(() => {
-    const sourceRows = activeSearchRows?.rows ?? effectiveRows.rows;
+    const source = activeSearchRows ?? effectiveRows;
     if (backendHistoryEnabled) {
-      return sourceRows.length > maxHistoryCommits
-        ? sourceRows.slice(0, maxHistoryCommits)
-        : sourceRows;
+      // The incremental projector appends into one stable array instance, so a
+      // shallow copy is what tells downstream memos that commits arrived.
+      return source.rows.slice(0, maxHistoryCommits);
     }
     if (activeSearchRows === null) {
       return fixtureFilteredRows;
     }
 
     const visibleIds = new Set(fixtureFilteredRows.map((row) => row.commit.id));
-    return sourceRows.filter((row) => visibleIds.has(row.commit.id));
+    return source.rows.filter((row) => visibleIds.has(row.commit.id));
   }, [
     activeSearchRows,
     backendHistoryEnabled,
-    effectiveRows.rows,
+    effectiveRows,
     fixtureFilteredRows,
   ]);
   const unsyncedCommitIds = React.useMemo(() => {
@@ -695,6 +696,44 @@ export function HistoryWorkbench({
     },
     [maybeLoadNextPage, measureHistoryViewport, virtual],
   );
+  // A branch that is far behind or ahead keeps one of its tips several pages
+  // deep, and divergence cannot be classified until both are loaded. Page ahead
+  // on the branch's behalf so the unsynced highlight does not wait for the user
+  // to scroll past hundreds of commits.
+  const branchTracksRemote = React.useMemo(() => {
+    if (singleHistoryBranchName === null) {
+      return false;
+    }
+    const branch = branches.find(
+      (candidate) => candidate.name === singleHistoryBranchName,
+    );
+    return Boolean(
+      branch?.remoteRevision &&
+      (branch.revision ?? "").startsWith("refs/heads/"),
+    );
+  }, [branches, singleHistoryBranchName]);
+  React.useEffect(() => {
+    if (
+      singleHistoryBranchName === null ||
+      !branchTracksRemote ||
+      effectiveSearchTerm ||
+      !canLoadMore ||
+      isFetchingNextPage ||
+      hasBothBranchTips(visibleRows, singleHistoryBranchName)
+    ) {
+      return;
+    }
+
+    requestNextPage();
+  }, [
+    branchTracksRemote,
+    canLoadMore,
+    effectiveSearchTerm,
+    isFetchingNextPage,
+    requestNextPage,
+    singleHistoryBranchName,
+    visibleRows,
+  ]);
   const historyContentHeight = Math.max(
     virtual.totalSize,
     canLoadMore ? historyViewportHeight - loadMoreFooterHeight : 0,
@@ -1349,6 +1388,7 @@ function createHistoryOperationId(prefix: string): string {
 function RefBadge({ refItem }: { refItem: HistoryCommit["refs"][number] }) {
   const isTag = refItem.type === "tag";
   const isRemoteBranch = !isTag && Boolean(refItem.remote);
+  const label = formatRefLabel(refItem);
   return (
     <span
       className={cn(
@@ -1362,10 +1402,16 @@ function RefBadge({ refItem }: { refItem: HistoryCommit["refs"][number] }) {
       data-remote={isRemoteBranch ? "true" : undefined}
       data-tag={isTag ? "true" : undefined}
       data-testid="history-ref-badge"
+      title={label}
     >
-      <span className="truncate">{refItem.name}</span>
+      <span className="truncate">{label}</span>
     </span>
   );
+}
+
+/** Remote-tracking refs keep their remote prefix so `main` and `origin/main` stay distinguishable. */
+function formatRefLabel(refItem: HistoryCommit["refs"][number]): string {
+  return refItem.remote ? `${refItem.remote}/${refItem.name}` : refItem.name;
 }
 
 function CommitRefsBrowser({ refs }: { refs: HistoryCommit["refs"] }) {
@@ -1471,6 +1517,7 @@ function VirtualCommitRefList({ refs }: { refs: HistoryCommit["refs"] }) {
           const ref = refs[item.index];
           const isTag = ref.type === "tag";
           const isRemoteBranch = !isTag && Boolean(ref.remote);
+          const label = formatRefLabel(ref);
           return (
             <div
               aria-posinset={item.index + 1}
@@ -1492,8 +1539,8 @@ function VirtualCommitRefList({ refs }: { refs: HistoryCommit["refs"] }) {
               ) : (
                 <GitBranch aria-hidden="true" className="size-3.5 shrink-0" />
               )}
-              <span className="min-w-0 flex-1 truncate" title={ref.name}>
-                {ref.name}
+              <span className="min-w-0 flex-1 truncate" title={label}>
+                {label}
               </span>
             </div>
           );

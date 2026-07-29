@@ -129,52 +129,75 @@ export function parseCommitRefs(refs: string[]): HistoryCommitRef[] {
   return refs
     .map((ref) => ref.trim())
     .filter((ref) => ref.length > 0 && ref !== "HEAD")
-    .map((ref) => {
+    .flatMap((ref): HistoryCommitRef[] => {
       if (ref.startsWith("HEAD -> ")) {
-        return {
-          current: true,
-          name: normalizeLocalBranchRef(ref.slice("HEAD -> ".length)),
-          type: "branch" as const,
-        };
+        return [
+          {
+            current: true,
+            name: normalizeLocalBranchRef(ref.slice("HEAD -> ".length)),
+            type: "branch",
+          },
+        ];
       }
       if (ref.startsWith("tag: ")) {
-        return {
-          name: ref.slice("tag: ".length),
-          type: "tag" as const,
-        };
+        return [{ name: ref.slice("tag: ".length), type: "tag" }];
       }
-      const remoteName = parseRemoteBranchName(ref);
-      if (remoteName !== null) {
-        return {
-          name: remoteName,
-          remote: true,
-          type: "branch" as const,
-        };
+      const remoteRef = parseRemoteBranchRef(ref);
+      if (remoteRef !== null) {
+        // `origin/HEAD` only points at the remote default branch, so it would
+        // otherwise show up as a second badge for that same branch.
+        return remoteRef.name === "HEAD" ? [] : [remoteRef];
       }
-      return {
-        name: normalizeLocalBranchRef(ref),
-        type: "branch" as const,
-      };
+      return [{ name: normalizeLocalBranchRef(ref), type: "branch" }];
     });
 }
 
-function parseRemoteBranchName(ref: string): string | null {
-  const candidates = [
-    ref.startsWith("refs/remotes/origin/")
-      ? ref.slice("refs/remotes/origin/".length)
-      : null,
-    ref.startsWith("origin/") ? ref.slice("origin/".length) : null,
-  ];
-  for (const name of candidates) {
-    if (name && name !== "HEAD" && !name.startsWith("HEAD/")) {
-      return name;
-    }
-  }
-  return null;
+const qualifiedRemoteRefPattern = /^refs\/remotes\/([^/]+)\/(.+)$/;
+const decoratedRemoteRefPattern = /^(origin)\/(.+)$/;
+
+function parseRemoteBranchRef(ref: string): HistoryCommitRef | null {
+  // `git log --format=%D` decorates with short names, so `origin/` is the only
+  // prefix we can attribute to a remote without guessing.
+  const match =
+    qualifiedRemoteRefPattern.exec(ref) ?? decoratedRemoteRefPattern.exec(ref);
+  return match === null
+    ? null
+    : { name: match[2], remote: match[1], type: "branch" };
 }
 
 function normalizeLocalBranchRef(ref: string): string {
   return ref.replace(/^refs\/heads\//, "");
+}
+
+/**
+ * Whether both the local and the remote-tracking tip of a branch are present in
+ * the loaded rows. Divergence cannot be classified until both are available, so
+ * callers use this to decide whether more history has to be paged in first.
+ */
+export function hasBothBranchTips(
+  rows: readonly HistoryRow[],
+  branchName: string,
+): boolean {
+  let local = false;
+  let remote = false;
+
+  for (const row of rows) {
+    for (const ref of row.commit.refs) {
+      if (ref.type !== "branch" || ref.name !== branchName) {
+        continue;
+      }
+      if (ref.remote) {
+        remote = true;
+      } else {
+        local = true;
+      }
+      if (local && remote) {
+        return true;
+      }
+    }
+  }
+
+  return false;
 }
 
 /**

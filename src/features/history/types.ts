@@ -2,11 +2,12 @@ export type HistoryRefType = "branch" | "tag";
 export type HistorySearchMatch = "message" | "author" | "content";
 
 export interface HistoryCommitRef {
+  /** Branch or tag name without the remote prefix, e.g. `main`. */
   name: string;
   type: HistoryRefType;
   current?: boolean;
-  /** Remote-tracking ref such as origin/main. Local branches omit this. */
-  remote?: boolean;
+  /** Remote that owns a remote-tracking ref, e.g. `origin`. Local refs omit this. */
+  remote?: string;
 }
 
 export interface HistoryAuthor {
