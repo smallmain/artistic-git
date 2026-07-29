@@ -269,6 +269,27 @@ describe("history graph pagination", () => {
       ),
     ).toBe(true);
   });
+
+  it("stops lane strokes at branch tips and root commits", () => {
+    const rows = attachGraphRows([
+      {
+        ...mockHistoryCommits[0],
+        id: "tip",
+        parents: ["root"],
+        shortId: "tip",
+      },
+      { ...mockHistoryCommits[0], id: "root", parents: [], shortId: "root" },
+    ]);
+    const laneSegment = (index: number) =>
+      rows[index].graph.segments.find(
+        (segment) =>
+          segment.kind === "vertical" &&
+          segment.fromLane === rows[index].graph.node.lane,
+      );
+
+    expect(laneSegment(0)).toMatchObject({ fromY: "middle", toY: "bottom" });
+    expect(laneSegment(1)).toMatchObject({ fromY: "top", toY: "middle" });
+  });
 });
 
 describe("HistoryWorkbench", () => {
@@ -1011,7 +1032,7 @@ describe("HistoryWorkbench", () => {
     expect(screen.getByRole("option", { name: "branch-20" })).toBeDisabled();
   });
 
-  it("distinguishes local and remote branch badges with branch and cloud icons", () => {
+  it("distinguishes local, remote, and tag badges by fill, outline, and tint", () => {
     const row = {
       ...mockHistoryRows[0],
       commit: {
@@ -1029,10 +1050,15 @@ describe("HistoryWorkbench", () => {
     const badges = screen.getAllByTestId("history-ref-badge");
     expect(badges).toHaveLength(3);
     expect(badges[0]).not.toHaveAttribute("data-remote");
-    expect(badges[0].querySelector("svg.lucide-git-branch")).not.toBeNull();
+    expect(badges[0]).toHaveClass("bg-secondary");
     expect(badges[1]).toHaveAttribute("data-remote", "true");
-    expect(badges[1].querySelector("svg.lucide-cloud")).not.toBeNull();
-    expect(badges[2].querySelector("svg.lucide-tag")).not.toBeNull();
+    expect(badges[1]).toHaveClass("border", "border-border-subtle");
+    expect(badges[2]).toHaveAttribute("data-tag", "true");
+    expect(badges[2]).toHaveClass("bg-warning/15");
+    // Redesign mockup keeps every ref chip at 18px so 48px rows stay balanced.
+    for (const badge of badges) {
+      expect(badge).toHaveClass("h-[18px]");
+    }
   });
 
   it("highlights unpushed local and unsynced remote commits for a single branch", () => {

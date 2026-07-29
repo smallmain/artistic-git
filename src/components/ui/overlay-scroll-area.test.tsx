@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import * as React from "react";
 import { describe, expect, it, vi } from "vitest";
 
@@ -49,5 +49,40 @@ describe("OverlayScrollArea", () => {
     fireEvent.pointerDown(track, { clientY: 140, pointerId: 1 });
     expect(viewport.scrollTop).toBeGreaterThan(400);
     fireEvent.pointerUp(window);
+  });
+
+  it("reveals the thumb while scrolling and fades it out once idle", () => {
+    vi.useFakeTimers();
+    try {
+      const { getByTestId } = render(
+        <OverlayScrollArea className="h-48 w-48" data-testid="idle-viewport">
+          <div className="h-[1000px]" />
+        </OverlayScrollArea>,
+      );
+
+      const viewport = getByTestId("idle-viewport");
+      Object.defineProperties(viewport, {
+        clientHeight: { configurable: true, value: 192 },
+        clientWidth: { configurable: true, value: 192 },
+        scrollHeight: { configurable: true, value: 1_000 },
+        scrollWidth: { configurable: true, value: 192 },
+      });
+      fireEvent.scroll(viewport, { target: { scrollTop: 400 } });
+
+      const track = within(viewport.parentElement as HTMLElement).getByTestId(
+        "overlay-scrollbar-vertical",
+      );
+      expect(track.firstElementChild).toHaveClass("opacity-100");
+      expect(track).not.toHaveAttribute("data-scrollbar-idle");
+
+      act(() => {
+        vi.advanceTimersByTime(1_000);
+      });
+
+      expect(track.firstElementChild).toHaveClass("opacity-0");
+      expect(track).toHaveAttribute("data-scrollbar-idle", "true");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

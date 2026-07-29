@@ -11,13 +11,15 @@ import type {
   HistorySearchMatch,
 } from "./types";
 
+// Muted lane colors following the redesign mockup: the trunk stays neutral and
+// branches pick up desaturated accents instead of fully saturated primaries.
 const palette = [
-  "#2563eb",
-  "#16a34a",
-  "#dc2626",
-  "#9333ea",
-  "#ea580c",
-  "#0891b2",
+  "hsl(220 9% 46%)",
+  "hsl(188 58% 36%)",
+  "hsl(262 45% 52%)",
+  "hsl(24 78% 48%)",
+  "hsl(152 45% 36%)",
+  "hsl(340 48% 50%)",
 ];
 const maxVisibleGraphLanes = 6;
 
@@ -264,7 +266,10 @@ function layoutRows(
   return commits.map((commit) => {
     const commitKey = graphKey(commit.id);
     let nodeLane = state.findIndex((lane) => lane.target === commitKey);
-    if (nodeLane < 0) {
+    // A lane that starts here means the commit is a branch tip, so its own lane
+    // must not draw a stub above the node.
+    const startsLane = nodeLane < 0;
+    if (startsLane) {
       const newLane = {
         color: palette[layoutState.nextColor % palette.length],
         target: commitKey,
@@ -283,13 +288,14 @@ function layoutRows(
       .map((lane, index) => (lane.target === commitKey ? index : -1))
       .filter((index) => index >= 0 && index !== nodeLane);
     const lanesBefore = state.map((lane) => ({ ...lane }));
+    const isRootCommit = commit.parents.length === 0;
     const segments: HistoryGraphSegment[] = lanesBefore.map((lane, index) => ({
       color: lane.color,
       fromLane: index,
-      fromY: "top",
+      fromY: index === nodeLane && startsLane ? "middle" : "top",
       kind: "vertical",
       toLane: index,
-      toY: "bottom",
+      toY: index === nodeLane && isRootCommit ? "middle" : "bottom",
     }));
 
     for (const duplicateLane of duplicateLanes) {
@@ -308,7 +314,7 @@ function layoutRows(
     }
     nodeLane = state.findIndex((lane) => lane.target === commitKey);
 
-    if (commit.parents.length === 0) {
+    if (isRootCommit) {
       state.splice(nodeLane, 1);
     } else {
       state[nodeLane].target = graphKey(commit.parents[0]);

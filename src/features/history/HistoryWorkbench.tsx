@@ -82,8 +82,10 @@ import { useVirtualWindow } from "./useVirtualWindow";
 
 const rowHeight = 48;
 const fallbackViewportHeight = 504;
-const graphLaneWidth = 18;
-const graphLeftPadding = 14;
+const graphLaneWidth = 16;
+const graphLeftPadding = 28;
+const graphStrokeWidth = 1.5;
+const graphLineOpacity = 0.45;
 const historyPageSize = 200;
 const maxHistoryCommits = 2_000;
 const maxCustomBranchSelections = 20;
@@ -828,6 +830,10 @@ export function HistoryWorkbench({
         ref={historyViewportRef}
         viewportClassName="overscroll-contain"
       >
+        <span
+          aria-hidden="true"
+          className="pointer-events-none sticky inset-x-0 top-0 z-[2] -mb-3 block h-3 bg-gradient-to-b from-card to-transparent"
+        />
         <div className="relative" style={{ height: historyContentHeight }}>
           {virtual.items.map((item) => {
             const row = visibleRows[item.index];
@@ -851,6 +857,7 @@ export function HistoryWorkbench({
           })}
           <HistoryGraphSvg
             rows={visibleRows}
+            unsyncedCommitIds={unsyncedCommitIds}
             virtualItems={virtual.items}
             width={112}
           />
@@ -904,6 +911,10 @@ export function HistoryWorkbench({
             </Button>
           </div>
         ) : null}
+        <span
+          aria-hidden="true"
+          className="pointer-events-none sticky inset-x-0 bottom-0 z-[2] -mt-3 block h-3 bg-gradient-to-t from-card to-transparent"
+        />
       </OverlayScrollArea>
 
       {selectedCommit ? (
@@ -1238,13 +1249,13 @@ function HistoryCommitRow({
       type="button"
     >
       <span aria-hidden="true" />
-      <span className="flex min-w-0 items-center gap-3">
+      <span className="flex min-w-0 items-center gap-2">
         <Avatar author={commit.author} gravatarEnabled={gravatarEnabled} />
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-[13px] font-medium">
+          <span className="block truncate text-[13px]/[18px] font-medium">
             {commit.message}
           </span>
-          <span className="mt-1 flex min-w-0 items-center gap-1.5">
+          <span className="mt-[3px] flex min-w-0 items-center gap-1">
             {visibleRefs.map((ref, index) => (
               <RefBadge
                 key={`${ref.type}:${ref.remote ? "remote" : "local"}:${ref.name}:${index}`}
@@ -1258,7 +1269,7 @@ function HistoryCommitRow({
                 {({ describedBy }) => (
                   <span
                     aria-describedby={describedBy}
-                    className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground"
+                    className="inline-flex h-[18px] shrink-0 items-center rounded-[5px] bg-muted px-1.5 text-[12px]/[16px] font-medium text-muted-foreground"
                     data-testid="history-ref-overflow"
                   >
                     +{hiddenRefCount}
@@ -1268,7 +1279,7 @@ function HistoryCommitRow({
             ) : null}
             {commit.searchMatches?.map((match) => (
               <span
-                className="rounded bg-warning/20 px-1.5 py-0.5 text-[11px] text-foreground"
+                className="inline-flex h-[18px] shrink-0 items-center rounded-[5px] bg-warning/15 px-1.5 text-[12px]/[16px] font-medium text-warning"
                 key={match}
               >
                 {t(`history.search.matches.${match}`)}
@@ -1320,8 +1331,11 @@ function Avatar({
   return (
     <span
       aria-hidden="true"
-      className="text-caption flex size-6 shrink-0 items-center justify-center rounded-full font-semibold text-white"
-      style={{ backgroundColor: presentation.background }}
+      className="flex size-6 shrink-0 items-center justify-center rounded-full text-[11px]/[16px] font-[560]"
+      style={{
+        backgroundColor: presentation.background,
+        color: presentation.foreground,
+      }}
     >
       {presentation.initials}
     </span>
@@ -1338,7 +1352,7 @@ function RefBadge({ refItem }: { refItem: HistoryCommit["refs"][number] }) {
   return (
     <span
       className={cn(
-        "text-caption inline-flex max-w-44 items-center gap-1 truncate rounded-[5px] px-1.5 py-0 font-medium",
+        "inline-flex h-[18px] max-w-44 shrink-0 items-center whitespace-nowrap rounded-[5px] px-1.5 text-[12px]/[16px] font-medium",
         isTag
           ? "bg-warning/15 text-warning"
           : isRemoteBranch
@@ -1346,15 +1360,9 @@ function RefBadge({ refItem }: { refItem: HistoryCommit["refs"][number] }) {
             : "bg-secondary text-foreground",
       )}
       data-remote={isRemoteBranch ? "true" : undefined}
+      data-tag={isTag ? "true" : undefined}
       data-testid="history-ref-badge"
     >
-      {isTag ? (
-        <Tag className="size-3 shrink-0" />
-      ) : isRemoteBranch ? (
-        <Cloud className="size-3 shrink-0" />
-      ) : (
-        <GitBranch className="size-3 shrink-0" />
-      )}
       <span className="truncate">{refItem.name}</span>
     </span>
   );
@@ -1497,10 +1505,12 @@ function VirtualCommitRefList({ refs }: { refs: HistoryCommit["refs"] }) {
 
 function HistoryGraphSvg({
   rows,
+  unsyncedCommitIds,
   virtualItems,
   width,
 }: {
   rows: HistoryRow[];
+  unsyncedCommitIds: ReadonlySet<string>;
   virtualItems: Array<{ index: number; start: number; size: number }>;
   width: number;
 }) {
@@ -1530,21 +1540,71 @@ function HistoryGraphSvg({
           />
         )),
       )}
-      {virtualItems.map((item) => {
-        const row = rows[item.index];
-        return (
-          <circle
-            cx={laneX(row.graph.node.lane)}
-            cy={item.start - windowStart + rowHeight / 2}
-            fill={row.graph.node.color}
-            key={`${row.commit.id}:node`}
-            r="5"
-            stroke="hsl(var(--card))"
-            strokeWidth="2"
-          />
-        );
-      })}
+      {virtualItems.map((item) => (
+        <GraphCommitNode
+          key={`${rows[item.index].commit.id}:node`}
+          row={rows[item.index]}
+          rowStart={item.start - windowStart}
+          unsynced={unsyncedCommitIds.has(rows[item.index].commit.id)}
+        />
+      ))}
     </svg>
+  );
+}
+
+function GraphCommitNode({
+  row,
+  rowStart,
+  unsynced,
+}: {
+  row: HistoryRow;
+  rowStart: number;
+  unsynced: boolean;
+}) {
+  const cx = laneX(row.graph.node.lane);
+  const cy = rowStart + rowHeight / 2;
+  const color = unsynced ? "hsl(var(--sync))" : row.graph.node.color;
+
+  // Merge commits read as a ring with an inner dot, side branches stay hollow,
+  // and everything else is a plain filled dot (redesign mockup graph legend).
+  if (row.commit.parents.length > 1) {
+    return (
+      <g data-testid="history-graph-node">
+        <circle
+          cx={cx}
+          cy={cy}
+          fill="hsl(var(--card))"
+          r={5}
+          stroke={color}
+          strokeWidth={graphStrokeWidth}
+        />
+        <circle cx={cx} cy={cy} fill={color} r={2} />
+      </g>
+    );
+  }
+
+  if (row.graph.node.lane > 0 && !unsynced) {
+    return (
+      <circle
+        cx={cx}
+        cy={cy}
+        data-testid="history-graph-node"
+        fill="hsl(var(--card))"
+        r={3.5}
+        stroke={color}
+        strokeWidth={graphStrokeWidth}
+      />
+    );
+  }
+
+  return (
+    <circle
+      cx={cx}
+      cy={cy}
+      data-testid="history-graph-node"
+      fill={color}
+      r={4}
+    />
   );
 }
 
@@ -1555,15 +1615,24 @@ function GraphSegmentLine({
   rowStart: number;
   segment: HistoryGraphSegment;
 }) {
+  const x1 = laneX(segment.fromLane);
+  const x2 = laneX(segment.toLane);
+  const y1 = rowStart + anchorY(segment.fromY);
+  const y2 = rowStart + anchorY(segment.toY);
+  const midpointY = (y1 + y2) / 2;
+
   return (
-    <line
+    <path
+      d={
+        x1 === x2
+          ? `M${x1} ${y1} V${y2}`
+          : `M${x1} ${y1} C ${x1} ${midpointY}, ${x2} ${midpointY}, ${x2} ${y2}`
+      }
+      fill="none"
       stroke={segment.color}
       strokeLinecap="round"
-      strokeWidth={segment.kind === "vertical" ? 2 : 2.5}
-      x1={laneX(segment.fromLane)}
-      x2={laneX(segment.toLane)}
-      y1={rowStart + anchorY(segment.fromY)}
-      y2={rowStart + anchorY(segment.toY)}
+      strokeOpacity={graphLineOpacity}
+      strokeWidth={graphStrokeWidth}
     />
   );
 }

@@ -21,6 +21,7 @@ export interface OverlayScrollAreaProps extends React.HTMLAttributes<HTMLDivElem
 
 const scrollbarInset = 4;
 const minimumThumbSize = 24;
+const scrollbarIdleDelay = 900;
 const hiddenAxis: ScrollbarAxisState = {
   offset: 0,
   size: 0,
@@ -40,8 +41,25 @@ export const OverlayScrollArea = React.forwardRef<
 ) {
   const viewportRef = React.useRef<HTMLDivElement | null>(null);
   const finishDragRef = React.useRef<(() => void) | null>(null);
+  const idleTimerRef = React.useRef<number | null>(null);
   const [scrollbars, setScrollbars] =
     React.useState<ScrollbarState>(hiddenScrollbars);
+  const [active, setActive] = React.useState(false);
+  // Overlay scrollbars stay out of the way: they surface on scroll or pointer
+  // proximity and fade back out once the surface goes idle.
+  const wake = React.useCallback((sticky = false) => {
+    setActive(true);
+    if (idleTimerRef.current !== null) {
+      window.clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = null;
+    }
+    if (!sticky) {
+      idleTimerRef.current = window.setTimeout(() => {
+        idleTimerRef.current = null;
+        setActive(false);
+      }, scrollbarIdleDelay);
+    }
+  }, []);
   const setViewportRef = React.useCallback(
     (node: HTMLDivElement | null) => {
       viewportRef.current = node;
@@ -108,6 +126,9 @@ export const OverlayScrollArea = React.forwardRef<
   React.useEffect(
     () => () => {
       finishDragRef.current?.();
+      if (idleTimerRef.current !== null) {
+        window.clearTimeout(idleTimerRef.current);
+      }
     },
     [],
   );
@@ -123,6 +144,7 @@ export const OverlayScrollArea = React.forwardRef<
     }
 
     finishDragRef.current?.();
+    wake(true);
     event.preventDefault();
     event.stopPropagation();
     event.currentTarget.setPointerCapture?.(event.pointerId);
@@ -175,6 +197,7 @@ export const OverlayScrollArea = React.forwardRef<
       if (finishDragRef.current === finishDrag) {
         finishDragRef.current = null;
       }
+      wake();
     };
 
     window.addEventListener("pointermove", updateScrollPosition);
@@ -187,6 +210,8 @@ export const OverlayScrollArea = React.forwardRef<
   return (
     <div
       className={cn("relative isolate min-h-0 overflow-hidden", className)}
+      onPointerLeave={() => wake()}
+      onPointerMove={() => wake()}
       style={style}
     >
       <div
@@ -197,6 +222,7 @@ export const OverlayScrollArea = React.forwardRef<
         )}
         onScroll={(event) => {
           onScroll?.(event);
+          wake();
           measure();
         }}
         ref={setViewportRef}
@@ -207,11 +233,16 @@ export const OverlayScrollArea = React.forwardRef<
         <div
           aria-hidden="true"
           className="absolute bottom-1 right-1 top-1 z-30 w-2 touch-none"
+          data-scrollbar-idle={active ? undefined : "true"}
           data-testid="overlay-scrollbar-vertical"
           onPointerDown={(event) => startThumbDrag("vertical", event)}
+          onPointerEnter={() => wake(true)}
         >
           <span
-            className="absolute right-0 w-1.5 rounded-full bg-foreground/25 transition-colors hover:bg-foreground/40"
+            className={cn(
+              "absolute right-0 w-1.5 rounded-full bg-foreground/25 transition-[opacity,background-color] duration-fast hover:bg-foreground/40 motion-reduce:transition-none",
+              active ? "opacity-100" : "opacity-0",
+            )}
             style={{
               height: scrollbars.vertical.size,
               transform: `translateY(${scrollbars.vertical.offset}px)`,
@@ -223,11 +254,16 @@ export const OverlayScrollArea = React.forwardRef<
         <div
           aria-hidden="true"
           className="absolute bottom-1 left-1 right-1 z-30 h-2 touch-none"
+          data-scrollbar-idle={active ? undefined : "true"}
           data-testid="overlay-scrollbar-horizontal"
           onPointerDown={(event) => startThumbDrag("horizontal", event)}
+          onPointerEnter={() => wake(true)}
         >
           <span
-            className="absolute bottom-0 h-1.5 rounded-full bg-foreground/25 transition-colors hover:bg-foreground/40"
+            className={cn(
+              "absolute bottom-0 h-1.5 rounded-full bg-foreground/25 transition-[opacity,background-color] duration-fast hover:bg-foreground/40 motion-reduce:transition-none",
+              active ? "opacity-100" : "opacity-0",
+            )}
             style={{
               transform: `translateX(${scrollbars.horizontal.offset}px)`,
               width: scrollbars.horizontal.size,
