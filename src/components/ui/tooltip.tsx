@@ -33,7 +33,7 @@ export function Tooltip({
   > | null>(null);
   const isOpen =
     (hasFocus || isTooltipHovered || isTriggerHovered) && !isDismissed;
-  // 悬停触发延迟 300ms 淡入（redesign-spec §6.3）；键盘聚焦立即显示
+  // Hover-triggered fade-in delayed 300ms (redesign-spec §6.3); keyboard focus shows immediately.
   const openedViaHover = isTriggerHovered || isTooltipHovered;
 
   const cancelPendingHoverClose = React.useCallback(() => {

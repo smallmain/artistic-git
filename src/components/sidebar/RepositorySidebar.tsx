@@ -832,7 +832,7 @@ function SidebarSection({
   );
 }
 
-/** 骨架行：形状对齐 40px 列表行（redesign-spec §7.1）。 */
+/** Skeleton row: shape aligned to the 40px list row (redesign-spec §7.1). */
 function SidebarSectionSkeleton() {
   return (
     <div

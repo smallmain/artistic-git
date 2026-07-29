@@ -10,7 +10,7 @@ import {
 } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 
-/** Toast 退出淡出时长（redesign-spec §5.2：退出 120ms，留 20ms 缓冲卸载）。 */
+/** Toast exit fade duration (redesign-spec §5.2: 120ms exit plus a 20ms unmount buffer). */
 export const toastExitAnimationMs = 140;
 
 interface ToastItem extends Required<Pick<ToastRequest, "message" | "tone">> {
@@ -78,7 +78,7 @@ export function ToastViewport() {
 
   const dismissToast = React.useCallback(
     (id: string) => {
-      // 已在退出动画中，避免重复调度
+      // Already in the exit animation; avoid scheduling it twice.
       if (leaveTimeoutsRef.current.has(id)) {
         return;
       }
@@ -86,7 +86,7 @@ export function ToastViewport() {
       if (timer?.timeoutId !== null && timer?.timeoutId !== undefined) {
         window.clearTimeout(timer.timeoutId);
       }
-      // 手动关闭即清除计时记录，同 key 重建时不继承暂停状态
+      // Manual dismiss clears the timer record so a same-key rebuild does not inherit the paused state.
       timersRef.current.delete(id);
       setLeavingIds((current) => new Set(current).add(id));
       const timeoutId = window.setTimeout(() => {
@@ -179,7 +179,7 @@ export function ToastViewport() {
         window.clearTimeout(previousTimer.timeoutId);
       }
       timers.delete(id);
-      // 同 key 重新出现：取消未完成的退出动画，避免误删新 Toast
+      // Same key reappears: cancel the pending exit animation so the new toast is not removed.
       const pendingLeave = leaveTimeoutsRef.current.get(id);
       if (pendingLeave !== undefined) {
         window.clearTimeout(pendingLeave);

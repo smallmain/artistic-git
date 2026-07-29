@@ -5,8 +5,8 @@ import { cn } from "@/lib/utils";
 export type SkeletonProps = React.HTMLAttributes<HTMLDivElement>;
 
 /**
- * 骨架屏基元：克制 pulse（1800ms），形状应与真实布局一致。
- * 用法：以真实元素的尺寸拼接 Skeleton 块，禁止 shimmer 扫光。
+ * Skeleton primitive: restrained pulse (1800ms); shapes should mirror the real layout.
+ * Usage: compose Skeleton blocks at the real element's dimensions; no shimmer sweep.
  */
 export function Skeleton({ className, ...props }: SkeletonProps) {
   return (

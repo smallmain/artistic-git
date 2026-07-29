@@ -2,7 +2,7 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* Inter Variable（latin 子集，SIL OFL 1.1）——中文回落系统字体，见 redesign-spec §3.1 */
+/* Inter Variable (latin subset, SIL OFL 1.1); CJK falls back to system fonts, see redesign-spec §3.1 */
 @font-face {
   font-family: "Inter";
   src: url("./assets/fonts/InterVariable.woff2") format("woff2");
@@ -323,7 +323,7 @@ body {
   font-feature-settings: "tnum";
 }
 
-/* 语义字阶（redesign-spec §3.2，每级锁定 字号/行高/字重/字距） */
+/* Semantic type scale (redesign-spec §3.2; each level locks size/line-height/weight/tracking) */
 .text-display {
   font-size: 24px;
   line-height: 32px;
@@ -364,7 +364,7 @@ body {
   font-weight: 450;
 }
 
-/* 动效原语（redesign-spec §5.2 模式库；reduced-motion 由全局规则降级） */
+/* Motion primitives (redesign-spec §5.2 pattern library; reduced-motion is downgraded by the global rule) */
 @keyframes overlay-backdrop-in {
   from {
     opacity: 0;
@@ -398,34 +398,34 @@ body {
   }
 }
 
-/* 对话框/覆盖层背景：淡入 180ms */
+/* Dialog/overlay backdrop: fade in over 180ms */
 .animate-overlay-backdrop-in {
   animation: overlay-backdrop-in var(--duration-fast-value)
     var(--ease-standard-value);
 }
 
-/* 覆盖层进入：fade + scale 0.98 + y 4px，240ms 减速 */
+/* Overlay enter: fade + scale 0.98 + y 4px, 240ms decelerate */
 .animate-overlay-enter {
   animation: overlay-enter var(--duration-panel-value) var(--ease-enter-value);
 }
 
-/* 浮层进入：fade + scale 0.96，180ms 减速 */
+/* Popover enter: fade + scale 0.96, 180ms decelerate */
 .animate-popover-enter {
   animation: popover-enter var(--duration-fast-value) var(--ease-enter-value);
 }
 
-/* Toast 进入：fade + y 8px，240ms 减速 */
+/* Toast enter: fade + y 8px, 240ms decelerate */
 .animate-toast-enter {
   animation: toast-enter var(--duration-panel-value) var(--ease-enter-value);
 }
 
-/* 退出：仅快速淡出 120ms（forwards 保持终态，配合延迟卸载） */
+/* Exit: fast fade-out only, 120ms (forwards holds the end state, paired with delayed unmount) */
 .animate-fade-exit {
   animation: fade-exit var(--duration-micro-value) var(--ease-exit-value)
     forwards;
 }
 
-/* 骨架屏：克制 pulse，1800ms，无 shimmer 扫光（redesign-spec §7.1） */
+/* Skeleton: restrained pulse, 1800ms, no shimmer sweep (redesign-spec §7.1) */
 @keyframes skeleton-pulse {
   0%,
   100% {
@@ -440,7 +440,7 @@ body {
   animation: skeleton-pulse 1800ms ease-in-out infinite;
 }
 
-/* 顶部进度条不定态：2px 细条左右滑动 1200ms（redesign-spec §7.2） */
+/* Top progress bar indeterminate state: 2px bar sliding left-right over 1200ms (redesign-spec §7.2) */
 @keyframes indeterminate-slide {
   from {
     left: -40%;

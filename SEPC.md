@@ -235,15 +235,16 @@
 
 # 视觉设计系统
 
-先定一套轻量设计令牌（design tokens）作为所有界面的统一基准，落地为 CSS 变量 + Tailwind 主题扩展，由 shadcn 组件消费。
+设计目标：大道至简、内敛精致（Linear 式视觉语言）。一套设计令牌（design tokens）作为所有界面的统一基准，落地为 CSS 变量 + Tailwind 主题扩展，由 shadcn 组件消费。完整规格与令牌值见 [docs/design/redesign-spec.md](docs/design/redesign-spec.md)（单一事实来源），本节为约束摘要。
 
-- 主色：黑白极简（Vercel/Geist 风格）——浅色主题主色为近黑，深色主题主色为白；中性灰阶走纯灰。
-- 语义色（克制使用，主要用于状态指示）：成功绿、警告黄、危险红、同步橙（待同步状态）；审查模式按钮的青色渐变单独定义（规格已指定）。
-- 排版：系统字体栈（macOS SF、Windows Segoe），尺寸阶梯 12/13/14/16/20/24，行高 1.5；数字用等宽变体（提交数、文件大小对齐）。
-- 圆角：卡片 8px、按钮 6px、输入框 6px、Modal 12px。
-- 间距：4px 基准网格（4/8/12/16/24/32）。
-- 阴影：克制，仅用于浮层（Modal、下拉、提交详情面板、tooltip），苹果风格柔和阴影。
-- 动效：微交互 150ms、面板滑出/Modal 200–250ms，缓动用 ease-out/spring；尊重系统“减少动态效果”无障碍设置时降级为淡入淡出。
+- 色彩：微冷中性阶（非纯灰，带极轻蓝相），浅色 / 深色各一套完整令牌；层级靠字重与灰度差表达，内容区几乎不用分隔线。语义色一律降饱和、克制使用：成功绿、警告黄、危险红、同步橙（待同步）、审查模式青（全界面唯一彩色块）。
+- 排版：**Inter Variable 内嵌**（latin/latin-ext 子集，SIL OFL 1.1，`font-display: swap`）负责英文/数字/标点；**中文锁定系统字体**（PingFang SC / 微软雅黑 / Noto Sans CJK 回落，不内嵌 CJK）。等宽仅用于 commit hash、文件路径、diff。
+- 字阶：6 级语义工具类 `.text-display / .text-title / .text-heading / .text-body / .text-label / .text-caption`，每级锁定 字号/行高/字重/字距（如 body 13/20 · 450 · 0）。禁止在组件中用裸 `text-xs/text-sm` 表达语义层级。堆叠比较的数字加 `.text-numeric`（tabular-nums）。
+- 中英混排：行高统一用固定 px（不用相对单位）以消化 Inter 与系统中文的基线差；混排行字重取低档（body 450）。
+- 圆角：按钮/输入框/列表行 6px、面板/卡片/popover 8px、对话框/大浮层 12px。间距：4px 网格（4/8/12/16/20/24/32）。
+- 边框与阴影：分隔线用 `--border-subtle`，浮层边缘用 `--border`；阴影仅用于浮层（raised/overlay/popover 三级，深色主题提高 alpha），内容区域不使用阴影。
+- 动效：时长令牌 `--duration-micro/fast/panel/large` = 120/180/240/320ms，曲线 `--ease-standard/enter/exit`。仅使用规格模式库（hover 反馈、popover/overlay/toast 进入、面板展开、列表首屏 stagger ≤24ms/项、骨架 pulse、进度条），禁止发明新动画。`prefers-reduced-motion` 全局降级为 1ms 淡入淡出。
+- 加载与进度：骨架屏用克制 pulse（1800ms，形状对齐真实布局，无 shimmer 扫光）替代 spinner；fetch/sync 用顶部 2px 不定态细进度条（同步橙）。
 - 图标：lucide，统一线宽与尺寸（16/20）。
 - 深浅主题：两套完整令牌值，通过 CSS 变量切换，shadcn theming 机制承载。
 
