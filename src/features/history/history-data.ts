@@ -310,16 +310,12 @@ function layoutRows(
     const duplicateLanes = state
       .map((lane, index) => (lane.target === commitKey ? index : -1))
       .filter((index) => index >= 0 && index !== nodeLane);
-    const lanesBefore = state.map((lane) => ({ ...lane }));
+    // Lane identities are tracked by reference so a lane that shifts sideways
+    // this row can be drawn to the column it actually ends up in.
+    const laneRefsBefore = [...state];
+    const lanesBefore = laneRefsBefore.map((lane) => ({ ...lane }));
     const isRootCommit = commit.parents.length === 0;
-    const segments: HistoryGraphSegment[] = lanesBefore.map((lane, index) => ({
-      color: lane.color,
-      fromLane: index,
-      fromY: index === nodeLane && startsLane ? "middle" : "top",
-      kind: "vertical",
-      toLane: index,
-      toY: index === nodeLane && isRootCommit ? "middle" : "bottom",
-    }));
+    const segments: HistoryGraphSegment[] = [];
 
     for (const duplicateLane of duplicateLanes) {
       segments.push({
@@ -335,7 +331,9 @@ function layoutRows(
     for (const duplicateLane of [...duplicateLanes].reverse()) {
       state.splice(duplicateLane, 1);
     }
-    nodeLane = state.findIndex((lane) => lane.target === commitKey);
+    // Duplicates and inserted parent lanes always sit to the right of the node,
+    // so the node keeps its column for the whole row.
+    nodeLane = state.indexOf(laneRefsBefore[nodeLane]);
 
     if (isRootCommit) {
       state.splice(nodeLane, 1);
@@ -358,6 +356,27 @@ function layoutRows(
           toY: "bottom",
         });
       }
+    }
+
+    // Merging a lane away or inserting a parent lane shifts every lane to its
+    // right. Each surviving lane is drawn from the column it entered to the one
+    // it leaves in, otherwise the next row restarts the stroke at a different x
+    // and the graph reads as broken.
+    const laneIndexAfter = new Map(state.map((lane, index) => [lane, index]));
+    const mergedLanes = new Set(duplicateLanes);
+    for (const [index, laneRef] of laneRefsBefore.entries()) {
+      if (mergedLanes.has(index)) {
+        continue;
+      }
+      const isNodeLane = index === nodeLane;
+      segments.push({
+        color: lanesBefore[index].color,
+        fromLane: index,
+        fromY: isNodeLane && startsLane ? "middle" : "top",
+        kind: "vertical",
+        toLane: laneIndexAfter.get(laneRef) ?? index,
+        toY: isNodeLane && isRootCommit ? "middle" : "bottom",
+      });
     }
 
     const lanesAfter = state.map((lane) => ({ ...lane }));

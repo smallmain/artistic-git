@@ -69,9 +69,9 @@ describe("RepositorySidebar", () => {
       "text-review-foreground",
     );
     expect(reviewButton.querySelector("svg")).not.toBeNull();
-    expect(settingsButton).toHaveClass("size-9");
+    expect(settingsButton).toHaveClass("size-7");
     expect(settingsButton).not.toHaveTextContent("Settings");
-    expect(safetyBackupsButton).toHaveClass("size-9");
+    expect(safetyBackupsButton).toHaveClass("size-7");
     expect(safetyBackupsButton).not.toHaveTextContent("Safety backups");
     expect(
       settingsButton.compareDocumentPosition(safetyBackupsButton) &
@@ -183,9 +183,9 @@ describe("RepositorySidebar", () => {
     const branchRows = screen.getAllByTestId("branch-row");
     const stashRows = screen.getAllByTestId("stash-row");
 
-    expect(branchRows[0]).toHaveStyle({ height: "36px", top: "0px" });
-    expect(branchRows[1]).toHaveStyle({ height: "36px", top: "36px" });
-    expect(stashRows[0]).toHaveStyle({ height: "36px", top: "0px" });
+    expect(branchRows[0]).toHaveStyle({ height: "32px", top: "0px" });
+    expect(branchRows[1]).toHaveStyle({ height: "32px", top: "32px" });
+    expect(stashRows[0]).toHaveStyle({ height: "32px", top: "0px" });
     expect(screen.getByTestId("sidebar-branches-scroll")).toHaveClass(
       "overlay-scrollbar-viewport",
     );
@@ -512,9 +512,11 @@ describe("RepositorySidebar", () => {
 
     expect(widthHandle.closest("aside")).toHaveClass("overflow-hidden");
     expect(widthHandle).toHaveClass("group", "cursor-ew-resize");
+    // The sidebar border is the resting divider, so the handle stays invisible
+    // until it is hovered or dragged instead of drawing a second line.
     expect(widthHandle.firstElementChild).toHaveClass(
       "w-px",
-      "bg-border",
+      "bg-transparent",
       "group-hover:w-0.5",
       "group-hover:bg-ring",
       "group-active:w-0.5",

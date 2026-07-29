@@ -84,8 +84,10 @@ import { useVirtualWindow } from "./useVirtualWindow";
 
 const rowHeight = 48;
 const fallbackViewportHeight = 504;
-const graphLaneWidth = 16;
-const graphLeftPadding = 28;
+// Lane 0 sits under the "Graph" column label, and six lanes still leave a clear
+// gutter before the commit column so a busy graph never crowds the avatars.
+const graphLaneWidth = 14;
+const graphLeftPadding = 10;
 const graphStrokeWidth = 1.5;
 const graphLineOpacity = 0.45;
 const historyPageSize = 200;

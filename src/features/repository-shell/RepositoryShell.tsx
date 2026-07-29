@@ -2348,7 +2348,7 @@ export function RepositoryShell({ repositoryPath }: RepositoryShellProps) {
 
         <header className="flex h-12 shrink-0 items-center justify-between border-b border-border-subtle px-4">
           <nav
-            className="flex items-center gap-1"
+            className="flex items-center gap-0.5"
             aria-label={t("repository.tabs")}
           >
             <TabButton
@@ -4791,7 +4791,7 @@ function TabButton({
   return (
     <button
       className={cn(
-        "flex h-8 items-center gap-1.5 rounded-md px-2.5 text-[13px] font-medium transition-colors duration-micro",
+        "flex h-[30px] items-center gap-1.5 rounded-md px-2.5 text-[13px] font-medium transition-colors duration-micro",
         active
           ? "bg-accent text-foreground"
           : "text-foreground-tertiary hover:bg-accent hover:text-foreground",

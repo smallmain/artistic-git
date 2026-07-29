@@ -273,6 +273,34 @@ describe("history graph pagination", () => {
     ).toBe(true);
   });
 
+  it("carries a lane across the column it shifts into", () => {
+    const commit = (id: string, parents: string[]) => ({
+      ...mockHistoryCommits[0],
+      id,
+      parents,
+      shortId: id,
+    });
+    // Merging `dup` away at `base` pulls the lane held by `side` one column to
+    // the left, so that row has to bridge the two columns itself.
+    const rows = attachGraphRows([
+      commit("merge", ["mainp", "dup"]),
+      commit("mainp", ["base"]),
+      commit("dup", ["base"]),
+      commit("side", ["older"]),
+      commit("base", []),
+      commit("older", []),
+    ]);
+    const baseRow = rows.find((row) => row.commit.id === "base");
+
+    expect(
+      baseRow?.graph.segments.filter((segment) => segment.kind === "vertical"),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ fromLane: 2, kind: "vertical", toLane: 0 }),
+      ]),
+    );
+  });
+
   it("stops lane strokes at branch tips and root commits", () => {
     const rows = attachGraphRows([
       {

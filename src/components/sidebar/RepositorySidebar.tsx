@@ -92,10 +92,10 @@ const minSidebarWidth = 260;
 const maxSidebarWidth = 460;
 const minBranchRatio = 35;
 const maxBranchRatio = 78;
-const branchRowHeight = 36;
+const branchRowHeight = 32;
 const branchVirtualOverscan = 6;
 const defaultBranchViewportHeight = 720;
-const stashRowHeight = 36;
+const stashRowHeight = 32;
 const stashVirtualOverscan = 6;
 /** Shared edge-fade hover action cluster for list rows. */
 const hoverActionGroupClassName =
@@ -412,9 +412,7 @@ export function RepositorySidebar({
           />
           {repository.hasRemote ? (
             <IconButton
-              className={
-                hasPendingSync ? "text-sync hover:bg-sync/10" : undefined
-              }
+              className="relative"
               data-testid="repository-sync-all"
               disabled={busy || !onFetch}
               label={t("repository.sync")}
@@ -426,6 +424,13 @@ export function RepositorySidebar({
               variant="ghost"
             >
               <RefreshCw className="size-4" aria-hidden="true" />
+              {hasPendingSync ? (
+                <span
+                  aria-hidden="true"
+                  className="absolute right-[5px] top-[5px] size-[7px] rounded-full border-[1.5px] border-background bg-sync"
+                  data-testid="repository-sync-pending-dot"
+                />
+              ) : null}
             </IconButton>
           ) : null}
         </div>
@@ -600,11 +605,10 @@ export function RepositorySidebar({
       </section>
 
       <section
-        className="flex shrink-0 items-center gap-1 border-t border-border-subtle px-3 py-2"
+        className="flex shrink-0 items-center gap-0.5 border-t border-border-subtle px-2 py-1.5"
         data-testid="sidebar-settings-action"
       >
         <IconButton
-          className="size-9"
           label={t("actions.openSettings")}
           onClick={onOpenSettings}
           tooltip={t("actions.openSettings")}
@@ -616,7 +620,6 @@ export function RepositorySidebar({
         </IconButton>
         {onShowSafetyBackups ? (
           <IconButton
-            className="size-9"
             disabled={busy}
             label={t("repository.safetyBackups")}
             onClick={onShowSafetyBackups}
@@ -638,9 +641,11 @@ export function RepositorySidebar({
         onPointerDown={startSidebarResize}
         role="separator"
       >
+        {/* The sidebar's own right border is the resting divider; this handle
+            only lights up while it is being targeted. */}
         <span
           aria-hidden="true"
-          className="pointer-events-none absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-border transition-[width,background-color] group-hover:w-0.5 group-hover:bg-ring group-active:w-0.5 group-active:bg-ring"
+          className="pointer-events-none absolute inset-y-0 right-0 w-px bg-transparent transition-[width,background-color] group-hover:w-0.5 group-hover:bg-ring group-active:w-0.5 group-active:bg-ring"
         />
       </div>
     </aside>
@@ -773,7 +778,7 @@ function SidebarSection({
 
   return (
     <section
-      className="flex min-h-0 flex-col px-3 py-3"
+      className="flex min-h-0 flex-col px-2 py-2"
       style={{ flexBasis: collapsed ? "auto" : maxHeight }}
     >
       <div className="flex h-8 items-center gap-2">
@@ -919,7 +924,7 @@ function BranchRow({
       style={style}
     >
       <button
-        className="grid h-9 w-full grid-cols-[14px_auto_1fr_auto] items-center gap-2 rounded-md px-2 text-left text-[13px] transition-colors duration-micro group-hover:bg-accent group-focus-within:bg-accent"
+        className="grid h-8 w-full grid-cols-[14px_auto_1fr_auto] items-center gap-2 rounded-md px-2 text-left text-[13px] transition-colors duration-micro group-hover:bg-accent group-focus-within:bg-accent"
         onClick={() => {
           onFocus(branch);
         }}
@@ -1105,7 +1110,7 @@ function StashRow({
       style={style}
     >
       <button
-        className="grid h-9 w-full grid-cols-[auto_1fr_auto] items-center gap-2 rounded-md px-2 text-left text-[13px] transition-colors duration-micro group-hover:bg-accent group-focus-within:bg-accent"
+        className="grid h-8 w-full grid-cols-[auto_1fr_auto] items-center gap-2 rounded-md px-2 text-left text-[13px] transition-colors duration-micro group-hover:bg-accent group-focus-within:bg-accent"
         disabled={busy || !onDetails}
         onClick={onDetails ? () => onDetails(stash) : undefined}
         type="button"
