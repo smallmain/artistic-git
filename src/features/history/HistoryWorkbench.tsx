@@ -6,8 +6,6 @@ import {
   Copy,
   FileText,
   GitBranch,
-  GitCommitHorizontal,
-  GitPullRequest,
   Loader2,
   RefreshCw,
   Search,
@@ -82,7 +80,7 @@ import {
 } from "./useIncrementalHistoryRows";
 import { useVirtualWindow } from "./useVirtualWindow";
 
-const rowHeight = 72;
+const rowHeight = 48;
 const fallbackViewportHeight = 504;
 const graphLaneWidth = 18;
 const graphLeftPadding = 14;
@@ -717,10 +715,6 @@ export function HistoryWorkbench({
     >
       <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-border-subtle px-4 py-3">
         <div className="flex min-w-0 items-center gap-2">
-          <GitPullRequest
-            className="size-4 shrink-0 text-foreground-tertiary"
-            aria-hidden="true"
-          />
           <div className="min-w-0">
             <h2 className="text-heading truncate">{t("history.title")}</h2>
             <p className="text-caption truncate text-foreground-tertiary">
@@ -818,7 +812,7 @@ export function HistoryWorkbench({
       ) : null}
 
       <div
-        className="text-label grid shrink-0 border-b border-border-subtle px-4 py-1.5 text-foreground-tertiary [grid-template-columns:112px_minmax(0,1fr)_180px_140px]"
+        className="text-label grid shrink-0 border-b border-border-subtle px-4 py-1.5 text-foreground-tertiary [grid-template-columns:112px_minmax(0,1fr)_160px_120px]"
         data-testid="history-column-header"
       >
         <span>{t("history.columns.graph")}</span>
@@ -876,7 +870,7 @@ export function HistoryWorkbench({
             >
               {[0, 1, 2, 3, 4, 5, 6, 7].map((row) => (
                 <div
-                  className="grid h-[52px] items-center border-b border-border-subtle [grid-template-columns:112px_minmax(0,1fr)_180px_140px]"
+                  className="grid h-12 items-center border-b border-border-subtle [grid-template-columns:112px_minmax(0,1fr)_160px_120px]"
                   key={row}
                 >
                   <span />
@@ -1227,7 +1221,7 @@ function HistoryCommitRow({
   return (
     <button
       className={cn(
-        "absolute left-0 right-0 grid border-b border-border-subtle px-4 text-left transition-colors duration-micro [grid-template-columns:112px_minmax(0,1fr)_180px_140px]",
+        "absolute left-0 right-0 grid border-b border-border-subtle px-4 text-left transition-colors duration-micro [grid-template-columns:112px_minmax(0,1fr)_160px_120px]",
         unsynced
           ? "bg-warning/10 hover:bg-warning/15"
           : "bg-card hover:bg-accent/55",
@@ -1244,17 +1238,11 @@ function HistoryCommitRow({
       type="button"
     >
       <span aria-hidden="true" />
-      <span className="flex min-w-0 items-center gap-3 py-3">
+      <span className="flex min-w-0 items-center gap-3">
         <Avatar author={commit.author} gravatarEnabled={gravatarEnabled} />
         <span className="min-w-0 flex-1">
-          <span className="flex min-w-0 items-center gap-2">
-            <GitCommitHorizontal
-              className="size-4 shrink-0 text-foreground-tertiary"
-              aria-hidden="true"
-            />
-            <span className="truncate text-[13px] font-medium">
-              {commit.message}
-            </span>
+          <span className="block truncate text-[13px] font-medium">
+            {commit.message}
           </span>
           <span className="mt-1 flex min-w-0 items-center gap-1.5">
             {visibleRefs.map((ref, index) => (

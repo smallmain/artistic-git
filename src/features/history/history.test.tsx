@@ -889,10 +889,10 @@ describe("HistoryWorkbench", () => {
       initialRenderedCount,
     );
 
-    fireEvent.scroll(viewport, { target: { scrollTop: 5_000 * 72 - 1_000 } });
+    fireEvent.scroll(viewport, { target: { scrollTop: 5_000 * 48 - 1_000 } });
 
     expect(screen.getByText("Commit 4999")).toBeInTheDocument();
-    expect(screen.getAllByTestId("history-commit-row").length).toBeLessThan(30);
+    expect(screen.getAllByTestId("history-commit-row").length).toBeLessThan(40);
   });
 
   it("keeps a long current branch name inside the history toolbar", () => {
